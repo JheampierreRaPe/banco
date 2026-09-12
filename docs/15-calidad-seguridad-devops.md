@@ -16,12 +16,29 @@
 
 Ver seccion 12 de `04-motor-transaccional-y-ledger.md`. Son **bloqueantes** para cerrar HU17/HU18.
 
-### 1.2 Datos de prueba
+### 1.2 Datos de prueba (Q-T01 implementado en `feature/qa-bootstrap`)
 
-- Semilla reproducible: usuarios demo, cuentas en PEN/USD, saldos iniciales, catalogo contable,
-  comercios, billers, listas restrictivas de prueba.
-- Nunca usar datos personales reales.
-- Scripts de seed versionados.
+- **BD de prueba:** `banca_test` (override con `TEST_DATABASE_URL`). Se crea si falta y se
+  migra con `alembic upgrade head`. El loader se niega a operar sobre BDs que no contengan
+  `test` en el nombre, salvo flag explicito.
+- **Fuente de verdad:** `backend/tests/factories.py` (`build_seed_dataset(seed)`). Determinista:
+  UUID v5 por nombre, `random.Random(seed)` (defecto `SEED=42`), JSON canonico + huella
+  `sha256`. Misma semilla => mismo dataset en cualquier entorno.
+- **Contenido simulado (cero PII real):** 4 usuarios demo (`@example.com`, docs `000...`),
+  4 cuentas PEN/USD con saldos en centimos, catalogo contable minimo (8 cuentas), 2 comercios
+  QR, 3 billers, 2 asientos cuadrados y llaves de idempotencia de ejemplo.
+- **Script versionado:** `backend/scripts/seed_demo.py` con `check` (reproducibilidad),
+  `dump` (snapshot canonico) y `load` (crea BD, migra, persiste en `qa.seed_snapshots` con
+  upsert idempotente y verifica el baseline: 13 esquemas + 13 parametros de `config`).
+- **Fixtures (`backend/tests/conftest.py`):** `client` (sin BD), `test_engine` (1 vez/sesion),
+  `db_session` (transaccion + rollback: cada prueba arranca en estado conocido), `db_client`
+  (override de `get_db`), `seeded_snapshot`. Sin Postgres, las pruebas de integracion hacen
+  `skip`; las unitarias siempre corren.
+- **Comandos (desde `backend/`):**
+  `python scripts/seed_demo.py check|load` y `pytest` (15 pruebas Q-T01 en verde).
+- **Extension:** cuando cada modulo cree sus tablas, se agregan loaders con upsert por `id`
+  sobre estos mismos diccionarios, sin cambiar el contrato. Nunca usar datos personales reales;
+  los scripts de seed estan versionados.
 
 ## 2. Trabajo de desarrollo
 

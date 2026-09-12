@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Base de datos / logs
+*.log
+*.sqlite3
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/build/
+frontend/.idea/
+frontend/.vscode/
+
+# Node (panel web)
+admin-web/node_modules/
+admin-web/dist/
+admin-web/.vite/
+
+# Sistema
+.DS_Store
+Thumbs.db

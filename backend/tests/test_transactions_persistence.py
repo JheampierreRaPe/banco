@@ -103,9 +103,9 @@ def test_no_foreign_keys_to_other_schemas():
     for table in tables:
         for fk in table.foreign_keys:
             target = fk.column.table
-            assert target.schema == "transactions", (
-                f"FK fuera del schema propio: {table.name} -> {target.schema}.{target.name}"
-            )
+            assert (
+                target.schema == "transactions"
+            ), f"FK fuera del schema propio: {table.name} -> {target.schema}.{target.name}"
 
 
 def test_migration_0002_exists_and_matches_models():
@@ -293,9 +293,9 @@ def test_hold_lifecycle_and_expiration(sqlite_session: Session):
 def test_pg_tables_exist(db_session: Session):
     insp = sa.inspect(db_session.bind)
     for table in ("transactions", "transaction_status_history", "holds"):
-        assert insp.has_table(table, schema="transactions"), (
-            f"falta tabla transactions.{table} (aplica `alembic upgrade head`)"
-        )
+        assert insp.has_table(
+            table, schema="transactions"
+        ), f"falta tabla transactions.{table} (aplica `alembic upgrade head`)"
 
 
 def test_pg_crud_smoke(db_session: Session):

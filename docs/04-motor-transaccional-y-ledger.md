@@ -55,7 +55,7 @@ INITIATED ─► VALIDATED ─┬─► PENDING_AUTHORIZATION ─► AUTHORIZED 
 | `FUNDS_HELD` | Fondos reservados. | Retenidos |
 | `POSTED` | Asiento contable registrado. | Contabilizados |
 | `SETTLED` | Entregado al destino. | Entregados |
-| `CONCILIATED` | Cruzado con el tercero (terminal). | Conciliados |
+| `CONCILIATED` | Cruzado con el tercero (terminal salvo descuadre). | Conciliados |
 | `REJECTED` | No se pudo iniciar (terminal, sin movimiento). | Intactos |
 | `FAILED` | Error tecnico tras retener; el hold se libera. | Liberados |
 | `REVERSED` | Compensada con asiento inverso (terminal). | Devueltos |

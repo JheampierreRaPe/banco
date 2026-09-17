@@ -1,0 +1,220 @@
+{
+  "accounts": [
+    {
+      "alias": "ana-pen",
+      "balance_minor": 150654,
+      "currency": "PEN",
+      "id": "e069d2bd-c323-5bbc-9aea-f5e3aa6fe96c",
+      "owner_id": "f07a7962-4bac-5a02-ac08-367248e22eb6",
+      "status": "active"
+    },
+    {
+      "alias": "bruno-pen",
+      "balance_minor": 20114,
+      "currency": "PEN",
+      "id": "127b62d9-29b8-5e53-9fee-719abb74f6e0",
+      "owner_id": "0e2a8835-822c-5704-b36b-6031988b31f9",
+      "status": "active"
+    },
+    {
+      "alias": "bruno-usd",
+      "balance_minor": 50025,
+      "currency": "USD",
+      "id": "0c57dfe9-64b2-5557-98df-649e81ce05f9",
+      "owner_id": "0e2a8835-822c-5704-b36b-6031988b31f9",
+      "status": "active"
+    },
+    {
+      "alias": "carmen-pen",
+      "balance_minor": 300759,
+      "currency": "PEN",
+      "id": "1fa0aa68-bfa5-5266-a1d9-c8a6e16dd624",
+      "owner_id": "e2e3f377-ea5a-5d12-86c3-5eaca788bf67",
+      "status": "active"
+    }
+  ],
+  "billers": [
+    {
+      "alias": "biller-luz",
+      "category": "electricidad",
+      "id": "9a7ebd5a-027a-5f3a-9c9b-a0d985d6c784",
+      "name": "Luz del Sur (demo)",
+      "status": "active"
+    },
+    {
+      "alias": "biller-agua",
+      "category": "agua",
+      "id": "549b1bd6-98db-54ee-b309-ab9f31f27ed9",
+      "name": "Sedapal Agua (demo)",
+      "status": "active"
+    },
+    {
+      "alias": "biller-movil",
+      "category": "telecom",
+      "id": "cdbaf000-c20b-5223-a289-b0e2db9fe243",
+      "name": "Movil Peru (demo)",
+      "status": "active"
+    }
+  ],
+  "chart_of_accounts": [
+    {
+      "code": "1011",
+      "currency_scope": "PEN",
+      "id": "7886f012-bec9-5102-ab8f-bfd2317a3756",
+      "name": "Caja PEN",
+      "type": "activo"
+    },
+    {
+      "code": "1012",
+      "currency_scope": "USD",
+      "id": "9e3006ba-6ea8-55bb-9703-08bf2b8f6196",
+      "name": "Caja USD",
+      "type": "activo"
+    },
+    {
+      "code": "1013",
+      "currency_scope": "*",
+      "id": "6df2fc61-e766-53bc-8e93-99381a0b389e",
+      "name": "Cuenta puente interbancaria",
+      "type": "activo"
+    },
+    {
+      "code": "2011",
+      "currency_scope": "PEN",
+      "id": "541eb83d-9263-53c7-9eb5-e9d7f88e4cef",
+      "name": "Depositos a la vista PEN",
+      "type": "pasivo"
+    },
+    {
+      "code": "2012",
+      "currency_scope": "USD",
+      "id": "e682b60d-d549-5c6c-8d50-e2a486dd6367",
+      "name": "Depositos a la vista USD",
+      "type": "pasivo"
+    },
+    {
+      "code": "3011",
+      "currency_scope": "*",
+      "id": "02150c10-36ff-56a0-b6fb-f67e593a1a71",
+      "name": "Capital social",
+      "type": "patrimonio"
+    },
+    {
+      "code": "4011",
+      "currency_scope": "*",
+      "id": "f478665f-a335-5d2f-b0b5-22fe3d69e39b",
+      "name": "Ingresos por comisiones",
+      "type": "ingreso"
+    },
+    {
+      "code": "5011",
+      "currency_scope": "*",
+      "id": "476bfd9a-dac2-552f-bab6-aa180b593489",
+      "name": "Egresos operativos",
+      "type": "egreso"
+    }
+  ],
+  "journal_entries": [
+    {
+      "alias": "fondeo-inicial-pen",
+      "currency": "PEN",
+      "id": "85b7d77d-1e94-5707-9781-c137caa3227e",
+      "postings": [
+        {
+          "credit_minor": 0,
+          "currency": "PEN",
+          "debit_minor": 170000,
+          "ledger_code": "1011"
+        },
+        {
+          "credit_minor": 170000,
+          "currency": "PEN",
+          "debit_minor": 0,
+          "ledger_code": "2011"
+        }
+      ],
+      "total_minor": 170000
+    },
+    {
+      "alias": "traspaso-interno-pen",
+      "currency": "PEN",
+      "id": "b6040cd4-7f42-51d6-9ab7-7f85b92988d5",
+      "postings": [
+        {
+          "credit_minor": 0,
+          "currency": "PEN",
+          "debit_minor": 20000,
+          "ledger_code": "2011"
+        },
+        {
+          "credit_minor": 20000,
+          "currency": "PEN",
+          "debit_minor": 0,
+          "ledger_code": "2011"
+        }
+      ],
+      "total_minor": 20000
+    }
+  ],
+  "merchants": [
+    {
+      "alias": "cafe-central",
+      "id": "b5fa2846-4903-5d5e-b8a2-3aa16d668413",
+      "name": "Cafe Central (demo)",
+      "owner_id": "e2e3f377-ea5a-5d12-86c3-5eaca788bf67",
+      "qr_code": "QR-DEMO-CAFE-0001",
+      "status": "active"
+    },
+    {
+      "alias": "libreria-norte",
+      "id": "23d67cc6-090f-5525-ba0d-794e52b145d3",
+      "name": "Libreria Norte (demo)",
+      "owner_id": "e2e3f377-ea5a-5d12-86c3-5eaca788bf67",
+      "qr_code": "QR-DEMO-LIB-0002",
+      "status": "active"
+    }
+  ],
+  "meta": {
+    "seed": 42,
+    "version": "seed-v1"
+  },
+  "sample_idempotency_keys": [
+    "dea7255b-5420-5907-9f27-f3a4eab34468",
+    "ad41e584-6508-5942-97d8-20caa53ba158",
+    "408423ad-7af6-5834-ba19-856f161250c4"
+  ],
+  "users": [
+    {
+      "alias": "ana",
+      "doc_number": "00000001",
+      "email": "ana.quintero@example.com",
+      "id": "f07a7962-4bac-5a02-ac08-367248e22eb6",
+      "kyc_status": "approved",
+      "role": "titular"
+    },
+    {
+      "alias": "bruno",
+      "doc_number": "00000002",
+      "email": "bruno.paredes@example.com",
+      "id": "0e2a8835-822c-5704-b36b-6031988b31f9",
+      "kyc_status": "approved",
+      "role": "titular"
+    },
+    {
+      "alias": "carmen",
+      "doc_number": "00000003",
+      "email": "carmen.torres@example.com",
+      "id": "e2e3f377-ea5a-5d12-86c3-5eaca788bf67",
+      "kyc_status": "approved",
+      "role": "comercio"
+    },
+    {
+      "alias": "diego",
+      "doc_number": "00000004",
+      "email": "diego.rios@example.com",
+      "id": "1150c569-2b8a-5abe-b6e2-cd303efc5f67",
+      "kyc_status": "rejected",
+      "role": "titular"
+    }
+  ]
+}

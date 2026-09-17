@@ -9,7 +9,7 @@
 | Sprint | `1` (fase de preparacion) |
 | HU | `Transversal` |
 | Dependencias | `Ninguna` |
-| Estado | `Hecho` (estructura creada; falta instalar deps y correr `pytest`) |
+| Estado | `Hecho` |
 
 ## Objetivo
 Crear la estructura fisica del monorepo y el proyecto backend base (FastAPI) con la estructura de
@@ -66,9 +66,13 @@ Cada modulo con `api/ schemas/ domain/ service/ repository/ models/ events/ jobs
 - La app levanta; `/health` responde 200; un import por modulo no rompe.
 
 ## Entregables
-- [ ] Monorepo + backend base + paquetes de modulos vacios.
-- [ ] `.env.example` y README raiz con instrucciones.
-- [ ] Prueba de humo del healthcheck.
+- [x] Monorepo + backend base + paquetes de modulos vacios.
+- [x] `.env.example` y README raiz con instrucciones.
+- [x] Prueba de humo del healthcheck.
+
+## Verificación de cierre (orquestador)
+Deps instaladas (`pip check` limpio), suite completa `65 passed` con
+`backend/.venv`, imports base OK. Coletilla cerrada.
 
 ## Entorno
 - Rama: `feature/init-monorepo`

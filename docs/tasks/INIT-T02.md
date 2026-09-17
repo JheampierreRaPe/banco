@@ -9,7 +9,7 @@
 | Sprint | `1` (fase de preparacion) |
 | HU | `Transversal` |
 | Dependencias | `INIT-T01` |
-| Estado | `Hecho` (archivos creados; falta ejecutar `alembic upgrade head`) |
+| Estado | `Hecho` |
 
 ## Objetivo
 Configurar Alembic para PostgreSQL con un esquema por modulo, crear todos los esquemas vacios, la
@@ -55,9 +55,13 @@ tabla transversal `config.parameters` y su semilla, y dejar las convenciones de 
 - `alembic upgrade head` y `downgrade` en base limpia; esquemas creados; seed cargado.
 
 ## Entregables
-- [ ] Alembic multi-esquema + esquemas vacios.
-- [ ] `config.parameters` + seed.
-- [ ] Documento de convenciones de migraciones.
+- [x] Alembic multi-esquema + esquemas vacios.
+- [x] `config.parameters` + seed.
+- [x] Documento de convenciones de migraciones.
+
+## Verificación de cierre (orquestador)
+`alembic upgrade head` ejecutado OK en Postgres local
+(`0001` → `0002` → `0003` → `0004`). Coletilla cerrada.
 
 ## Entorno
 - Rama: `feature/init-migrations`

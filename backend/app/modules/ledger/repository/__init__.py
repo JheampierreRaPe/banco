@@ -26,6 +26,48 @@ from app.modules.ledger.domain.chart import (
     validate_currency,
 )
 from app.modules.ledger.models import LedgerAccount
+from app.modules.ledger.repository.entries import (
+    get_entry as get_entry,
+)
+from app.modules.ledger.repository.entries import (
+    list_postings as list_postings,
+)
+from app.modules.ledger.repository.entries import (
+    post_entry as post_entry,
+)
+from app.modules.ledger.repository.entries import (
+    reverse_entry as reverse_entry,
+)
+from app.modules.ledger.repository.balances import (  # E5-T12 (HU18 CA-04)
+    AccountProjectionPort as AccountProjectionPort,
+)
+from app.modules.ledger.repository.balances import (
+    DEFAULT_ACCOUNT_PROJECTION as DEFAULT_ACCOUNT_PROJECTION,
+)
+from app.modules.ledger.repository.balances import (
+    DefaultAccountProjection as DefaultAccountProjection,
+)
+from app.modules.ledger.repository.balances import (
+    VersionConflictError as VersionConflictError,
+)
+from app.modules.ledger.repository.balances import (
+    apply_balance_delta as apply_balance_delta,
+)
+from app.modules.ledger.repository.balances import (
+    check_projection_consistency as check_projection_consistency,
+)
+from app.modules.ledger.repository.balances import (
+    get_balance as get_balance,
+)
+from app.modules.ledger.repository.balances import (
+    post_entry_and_update_balances as post_entry_and_update_balances,
+)
+from app.modules.ledger.repository.balances import (
+    reverse_entry_and_update_balances as reverse_entry_and_update_balances,
+)
+from app.modules.ledger.repository.balances import (
+    signed_delta as signed_delta,
+)
 
 
 def get_by_code(session: Session, code: str) -> LedgerAccount | None:

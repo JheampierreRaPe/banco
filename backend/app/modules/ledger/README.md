@@ -17,3 +17,32 @@ posteriores del sprint.
   (delega a `repository`; idempotente por `code` unico + `SAVEPOINT`).
 - Desviacion de `03b#7.1`: `code` es `VARCHAR(50)` (no 30) porque
   `2000-<uuid>` ocupa 41 caracteres; el ejemplo de `03b` manda.
+
+## E5-T10 - Asientos de partida doble (HU18)
+
+- Tablas propias: `ledger.journal_entries` + `ledger.postings` append-only
+  (sin `UPDATE`/`DELETE`; el reverso marca el original `POSTED` -> `REVERSED`
+  y crea un asiento compensatorio nuevo con postings intactos).
+- Cuadre por moneda (`04#2`): `sum(DEBIT) == sum(CREDIT)` por moneda, dinero
+  entero en centimos (nunca `float`).
+- Hash encadenado SHA-256 en hex (64 chars) sobre campos canonicos del asiento
+  + postings ordenados + `prev_hash` (genesis: `prev_hash None`), unidos por
+  `"\n"`; punta determinista (asiento cuyo `hash` nadie referencia como
+  `prev_hash`), sin depender de `created_at`.
+- Fachada interna: `repository.post_entry(...)` / `reverse_entry(entry_id)`
+  (a la que `service` delega); hacen `flush`, no `commit`.
+- Sin eventos (regla de oro 8: la emision de `ledger.entry.posted` queda para
+  outbox/E5-T05).
+
+## E5-T11 - Validador de cuadre contable (HU18)
+
+- Validador explicito del agregado: `domain.validate_balanced(items)` exige
+  `sum(DEBIT) == sum(CREDIT)` por moneda con igualdad exacta de enteros en
+  centimos (sin tolerancias, sin redondeos, sin flags de desactivacion);
+  lanza `ValueError` si alguna moneda descuadra.
+- `domain.validate_postings` delega siempre en `validate_balanced` (sin opcion
+  de omitirlo); `repository.post_entry` valida antes de agregar filas (sin
+  filas residuales al rechazar).
+- Auditoria de rutas: la unica creacion es `repository.post_entry` (a la que
+  `reverse_entry` y la fachada `service` delegan); ninguna ruta saltea la
+  validacion, sin `float`/`round`, sin eventos.

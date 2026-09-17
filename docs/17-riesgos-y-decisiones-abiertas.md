@@ -45,6 +45,7 @@
 | R18 | Cierre contable que no cuadra por datos sucios | 2 | 3 | Alto | Validador de cuadre y control de consistencia. |
 | R19 | Migraciones divergentes entre desarrolladores | 2 | 2 | Medio | Una sola linea de migraciones y CI que valida up/down. |
 | R20 | Reloj/zona horaria en fechas de negocio | 2 | 2 | Medio | UTC en base, conversion en frontera; corte diario definido. |
+| R21 | Listado/export de movimientos filtran en memoria (hasta `FETCH_LIMIT` 10000 filas) | 1 | 2 | Bajo | Aceptado por alcance académico (fase 4, decisión del dueño): si el volumen crece, mover filtros/paginación a SQL en `accounts/repository/movements.py`. |
 
 ## 4. Dependencias externas
 

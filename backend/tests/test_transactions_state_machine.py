@@ -32,10 +32,7 @@ def test_happy_path_initiated_to_settled():
 
 def test_happy_path_via_pending_authorization():
     assert transition(S.VALIDATED, S.PENDING_AUTHORIZATION) is S.PENDING_AUTHORIZATION
-    assert (
-        transition(S.PENDING_AUTHORIZATION, S.AUTHORIZED, ActorType.USER)
-        is S.AUTHORIZED
-    )
+    assert transition(S.PENDING_AUTHORIZATION, S.AUTHORIZED, ActorType.USER) is S.AUTHORIZED
 
 
 def test_illegal_transition_raises_explicitly():

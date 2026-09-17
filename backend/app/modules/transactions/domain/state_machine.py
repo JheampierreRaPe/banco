@@ -69,9 +69,7 @@ _TRANSITIONS: dict[TransactionStatus, frozenset[TransactionStatus]] = {
     TransactionStatus.AUTHORIZED: frozenset(
         {TransactionStatus.FUNDS_HELD, TransactionStatus.REJECTED}
     ),
-    TransactionStatus.FUNDS_HELD: frozenset(
-        {TransactionStatus.POSTED, TransactionStatus.FAILED}
-    ),
+    TransactionStatus.FUNDS_HELD: frozenset({TransactionStatus.POSTED, TransactionStatus.FAILED}),
     TransactionStatus.POSTED: frozenset(
         {
             TransactionStatus.SETTLED,
@@ -91,51 +89,29 @@ _TRANSITIONS: dict[TransactionStatus, frozenset[TransactionStatus]] = {
 # Actores autorizados por transicion. Solo el motor cambia de estado; el actor
 # indica quien origino el cambio que el motor registra en el historial.
 _ACTORS: dict[tuple[TransactionStatus, TransactionStatus], frozenset[ActorType]] = {
-    (TransactionStatus.INITIATED, TransactionStatus.VALIDATED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.INITIATED, TransactionStatus.REJECTED): frozenset(
-        {ActorType.SYSTEM}
-    ),
+    (TransactionStatus.INITIATED, TransactionStatus.VALIDATED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.INITIATED, TransactionStatus.REJECTED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.VALIDATED, TransactionStatus.PENDING_AUTHORIZATION): frozenset(
         {ActorType.SYSTEM}
     ),
-    (TransactionStatus.VALIDATED, TransactionStatus.AUTHORIZED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.VALIDATED, TransactionStatus.REJECTED): frozenset(
-        {ActorType.SYSTEM}
-    ),
+    (TransactionStatus.VALIDATED, TransactionStatus.AUTHORIZED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.VALIDATED, TransactionStatus.REJECTED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.PENDING_AUTHORIZATION, TransactionStatus.AUTHORIZED): frozenset(
         {ActorType.USER, ActorType.SYSTEM}
     ),
     (TransactionStatus.PENDING_AUTHORIZATION, TransactionStatus.REJECTED): frozenset(
         {ActorType.SYSTEM, ActorType.USER}
     ),
-    (TransactionStatus.AUTHORIZED, TransactionStatus.FUNDS_HELD): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.AUTHORIZED, TransactionStatus.REJECTED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.FUNDS_HELD, TransactionStatus.POSTED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.FUNDS_HELD, TransactionStatus.FAILED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.POSTED, TransactionStatus.SETTLED): frozenset(
-        {ActorType.SYSTEM}
-    ),
-    (TransactionStatus.POSTED, TransactionStatus.FAILED): frozenset(
-        {ActorType.SYSTEM}
-    ),
+    (TransactionStatus.AUTHORIZED, TransactionStatus.FUNDS_HELD): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.AUTHORIZED, TransactionStatus.REJECTED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.FUNDS_HELD, TransactionStatus.POSTED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.FUNDS_HELD, TransactionStatus.FAILED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.POSTED, TransactionStatus.SETTLED): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.POSTED, TransactionStatus.FAILED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.POSTED, TransactionStatus.REVERSED): frozenset(
         {ActorType.SYSTEM, ActorType.ANALYST}
     ),
-    (TransactionStatus.SETTLED, TransactionStatus.CONCILIATED): frozenset(
-        {ActorType.SYSTEM}
-    ),
+    (TransactionStatus.SETTLED, TransactionStatus.CONCILIATED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.SETTLED, TransactionStatus.REVERSED): frozenset(
         {ActorType.SYSTEM, ActorType.ANALYST}
     ),
@@ -159,9 +135,7 @@ def next_states(current: TransactionStatus | str) -> tuple[TransactionStatus, ..
     return tuple(sorted(_TRANSITIONS[status], key=lambda s: s.value))
 
 
-def can_transition(
-    current: TransactionStatus | str, target: TransactionStatus | str
-) -> bool:
+def can_transition(current: TransactionStatus | str, target: TransactionStatus | str) -> bool:
     """Indica si la transicion esta listada. No lanza; `transition` si lo hace."""
     try:
         from_status = TransactionStatus(current)

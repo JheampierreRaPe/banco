@@ -1,0 +1,17 @@
+# Q-T05: imagen CI del worker (verificacion de build).
+# Aun no hay codigo de worker; Q-T06 la reemplaza por el entrypoint real
+# (cola/tareas). El CMD actual falla rapido con un mensaje claro en vez de
+# arrancar algo incorrecto en silencio.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /srv/app
+
+COPY backend/pyproject.toml backend/alembic.ini ./
+COPY backend/app ./app
+COPY backend/migrations ./migrations
+RUN pip install --no-cache-dir .
+
+CMD ["python", "-c", "raise SystemExit('worker pendiente de Q-T06')"]

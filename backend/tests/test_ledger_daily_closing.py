@@ -85,8 +85,7 @@ def test_no_foreign_keys_outside_ledger():
     for fk in table.foreign_keys:
         target = fk.column.table
         assert target.schema == "ledger", (
-            f"FK fuera del schema propio: daily_closings -> "
-            f"{target.schema}.{target.name}"
+            f"FK fuera del schema propio: daily_closings -> " f"{target.schema}.{target.name}"
         )
 
 
@@ -133,9 +132,9 @@ def test_migration_0008_exists_and_matches_models():
         assert token in content, f"migracion sin {token}"
     assert "daily_closings" in content
     for forbidden in ("account_balances", "journal_entries", "postings", "ledger_balances"):
-        assert f'create_table(\n        "{forbidden}"' not in content, (
-            f"la migracion solo crea daily_closings, no {forbidden}"
-        )
+        assert (
+            f'create_table(\n        "{forbidden}"' not in content
+        ), f"la migracion solo crea daily_closings, no {forbidden}"
     assert 'schema="accounts"' not in content, "la migracion no debe tocar accounts"
     assert "schema='accounts'" not in content, "la migracion no debe tocar accounts"
 
@@ -162,9 +161,9 @@ def test_job_has_no_float_commit_publish_nor_edits():
         r"def\s+(update|delete|remove|purge)_posting",
     ):
         assert not re.search(pattern, content), f"job con {pattern}"
-    assert "check_projection_consistency" in content, (
-        "debe reutilizar el chequeo de E5-T12, no duplicarlo"
-    )
+    assert (
+        "check_projection_consistency" in content
+    ), "debe reutilizar el chequeo de E5-T12, no duplicarlo"
     assert "validate_currency" in content, "moneda ISO-4217 validada"
     assert "value_date" in content, "el dia se recorta por value_date (documentado)"
     assert "def run_daily_closing" in content, "fachada run_daily_closing"
@@ -209,17 +208,13 @@ def _seed(session):
 
 def _closings_count(session):
     return session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.daily_closings"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.daily_closings"])
     )
 
 
 def _postings_count(session):
     return session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.postings"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.postings"])
     )
 
 
@@ -362,9 +357,7 @@ def test_idempotent_double_run_same_day_is_one_row():
         assert alert2 is None
         assert _closings_count(session) == 1, "doble corrida = 1 fila (UQ dia+moneda)"
         # Otro dia si genera su propia fila.
-        other, _ = run_daily_closing(
-            session, closing_date=date(2026, 9, 14), currency="PEN"
-        )
+        other, _ = run_daily_closing(session, closing_date=date(2026, 9, 14), currency="PEN")
         assert other.id != first.id
         assert _closings_count(session) == 2
     finally:
@@ -386,9 +379,7 @@ def test_integration_postgres_daily_closing(db_session: Session):
         description="humo E5-T13",
         value_date=day,
     )
-    closing, alert = run_daily_closing(
-        db_session, closing_date=day, currency="PEN"
-    )
+    closing, alert = run_daily_closing(db_session, closing_date=day, currency="PEN")
     assert alert is None
     assert closing.balanced is True and closing.closed_at is not None
     assert closing.total_debits_minor == 2_500

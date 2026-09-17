@@ -44,9 +44,7 @@ def publish_pending(
     pending = repo.list_pending(session, limit=limit, now=now)
     for candidate in pending:
         entry_id: uuid.UUID = candidate.id
-        if not repo.claim_entry(
-            session, entry_id, lease_seconds=lease_seconds, now=now
-        ):
+        if not repo.claim_entry(session, entry_id, lease_seconds=lease_seconds, now=now):
             result["skipped"] += 1
             continue
         entry: OutboxEntry | None = session.get(OutboxEntry, entry_id)

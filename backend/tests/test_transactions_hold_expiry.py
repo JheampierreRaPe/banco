@@ -103,7 +103,7 @@ def sqlite_session():
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
 
-    import app.modules.ledger.models as _lm  # noqa: F401 (registro)
+    import app.modules.ledger.models as _lm
     import app.modules.transactions.models as m
 
     assert _lm is not None  # evita unused-import en lint estricto
@@ -212,9 +212,7 @@ def _ledger_totals(session: Session):
 
 
 def _count(session: Session, key: str) -> int:
-    return session.scalar(
-        sa.select(sa.func.count()).select_from(Base.metadata.tables[key])
-    )
+    return session.scalar(sa.select(sa.func.count()).select_from(Base.metadata.tables[key]))
 
 
 def test_expired_hold_released_and_tx_failed(
@@ -253,9 +251,7 @@ def test_active_hold_untouched(sqlite_session: Session, monkeypatch: pytest.Monk
     from app.modules.transactions.jobs.release_expired_holds import release_expired_holds
 
     _install_fake_outbox(monkeypatch)
-    tx, hold = _make_posted_tx_with_hold(
-        sqlite_session, expires_at=_utcnow() + timedelta(hours=1)
-    )
+    tx, hold = _make_posted_tx_with_hold(sqlite_session, expires_at=_utcnow() + timedelta(hours=1))
 
     assert release_expired_holds(sqlite_session, now=_utcnow()) == []
     assert hold.status == "ACTIVE" and hold.released_at is None
@@ -299,9 +295,7 @@ def test_hold_without_expiry_never_touched(
     assert len(repo.list_history(sqlite_session, tx.id)) == 5
 
 
-def test_processes_in_batches_with_limit(
-    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
-):
+def test_processes_in_batches_with_limit(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     from app.modules.transactions.jobs.release_expired_holds import release_expired_holds
 
     _install_fake_outbox(monkeypatch)
@@ -454,9 +448,7 @@ def test_hold_release_guard_reads_via_ledger_facade(
     assert "ledger.models" not in job_path.read_text(encoding="utf-8")
 
     assert len(release_expired_holds(sqlite_session, now=_utcnow())) == 1
-    found = ledger_service.find_hold_release(
-        sqlite_session, transaction_id=tx.id, hold_id=hold.id
-    )
+    found = ledger_service.find_hold_release(sqlite_session, transaction_id=tx.id, hold_id=hold.id)
     assert found is not None and found.entry_type == "HOLD_RELEASE"
 
     assert release_expired_holds(sqlite_session, now=_utcnow()) == []
@@ -497,9 +489,7 @@ def test_pg_hold_expiry_smoke(db_session: Session, monkeypatch: pytest.MonkeyPat
     from app.modules.transactions.jobs.release_expired_holds import release_expired_holds
 
     _install_fake_outbox(monkeypatch)
-    tx = repo.create_transaction(
-        db_session, type="OWN_TRANSFER", amount_minor=2000, currency="PEN"
-    )
+    tx = repo.create_transaction(db_session, type="OWN_TRANSFER", amount_minor=2000, currency="PEN")
     for target in ("VALIDATED", "AUTHORIZED", "FUNDS_HELD", "POSTED"):
         repo.transition_transaction(db_session, tx.id, target)
     hold = repo.create_hold(

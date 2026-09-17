@@ -207,7 +207,15 @@ def execute_transfer(
         if existing is not None:
             return existing
 
-    port: BalancePort = balance_port if balance_port is not None else DEFAULT_BALANCE_PORT
+    if balance_port is not None:
+        port: BalancePort = balance_port
+    else:  # Cableado productivo E2-T01 (opcion b): adaptador real sin ciclos.
+        try:
+            from app.composition import resolve_balance_port as _resolve_bp
+        except ImportError:  # pragma: no cover - red de seguridad
+            port = DEFAULT_BALANCE_PORT
+        else:
+            port = _resolve_bp(None, fallback=DEFAULT_BALANCE_PORT)
     total_minor = amount_minor + fee_minor
     tx: Transaction | None = None
     try:
@@ -240,9 +248,7 @@ def execute_transfer(
             return tx
 
         # 5. Retencion: subcuentas via fachada, hold ACTIVE, delta, estado.
-        src_avail, src_hold = ledger_service.ensure_customer_accounts(
-            session, source, currency
-        )
+        src_avail, src_hold = ledger_service.ensure_customer_accounts(session, source, currency)
         hold = tx_repository.create_hold(
             session,
             transaction_id=tx.id,
@@ -345,7 +351,7 @@ def execute_transfer(
                 },
             )
         return tx
-    except Exception:
+    except Exception:  # noqa: BLE001 - cleanup best-effort y re-lanza (finally: raise)
         # Fallo tecnico: libera holds + FAILED best-effort y re-lanza
         # (no se oculta el rollback: el llamador revierte la sesion).
         try:
@@ -357,16 +363,16 @@ def execute_transfer(
                                 tx_repository.update_hold_status(
                                     session, active.id, HoldStatus.RELEASED.value
                                 )
-                            except Exception:
+                            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
                                 pass
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
                     pass
                 try:
                     if tx.status in ("FUNDS_HELD", "POSTED"):
                         tx_repository.transition_transaction(
                             session, tx.id, "FAILED", reason="fallo tecnico"
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
                     pass
                 try:
                     _publish_outbox(
@@ -378,17 +384,17 @@ def execute_transfer(
                             "status": "FAILED",
                         },
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
                     pass
         finally:
             raise
 
 
 __all__ = [
-    "BalancePort",
-    "BalanceView",
     "DEFAULT_BALANCE_PORT",
     "HOLD_ENTRY_TYPE",
     "SETTLE_ENTRY_TYPE",
+    "BalancePort",
+    "BalanceView",
     "execute_transfer",
 ]

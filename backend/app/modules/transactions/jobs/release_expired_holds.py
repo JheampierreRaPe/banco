@@ -58,7 +58,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.core import events as domain_events
@@ -172,7 +171,7 @@ def _publish_outbox(
             event_type=event_type,
             payload=payload,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort: no aborta la liberacion
         return False
     return True
 
@@ -204,11 +203,7 @@ def release_expired_holds(
 
     actives = tx_repository.list_active_holds(session)
     due = sorted(
-        (
-            h
-            for h in actives
-            if h.expires_at is not None and _as_naive(h.expires_at) <= cutoff
-        ),
+        (h for h in actives if h.expires_at is not None and _as_naive(h.expires_at) <= cutoff),
         key=lambda h: _as_naive(h.expires_at),  # type: ignore[arg-type]
     )[:limit]
 
@@ -232,8 +227,8 @@ def release_expired_holds(
                     "FAILED",
                     reason=f"hold expirado: {hold.id}",
                 )
-            except Exception:
-                pass  # best-effort: el hold ya quedo terminal
+            except Exception:  # noqa: BLE001, S110 - best-effort: el hold ya quedo terminal
+                pass
             else:
                 tx_failed_now = True
         # Si la tx no existe o ya estaba en terminal/otro estado, se deja

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -112,13 +113,12 @@ def test_no_foreign_keys_to_other_schemas_and_tx_id_is_logical():
         for fk in table.foreign_keys:
             target = fk.column.table
             assert target.schema == "ledger", (
-                f"FK fuera del schema propio: {key} -> "
-                f"{target.schema}.{target.name}"
+                f"FK fuera del schema propio: {key} -> " f"{target.schema}.{target.name}"
             )
     entry = Base.metadata.tables["ledger.journal_entries"]
-    assert not entry.columns["transaction_id"].foreign_keys, (
-        "transaction_id debe ser UUID logico sin FK fisica a otro schema"
-    )
+    assert not entry.columns[
+        "transaction_id"
+    ].foreign_keys, "transaction_id debe ser UUID logico sin FK fisica a otro schema"
 
 
 def test_ledger_account_untouched_by_e5_t10():
@@ -195,9 +195,13 @@ def test_domain_rejects_float_zero_negative_and_bad_enums():
 
     a, b = uuid.uuid4(), uuid.uuid4()
     base = _valid_postings(a, b)
-    for bad in (10_000.0, 0, -5, True, "10000"):
+    for bad in (0, -5):
         bad_postings = [dict(base[0], amount_minor=bad), base[1]]
         with pytest.raises(ValueError):
+            validate_postings(bad_postings)
+    for bad_type in (10_000.0, True, "10000"):
+        bad_postings = [dict(base[0], amount_minor=bad_type), base[1]]
+        with pytest.raises(TypeError):
             validate_postings(bad_postings)
     with pytest.raises(ValueError):
         validate_postings([dict(base[0], direction="debit"), base[1]])
@@ -212,13 +216,13 @@ def test_domain_hash_is_chained_hex():
 
     a, b = uuid.uuid4(), uuid.uuid4()
     items = validate_postings(_valid_postings(a, b))
-    kwargs = dict(
-        entry_type="OWN_TRANSFER",
-        description="test",
-        value_date=date(2026, 9, 17),
-        transaction_id=uuid.uuid4(),
-        postings=items,
-    )
+    kwargs = {
+        "entry_type": "OWN_TRANSFER",
+        "description": "test",
+        "value_date": date(2026, 9, 17),
+        "transaction_id": uuid.uuid4(),
+        "postings": items,
+    }
     genesis = compute_entry_hash(**kwargs, prev_hash=None)
     assert re.fullmatch(r"[0-9a-f]{64}", genesis), "hash debe ser hex de 64 chars"
     # Determinista e independiente del orden de los postings.
@@ -314,9 +318,7 @@ def _seed_accounts(session):
 
 
 def _count(session, key):
-    return session.scalar(
-        sa.select(sa.func.count()).select_from(Base.metadata.tables[key])
-    )
+    return session.scalar(sa.select(sa.func.count()).select_from(Base.metadata.tables[key]))
 
 
 def test_post_balanced_entry(sqlite_session: Session):
@@ -357,9 +359,7 @@ def test_post_unbalanced_rejected_without_residue(sqlite_session: Session):
         _count(sqlite_session, "ledger.postings"),
     )
     with pytest.raises(ValueError, match="descuadrado"):
-        repo.post_entry(
-            sqlite_session, entry_type="OWN_TRANSFER", postings=postings
-        )
+        repo.post_entry(sqlite_session, entry_type="OWN_TRANSFER", postings=postings)
     sqlite_session.rollback()
     assert _count(sqlite_session, "ledger.journal_entries") == before_entries
     assert _count(sqlite_session, "ledger.postings") == before_postings
@@ -422,7 +422,7 @@ def test_uuid_unique_and_hash_chain(sqlite_session: Session):
     hashes = [e.hash for e in entries]
     assert len(set(hashes)) == 3
     assert entries[0].prev_hash is None
-    for prev, current in zip(entries, entries[1:]):
+    for prev, current in pairwise(entries):
         assert current.prev_hash == prev.hash, "cada hash referencia al anterior"
 
 

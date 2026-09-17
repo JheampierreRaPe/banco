@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -52,11 +52,7 @@ def test_table_registered_with_schema_columns_constraints_indexes():
     assert isinstance(table.columns["request_hash"].type, sa.String)
     assert table.columns["request_hash"].type.length == 64
     assert isinstance(table.columns["response_snapshot"].type, sa.JSON)
-    uniques = {
-        c.name
-        for c in table.constraints
-        if isinstance(c, sa.UniqueConstraint)
-    }
+    uniques = {c.name for c in table.constraints if isinstance(c, sa.UniqueConstraint)}
     assert "uq_idempotency_key_user" in uniques, "UQ(key, user_id)"
     idx = {i.name for i in table.indexes}
     assert "ix_idempotency_created_at" in idx
@@ -147,9 +143,7 @@ def test_header_required_only_for_money():
     # Fuera de dinero: opcional (marca explicita) pero respetada si viene.
     assert require_idempotency_key({}, endpoint="/health") is None
     assert require_idempotency_key({}, endpoint="/accounts") is None
-    assert (
-        require_idempotency_key({"idempotency-key": "k-2"}, endpoint="/health") == "k-2"
-    )
+    assert require_idempotency_key({"idempotency-key": "k-2"}, endpoint="/health") == "k-2"
 
 
 def test_new_files_have_no_commit_publish_float_nor_service_touch():
@@ -164,9 +158,9 @@ def test_new_files_have_no_commit_publish_float_nor_service_touch():
         assert "float(" not in content, f"{rel} sin atajos float"
     mw = (base / "app/modules/transactions/api/idempotency.py").read_text(encoding="utf-8")
     assert "publish" not in mw.lower(), "el middleware no publica eventos"
-    assert "transactions/service" not in mw and "modules.transactions.service" not in mw, (
-        "sin tocar transactions/service (E5-T03)"
-    )
+    assert (
+        "transactions/service" not in mw and "modules.transactions.service" not in mw
+    ), "sin tocar transactions/service (E5-T03)"
     service_dir = base / "app/modules/transactions/service"
     assert service_dir.exists()
 
@@ -190,9 +184,7 @@ def sqlite_session():
         cur.close()
 
     event.listen(engine, "connect", _attach)
-    Base.metadata.create_all(
-        engine, tables=[Base.metadata.tables["shared.idempotency_keys"]]
-    )
+    Base.metadata.create_all(engine, tables=[Base.metadata.tables["shared.idempotency_keys"]])
     session = Session(bind=engine, autoflush=False, expire_on_commit=False)
     try:
         yield session
@@ -214,16 +206,14 @@ def test_exact_replay_returns_snapshot_without_reexecution(sqlite_session: Sessi
 
     calls: list = []
     tx_id = uuid.uuid4()
-    kwargs = dict(
-        key="k-exacta",
-        user_id=uuid.uuid4(),
-        endpoint="/transfers",
-        method="POST",
-        body={"to": "B", "amount_minor": 10_000},
-    )
-    first = execute_with_idempotency(
-        sqlite_session, handler=_money_handler(calls, tx_id), **kwargs
-    )
+    kwargs = {
+        "key": "k-exacta",
+        "user_id": uuid.uuid4(),
+        "endpoint": "/transfers",
+        "method": "POST",
+        "body": {"to": "B", "amount_minor": 10_000},
+    }
+    first = execute_with_idempotency(sqlite_session, handler=_money_handler(calls, tx_id), **kwargs)
     assert first.replayed is False
     assert first.response == {"status": "SETTLED", "amount_minor": 10_000}
     assert first.transaction_id == tx_id
@@ -242,12 +232,12 @@ def test_same_key_different_body_conflicts(sqlite_session: Session):
     )
 
     calls: list = []
-    base = dict(
-        key="k-conflicto",
-        user_id=uuid.uuid4(),
-        endpoint="/payments",
-        method="POST",
-    )
+    base = {
+        "key": "k-conflicto",
+        "user_id": uuid.uuid4(),
+        "endpoint": "/payments",
+        "method": "POST",
+    }
     execute_with_idempotency(
         sqlite_session,
         handler=_money_handler(calls, uuid.uuid4()),
@@ -265,7 +255,6 @@ def test_same_key_different_body_conflicts(sqlite_session: Session):
 
 
 def test_expired_key_is_treated_as_new(sqlite_session: Session):
-    from datetime import timezone
 
     from app.modules.shared.models import IdempotencyKey
     from app.modules.shared.repository import compute_request_hash
@@ -292,7 +281,7 @@ def test_expired_key_is_treated_as_new(sqlite_session: Session):
         )
     )
     assert row is not None
-    row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     sqlite_session.flush()
     tx_id = uuid.uuid4()
     again = execute_with_idempotency(
@@ -395,20 +384,16 @@ def test_integration_postgres_idempotency_smoke(db_session: Session):
 
     calls: list = []
     tx_id = uuid.uuid4()
-    kwargs = dict(
-        key=f"k-smoke-{uuid.uuid4().hex[:8]}",
-        user_id=uuid.uuid4(),
-        endpoint="/transfers",
-        method="POST",
-        body={"amount_minor": 100},
-    )
-    first = execute_with_idempotency(
-        db_session, handler=_money_handler(calls, tx_id), **kwargs
-    )
+    kwargs = {
+        "key": f"k-smoke-{uuid.uuid4().hex[:8]}",
+        "user_id": uuid.uuid4(),
+        "endpoint": "/transfers",
+        "method": "POST",
+        "body": {"amount_minor": 100},
+    }
+    first = execute_with_idempotency(db_session, handler=_money_handler(calls, tx_id), **kwargs)
     assert first.replayed is False
-    second = execute_with_idempotency(
-        db_session, handler=_money_handler(calls, tx_id), **kwargs
-    )
+    second = execute_with_idempotency(db_session, handler=_money_handler(calls, tx_id), **kwargs)
     assert second.replayed is True and len(calls) == 1
     stored = find_key(db_session, key=kwargs["key"], user_id=kwargs["user_id"])
     assert stored is not None

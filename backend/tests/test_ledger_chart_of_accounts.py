@@ -56,8 +56,7 @@ def test_no_foreign_keys_to_other_schemas():
     for fk in table.foreign_keys:
         target = fk.column.table
         assert target.schema == "ledger", (
-            f"FK fuera del schema propio: ledger_accounts -> "
-            f"{target.schema}.{target.name}"
+            f"FK fuera del schema propio: ledger_accounts -> " f"{target.schema}.{target.name}"
         )
 
 
@@ -154,9 +153,7 @@ def test_catalog_loaded_and_idempotent(sqlite_session: Session):
     second = repo.ensure_system_catalog(sqlite_session)
     assert {k: v.id for k, v in first.items()} == {k: v.id for k, v in second.items()}
     count = sqlite_session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.ledger_accounts"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.ledger_accounts"])
     )
     assert count == 11
 
@@ -181,9 +178,7 @@ def test_ensure_customer_accounts_idempotent(sqlite_session: Session):
     assert again_avail.id == avail.id
     assert again_hold.id == hold.id
     count = sqlite_session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.ledger_accounts"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.ledger_accounts"])
     )
     assert count == 13  # 11 catalogo + 2 subcuentas
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -48,9 +47,7 @@ class _FakeAccountProjection:
         self.calls: list[tuple] = []
 
     def apply_projection(self, session, ledger_account_id, signed_delta_minor, currency):
-        self.calls.append(
-            (ledger_account_id, signed_delta_minor, currency)
-        )
+        self.calls.append((ledger_account_id, signed_delta_minor, currency))
 
 
 # ---------------------------------------------------------------- Parte A: modelo
@@ -86,8 +83,7 @@ def test_no_foreign_keys_to_other_schemas():
         for fk in table.foreign_keys:
             target = fk.column.table
             assert target.schema == "ledger", (
-                f"FK fuera del schema propio: {key} -> "
-                f"{target.schema}.{target.name}"
+                f"FK fuera del schema propio: {key} -> " f"{target.schema}.{target.name}"
             )
 
 
@@ -110,10 +106,7 @@ def test_ledger_account_untouched_by_e5_t12():
 
 def test_migration_0006_exists_and_matches_models():
     path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "0006_ledger_balances.py"
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0006_ledger_balances.py"
     )
     assert path.exists(), "falta migracion 0006_ledger_balances.py"
     content = path.read_text(encoding="utf-8")
@@ -127,9 +120,7 @@ def test_migration_0006_exists_and_matches_models():
         assert token in content, f"migracion sin {token}"
     assert 'schema="accounts"' not in content, "la migracion no debe tocar accounts"
     assert "schema='accounts'" not in content, "la migracion no debe tocar accounts"
-    assert "account_balances" not in content, (
-        "esa tabla es de E2-T01 fase 4: NO crearla aqui"
-    )
+    assert "account_balances" not in content, "esa tabla es de E2-T01 fase 4: NO crearla aqui"
 
 
 def test_account_projection_port_defaults_to_stub():
@@ -251,16 +242,12 @@ def test_version_increments_and_conflict_rejected(sqlite_session: Session):
     row = apply_balance_delta(sqlite_session, avail.id, 2_000, "PEN")
     assert (row.balance_minor, row.version) == (7_000, 1)
     # Version esperada correcta: aplica e incrementa.
-    row = apply_balance_delta(
-        sqlite_session, avail.id, 1_000, "PEN", expected_version=1
-    )
+    row = apply_balance_delta(sqlite_session, avail.id, 1_000, "PEN", expected_version=1)
     assert (row.balance_minor, row.version) == (8_000, 2)
     # Version concurrente obsoleta: rechazada, saldo intacto (el fallo ocurre
     # antes de mutar: no hay nada que revertir de este intento).
     with pytest.raises(VersionConflictError):
-        apply_balance_delta(
-            sqlite_session, avail.id, 1_000, "PEN", expected_version=1
-        )
+        apply_balance_delta(sqlite_session, avail.id, 1_000, "PEN", expected_version=1)
     row = repo.get_balance(sqlite_session, avail.id)
     assert (row.balance_minor, row.version) == (8_000, 2)
 
@@ -277,9 +264,7 @@ def test_rollback_leaves_projection_intact(sqlite_session: Session):
             raise RuntimeError("fallo inyectado tras el asiento")
 
     before_entries = sqlite_session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.journal_entries"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.journal_entries"])
     )
     with pytest.raises(RuntimeError, match="fallo inyectado"):
         repo.post_entry_and_update_balances(
@@ -290,9 +275,7 @@ def test_rollback_leaves_projection_intact(sqlite_session: Session):
         )
     sqlite_session.rollback()
     after_entries = sqlite_session.scalar(
-        sa.select(sa.func.count()).select_from(
-            Base.metadata.tables["ledger.journal_entries"]
-        )
+        sa.select(sa.func.count()).select_from(Base.metadata.tables["ledger.journal_entries"])
     )
     assert after_entries == before_entries, "el asiento tambien se revierte"
     assert repo.get_balance(sqlite_session, avail.id) is None
@@ -301,7 +284,6 @@ def test_rollback_leaves_projection_intact(sqlite_session: Session):
 
 
 def test_consistency_projection_vs_postings(sqlite_session: Session):
-    from app.modules.ledger.models import LedgerBalance
     from app.modules.ledger import repository as repo
 
     avail, hold = _seed_accounts(sqlite_session)

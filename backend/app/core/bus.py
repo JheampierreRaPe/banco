@@ -22,7 +22,7 @@ class EventBus:
         if not event_type or not str(event_type).strip():
             raise ValueError("event_type es obligatorio")
         if not callable(handler):
-            raise ValueError("handler debe ser callable")
+            raise TypeError("handler debe ser callable")
         self._handlers.setdefault(str(event_type), []).append(handler)
 
     def unsubscribe(self, event_type: str, handler: Callable[[Any], None]) -> None:

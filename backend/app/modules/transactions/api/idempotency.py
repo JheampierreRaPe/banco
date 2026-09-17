@@ -24,9 +24,10 @@ decide el llamante) y retorna. El reclamo es atomico por UQ
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -64,7 +65,7 @@ class IdempotencyConflictError(ValueError):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def moves_money(endpoint: str) -> bool:
@@ -77,9 +78,7 @@ def moves_money(endpoint: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in MONEY_ENDPOINTS)
 
 
-def require_idempotency_key(
-    headers: Mapping[str, Any], *, endpoint: str
-) -> str | None:
+def require_idempotency_key(headers: Mapping[str, Any], *, endpoint: str) -> str | None:
     """Exige `Idempotency-Key` si la ruta mueve dinero.
 
     Retorna la clave limpia, o `None` si la ruta no mueve dinero y no se
@@ -109,9 +108,7 @@ def require_idempotency_key(
             raise IdempotencyKeyMissingError("Idempotency-Key supera 80 caracteres")
         return key
     if moves_money(endpoint):
-        raise IdempotencyKeyMissingError(
-            f"Idempotency-Key es obligatoria en {endpoint}"
-        )
+        raise IdempotencyKeyMissingError(f"Idempotency-Key es obligatoria en {endpoint}")
     return None
 
 
@@ -149,7 +146,7 @@ def execute_with_idempotency(
     publicar eventos (regla de oro 8: el llamante usa outbox).
     """
     if not callable(handler):
-        raise ValueError("handler debe ser callable")
+        raise TypeError("handler debe ser callable")
     digest = compute_request_hash(body)
     ttl = resolve_ttl_seconds(ttl_seconds)
     moment = now or _utcnow()
@@ -187,24 +184,18 @@ def execute_with_idempotency(
             now=moment,
         )
         payload, transaction_id = handler()
-        store_response(
-            session, stored, response_snapshot=payload, transaction_id=transaction_id
-        )
+        store_response(session, stored, response_snapshot=payload, transaction_id=transaction_id)
         return IdempotentResult(
             response=dict(payload),
             replayed=False,
             transaction_id=stored.transaction_id,
         )
     if stored.request_hash != digest:
-        raise IdempotencyConflictError(
-            "Idempotency-Key ya usada con un cuerpo distinto"
-        )
+        raise IdempotencyConflictError("Idempotency-Key ya usada con un cuerpo distinto")
     if stored.response_snapshot is None:
         # Marca en vuelo: otro worker reclamo primero y aun no persiste la
         # respuesta. No re-ejecutar (sin doble debito): 409 para reintentar.
-        raise IdempotencyConflictError(
-            "operacion en curso para esta Idempotency-Key"
-        )
+        raise IdempotencyConflictError("operacion en curso para esta Idempotency-Key")
     return IdempotentResult(
         response=dict(stored.response_snapshot),
         replayed=True,

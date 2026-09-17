@@ -99,7 +99,7 @@ def test_validation_cannot_be_disabled():
     tolerancias ni redondeos; el repositorio no publica eventos ni usa float."""
     import app.modules.ledger.domain.entries as domain
     import app.modules.ledger.repository.entries as repo_entries
-    import app.modules.ledger.service as service
+    from app.modules.ledger import service
 
     assert callable(domain.validate_balanced)
     for fn in (
@@ -118,9 +118,7 @@ def test_validation_cannot_be_disabled():
             "tolerance",
             "allow_unbalanced",
         ):
-            assert forbidden not in params, (
-                f"{fn.__qualname__} expone flag {forbidden}"
-            )
+            assert forbidden not in params, f"{fn.__qualname__} expone flag {forbidden}"
     for path in (
         Path(domain.__file__),
         Path(repo_entries.__file__),
@@ -178,9 +176,7 @@ def _seed_accounts(session):
 
 
 def _count(session, key):
-    return session.scalar(
-        sa.select(sa.func.count()).select_from(Base.metadata.tables[key])
-    )
+    return session.scalar(sa.select(sa.func.count()).select_from(Base.metadata.tables[key]))
 
 
 def test_post_balanced_entry(sqlite_session: Session):
@@ -213,9 +209,7 @@ def test_post_off_by_one_cent_rejected_without_residue(sqlite_session: Session):
         _count(sqlite_session, "ledger.postings"),
     )
     with pytest.raises(ValueError, match="descuadrado"):
-        repo.post_entry(
-            sqlite_session, entry_type="OWN_TRANSFER", postings=postings
-        )
+        repo.post_entry(sqlite_session, entry_type="OWN_TRANSFER", postings=postings)
     sqlite_session.rollback()
     assert _count(sqlite_session, "ledger.journal_entries") == before_entries
     assert _count(sqlite_session, "ledger.postings") == before_postings
@@ -279,9 +273,7 @@ def test_service_post_entry_enforces_balance(sqlite_session: Session):
     bad = _valid_postings(avail.id, hold.id)
     bad[1]["amount_minor"] = 9_999
     with pytest.raises(ValueError, match="descuadrado"):
-        service.post_entry(
-            sqlite_session, entry_type="OWN_TRANSFER", postings=bad
-        )
+        service.post_entry(sqlite_session, entry_type="OWN_TRANSFER", postings=bad)
 
 
 # ---------------------------------------------------------------- Parte C: Postgres
@@ -301,6 +293,4 @@ def test_integration_postgres_balance_validator(db_session: Session):
     bad = _valid_postings(avail.id, hold.id)
     bad[1]["amount_minor"] = 9_999
     with pytest.raises(ValueError, match="descuadrado"):
-        repo.post_entry(
-            db_session, entry_type="OWN_TRANSFER", postings=bad
-        )
+        repo.post_entry(db_session, entry_type="OWN_TRANSFER", postings=bad)

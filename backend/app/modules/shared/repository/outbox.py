@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
@@ -36,7 +36,7 @@ DEFAULT_CLAIM_LEASE_SECONDS = 60
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def compute_backoff_seconds(attempts: int, base_seconds: int) -> int:
@@ -58,9 +58,7 @@ def _coerce_aggregate_id(value: uuid.UUID | str) -> uuid.UUID:
         raise ValueError(f"aggregate_id debe ser UUID, recibido: {value!r}") from exc
 
 
-def _validate_entry_fields(
-    aggregate_type: str, event_type: str, payload: dict
-) -> None:
+def _validate_entry_fields(aggregate_type: str, event_type: str, payload: dict) -> None:
     if not aggregate_type or not str(aggregate_type).strip():
         raise ValueError("aggregate_type es obligatorio")
     if len(str(aggregate_type)) > 60:
@@ -70,7 +68,7 @@ def _validate_entry_fields(
     if len(str(event_type)) > 80:
         raise ValueError("event_type supera 80 caracteres")
     if not isinstance(payload, dict):
-        raise ValueError("payload debe ser dict JSON-serializable")
+        raise TypeError("payload debe ser dict JSON-serializable")
     try:
         json.dumps(payload)
     except (TypeError, ValueError) as exc:
@@ -220,9 +218,7 @@ def _coerce_event_id(value: uuid.UUID | str) -> uuid.UUID:
         raise ValueError(f"event_id debe ser UUID, recibido: {value!r}") from exc
 
 
-def try_mark_processed(
-    session: Session, *, event_id: uuid.UUID | str, consumer: str
-) -> bool:
+def try_mark_processed(session: Session, *, event_id: uuid.UUID | str, consumer: str) -> bool:
     """Registro idempotente de consumo (`processed_events`).
 
     `True` si es el primer consumo; `False` si ya estaba registrado (el
@@ -234,9 +230,7 @@ def try_mark_processed(
         raise ValueError("consumer es obligatorio")
     if len(str(consumer)) > 60:
         raise ValueError("consumer supera 60 caracteres")
-    row = ProcessedEvent(
-        event_id=_coerce_event_id(event_id), consumer=str(consumer)
-    )
+    row = ProcessedEvent(event_id=_coerce_event_id(event_id), consumer=str(consumer))
     try:
         with session.begin_nested():
             session.add(row)
@@ -246,9 +240,7 @@ def try_mark_processed(
     return True
 
 
-def is_processed(
-    session: Session, *, event_id: uuid.UUID | str, consumer: str
-) -> bool:
+def is_processed(session: Session, *, event_id: uuid.UUID | str, consumer: str) -> bool:
     """Indica si `consumer` ya proceso `event_id`."""
     stmt = sa.select(sa.literal(1)).where(
         ProcessedEvent.event_id == _coerce_event_id(event_id),

@@ -47,9 +47,7 @@ class FakeBalances:
 
     def apply_delta(self, session: Session, account_id, delta_minor: int, currency: str):
         assert isinstance(delta_minor, int) and not isinstance(delta_minor, bool)
-        cur = self.funds.setdefault(
-            str(account_id), {"available_minor": 0, "currency": currency}
-        )
+        cur = self.funds.setdefault(str(account_id), {"available_minor": 0, "currency": currency})
         cur["available_minor"] += delta_minor
         cur["currency"] = currency
         self.deltas.append((str(account_id), delta_minor))
@@ -109,9 +107,7 @@ def _sqlite_engine_with_schemas():
 
 
 def _count(session: Session, key: str) -> int:
-    return session.scalar(
-        sa.select(sa.func.count()).select_from(Base.metadata.tables[key])
-    )
+    return session.scalar(sa.select(sa.func.count()).select_from(Base.metadata.tables[key]))
 
 
 def _postings_of(session: Session, entry_id) -> list:
@@ -129,33 +125,58 @@ def test_rejects_bad_input_without_touching_db():
     src, dst = uuid.uuid4(), uuid.uuid4()
     with pytest.raises(ValueError):
         svc.execute_transfer(
-            session, source_account_id=src, target_account_id=dst,
-            amount_minor=0, currency="PEN", balance_port=port,
+            session,
+            source_account_id=src,
+            target_account_id=dst,
+            amount_minor=0,
+            currency="PEN",
+            balance_port=port,
         )
     with pytest.raises(TypeError):
         svc.execute_transfer(
-            session, source_account_id=src, target_account_id=dst,
-            amount_minor=10.5, currency="PEN", balance_port=port,  # type: ignore[arg-type]
+            session,
+            source_account_id=src,
+            target_account_id=dst,
+            amount_minor=10.5,
+            currency="PEN",
+            balance_port=port,  # type: ignore[arg-type]
         )
     with pytest.raises(ValueError):
         svc.execute_transfer(
-            session, source_account_id=src, target_account_id=dst,
-            amount_minor=100, currency="pen", balance_port=port,
+            session,
+            source_account_id=src,
+            target_account_id=dst,
+            amount_minor=100,
+            currency="pen",
+            balance_port=port,
         )
     with pytest.raises(ValueError, match="distintas"):
         svc.execute_transfer(
-            session, source_account_id=src, target_account_id=src,
-            amount_minor=100, currency="PEN", balance_port=port,
+            session,
+            source_account_id=src,
+            target_account_id=src,
+            amount_minor=100,
+            currency="PEN",
+            balance_port=port,
         )
     with pytest.raises(ValueError):
         svc.execute_transfer(
-            session, source_account_id=src, target_account_id=dst,
-            amount_minor=100, currency="PEN", fee_minor=-1, balance_port=port,
+            session,
+            source_account_id=src,
+            target_account_id=dst,
+            amount_minor=100,
+            currency="PEN",
+            fee_minor=-1,
+            balance_port=port,
         )
     with pytest.raises(ValueError):
         svc.execute_transfer(
-            session, source_account_id="no-uuid", target_account_id=dst,
-            amount_minor=100, currency="PEN", balance_port=port,
+            session,
+            source_account_id="no-uuid",
+            target_account_id=dst,
+            amount_minor=100,
+            currency="PEN",
+            balance_port=port,
         )
 
 
@@ -188,8 +209,14 @@ def test_service_static_rules_no_float_no_direct_publish_no_direct_insert():
     assert "except ImportError" in content, "fallback si E5-T05 pendiente"
     assert "E2-T01 pendiente" in content
     assert "E5-T05" in content
-    for pattern in (r"session\.delete", r"sa\.delete\s*\(", r"JournalEntry\s*\(",
-                    r"Posting\s*\(", r"journal_entries", r"\.postings\."):
+    for pattern in (
+        r"session\.delete",
+        r"sa\.delete\s*\(",
+        r"JournalEntry\s*\(",
+        r"Posting\s*\(",
+        r"journal_entries",
+        r"\.postings\.",
+    ):
         assert not re.search(pattern, content), f"ledger directo prohibido: {pattern}"
     assert "ledger.service.post_entry" in content or "ledger_service.post_entry" in content
     assert "ensure_customer_accounts" in content
@@ -227,13 +254,23 @@ def test_happy_path_settles_with_entries_hold_and_history(
     port = FakeBalances(_funds(src, dst))
 
     tx = svc.execute_transfer(
-        sqlite_session, source_account_id=src, target_account_id=dst,
-        amount_minor=3000, currency="PEN", fee_minor=200, balance_port=port,
+        sqlite_session,
+        source_account_id=src,
+        target_account_id=dst,
+        amount_minor=3000,
+        currency="PEN",
+        fee_minor=200,
+        balance_port=port,
     )
     assert tx.status == "SETTLED"
     # Historial: creada + 5 transiciones.
     assert [h.to_status for h in repo.list_history(sqlite_session, tx.id)] == [
-        "INITIATED", "VALIDATED", "AUTHORIZED", "FUNDS_HELD", "POSTED", "SETTLED",
+        "INITIATED",
+        "VALIDATED",
+        "AUTHORIZED",
+        "FUNDS_HELD",
+        "POSTED",
+        "SETTLED",
     ]
     # Hold capturado por el total (monto + fee).
     holds = repo.list_holds_by_transaction(sqlite_session, tx.id)
@@ -280,8 +317,12 @@ def test_insufficient_funds_rejected_without_movements(
     port = FakeBalances(_funds(src, dst, src_amount=1000))
 
     tx = svc.execute_transfer(
-        sqlite_session, source_account_id=src, target_account_id=dst,
-        amount_minor=5000, currency="PEN", balance_port=port,
+        sqlite_session,
+        source_account_id=src,
+        target_account_id=dst,
+        amount_minor=5000,
+        currency="PEN",
+        balance_port=port,
     )
     assert tx.status == "REJECTED"
     assert repo.list_holds_by_transaction(sqlite_session, tx.id) == []
@@ -290,7 +331,10 @@ def test_insufficient_funds_rejected_without_movements(
     assert port.funds[str(src)]["available_minor"] == 1000
     assert port.funds[str(dst)]["available_minor"] == 0
     assert [h.to_status for h in repo.list_history(sqlite_session, tx.id)] == [
-        "INITIATED", "VALIDATED", "AUTHORIZED", "REJECTED",
+        "INITIATED",
+        "VALIDATED",
+        "AUTHORIZED",
+        "REJECTED",
     ]
 
 
@@ -316,8 +360,12 @@ def test_intermediate_failure_rolls_back_everything(
     monkeypatch.setattr(ledger_service, "post_entry", flaky_post)
     with pytest.raises(RuntimeError, match="mitad de camino"):
         svc.execute_transfer(
-            sqlite_session, source_account_id=src, target_account_id=dst,
-            amount_minor=3000, currency="PEN", balance_port=port,
+            sqlite_session,
+            source_account_id=src,
+            target_account_id=dst,
+            amount_minor=3000,
+            currency="PEN",
+            balance_port=port,
         )
     sqlite_session.rollback()
     # Rollback total: sin transaction/asiento/hold residual.
@@ -340,16 +388,19 @@ def test_hold_moves_2000_to_2100_with_invariant_total(
     port = FakeBalances(_funds(src, dst))
 
     tx = svc.execute_transfer(
-        sqlite_session, source_account_id=src, target_account_id=dst,
-        amount_minor=4000, currency="PEN", settle=False, balance_port=port,
+        sqlite_session,
+        source_account_id=src,
+        target_account_id=dst,
+        amount_minor=4000,
+        currency="PEN",
+        settle=False,
+        balance_port=port,
     )
     assert tx.status == "POSTED"
     holds = repo.list_holds_by_transaction(sqlite_session, tx.id)
     assert len(holds) == 1 and holds[0].status == "ACTIVE"
 
-    avail, hold_acct = ledger_service.ensure_customer_accounts(
-        sqlite_session, src, "PEN"
-    )
+    avail, hold_acct = ledger_service.ensure_customer_accounts(sqlite_session, src, "PEN")
     from app.modules.ledger.models import JournalEntry
 
     entries = sqlite_session.scalars(sa.select(JournalEntry)).all()
@@ -379,8 +430,12 @@ def test_outbox_missing_continues_without_publishing(
         from app.core.outbox import record  # noqa: F401 (verifica el truco)
     src, dst = uuid.uuid4(), uuid.uuid4()
     tx = svc.execute_transfer(
-        sqlite_session, source_account_id=src, target_account_id=dst,
-        amount_minor=1000, currency="PEN", settle=False,
+        sqlite_session,
+        source_account_id=src,
+        target_account_id=dst,
+        amount_minor=1000,
+        currency="PEN",
+        settle=False,
         balance_port=FakeBalances(_funds(src, dst)),
     )
     assert tx.status == "POSTED"
@@ -393,8 +448,11 @@ def test_pg_engine_smoke(db_session: Session, monkeypatch: pytest.MonkeyPatch):
     outbox_calls = _install_fake_outbox(monkeypatch)
     src, dst = uuid.uuid4(), uuid.uuid4()
     tx = svc.execute_transfer(
-        db_session, source_account_id=src, target_account_id=dst,
-        amount_minor=1500, currency="PEN",
+        db_session,
+        source_account_id=src,
+        target_account_id=dst,
+        amount_minor=1500,
+        currency="PEN",
         idempotency_key=f"e5t03-smoke-{uuid.uuid4()}",
         balance_port=FakeBalances(_funds(src, dst)),
     )

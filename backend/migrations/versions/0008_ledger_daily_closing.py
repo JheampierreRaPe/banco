@@ -53,9 +53,7 @@ def upgrade() -> None:
         ),
         sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("closed_by", sa.Uuid(), nullable=True),
-        sa.UniqueConstraint(
-            "closing_date", "currency", name="uq_daily_closings_date_currency"
-        ),
+        sa.UniqueConstraint("closing_date", "currency", name="uq_daily_closings_date_currency"),
         schema="ledger",
     )
 

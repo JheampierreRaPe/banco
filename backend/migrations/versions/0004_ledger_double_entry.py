@@ -152,22 +152,12 @@ def downgrade() -> None:
     )
     op.drop_index("ix_postings_created_at", table_name="postings", schema="ledger")
     op.drop_index("ix_postings_account_ref", table_name="postings", schema="ledger")
-    op.drop_index(
-        "ix_postings_ledger_account_id", table_name="postings", schema="ledger"
-    )
-    op.drop_index(
-        "ix_postings_journal_entry_id", table_name="postings", schema="ledger"
-    )
+    op.drop_index("ix_postings_ledger_account_id", table_name="postings", schema="ledger")
+    op.drop_index("ix_postings_journal_entry_id", table_name="postings", schema="ledger")
     op.drop_table("postings", schema="ledger")
-    op.drop_index(
-        "ix_journal_entries_created_at", table_name="journal_entries", schema="ledger"
-    )
-    op.drop_index(
-        "ix_journal_entries_status", table_name="journal_entries", schema="ledger"
-    )
-    op.drop_index(
-        "ix_journal_entries_value_date", table_name="journal_entries", schema="ledger"
-    )
+    op.drop_index("ix_journal_entries_created_at", table_name="journal_entries", schema="ledger")
+    op.drop_index("ix_journal_entries_status", table_name="journal_entries", schema="ledger")
+    op.drop_index("ix_journal_entries_value_date", table_name="journal_entries", schema="ledger")
     op.drop_index(
         "ix_journal_entries_transaction_id",
         table_name="journal_entries",

@@ -27,7 +27,7 @@ postings ni balances (regla de oro 2). Dinero entero en centimos; nunca
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -39,9 +39,7 @@ from app.modules.ledger.repository.balances import check_projection_consistency
 DEFAULT_CURRENCY = "PEN"
 
 
-def get_closing(
-    session: Session, closing_date: date, currency: str
-) -> DailyClosing | None:
+def get_closing(session: Session, closing_date: date, currency: str) -> DailyClosing | None:
     """Retorna el cierre de un dia+moneda (`None` si aun no existe)."""
     stmt = sa.select(DailyClosing).where(
         DailyClosing.closing_date == closing_date,
@@ -50,24 +48,18 @@ def get_closing(
     return session.scalars(stmt).first()
 
 
-def _day_totals(
-    session: Session, closing_date: date, currency: str
-) -> tuple[int, int, int]:
+def _day_totals(session: Session, closing_date: date, currency: str) -> tuple[int, int, int]:
     """Suma (debitos, creditos, conteo) del dia por `value_date` y moneda.
 
     Igualdad exacta de enteros en centimos (sin tolerancias ni redondeos):
     el cuadre es `debits == credits` (`04#2`, `03b#7.5`).
     """
     debits = sa.func.coalesce(
-        sa.func.sum(
-            sa.case((Posting.direction == "DEBIT", Posting.amount_minor), else_=0)
-        ),
+        sa.func.sum(sa.case((Posting.direction == "DEBIT", Posting.amount_minor), else_=0)),
         0,
     ).label("debits")
     credits = sa.func.coalesce(
-        sa.func.sum(
-            sa.case((Posting.direction == "CREDIT", Posting.amount_minor), else_=0)
-        ),
+        sa.func.sum(sa.case((Posting.direction == "CREDIT", Posting.amount_minor), else_=0)),
         0,
     ).label("credits")
     count = sa.func.count().label("count")
@@ -106,9 +98,9 @@ def run_daily_closing(
     ni balances. Solo lectura + un INSERT; `flush` sin `commit`.
     """
     cur = validate_currency(currency)
-    day = date.today() if closing_date is None else closing_date
+    day = datetime.now(UTC).date() if closing_date is None else closing_date
     if not isinstance(day, date):
-        raise ValueError(f"closing_date debe ser DATE, recibido: {closing_date!r}")
+        raise TypeError(f"closing_date debe ser DATE, recibido: {closing_date!r}")
 
     existing = get_closing(session, day, cur)
     if existing is not None:
@@ -123,9 +115,7 @@ def run_daily_closing(
         try:
             closed_by = uuid.UUID(closed_by)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"closed_by debe ser UUID, recibido: {closed_by!r}"
-            ) from exc
+            raise ValueError(f"closed_by debe ser UUID, recibido: {closed_by!r}") from exc
 
     closing = DailyClosing(
         id=uuid.uuid4(),
@@ -135,7 +125,7 @@ def run_daily_closing(
         total_credits_minor=credits,
         balanced=balanced,
         postings_count=count,
-        closed_at=datetime.now(timezone.utc) if closed else None,
+        closed_at=datetime.now(UTC) if closed else None,
         closed_by=closed_by,
     )
     session.add(closing)

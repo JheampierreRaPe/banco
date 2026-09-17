@@ -20,7 +20,7 @@ Cuadre (E5-T11): la unica ruta de creacion es `post_entry` (a la que
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -54,9 +54,7 @@ def _latest_hash(session: Session) -> str | None:
     (el desempate por `id` aleatorio rompia la cadena de forma
     intermitente). En una cadena lineal hay exactamente una punta.
     """
-    referenced = sa.select(JournalEntry.prev_hash).where(
-        JournalEntry.prev_hash.is_not(None)
-    )
+    referenced = sa.select(JournalEntry.prev_hash).where(JournalEntry.prev_hash.is_not(None))
     stmt = (
         sa.select(JournalEntry.hash)
         .where(JournalEntry.hash.not_in(referenced))
@@ -69,9 +67,7 @@ def _latest_hash(session: Session) -> str | None:
 def _require_accounts(session: Session, items: list[PostingInput]) -> None:
     wanted = {p.ledger_account_id for p in items}
     found = set(
-        session.scalars(
-            sa.select(LedgerAccount.id).where(LedgerAccount.id.in_(wanted))
-        ).all()
+        session.scalars(sa.select(LedgerAccount.id).where(LedgerAccount.id.in_(wanted))).all()
     )
     missing = wanted - found
     if missing:
@@ -98,9 +94,9 @@ def post_entry(
     _require_accounts(session, items)
     tx_id = _coerce_uuid(transaction_id, "transaction_id")
     reverses_id = _coerce_uuid(reverses_entry_id, "reverses_entry_id")
-    day = value_date if value_date is not None else date.today()
+    day = value_date if value_date is not None else datetime.now(UTC).date()
     if not isinstance(day, date):
-        raise ValueError(f"value_date debe ser DATE, recibido: {value_date!r}")
+        raise TypeError(f"value_date debe ser DATE, recibido: {value_date!r}")
 
     prev_hash = _latest_hash(session)
     entry_hash = compute_entry_hash(
@@ -158,9 +154,7 @@ def reverse_entry(
     if original is None:
         raise ValueError(f"journal_entry inexistente: {entry_id!r}")
     if original.status != "POSTED":
-        raise ValueError(
-            f"solo se revierte un asiento POSTED, estado actual: {original.status!r}"
-        )
+        raise ValueError(f"solo se revierte un asiento POSTED, estado actual: {original.status!r}")
     original_items = [
         PostingInput(
             ledger_account_id=p.ledger_account_id,

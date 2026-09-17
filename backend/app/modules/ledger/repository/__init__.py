@@ -26,23 +26,11 @@ from app.modules.ledger.domain.chart import (
     validate_currency,
 )
 from app.modules.ledger.models import LedgerAccount
-from app.modules.ledger.repository.entries import (
-    get_entry as get_entry,
-)
-from app.modules.ledger.repository.entries import (
-    list_postings as list_postings,
-)
-from app.modules.ledger.repository.entries import (
-    post_entry as post_entry,
-)
-from app.modules.ledger.repository.entries import (
-    reverse_entry as reverse_entry,
+from app.modules.ledger.repository.balances import (
+    DEFAULT_ACCOUNT_PROJECTION as DEFAULT_ACCOUNT_PROJECTION,
 )
 from app.modules.ledger.repository.balances import (  # E5-T12 (HU18 CA-04)
     AccountProjectionPort as AccountProjectionPort,
-)
-from app.modules.ledger.repository.balances import (
-    DEFAULT_ACCOUNT_PROJECTION as DEFAULT_ACCOUNT_PROJECTION,
 )
 from app.modules.ledger.repository.balances import (
     DefaultAccountProjection as DefaultAccountProjection,
@@ -67,6 +55,18 @@ from app.modules.ledger.repository.balances import (
 )
 from app.modules.ledger.repository.balances import (
     signed_delta as signed_delta,
+)
+from app.modules.ledger.repository.entries import (
+    get_entry as get_entry,
+)
+from app.modules.ledger.repository.entries import (
+    list_postings as list_postings,
+)
+from app.modules.ledger.repository.entries import (
+    post_entry as post_entry,
+)
+from app.modules.ledger.repository.entries import (
+    reverse_entry as reverse_entry,
 )
 
 

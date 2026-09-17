@@ -106,9 +106,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("processed_events", schema="shared")
-    op.drop_index(
-        "ix_outbox_status_available_at", table_name="outbox", schema="shared"
-    )
+    op.drop_index("ix_outbox_status_available_at", table_name="outbox", schema="shared")
     op.drop_index("ix_outbox_available_at", table_name="outbox", schema="shared")
     op.drop_index("ix_outbox_status", table_name="outbox", schema="shared")
     op.drop_index("ix_outbox_aggregate_id", table_name="outbox", schema="shared")

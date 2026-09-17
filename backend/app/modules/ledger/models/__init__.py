@@ -13,7 +13,7 @@ longitud. Unicidad (`UQ`) e idempotencia se mantienen.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -50,9 +50,7 @@ class LedgerAccount(Base):
     name: Mapped[str] = mapped_column(sa.String(120), nullable=False)
     type: Mapped[str] = mapped_column(sa.String(12), nullable=False)
     currency: Mapped[str] = mapped_column(sa.String(3), nullable=False)
-    owner_type: Mapped[str] = mapped_column(
-        sa.String(20), nullable=False, server_default="SYSTEM"
-    )
+    owner_type: Mapped[str] = mapped_column(sa.String(20), nullable=False, server_default="SYSTEM")
     owner_ref: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
     parent_account_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(), sa.ForeignKey(f"{SCHEMA}.ledger_accounts.id"), nullable=True
@@ -99,14 +97,12 @@ class JournalEntry(Base):
     hash: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         server_default=sa.func.now(),
         nullable=False,
     )
 
-    postings: Mapped[list["Posting"]] = relationship(
-        back_populates="entry", passive_deletes=True
-    )
+    postings: Mapped[list[Posting]] = relationship(back_populates="entry", passive_deletes=True)
 
 
 class Posting(Base):
@@ -136,9 +132,7 @@ class Posting(Base):
         sa.Index("ix_postings_ledger_account_id", "ledger_account_id"),
         sa.Index("ix_postings_account_ref", "account_ref"),
         sa.Index("ix_postings_created_at", "created_at"),
-        sa.Index(
-            "ix_postings_ledger_account_created_at", "ledger_account_id", "created_at"
-        ),
+        sa.Index("ix_postings_ledger_account_created_at", "ledger_account_id", "created_at"),
         {"schema": SCHEMA},
     )
 
@@ -151,12 +145,12 @@ class Posting(Base):
     account_ref: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         server_default=sa.func.now(),
         nullable=False,
     )
 
-    entry: Mapped["JournalEntry"] = relationship(back_populates="postings")
+    entry: Mapped[JournalEntry] = relationship(back_populates="postings")
 
 
 class LedgerBalance(Base):
@@ -191,7 +185,7 @@ class LedgerBalance(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         server_default=sa.func.now(),
         nullable=False,
     )
@@ -214,9 +208,7 @@ class DailyClosing(Base):
 
     __tablename__ = "daily_closings"
     __table_args__ = (
-        sa.UniqueConstraint(
-            "closing_date", "currency", name="uq_daily_closings_date_currency"
-        ),
+        sa.UniqueConstraint("closing_date", "currency", name="uq_daily_closings_date_currency"),
         {"schema": SCHEMA},
     )
 
@@ -235,7 +227,5 @@ class DailyClosing(Base):
     postings_count: Mapped[int] = mapped_column(
         sa.BigInteger(), nullable=False, default=0, server_default="0"
     )
-    closed_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True
-    )
+    closed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     closed_by: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)

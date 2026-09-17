@@ -33,9 +33,7 @@ CATALOG_CODES: tuple[str, ...] = (
 )
 
 # Tipos del CK `ledger_account_type` (ver `03-modelo-de-datos.md`).
-ACCOUNT_TYPES: frozenset[str] = frozenset(
-    {"asset", "liability", "equity", "income", "expense"}
-)
+ACCOUNT_TYPES: frozenset[str] = frozenset({"asset", "liability", "equity", "income", "expense"})
 
 OWNER_TYPES: frozenset[str] = frozenset({"CUSTOMER", "SYSTEM", "MERCHANT", "POOL"})
 

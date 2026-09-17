@@ -84,16 +84,14 @@ def upgrade() -> None:
     # Seed del catalogo minimo (idempotente por `code`).
     for code, name, type_, currency, owner_type, is_system in CATALOG:
         op.execute(
-            sa.text(
-                """
+            sa.text("""
                 INSERT INTO ledger.ledger_accounts
                     (id, code, name, type, currency, owner_type, is_system)
                 VALUES
                     (gen_random_uuid(), :code, :name, :type, :currency,
                      :owner_type, :is_system)
                 ON CONFLICT (code) DO NOTHING
-                """
-            ).bindparams(
+                """).bindparams(
                 code=code,
                 name=name,
                 type=type_,

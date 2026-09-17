@@ -18,7 +18,7 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
@@ -39,7 +39,7 @@ MAX_METHOD_LENGTH = 10
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _naive(moment: datetime) -> datetime:
@@ -86,7 +86,9 @@ def compute_request_hash(body: dict | list | str | bytes | None) -> str:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"cuerpo no es JSON-serializable: {exc}") from exc
     else:
-        raise ValueError(f"cuerpo debe ser dict/list/str/bytes/None, recibido: {type(body).__name__}")
+        raise ValueError(
+            f"cuerpo debe ser dict/list/str/bytes/None, recibido: {type(body).__name__}"
+        )
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -241,7 +243,7 @@ def store_response(
     dinero: montos en centimos enteros). Hace `flush`, no `commit`.
     """
     if not isinstance(response_snapshot, dict):
-        raise ValueError("response_snapshot debe ser dict JSON-serializable")
+        raise TypeError("response_snapshot debe ser dict JSON-serializable")
     try:
         json.dumps(response_snapshot)
     except (TypeError, ValueError) as exc:

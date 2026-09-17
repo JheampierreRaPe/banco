@@ -12,7 +12,7 @@ corran en SQLite; las migraciones Postgres usan `JSONB` segun `03b`.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,7 +26,7 @@ OUTBOX_STATUSES = ("PENDING", "PUBLISHED", "FAILED")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class OutboxEntry(Base):
@@ -75,9 +75,7 @@ class OutboxEntry(Base):
         server_default=sa.func.now(),
         nullable=False,
     )
-    published_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True
-    )
+    published_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
 class ProcessedEvent(Base):
@@ -136,6 +134,4 @@ class IdempotencyKey(Base):
         server_default=sa.func.now(),
         nullable=False,
     )
-    expires_at: Mapped[datetime] = mapped_column(
-        sa.DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)

@@ -44,8 +44,7 @@ def validate_direction(direction: str) -> str:
     """Valida `posting_direction` (`03b#1`): `DEBIT`/`CREDIT` en mayusculas."""
     if direction not in POSTING_DIRECTIONS:
         raise ValueError(
-            f"direction debe ser una de {sorted(POSTING_DIRECTIONS)}, "
-            f"recibido: {direction!r}"
+            f"direction debe ser una de {sorted(POSTING_DIRECTIONS)}, " f"recibido: {direction!r}"
         )
     return direction
 
@@ -53,22 +52,16 @@ def validate_direction(direction: str) -> str:
 def validate_amount(amount_minor: int) -> int:
     """Valida dinero entero en centimos: `int > 0`, nunca `float` (regla de oro 3)."""
     if isinstance(amount_minor, bool) or not isinstance(amount_minor, int):
-        raise ValueError(
-            f"amount_minor debe ser entero en centimos, recibido: {amount_minor!r}"
-        )
+        raise TypeError(f"amount_minor debe ser entero en centimos, recibido: {amount_minor!r}")
     if amount_minor <= 0:
-        raise ValueError(
-            f"amount_minor debe ser > 0, recibido: {amount_minor!r}"
-        )
+        raise ValueError(f"amount_minor debe ser > 0, recibido: {amount_minor!r}")
     return amount_minor
 
 
 def validate_currency(currency: str) -> str:
     """Valida ISO-4217 basico: 3 letras mayusculas."""
     if not isinstance(currency, str) or len(currency) != 3 or not currency.isalpha():
-        raise ValueError(
-            f"currency debe ser ISO-4217 de 3 letras, recibido: {currency!r}"
-        )
+        raise ValueError(f"currency debe ser ISO-4217 de 3 letras, recibido: {currency!r}")
     if currency != currency.upper():
         raise ValueError(f"currency debe ser mayusculas, recibido: {currency!r}")
     return currency
@@ -79,9 +72,7 @@ def validate_entry_type(entry_type: str) -> str:
     if not isinstance(entry_type, str) or not entry_type.strip():
         raise ValueError(f"entry_type no puede ser vacio, recibido: {entry_type!r}")
     if len(entry_type) > 30:
-        raise ValueError(
-            f"entry_type supera VARCHAR(30), recibido: {entry_type!r}"
-        )
+        raise ValueError(f"entry_type supera VARCHAR(30), recibido: {entry_type!r}")
     return entry_type
 
 
@@ -109,16 +100,14 @@ def normalize_posting(raw: PostingInput | dict) -> PostingInput:
     elif isinstance(raw, dict):
         data = dict(raw)
     else:
-        raise ValueError(f"posting debe ser PostingInput o dict, recibido: {raw!r}")
+        raise TypeError(f"posting debe ser PostingInput o dict, recibido: {raw!r}")
     account_ref = data.get("account_ref")
     return PostingInput(
         ledger_account_id=_coerce_uuid(data["ledger_account_id"], "ledger_account_id"),
         direction=validate_direction(data["direction"]),
         amount_minor=validate_amount(data["amount_minor"]),
         currency=validate_currency(data["currency"]),
-        account_ref=(
-            None if account_ref is None else _coerce_uuid(account_ref, "account_ref")
-        ),
+        account_ref=(None if account_ref is None else _coerce_uuid(account_ref, "account_ref")),
     )
 
 
@@ -206,12 +195,10 @@ def compute_entry_hash(
     """
     entry_type = validate_entry_type(entry_type)
     if not isinstance(value_date, date):
-        raise ValueError(f"value_date debe ser DATE, recibido: {value_date!r}")
+        raise TypeError(f"value_date debe ser DATE, recibido: {value_date!r}")
     if transaction_id is not None:
         transaction_id = _coerce_uuid(transaction_id, "transaction_id")
-    if prev_hash is not None and (
-        not isinstance(prev_hash, str) or len(prev_hash) != 64
-    ):
+    if prev_hash is not None and (not isinstance(prev_hash, str) or len(prev_hash) != 64):
         raise ValueError(f"prev_hash debe ser hex de 64 chars, recibido: {prev_hash!r}")
     ordered = sorted(_canonical_posting(p) for p in postings)
     canonical = "\n".join(

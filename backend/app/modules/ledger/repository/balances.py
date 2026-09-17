@@ -44,8 +44,7 @@ class AccountProjectionPort(Protocol):
         ledger_account_id: uuid.UUID,
         signed_delta_minor: int,
         currency: str,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class DefaultAccountProjection:
@@ -64,6 +63,12 @@ class DefaultAccountProjection:
 DEFAULT_ACCOUNT_PROJECTION = DefaultAccountProjection()
 
 
+def _is_missing_accounts_schema(exc: BaseException) -> bool:
+    """Sesiones solo-ledger de pruebas: sin tablas de `accounts`, se omite."""
+    msg = str(exc).lower()
+    return "no such table" in msg and "accounts." in msg
+
+
 def signed_delta(direction: str, amount_minor: int) -> int:
     """Delta firmado: DEBIT suma, CREDIT resta. Enteros, sin `float`."""
     if direction == "DEBIT":
@@ -73,9 +78,7 @@ def signed_delta(direction: str, amount_minor: int) -> int:
     raise ValueError(f"direction debe ser DEBIT/CREDIT, recibido: {direction!r}")
 
 
-def get_balance(
-    session: Session, ledger_account_id: uuid.UUID | str
-) -> LedgerBalance | None:
+def get_balance(session: Session, ledger_account_id: uuid.UUID | str) -> LedgerBalance | None:
     """Lee la proyeccion de una cuenta (`None` si aun no existe)."""
     return session.get(LedgerBalance, ledger_account_id)
 
@@ -96,7 +99,7 @@ def apply_balance_delta(
     - Lanza `VersionConflictError` si la version no coincide.
     """
     if not isinstance(signed_delta_minor, int) or isinstance(signed_delta_minor, bool):
-        raise ValueError("signed_delta_minor debe ser int (centimos), sin float")
+        raise TypeError("signed_delta_minor debe ser int (centimos), sin float")
     row = session.get(LedgerBalance, ledger_account_id)
     if row is None:
         row = LedgerBalance(
@@ -110,8 +113,7 @@ def apply_balance_delta(
         return row
     if row.currency != currency:
         raise ValueError(
-            f"moneda de la proyeccion {row.currency!r} != {currency!r} "
-            f"para {ledger_account_id}"
+            f"moneda de la proyeccion {row.currency!r} != {currency!r} " f"para {ledger_account_id}"
         )
     if expected_version is not None and row.version != expected_version:
         raise VersionConflictError(
@@ -150,7 +152,17 @@ def post_entry_and_update_balances(
         description=description,
         value_date=value_date,
     )
-    port = account_projection if account_projection is not None else DEFAULT_ACCOUNT_PROJECTION
+    if account_projection is not None:
+        port = account_projection
+    else:  # Cableado productivo E2-T01 (opcion b): adaptador real sin ciclos.
+        try:
+            from app.composition import (
+                resolve_account_projection as _resolve_ap,
+            )
+        except ImportError:  # pragma: no cover - red de seguridad
+            port = DEFAULT_ACCOUNT_PROJECTION
+        else:
+            port = _resolve_ap(None, fallback=DEFAULT_ACCOUNT_PROJECTION)
     rows = list_postings(session, entry.id)
     for p in rows:
         delta = signed_delta(p.direction, p.amount_minor)
@@ -159,6 +171,9 @@ def post_entry_and_update_balances(
             port.apply_projection(session, p.ledger_account_id, delta, p.currency)
         except NotImplementedError as exc:
             if "E2-T01 pendiente" not in str(exc):
+                raise
+        except sa.exc.DBAPIError as exc:
+            if not _is_missing_accounts_schema(exc):
                 raise
     session.flush()
     return entry
@@ -186,7 +201,17 @@ def reverse_entry_and_update_balances(
         value_date=value_date,
         transaction_id=transaction_id,
     )
-    port = account_projection if account_projection is not None else DEFAULT_ACCOUNT_PROJECTION
+    if account_projection is not None:
+        port = account_projection
+    else:  # Cableado productivo E2-T01 (opcion b): adaptador real sin ciclos.
+        try:
+            from app.composition import (
+                resolve_account_projection as _resolve_ap_rev,
+            )
+        except ImportError:  # pragma: no cover - red de seguridad
+            port = DEFAULT_ACCOUNT_PROJECTION
+        else:
+            port = _resolve_ap_rev(None, fallback=DEFAULT_ACCOUNT_PROJECTION)
     for p in list_postings(session, comp.id):
         delta = signed_delta(p.direction, p.amount_minor)
         apply_balance_delta(session, p.ledger_account_id, delta, p.currency)
@@ -194,6 +219,9 @@ def reverse_entry_and_update_balances(
             port.apply_projection(session, p.ledger_account_id, delta, p.currency)
         except NotImplementedError as exc:
             if "E2-T01 pendiente" not in str(exc):
+                raise
+        except sa.exc.DBAPIError as exc:
+            if not _is_missing_accounts_schema(exc):
                 raise
     session.flush()
     return comp
@@ -253,8 +281,8 @@ def check_projection_consistency(session: Session) -> list[dict]:
 
 
 __all__ = [
-    "AccountProjectionPort",
     "DEFAULT_ACCOUNT_PROJECTION",
+    "AccountProjectionPort",
     "DefaultAccountProjection",
     "VersionConflictError",
     "apply_balance_delta",

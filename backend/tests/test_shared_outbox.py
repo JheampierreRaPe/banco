@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -93,18 +93,13 @@ def test_no_foreign_keys_to_other_schemas():
         table = Base.metadata.tables[key]
         assert not list(table.foreign_keys), f"{key} no debe tener FK fisicas"
     outbox = Base.metadata.tables["shared.outbox"]
-    assert not outbox.columns["aggregate_id"].foreign_keys, (
-        "aggregate_id debe ser UUID logico sin FK fisica a otro schema"
-    )
+    assert not outbox.columns[
+        "aggregate_id"
+    ].foreign_keys, "aggregate_id debe ser UUID logico sin FK fisica a otro schema"
 
 
 def test_migration_0005_exists_and_matches_models():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "0005_shared_outbox.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0005_shared_outbox.py"
     assert path.exists(), "falta migracion 0005_shared_outbox.py"
     content = path.read_text(encoding="utf-8")
     for token in (
@@ -136,9 +131,7 @@ def test_record_signature_is_stable_contract():
     rest = {p.name for p in params[1:]}
     assert rest == {"aggregate_type", "aggregate_id", "event_type", "payload"}
     for p in params[1:]:
-        assert p.kind is inspect.Parameter.KEYWORD_ONLY, (
-            f"{p.name} debe ser keyword-only"
-        )
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY, f"{p.name} debe ser keyword-only"
     # Import perezoso (contrato E5-T03) sin efectos laterales.
     assert callable(fetch_pending) and callable(mark_published) and callable(mark_failed)
 
@@ -176,7 +169,7 @@ def test_record_validates_without_db_and_flushes_without_commit():
             event_type="transfer.settled",
             payload={},
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         record(
             bad_session,
             aggregate_type="transaction",
@@ -253,14 +246,10 @@ def test_outbox_modules_have_no_commit_publish_float_nor_business_logic():
         content = (base / rel).read_text(encoding="utf-8")
         assert ".commit(" not in content, f"{rel} no debe hacer commit"
         assert "float(" not in content, f"{rel} sin atajos float"
-    repo_content = (base / "app/modules/shared/repository/outbox.py").read_text(
-        encoding="utf-8"
-    )
+    repo_content = (base / "app/modules/shared/repository/outbox.py").read_text(encoding="utf-8")
     assert "session.delete" not in repo_content
     core_content = (base / "app/core/outbox.py").read_text(encoding="utf-8")
-    assert "publish_pending" not in core_content, (
-        "`record` no publica: el worker publica DESPUES"
-    )
+    assert "publish_pending" not in core_content, "`record` no publica: el worker publica DESPUES"
 
 
 # ---------------------------------------------------------------- Parte B: SQLite
@@ -382,10 +371,8 @@ def test_worker_retry_uses_atomic_claim_without_duplicating(sqlite_session: Sess
 
     stored = sqlite_session.get(OutboxEntry, entry_id)
     assert stored is not None and stored.status == "PENDING" and stored.attempts == 1
-    assert _naive(stored.available_at) > _naive(stored.created_at), (
-        "backoff difiere la entrega"
-    )
-    stored.available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert _naive(stored.available_at) > _naive(stored.created_at), "backoff difiere la entrega"
+    stored.available_at = datetime.now(UTC) - timedelta(seconds=1)
     sqlite_session.flush()
     third = publish_pending(sqlite_session, bus=bus, backoff_base_seconds=60)
     assert third["published"] == 1 and len(calls) == 2
@@ -395,12 +382,10 @@ def test_consumer_is_idempotent(sqlite_session: Session):
     from app.modules.shared.repository import is_processed, try_mark_processed
 
     event_id = uuid.uuid4()
-    assert try_mark_processed(
-        sqlite_session, event_id=event_id, consumer="notifications"
-    ) is True
-    assert try_mark_processed(
-        sqlite_session, event_id=event_id, consumer="notifications"
-    ) is False, "segundo consumo se ignora"
+    assert try_mark_processed(sqlite_session, event_id=event_id, consumer="notifications") is True
+    assert (
+        try_mark_processed(sqlite_session, event_id=event_id, consumer="notifications") is False
+    ), "segundo consumo se ignora"
     assert is_processed(sqlite_session, event_id=event_id, consumer="notifications")
     # Otro consumidor si procesa el mismo evento.
     assert try_mark_processed(sqlite_session, event_id=event_id, consumer="audit")
@@ -425,11 +410,9 @@ def test_failed_after_n_attempts_with_backoff(sqlite_session: Session):
     entry_id = entry.id
     for attempt in range(1, 4):
         stored = sqlite_session.get(OutboxEntry, entry_id)
-        stored.available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        stored.available_at = datetime.now(UTC) - timedelta(seconds=1)
         sqlite_session.flush()
-        result = publish_pending(
-            sqlite_session, bus=bus, max_attempts=3, backoff_base_seconds=60
-        )
+        result = publish_pending(sqlite_session, bus=bus, max_attempts=3, backoff_base_seconds=60)
         stored = sqlite_session.get(OutboxEntry, entry_id)
         if attempt < 3:
             assert result["failed"] == 1
@@ -484,10 +467,6 @@ def test_integration_postgres_outbox_smoke(db_session: Session):
     )
     result = publish_pending(db_session, bus=bus)
     assert result["published"] == 1 and delivered == [entry.id]
-    assert try_mark_processed(
-        db_session, event_id=entry.id, consumer="notifications"
-    )
-    assert not try_mark_processed(
-        db_session, event_id=entry.id, consumer="notifications"
-    )
+    assert try_mark_processed(db_session, event_id=entry.id, consumer="notifications")
+    assert not try_mark_processed(db_session, event_id=entry.id, consumer="notifications")
     assert is_processed(db_session, event_id=entry.id, consumer="notifications")

@@ -1,0 +1,8 @@
+# Q-T06: imagen demo del panel admin-web (placeholder estatico).
+# Al llegar F-T12 se reemplaza por la imagen real (admin-web/Dockerfile);
+# este placeholder solo mantiene el servicio levantado con healthcheck.
+FROM nginx:1.27-alpine
+
+COPY infra/docker/panel/index.html /usr/share/nginx/html/index.html
+
+EXPOSE 80

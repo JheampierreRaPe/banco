@@ -27,6 +27,7 @@ proveedor real solo implementa el Protocol sin tocar este modulo.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from datetime import UTC, datetime
@@ -38,6 +39,7 @@ from app.adapters.notification_sender import (
     MockNotificationSender,
     NotificationProviderError,
     NotificationSender,
+    TwilioNotificationSender,
 )
 from app.modules.notifications import repository as repo
 from app.modules.notifications.domain.templates import BASE_TEMPLATES, render_template
@@ -49,6 +51,41 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ATTEMPTS = 3
 # Backoff exponencial base en segundos (CA-01 HU02: envio < 5 s en el caso feliz).
 DEFAULT_BACKOFF_BASE_SECONDS = 1
+
+
+# Proveedores SMS seleccionables por env `SMS_PROVIDER` (default `mock`).
+SMS_PROVIDERS = ("mock", "twilio")
+
+
+def default_sender() -> NotificationSender:
+    """Resuelve el sender por defecto segun env (aditivo E1-T09).
+
+    - `SMS_PROVIDER=mock` (o ausente) -> `MockNotificationSender` (default,
+      sin red, sin secretos).
+    - `SMS_PROVIDER=twilio` -> `TwilioNotificationSender` con credenciales de
+      `TWILIO_ACCOUNT_SID` / `TWILIO_API_KEY_SID` / `TWILIO_AUTH_TOKEN` /
+      `TWILIO_FROM_NUMBER`.
+    - Esquema separado: `TWILIO_ACCOUNT_SID` es el Account SID real (AC...,
+      va en el path `/Accounts/{AC}/Messages.json`); `TWILIO_API_KEY_SID` es
+      opcional (API Key SID SK... como usuario del Basic Auth, default = el
+      Account SID para auth clasica AC+token); `TWILIO_AUTH_TOKEN` es el
+      password (API Key secret o Auth Token). Ver `.env.example`.
+    - Otro valor -> `ValueError` (falla rapido, sin reintento).
+    """
+    provider = (os.getenv("SMS_PROVIDER") or "mock").strip().lower() or "mock"
+    if provider == "mock":
+        return MockNotificationSender()
+    if provider == "twilio":
+        account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        # `or account_sid`: sin SK configurado se usa auth clasica AC+token.
+        api_key_sid = (os.getenv("TWILIO_API_KEY_SID", "") or account_sid) or ""
+        return TwilioNotificationSender(
+            account_sid=account_sid,
+            api_key_sid=api_key_sid,
+            auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
+            from_number=os.getenv("TWILIO_FROM_NUMBER", ""),
+        )
+    raise ValueError(f"SMS_PROVIDER debe ser uno de {SMS_PROVIDERS}, recibido: {provider!r}")
 
 
 def compute_backoff_seconds(attempts: int, base_seconds: int) -> int:
@@ -115,7 +152,7 @@ def send(
         raise TypeError("data debe ser dict")
     if max_attempts < 1:
         raise ValueError("max_attempts debe ser >= 1")
-    sender = sender if sender is not None else MockNotificationSender()
+    sender = sender if sender is not None else default_sender()
 
     template = _resolve_template(session, template_code)
     if template["channel"] != channel:
@@ -208,7 +245,7 @@ def retry_notification(
     reenvia (idempotente por estado). Re-renderiza con el `payload` guardado;
     el destinatario sale del `payload` salvo override explicito.
     """
-    sender = sender if sender is not None else MockNotificationSender()
+    sender = sender if sender is not None else default_sender()
     row = repo.get_notification(session, notification_id)
     if row is None:
         raise ValueError(f"notificacion inexistente: {notification_id}")

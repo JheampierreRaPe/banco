@@ -9,6 +9,23 @@ Contrato consumido (`docs/05-contratos-api.md#8`, prefijo `/api/v1`):
 - `POST /api/v1/liveness/evaluate`     -> validacion de una tarea.
 - `POST /api/v1/identity/verify-full`  -> resultado integral del KYC.
 
+Contrato REAL del microservicio (verificado 2026-09-18 contra
+`http://localhost:8001`, rama `eliminar` del repo KYC):
+- challenge: request con cuerpo VACIO (el endpoint no acepta JSON; enviar
+  `{"session_id": ...}` devuelve 422) -> `{token, steps, expires_in}`.
+- evaluate: JSON `{token, step, frames_base64[]}` (solo MediaPipe, <1s)
+  -> `{step, passed, reason, frames_analyzed, details}`.
+- verify-full: `multipart/form-data` con `document_image` (bytes del
+  documento) + `liveness_frames` (string JSON `{token, segments}` donde
+  `segments` es `{paso: [b64, ...]}`; el desafio debe estar completado)
+  -> `{document_validation, liveness, identity_consistency, face_match,
+  overall_result, overall_reason}` (se mapean `distance` desde
+  `face_match.distance` y `detail_code` desde `overall_reason`).
+
+Compatibilidad: se aceptan con fallback los nombres legacy de los tests
+(`challenge_token`/`expires_in_seconds`, `score`, `distance`/`detail_code`
+planos y `verify_full` JSON sin imagenes) para no romper E1-T01/E1-T02.
+
 Reglas (docs/02-arquitectura.md#9, docs/16 reglas de oro):
 - La `X-API-Key` vive solo en el backend; nunca se expone al movil ni se
   incluye en los retornos del adaptador.
@@ -228,7 +245,15 @@ class HttpKycProvider(KycProvider):
             headers={"X-API-Key": self.settings.api_key},
         )
 
-    def _post(self, path: str, *, session_id: str, body: dict) -> dict:
+    def _post(
+        self,
+        path: str,
+        *,
+        session_id: str,
+        body: dict | None = None,
+        files: dict | None = None,
+        data: dict | None = None,
+    ) -> dict:
         self._check_circuit(session_id)
         client = self._client_or_default()
         owns = self._owns_client and self._client is None
@@ -237,7 +262,14 @@ class HttpKycProvider(KycProvider):
             for attempt in range(self.settings.max_retries + 1):
                 try:
                     # La key viaja solo en cabecera; el body lleva IDs y datos de tarea.
-                    response = client.post(path, json=body)
+                    # `challenge` real exige cuerpo vacio (sin `json=`); `verify-full`
+                    # real usa multipart (`files` + `data`).
+                    if files is not None:
+                        response = client.post(path, files=files, data=data)
+                    elif body is not None:
+                        response = client.post(path, json=body)
+                    else:
+                        response = client.post(path)
                 except (httpx.TimeoutException, TimeoutError) as exc:
                     last_error = exc
                     logger.warning("kyc timeout session_id=%s attempt=%d", session_id, attempt)
@@ -288,39 +320,86 @@ class HttpKycProvider(KycProvider):
 
     # -- interfaz -------------------------------------------------------
     def challenge(self, *, session_id: str) -> Challenge:
-        data = self._post(
-            self.CHALLENGE_PATH, session_id=session_id, body={"session_id": session_id}
-        )
-        token = str(data.get("challenge_token", ""))
+        # Microservicio real: POST sin cuerpo -> {token, steps, expires_in}.
+        # (Fallback legacy: {challenge_token, steps, expires_in_seconds}.)
+        data = self._post(self.CHALLENGE_PATH, session_id=session_id, body=None)
+        token = str(data.get("token", data.get("challenge_token", "")))
         logger.info("kyc challenge_ok session_id=%s token_hash=%s", session_id, hash_token(token))
         return Challenge(
             challenge_token_hash=hash_token(token),
             steps=tuple(data.get("steps", [])),
-            expires_in_seconds=int(data.get("expires_in_seconds", 0)),
+            expires_in_seconds=int(data.get("expires_in", data.get("expires_in_seconds", 0))),
             raw_token=token,
         )
 
     def evaluate_liveness(
         self, *, session_id: str, task: str, payload: dict | None = None
     ) -> LivenessEvaluation:
-        body = {"session_id": session_id, "task": task, **(payload or {})}
+        # Microservicio real: {token, step, frames_base64[]} -> {passed, ...}.
+        # El token viaja en `payload["token"]` o, por compatibilidad con el
+        # proxy (`verify_full(session_id=<token>)`), se reusa `session_id`.
+        extra = payload or {}
+        frames = extra.get("frames_base64", extra.get("frames", []))
+        token = str(extra.get("token", extra.get("challenge_token", session_id)))
+        body = {"token": token, "step": task, "frames_base64": list(frames)}
         data = self._post(self.EVALUATE_PATH, session_id=session_id, body=body)
         result = LivenessEvaluation(
             session_id=session_id,
-            passed=bool(data.get("passed", False)),
+            passed=bool(data.get("passed", data.get("is_live", False))),
             score=float(data.get("score", 0.0)),
         )
         logger.info("kyc evaluate session_id=%s passed=%s", session_id, result.passed)
         return result
 
     def verify_full(self, *, session_id: str, payload: dict | None = None) -> FullVerification:
-        body = {"session_id": session_id, **(payload or {})}
-        data = self._post(self.VERIFY_FULL_PATH, session_id=session_id, body=body)
+        # Microservicio real: multipart document_image + liveness_frames JSON
+        # {token, segments:{paso:[b64]}} (desafio ya completado via /evaluate).
+        # Sin imagenes (tests/mock): JSON legacy {session_id, ...}.
+        extra = dict(payload or {})
+        doc_b64 = str(
+            extra.pop("document_image_b64", extra.pop("document_image", "")) or ""
+        ).strip()
+        segments = extra.pop("segments", [])
+        data: dict
+        if doc_b64 and segments:
+            import base64 as _b64
+            import json as _json
+
+            seg_map: dict[str, list[str]] = {}
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                name = str(segment.get("task", segment.get("step", ""))).strip()
+                image = str(
+                    segment.get("image_b64", segment.get("frame_b64", ""))
+                ).strip()
+                if name and image:
+                    seg_map.setdefault(name, []).append(image)
+            try:
+                doc_bytes = _b64.b64decode(doc_b64, validate=True)
+            except Exception:
+                doc_bytes = _b64.b64decode(doc_b64)
+            data = self._post(
+                self.VERIFY_FULL_PATH,
+                session_id=session_id,
+                files={"document_image": ("document.png", doc_bytes, "image/png")},
+                data={
+                    "liveness_frames": _json.dumps(
+                        {"token": session_id, "segments": seg_map}
+                    )
+                },
+            )
+        else:
+            body = {"session_id": session_id, **extra}
+            data = self._post(self.VERIFY_FULL_PATH, session_id=session_id, body=body)
+        face_match = data.get("face_match")
+        if not isinstance(face_match, dict):
+            face_match = {}
         result = FullVerification(
             session_id=session_id,
             overall_result=bool(data.get("overall_result", False)),
-            distance=float(data.get("distance", 0.0)),
-            detail_code=str(data.get("detail_code", "")),
+            distance=float(data.get("distance", face_match.get("distance", 0.0))),
+            detail_code=str(data.get("detail_code", data.get("overall_reason", ""))),
         )
         logger.info(
             "kyc verify_full session_id=%s overall=%s code=%s",

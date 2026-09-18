@@ -1,0 +1,22 @@
+# Q-T06: imagen demo del worker (colas/tareas).
+# Esqueleto: valida conectividad con Postgres/Redis y expone /health.
+# El consumidor real de colas llega con la tarea del modulo correspondiente;
+# esta imagen solo mantiene el entorno demo arriba sin logica de negocio.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /srv/app
+
+COPY backend/pyproject.toml backend/alembic.ini ./
+COPY backend/app ./app
+COPY backend/migrations ./migrations
+RUN pip install .
+
+COPY infra/docker/worker_entrypoint.py ./worker_entrypoint.py
+
+EXPOSE 8100
+
+CMD ["python", "worker_entrypoint.py"]

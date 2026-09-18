@@ -33,6 +33,11 @@ from app.modules.identity.schemas.pin_login import (
     PinLoginRequest,
     PinLoginResponse,
 )
+from app.modules.identity.schemas.pin_setup import (
+    PinSetupData,
+    PinSetupRequest,
+    PinSetupResponse,
+)
 from app.modules.identity.schemas.sessions import (
     LogoutData,
     LogoutRequest,
@@ -68,6 +73,9 @@ __all__ = [
     "PinLoginData",
     "PinLoginRequest",
     "PinLoginResponse",
+    "PinSetupData",
+    "PinSetupRequest",
+    "PinSetupResponse",
     "RefreshData",
     "RefreshRequest",
     "RefreshResponse",

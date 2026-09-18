@@ -56,10 +56,41 @@
 5. **Infraestructura de despliegue** gratuita para la demo.
 
 ## 5. Preguntas que conviene cerrar antes del Sprint 1
-
 1. ?Cual es el contrato interbancario y quien lo define?
 2. ?Quien asume DevOps y con que herramientas de despliegue?
 3. ?Se aprueba la estrategia de QR propio firmado como base?
 4. ?Se acepta el login con nonce firmado por dispositivo?
 5. ?Cual es el orden de recorte de `Should` si el equipo se atrasa?
 6. ?Que proveedor de tipo de cambio y de notificaciones se usara?
+
+## 6. Pendientes transferidos al Sprint 2 (entrada para el creador de briefs)
+
+> Guía de ubicación (según `GUIA-GENERAR-BRIEFS.md` §3): cada pendiente trae su
+> futuro ID sugerido, documento fuente y referencias, para que el planificador
+> genere el brief sin adivinar. Estado: `Pendiente` (Sprint 2).
+
+### P-S2-01 - OTP real por correo Gmail (canal email)
+- **Origen:** decisión del dueño 2026-09-18: Twilio/SMS queda como secundario
+  (cuenta trial con restricción 572006); el OTP real del Sprint 1 viaja por el
+  mock (veredicto en `notifications.payload_json`). Probaron PIN, cámara y KYC
+  real; el envío del código queda pendiente.
+- **Alcance Sprint 2:** `GmailNotificationSender` con `smtplib` (stdlib, sin
+  dependencias): SMTP `smtp.gmail.com:587` + STARTTLS; selección
+  `EMAIL_PROVIDER=gmail|mock` (default `mock`); credenciales `GMAIL_USER` /
+  `GMAIL_APP_PASSWORD` (solo `.env`, placeholders en `.env.example`); canal
+  `sms` sigue a Twilio/mock como fallback. El correo destino se pide al
+  registrarse (campo email en el flujo KYC de la app → `users.email`).
+- **Documentos fuente para el brief:** `docs/03b` (§13 notifications),
+  `docs/05` (§6.1), `docs/11` si aplica a HU22, `docs/16` (sin PII en logs).
+- **Frontera sugerida:** `backend/app/adapters/` (sender), `notifications/service`
+  (selección), `identity/service` (pasar email), `frontend/.../kyc` (campo
+  email). **Prohibido:** secretos en código; cambiar el contrato SMS.
+- **Requisito del dueño:** crear un Gmail emisor con 2FA + contraseña de
+  aplicación (16 letras) y entregarla al implementador; el correo de prueba es
+  el que el usuario escriba al registrarse.
+- **Pruebas sugeridas:** envío con SMTP mockeado (cero correos reales);
+  selección por env; E2E alta → correo → activate con el código recibido.
+- **IDs sugeridos para el brief:** `E1-T24` (backend sender + cableado) y
+  `F-T19` (campo email + copy "revisa tu correo"), o uno solo si el
+  planificador lo prefiere. **No duplicar** `E1-T09` (Hecho, mock).
+- **Estado:** `Pendiente`.

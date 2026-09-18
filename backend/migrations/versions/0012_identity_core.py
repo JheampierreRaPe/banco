@@ -92,9 +92,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Uuid(), primary_key=True, nullable=False),
         sa.Column("password_hash", sa.Text(), nullable=True),
         sa.Column("pin_hash", sa.Text(), nullable=True),
-        sa.Column(
-            "biometric_enabled", sa.Boolean(), server_default="false", nullable=False
-        ),
+        sa.Column("biometric_enabled", sa.Boolean(), server_default="false", nullable=False),
         sa.Column("failed_attempts", sa.SmallInteger(), server_default="0", nullable=False),
         sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("password_updated_at", sa.DateTime(timezone=True), nullable=True),

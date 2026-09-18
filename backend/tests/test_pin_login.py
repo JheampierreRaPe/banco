@@ -47,12 +47,7 @@ SERVICE_PATH = (
     / "pin_login.py"
 )
 API_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "api"
-    / "pin_login.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "api" / "pin_login.py"
 )
 
 PIN = "482917"
@@ -132,9 +127,7 @@ def _make_pin_user(pin_session: Session, *, pin: str = PIN):
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
     )
-    identity_repo.create_credential(
-        pin_session, user.id, pin_hash=pin_login_service.hash_pin(pin)
-    )
+    identity_repo.create_credential(pin_session, user.id, pin_hash=pin_login_service.hash_pin(pin))
     pin_session.commit()
     return user
 
@@ -191,9 +184,7 @@ def test_static_rules_pin_constants_no_commit_no_forbidden_imports():
     assert "jwt.encode(" not in service, "no inventa tokens: usa create_access_token"
     assert "_DUMMY_HASH" in service, "rama ciega contra hash ficticio (anti-timing)"
     top_imports = "\n".join(
-        line
-        for line in service.splitlines()
-        if line.startswith("from app.") or line.startswith("import app.")
+        line for line in service.splitlines() if line.startswith(("from app.", "import app."))
     )
     for forbidden in ("kyc_proxy", "otp_service", "activation", "onboard_customer"):
         assert forbidden not in top_imports, f"prohibido tocar {forbidden}"
@@ -204,9 +195,9 @@ def test_static_rules_pin_constants_no_commit_no_forbidden_imports():
     assert log_lines, "el servicio debe loguear sin PII"
     for line in log_lines:
         lowered = line.lower()
-        assert "pin" not in lowered or "pin_login" in lowered, (
-            f"el PIN podria salir en logs: {line.strip()}"
-        )
+        assert (
+            "pin" not in lowered or "pin_login" in lowered
+        ), f"el PIN podria salir en logs: {line.strip()}"
 
     api = API_PATH.read_text(encoding="utf-8")
     assert "INVALID_CREDENTIALS" in api and "ACCOUNT_LOCKED" in api
@@ -247,9 +238,7 @@ def test_pin_success_returns_tokens_and_resets_counter(
     row.failed_attempts = 2
     pin_session.commit()
 
-    resp = pin_client.post(
-        "/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN}
-    )
+    resp = pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert set(body) == {"data", "meta"}
@@ -301,9 +290,7 @@ def test_wrong_pin_increments_counter(pin_client: TestClient, pin_session: Sessi
     assert "failed_attempts" not in resp.text
 
 
-def test_fifth_failure_locks_and_notifies(
-    pin_client: TestClient, pin_session: Session
-):
+def test_fifth_failure_locks_and_notifies(pin_client: TestClient, pin_session: Session):
     user = _make_pin_user(pin_session)
     last = None
     for _ in range(5):
@@ -322,31 +309,21 @@ def test_fifth_failure_locks_and_notifies(
     assert len(notes) >= 1, "bloqueo notifica login_alert best-effort"
 
 
-def test_locked_login_rejected_even_with_correct_pin(
-    pin_client: TestClient, pin_session: Session
-):
+def test_locked_login_rejected_even_with_correct_pin(pin_client: TestClient, pin_session: Session):
     user = _make_pin_user(pin_session)
     for _ in range(5):
-        pin_client.post(
-            "/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": "000000"}
-        )
-    resp = pin_client.post(
-        "/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN}
-    )
+        pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": "000000"})
+    resp = pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN})
     assert resp.status_code == 423
     assert resp.json()["error"]["code"] == "ACCOUNT_LOCKED"
 
 
-def test_time_unlock_allows_login_again(
-    pin_client: TestClient, pin_session: Session
-):
+def test_time_unlock_allows_login_again(pin_client: TestClient, pin_session: Session):
     from app.modules.identity import repository as identity_repo
 
     user = _make_pin_user(pin_session)
     for _ in range(5):
-        pin_client.post(
-            "/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": "000000"}
-        )
+        pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": "000000"})
     assert _locked_until(pin_session, user.id) is not None
 
     # Viaja el reloj: el bloqueo ya vencio (desbloqueo automatico por tiempo).
@@ -356,18 +333,14 @@ def test_time_unlock_allows_login_again(
     row.locked_until = _utcnow() - timedelta(seconds=60)
     pin_session.commit()
 
-    resp = pin_client.post(
-        "/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN}
-    )
+    resp = pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN})
     assert resp.status_code == 200, resp.text
     assert _attempts(pin_session, user.id) == 0
     assert _locked_until(pin_session, user.id) is None
 
 
 # ---------------------------------------------------------------- No filtracion
-def test_unknown_user_matches_wrong_pin_body(
-    pin_client: TestClient, pin_session: Session
-):
+def test_unknown_user_matches_wrong_pin_body(pin_client: TestClient, pin_session: Session):
     user = _make_pin_user(pin_session)
     headers = {"X-Request-Id": "probe-pin"}
     wrong = pin_client.post(
@@ -388,15 +361,13 @@ def test_unknown_user_matches_wrong_pin_body(
     assert wrong.status_code == 401
     assert unknown.status_code == 401
     assert malformed.status_code == 401
-    assert wrong.json() == unknown.json() == malformed.json(), (
-        "sin distinguir inexistente/malformado de PIN erroneo"
-    )
+    assert (
+        wrong.json() == unknown.json() == malformed.json()
+    ), "sin distinguir inexistente/malformado de PIN erroneo"
     assert wrong.json()["error"]["code"] == "INVALID_CREDENTIALS"
 
 
-def test_unknown_vs_wrong_pin_timing_similar(
-    pin_client: TestClient, pin_session: Session
-):
+def test_unknown_vs_wrong_pin_timing_similar(pin_client: TestClient, pin_session: Session):
     user = _make_pin_user(pin_session)
     ghost = str(uuid.uuid4())
 

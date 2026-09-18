@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import uuid
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -51,12 +51,7 @@ AUDIT_SERVICE_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "modules" / "audit" / "service" / "__init__.py"
 )
 AUDIT_REPO_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "audit"
-    / "repository"
-    / "__init__.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "audit" / "repository" / "__init__.py"
 )
 
 KYC_COLUMNS = {
@@ -107,7 +102,9 @@ def test_tables_registered_with_schema_columns_constraints():
 
     kyc = Base.metadata.tables["identity.kyc_verifications"]
     assert kyc.schema == "identity"
-    assert {c.name for c in kyc.columns} == KYC_COLUMNS, (
+    assert {
+        c.name for c in kyc.columns
+    } == KYC_COLUMNS, (
         f"columnas 03b#4.4 + failure_reason, recibido: {sorted(c.name for c in kyc.columns)}"
     )
     assert isinstance(kyc.columns["provider"].type, sa.String)
@@ -123,9 +120,9 @@ def test_tables_registered_with_schema_columns_constraints():
 
     audit = Base.metadata.tables["audit.audit_log"]
     assert audit.schema == "audit"
-    assert {c.name for c in audit.columns} == AUDIT_COLUMNS, (
-        f"columnas 03b#14.1, recibido: {sorted(c.name for c in audit.columns)}"
-    )
+    assert {
+        c.name for c in audit.columns
+    } == AUDIT_COLUMNS, f"columnas 03b#14.1, recibido: {sorted(c.name for c in audit.columns)}"
     assert isinstance(audit.columns["hash"].type, sa.String)
     assert audit.columns["hash"].type.length == 64
     uq_cols = [
@@ -148,21 +145,21 @@ def test_no_biometric_columns_or_material():
     for key in ("identity.kyc_verifications", "audit.audit_log"):
         for col in Base.metadata.tables[key].columns:
             lowered = col.name.lower()
-            assert "frame" not in lowered and "image" not in lowered, (
-                f"columna biometrica prohibida: {key}.{col.name}"
-            )
+            assert (
+                "frame" not in lowered and "image" not in lowered
+            ), f"columna biometrica prohibida: {key}.{col.name}"
     for path in (KYC_REPO_PATH, AUDIT_SERVICE_PATH, AUDIT_REPO_PATH):
         content = path.read_text(encoding="utf-8")
         assert "float(" not in content
         assert ".commit(" not in content, f"flush sin commit en {path.name}"
     kyc_content = KYC_REPO_PATH.read_text(encoding="utf-8")
     for forbidden in ("face_image", "frame_base64", "data:image"):
-        assert forbidden not in kyc_content or "prohibido" in kyc_content.lower(), (
-            f"material biometrico fuera de la guardia: {forbidden}"
-        )
-    assert "import base64" not in kyc_content and "b64decode" not in kyc_content, (
-        "jamas decodificar/guardar frames base64"
-    )
+        assert (
+            forbidden not in kyc_content or "prohibido" in kyc_content.lower()
+        ), f"material biometrico fuera de la guardia: {forbidden}"
+    assert (
+        "import base64" not in kyc_content and "b64decode" not in kyc_content
+    ), "jamas decodificar/guardar frames base64"
 
 
 def test_save_verification_signature_and_audit_facade():
@@ -188,13 +185,13 @@ def test_save_verification_signature_and_audit_facade():
         assert expected in record_params, f"record sin {expected}: {record_params}"
 
     kyc_content = KYC_REPO_PATH.read_text(encoding="utf-8")
-    assert "audit" in kyc_content and "record" in kyc_content, (
-        "identity llama a audit via fachada record (misma sesion)"
-    )
+    assert (
+        "audit" in kyc_content and "record" in kyc_content
+    ), "identity llama a audit via fachada record (misma sesion)"
     assert "AuditLog" not in kyc_content, "identity no toca el modelo AuditLog"
-    assert "audit.models" not in kyc_content and "audit_log\"" not in kyc_content, (
-        "identity no escribe audit_log directamente"
-    )
+    assert (
+        "audit.models" not in kyc_content and 'audit_log"' not in kyc_content
+    ), "identity no escribe audit_log directamente"
 
 
 def test_audit_append_only_without_update_delete():
@@ -203,14 +200,14 @@ def test_audit_append_only_without_update_delete():
 
     for module in (audit_repo, audit_svc):
         for forbidden in ("update", "delete", "remove", "purge"):
-            assert not hasattr(module, forbidden), (
-                f"audit append-only: {module.__name__} no debe exponer {forbidden}"
-            )
+            assert not hasattr(
+                module, forbidden
+            ), f"audit append-only: {module.__name__} no debe exponer {forbidden}"
     for path in (AUDIT_SERVICE_PATH, AUDIT_REPO_PATH):
         content = path.read_text(encoding="utf-8")
-        assert "def update" not in content and "def delete" not in content, (
-            f"sin update/delete en {path.name}"
-        )
+        assert (
+            "def update" not in content and "def delete" not in content
+        ), f"sin update/delete en {path.name}"
 
 
 def test_audit_hash_is_deterministic_and_chained():
@@ -251,20 +248,38 @@ def test_audit_hash_is_deterministic_and_chained():
     from app.modules.audit.models import AuditLog
 
     genesis = AuditLog(
-        seq=1, actor_type="USER", actor_id=actor, action="kyc.verified",
-        entity_type="kyc_verification", entity_id=entity,
-        after_json={"overall_result": True}, prev_hash=None, hash=first,
+        seq=1,
+        actor_type="USER",
+        actor_id=actor,
+        action="kyc.verified",
+        entity_type="kyc_verification",
+        entity_id=entity,
+        after_json={"overall_result": True},
+        prev_hash=None,
+        hash=first,
     )
     chained = AuditLog(
-        seq=2, actor_type="USER", actor_id=actor, action="kyc.failed",
-        entity_type="kyc_verification", entity_id=entity,
-        after_json={"overall_result": False}, prev_hash=first, hash=second,
+        seq=2,
+        actor_type="USER",
+        actor_id=actor,
+        action="kyc.failed",
+        entity_type="kyc_verification",
+        entity_id=entity,
+        after_json={"overall_result": False},
+        prev_hash=first,
+        hash=second,
     )
     assert verify_chain([genesis, chained]) is True
     broken = AuditLog(
-        seq=2, actor_type="USER", actor_id=actor, action="kyc.failed",
-        entity_type="kyc_verification", entity_id=entity,
-        after_json={"overall_result": False}, prev_hash="0" * 64, hash=second,
+        seq=2,
+        actor_type="USER",
+        actor_id=actor,
+        action="kyc.failed",
+        entity_type="kyc_verification",
+        entity_id=entity,
+        after_json={"overall_result": False},
+        prev_hash="0" * 64,
+        hash=second,
     )
     assert verify_chain([genesis, broken]) is False
 
@@ -454,7 +469,7 @@ def test_audit_chain_links_every_consecutive_hash(sqlite_session: Session):
     assert len(rows) == 4
     assert [row.seq for row in rows] == [1, 2, 3, 4]
     assert rows[3].actor_type == "SYSTEM"
-    for previous, current in zip(rows, rows[1:]):
+    for previous, current in pairwise(rows):
         assert current.prev_hash == previous.hash
     assert verify_chain(rows) is True
 
@@ -528,9 +543,7 @@ def test_migration_up_down_on_test_database(db_session: Session):
         assert inspect(db_session.get_bind()).has_table("kyc_verifications", schema="identity")
         assert inspect(db_session.get_bind()).has_table("audit_log", schema="audit")
         _alembic("downgrade", "0012_identity_core")
-        assert not inspect(db_session.get_bind()).has_table(
-            "kyc_verifications", schema="identity"
-        )
+        assert not inspect(db_session.get_bind()).has_table("kyc_verifications", schema="identity")
         assert not inspect(db_session.get_bind()).has_table("audit_log", schema="audit")
     finally:
         _alembic("upgrade", "head")

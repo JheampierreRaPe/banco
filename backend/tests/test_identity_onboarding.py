@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import inspect
-import re
 import uuid
 from pathlib import Path
 
@@ -41,12 +40,7 @@ REPO_PATH = (
     / "__init__.py"
 )
 SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "service"
-    / "__init__.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "service" / "__init__.py"
 )
 
 
@@ -192,25 +186,24 @@ def test_service_signature_and_rules():
 
     for key in ("identity.users", "identity.credentials"):
         for col in Base.metadata.tables[key].columns:
-            assert "frame" not in col.name and "image" not in col.name, (
-                f"columna biometrica prohibida: {key}.{col.name}"
-            )
+            assert (
+                "frame" not in col.name and "image" not in col.name
+            ), f"columna biometrica prohibida: {key}.{col.name}"
     # Fachadas por import perezoso (sin ciclo a nivel top).
     assert "ensure_customer_accounts" in svc_content
     assert "create_account" in svc_content
     top_imports = [
         line
         for line in svc_content.splitlines()
-        if line.startswith(("from app.modules.", "import app.modules."))
-        or line.startswith("from app.core")
+        if line.startswith(("from app.modules.", "import app.modules.", "from app.core"))
     ]
     assert all(
         line.startswith(("from app.modules.identity.", "from app.modules.identity "))
         for line in top_imports
     ), f"imports top solo del propio modulo: {top_imports}"
-    assert "except " not in svc_content or "raise" in svc_content, (
-        "sin capturas que oculten el rollback"
-    )
+    assert (
+        "except " not in svc_content or "raise" in svc_content
+    ), "sin capturas que oculten el rollback"
 
 
 # ---------------------------------------------------------------- Parte B: SQLite
@@ -330,7 +323,6 @@ def test_ledger_failure_rolls_back_everything(sqlite_session: Session):
 
 
 def test_duplicate_document_rejected(sqlite_session: Session):
-    from app.modules.identity import repository as repo
     from app.modules.identity.service import onboard_customer
 
     doc_hash = f"hash-{uuid.uuid4().hex}"

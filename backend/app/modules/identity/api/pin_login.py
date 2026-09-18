@@ -55,9 +55,7 @@ def _request_id(request: Request) -> str:
     response_model=PinLoginResponse,
     summary="Verifica el PIN y abre sesion",
 )
-def login_pin(
-    body: PinLoginRequest, request: Request, db: Session = Depends(get_db)
-) -> dict:
+def login_pin(body: PinLoginRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     """Login alterno con PIN (HU03 CA-02) con bloqueo temporal (CA-03)."""
     try:
         result = pin_login_service.login_with_pin(
@@ -78,9 +76,7 @@ def login_pin(
         # contador avance (sin esto, el bloqueo del 5to fallo jamas se
         # alcanzaria; en la rama ciega el `commit` es no-op).
         db.commit()
-        raise AppError(
-            code="INVALID_CREDENTIALS", message=str(exc), status_code=401
-        ) from exc
+        raise AppError(code="INVALID_CREDENTIALS", message=str(exc), status_code=401) from exc
     db.commit()
     return {"data": result, "meta": {"request_id": _request_id(request)}}
 

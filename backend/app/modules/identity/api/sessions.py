@@ -56,9 +56,7 @@ def _request_id(request: Request) -> str:
     response_model=RefreshResponse,
     summary="Rota el refresh y emite tokens nuevos",
 )
-def refresh_tokens(
-    body: RefreshRequest, request: Request, db: Session = Depends(get_db)
-) -> dict:
+def refresh_tokens(body: RefreshRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     """Valida el refresh vigente y lo rota (HU03 CA-04)."""
     try:
         result = sessions_service.refresh_session(db, refresh_token=body.refresh_token)

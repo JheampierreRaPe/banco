@@ -58,7 +58,9 @@ def _request_id(request: Request) -> str:
     response_model=ActivateResponse,
     summary="Valida OTP y activa la cuenta",
 )
-def activate_account(body: ActivateRequest, request: Request, db: Session = Depends(get_db)) -> dict:
+def activate_account(
+    body: ActivateRequest, request: Request, db: Session = Depends(get_db)
+) -> dict:
     """Activa la cuenta con el OTP de un solo uso (HU02 CA-02/CA-03)."""
     try:
         result = activation_service.activate_account(db, user_ref=body.user_ref, code=body.code)

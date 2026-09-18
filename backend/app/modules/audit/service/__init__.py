@@ -141,9 +141,7 @@ def record(
     actor_id = _coerce_uuid(actor, "actor")
     resolved_actor_type = actor_type or ("USER" if actor_id is not None else "SYSTEM")
     if resolved_actor_type not in ACTOR_TYPES:
-        raise ValueError(
-            f"actor_type debe ser uno de {ACTOR_TYPES}, recibido: {actor_type!r}"
-        )
+        raise ValueError(f"actor_type debe ser uno de {ACTOR_TYPES}, recibido: {actor_type!r}")
     action_text = _require_text(action, "action", 60)
     entity_text = _require_text(entity, "entity", 60)
     target_id = _coerce_uuid(entity_id, "entity_id")
@@ -195,9 +193,13 @@ def record(
             # otro IntegrityError se relanza de inmediato.
             message = str(getattr(exc, "orig", exc)).lower()
             driver_msg = str(exc).lower()
-            if "uq_audit_log_seq" not in message and "uq_audit_log_seq" not in driver_msg:
-                if "seq" not in message and "seq" not in driver_msg:
-                    raise
+            if (
+                "uq_audit_log_seq" not in message
+                and "uq_audit_log_seq" not in driver_msg
+                and "seq" not in message
+                and "seq" not in driver_msg
+            ):
+                raise
             last_exc = exc
             continue
     assert last_exc is not None

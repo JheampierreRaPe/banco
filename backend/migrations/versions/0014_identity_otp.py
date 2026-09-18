@@ -39,15 +39,9 @@ def upgrade() -> None:
         sa.Column("destination", sa.String(255), nullable=True),
         sa.Column("code_hash", sa.String(128), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column(
-            "attempts", sa.SmallInteger(), server_default="0", nullable=False
-        ),
-        sa.Column(
-            "max_attempts", sa.SmallInteger(), server_default="3", nullable=False
-        ),
-        sa.Column(
-            "resend_count", sa.SmallInteger(), server_default="0", nullable=False
-        ),
+        sa.Column("attempts", sa.SmallInteger(), server_default="0", nullable=False),
+        sa.Column("max_attempts", sa.SmallInteger(), server_default="3", nullable=False),
+        sa.Column("resend_count", sa.SmallInteger(), server_default="0", nullable=False),
         sa.Column(
             "status",
             sa.String(20),
@@ -103,9 +97,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_otp_codes_expires_at", table_name="otp_codes", schema="identity"
-    )
+    op.drop_index("ix_otp_codes_expires_at", table_name="otp_codes", schema="identity")
     op.drop_index(
         "ix_otp_codes_user_purpose_status",
         table_name="otp_codes",

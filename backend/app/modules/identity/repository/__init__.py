@@ -55,8 +55,14 @@ from app.modules.identity.repository.kyc_verifications import (
 from app.modules.identity.repository.otp import (
     bump_attempts,
     create_otp,
+)
+from app.modules.identity.repository.otp import (
     get_active as get_active_otp,
+)
+from app.modules.identity.repository.otp import (
     mark_expired as mark_otp_expired,
+)
+from app.modules.identity.repository.otp import (
     mark_used as mark_otp_used,
 )
 
@@ -123,12 +129,12 @@ def create_user(
         raise ValueError("phone supera 20 caracteres")
     if birth_date is not None and not isinstance(birth_date, date):
         raise TypeError(f"birth_date debe ser date, recibido: {birth_date!r}")
-    if (
-        session.scalar(sa.select(User.id).where(User.doc_number_hash == doc_hash))
-        is not None
-    ):
+    if session.scalar(sa.select(User.id).where(User.doc_number_hash == doc_hash)) is not None:
         raise DuplicateDocumentError("documento ya registrado")
-    if email is not None and session.scalar(sa.select(User.id).where(User.email == email)) is not None:
+    if (
+        email is not None
+        and session.scalar(sa.select(User.id).where(User.email == email)) is not None
+    ):
         raise ValueError("email ya registrado")
 
     user = User(

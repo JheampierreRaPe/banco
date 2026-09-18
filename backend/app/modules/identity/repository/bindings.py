@@ -73,13 +73,10 @@ def register_binding(
         raise ValueError("public_key es obligatoria")
     key = public_key.strip()
     if platform is not None and platform not in DEVICE_PLATFORMS:
-        raise ValueError(
-            f"platform debe ser una de {DEVICE_PLATFORMS}, recibido: {platform!r}"
-        )
+        raise ValueError(f"platform debe ser una de {DEVICE_PLATFORMS}, recibido: {platform!r}")
     if biometric_type is not None and biometric_type not in BIOMETRIC_TYPES:
         raise ValueError(
-            f"biometric_type debe ser una de {BIOMETRIC_TYPES}, "
-            f"recibido: {biometric_type!r}"
+            f"biometric_type debe ser una de {BIOMETRIC_TYPES}, " f"recibido: {biometric_type!r}"
         )
 
     stmt = sa.select(DeviceBinding).where(
@@ -108,9 +105,7 @@ def register_binding(
     return row
 
 
-def get_binding(
-    session: Session, user_id: uuid.UUID | str, device_id: str
-) -> DeviceBinding | None:
+def get_binding(session: Session, user_id: uuid.UUID | str, device_id: str) -> DeviceBinding | None:
     """Lee el binding de (`user_id`, `device_id`) (`None` si no existe).
 
     Retorna la fila en cualquier estado: el llamante decide (un `REVOKED`
@@ -125,9 +120,7 @@ def get_binding(
     return session.scalars(stmt).first()
 
 
-def touch_binding(
-    session: Session, row: DeviceBinding, used_at: datetime
-) -> DeviceBinding:
+def touch_binding(session: Session, row: DeviceBinding, used_at: datetime) -> DeviceBinding:
     """Actualiza `last_used_at` tras un login exitoso (`flush`)."""
     if not isinstance(used_at, datetime):
         raise TypeError(f"used_at debe ser datetime, recibido: {used_at!r}")
@@ -191,9 +184,7 @@ def create_session(
     return row
 
 
-def get_session_by_refresh_hash(
-    session: Session, refresh_token_hash: str
-) -> UserSession | None:
+def get_session_by_refresh_hash(session: Session, refresh_token_hash: str) -> UserSession | None:
     """Lee una sesion por su `refresh_token_hash` (`None` si no existe)."""
     if not isinstance(refresh_token_hash, str) or not refresh_token_hash.strip():
         raise ValueError("refresh_token_hash es obligatorio")
@@ -203,9 +194,7 @@ def get_session_by_refresh_hash(
     return session.scalars(stmt).first()
 
 
-def revoke_session(
-    session: Session, row: UserSession, revoked_at: datetime
-) -> UserSession:
+def revoke_session(session: Session, row: UserSession, revoked_at: datetime) -> UserSession:
     """Marca la sesion como revocada (`flush`, sin `commit`)."""
     if not isinstance(revoked_at, datetime):
         raise TypeError(f"revoked_at debe ser datetime, recibido: {revoked_at!r}")
@@ -214,9 +203,7 @@ def revoke_session(
     return row
 
 
-def revoke_user_sessions(
-    session: Session, user_id: uuid.UUID | str, revoked_at: datetime
-) -> int:
+def revoke_user_sessions(session: Session, user_id: uuid.UUID | str, revoked_at: datetime) -> int:
     """Revoca TODAS las sesiones activas del usuario (`flush`, sin `commit`).
 
     Respuesta ante reuso de un refresh revocado (E1-T15, posible robo del

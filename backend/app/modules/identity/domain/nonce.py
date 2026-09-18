@@ -94,11 +94,7 @@ def _purge_expired_locked(now: datetime) -> None:
     if len(_NONCES) < _MAX_NONCES:
         expired = [key for key, entry in _NONCES.items() if entry.expires_at <= now]
     else:  # Mapa lleno: purga agresiva (vencidos + ya usados).
-        expired = [
-            key
-            for key, entry in _NONCES.items()
-            if entry.expires_at <= now or entry.used
-        ]
+        expired = [key for key, entry in _NONCES.items() if entry.expires_at <= now or entry.used]
     for key in expired:
         _NONCES.pop(key, None)
 
@@ -128,11 +124,7 @@ def issue_nonce(
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
     if ttl_seconds is None:
         ttl_seconds = NONCE_TTL_SECONDS
-    if (
-        not isinstance(ttl_seconds, int)
-        or isinstance(ttl_seconds, bool)
-        or ttl_seconds <= 0
-    ):
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
         raise ValueError("ttl_seconds debe ser int > 0")
 
     nonce = secrets.token_urlsafe(NONCE_ENTROPY_BYTES)

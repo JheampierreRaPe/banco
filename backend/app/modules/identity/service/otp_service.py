@@ -198,7 +198,7 @@ def _new_plain_code() -> str:
 def _hash_code(code: str) -> str:
     """Construye `"salt_hex$sha256_hex"` (97 caracteres, cabe en 128)."""
     salt = secrets.token_hex(16)
-    digest = hashlib.sha256(f"{salt}{code}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{salt}{code}".encode()).hexdigest()
     return f"{salt}${digest}"
 
 
@@ -206,7 +206,7 @@ def _verify_code(code: str, code_hash: str) -> bool:
     """Verifica el codigo contra `"salt_hex$sha256_hex"` (comparacion constante)."""
     try:
         salt, _, digest = code_hash.partition("$")
-        expected = hashlib.sha256(f"{salt}{code}".encode("utf-8")).hexdigest()
+        expected = hashlib.sha256(f"{salt}{code}".encode()).hexdigest()
     except (AttributeError, TypeError, ValueError):
         return False
     if not salt or len(digest) != 64:
@@ -306,9 +306,7 @@ def generate_otp(
     jamas se persiste ni se loguea.
     """
     if purpose not in OTP_PURPOSES:
-        raise ValueError(
-            f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}"
-        )
+        raise ValueError(f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}")
     try:
         uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
     except (ValueError, AttributeError, TypeError) as exc:
@@ -316,9 +314,7 @@ def generate_otp(
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
     ttl = _resolve_ttl_seconds(session, ttl_seconds)
     if max_attempts is not None and (
-        not isinstance(max_attempts, int)
-        or isinstance(max_attempts, bool)
-        or max_attempts < 1
+        not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1
     ):
         raise ValueError("max_attempts debe ser int >= 1")
     limit = max_attempts if max_attempts is not None else OTP_MAX_ATTEMPTS
@@ -373,18 +369,14 @@ def resend_otp(
     viejo jamas se reutiliza. Retorna `(fila_nueva, codigo_en_claro)`.
     """
     if purpose not in OTP_PURPOSES:
-        raise ValueError(
-            f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}"
-        )
+        raise ValueError(f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}")
     try:
         uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
     if wait_seconds is not None and (
-        not isinstance(wait_seconds, int)
-        or isinstance(wait_seconds, bool)
-        or wait_seconds < 0
+        not isinstance(wait_seconds, int) or isinstance(wait_seconds, bool) or wait_seconds < 0
     ):
         raise ValueError("wait_seconds debe ser int >= 0")
     wait = OTP_RESEND_WAIT_SECONDS if wait_seconds is None else wait_seconds
@@ -398,9 +390,7 @@ def resend_otp(
 
     ceiling = _resolve_max_resends(session, max_resends)
     if int(active.resend_count) + 1 > ceiling:
-        raise OtpMaxResendsExceededError(
-            f"maximo de {ceiling} reenvios alcanzado para {purpose!r}"
-        )
+        raise OtpMaxResendsExceededError(f"maximo de {ceiling} reenvios alcanzado para {purpose!r}")
     elapsed = (moment - _as_aware(active.created_at)).total_seconds()
     if elapsed < wait:
         raise OtpResendTooSoonError(
@@ -421,9 +411,7 @@ def resend_otp(
         max_attempts=int(active.max_attempts),
         resend_count=int(active.resend_count) + 1,
     )
-    logger.info(
-        "otp resent purpose=%s resend=%d/%d", purpose, row.resend_count, ceiling
-    )
+    logger.info("otp resent purpose=%s resend=%d/%d", purpose, row.resend_count, ceiling)
     _notify_code(
         session,
         user_id=uid,
@@ -455,9 +443,7 @@ def validate_otp(
     (los `USED`/`EXPIRED` jamas se revalidan).
     """
     if purpose not in OTP_PURPOSES:
-        raise ValueError(
-            f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}"
-        )
+        raise ValueError(f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}")
     try:
         uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
     except (ValueError, AttributeError, TypeError) as exc:

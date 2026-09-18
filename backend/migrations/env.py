@@ -4,17 +4,17 @@ import os
 import sys
 from logging.config import fileConfig
 
-from alembic import context
 import sqlalchemy as sa
+from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.dialects import postgresql
 
 # Permitir importar `app` al ejecutar alembic desde backend/
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import app.modules  # noqa: F401  (expone MODULES)
 import importlib
 
+import app.modules
 from app.core.config import get_settings
 from app.core.db import Base
 
@@ -33,7 +33,7 @@ for _mod_name in (*app.modules.MODULES, "shared"):
 # (`accounts/repository/movements.py`, sin efectos colaterales al importar:
 # solo define la clase + indice); se registra aqui para que la metadata
 # quede completa.
-import app.modules.accounts.repository.movements  # noqa: F401,E402
+import app.modules.accounts.repository.movements
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

@@ -73,9 +73,7 @@ def login_challenge(
     response_model=FacialResponse,
     summary="Verifica la firma del nonce y abre sesion",
 )
-def login_facial(
-    body: FacialRequest, request: Request, db: Session = Depends(get_db)
-) -> dict:
+def login_facial(body: FacialRequest, request: Request, db: Session = Depends(get_db)) -> dict:
     """Valida el nonce firmado y devuelve JWT + refresh (HU03 CA-01)."""
     try:
         result = device_login_service.login_with_device(

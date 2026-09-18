@@ -31,9 +31,7 @@ def latest_seq(session: Session) -> int:
 
 def latest_hash(session: Session) -> str | None:
     """`hash` del ultimo registro (`None` si la bitacora esta vacia)."""
-    return session.scalar(
-        sa.select(AuditLog.hash).order_by(AuditLog.seq.desc()).limit(1)
-    )
+    return session.scalar(sa.select(AuditLog.hash).order_by(AuditLog.seq.desc()).limit(1))
 
 
 def get(session: Session, log_id: uuid.UUID | str) -> AuditLog | None:

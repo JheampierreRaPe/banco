@@ -52,9 +52,7 @@ def create_otp(
     """
     uid = _coerce_uuid(user_id, "user_id")
     if purpose not in OTP_PURPOSES:
-        raise ValueError(
-            f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}"
-        )
+        raise ValueError(f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}")
     if not isinstance(code_hash, str) or "$" not in code_hash:
         raise ValueError("code_hash debe tener formato 'salt_hex$sha256_hex'")
     salt, _, digest = code_hash.partition("$")
@@ -92,9 +90,7 @@ def create_otp(
     return row
 
 
-def get_active(
-    session: Session, user_id: uuid.UUID | str, purpose: str
-) -> OtpCode | None:
+def get_active(session: Session, user_id: uuid.UUID | str, purpose: str) -> OtpCode | None:
     """OTP `PENDING` mas reciente de (`user_id`, `purpose`).
 
     Como cada emision invalida el anterior, hay como maximo un `PENDING`
@@ -103,9 +99,7 @@ def get_active(
     """
     uid = _coerce_uuid(user_id, "user_id")
     if purpose not in OTP_PURPOSES:
-        raise ValueError(
-            f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}"
-        )
+        raise ValueError(f"purpose debe ser uno de {OTP_PURPOSES}, recibido: {purpose!r}")
     stmt = (
         sa.select(OtpCode)
         .where(
@@ -121,9 +115,7 @@ def get_active(
 def mark_used(session: Session, row: OtpCode, consumed_at: datetime) -> OtpCode:
     """Marca un OTP como `USED` (un solo uso; `flush`, sin `commit`)."""
     if row.status != "PENDING":
-        raise ValueError(
-            f"solo un OTP PENDING puede consumirse, estado: {row.status!r}"
-        )
+        raise ValueError(f"solo un OTP PENDING puede consumirse, estado: {row.status!r}")
     if not isinstance(consumed_at, datetime):
         raise TypeError(f"consumed_at debe ser datetime, recibido: {consumed_at!r}")
     row.status = "USED"
@@ -139,9 +131,7 @@ def mark_expired(session: Session, row: OtpCode) -> OtpCode:
     anterior en un reenvio (el codigo viejo jamas se reutiliza).
     """
     if row.status != "PENDING":
-        raise ValueError(
-            f"solo un OTP PENDING puede expirar, estado: {row.status!r}"
-        )
+        raise ValueError(f"solo un OTP PENDING puede expirar, estado: {row.status!r}")
     row.status = "EXPIRED"
     session.flush()
     return row
@@ -150,9 +140,7 @@ def mark_expired(session: Session, row: OtpCode) -> OtpCode:
 def bump_attempts(session: Session, row: OtpCode) -> int:
     """Suma un intento fallido y retorna el contador (`flush`, sin `commit`)."""
     if row.status != "PENDING":
-        raise ValueError(
-            f"solo un OTP PENDING acumula intentos, estado: {row.status!r}"
-        )
+        raise ValueError(f"solo un OTP PENDING acumula intentos, estado: {row.status!r}")
     row.attempts = int(row.attempts) + 1
     session.flush()
     return row.attempts

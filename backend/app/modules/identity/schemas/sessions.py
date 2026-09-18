@@ -20,9 +20,7 @@ from pydantic import BaseModel, Field
 class RefreshRequest(BaseModel):
     """Entrada de `POST /auth/refresh` (refresh vigente a rotar)."""
 
-    refresh_token: str = Field(
-        min_length=1, max_length=256, description="Refresh opaco vigente."
-    )
+    refresh_token: str = Field(min_length=1, max_length=256, description="Refresh opaco vigente.")
 
 
 class RefreshData(BaseModel):

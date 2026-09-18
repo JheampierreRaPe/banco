@@ -175,9 +175,7 @@ def verify_pin(pin: object, stored_hash: object) -> bool:
     if iterations < 1 or len(salt) < 8 or len(expected) != 32:
         return False
     try:
-        candidate = hashlib.pbkdf2_hmac(
-            "sha256", pin.encode("utf-8"), salt, iterations
-        )
+        candidate = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, iterations)
     except (TypeError, ValueError):
         return False
     return hmac.compare_digest(candidate, expected)
@@ -327,9 +325,7 @@ def login_with_pin(
 
     uid = _coerce_user_id(user_ref)
     user = identity_repo.get_user(session, uid) if uid is not None else None
-    credential = (
-        identity_repo.get_credential(session, user.id) if user is not None else None
-    )
+    credential = identity_repo.get_credential(session, user.id) if user is not None else None
 
     if credential is not None and credential.locked_until is not None:
         locked_until = _as_aware(credential.locked_until)
@@ -350,11 +346,7 @@ def login_with_pin(
         credential.locked_until = None
         session.flush()
 
-    stored = (
-        credential.pin_hash
-        if credential is not None and credential.pin_hash
-        else None
-    )
+    stored = credential.pin_hash if credential is not None and credential.pin_hash else None
     if stored is None:
         # Rama ciega: mismo costo PBKDF2 que la rama real (no filtra por
         # timing) y mismo error que un PIN erroneo.
@@ -386,9 +378,7 @@ def login_with_pin(
             ip=ip,
         )
         access_token = create_access_token(subject=str(user.id))
-        _emit_login_succeeded(
-            session, user_id=user.id, session_id=row.id, device_id=device_id
-        )
+        _emit_login_succeeded(session, user_id=user.id, session_id=row.id, device_id=device_id)
         _audit_auth_event(
             session,
             user_id=user.id,
@@ -456,9 +446,9 @@ __all__ = [
     "AUDIT_FAILED_ATTEMPT",
     "AUDIT_LOGIN_SUCCEEDED",
     "INVALID_MESSAGE",
+    "LOCKOUT_SECONDS",
     "LOCK_CHANNEL",
     "LOCK_TEMPLATE_CODE",
-    "LOCKOUT_SECONDS",
     "MAX_FAILED_ATTEMPTS",
     "PBKDF2_ITERATIONS",
     "PIN_HASH_PREFIX",

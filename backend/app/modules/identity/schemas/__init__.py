@@ -17,6 +17,17 @@ from app.modules.identity.schemas.device_login import (
     FacialRequest,
     FacialResponse,
 )
+from app.modules.identity.schemas.kyc import (
+    KYC_DOC_TYPES,
+    KycChallengeData,
+    KycChallengeRequest,
+    KycChallengeResponse,
+    KycDocumentPayload,
+    KycSegmentPayload,
+    KycSubmitData,
+    KycSubmitRequest,
+    KycSubmitResponse,
+)
 from app.modules.identity.schemas.pin_login import (
     PinLoginData,
     PinLoginRequest,
@@ -30,28 +41,9 @@ from app.modules.identity.schemas.sessions import (
     RefreshRequest,
     RefreshResponse,
 )
-from app.modules.identity.schemas.kyc import (
-    KYC_DOC_TYPES,
-    KycChallengeData,
-    KycChallengeRequest,
-    KycChallengeResponse,
-    KycDocumentPayload,
-    KycSegmentPayload,
-    KycSubmitData,
-    KycSubmitRequest,
-    KycSubmitResponse,
-)
 
 __all__ = [
     "KYC_DOC_TYPES",
-    "KycChallengeData",
-    "KycChallengeRequest",
-    "KycChallengeResponse",
-    "KycDocumentPayload",
-    "KycSegmentPayload",
-    "KycSubmitData",
-    "KycSubmitRequest",
-    "KycSubmitResponse",
     "OTP_CHANNELS",
     "ActivateData",
     "ActivateRequest",
@@ -62,6 +54,14 @@ __all__ = [
     "FacialData",
     "FacialRequest",
     "FacialResponse",
+    "KycChallengeData",
+    "KycChallengeRequest",
+    "KycChallengeResponse",
+    "KycDocumentPayload",
+    "KycSegmentPayload",
+    "KycSubmitData",
+    "KycSubmitRequest",
+    "KycSubmitResponse",
     "LogoutData",
     "LogoutRequest",
     "LogoutResponse",

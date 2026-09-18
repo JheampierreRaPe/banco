@@ -134,7 +134,7 @@ def _hmac_secret(public_key: str) -> bytes | None:
     if not isinstance(public_key, str) or not public_key.startswith("hmac:"):
         return None
     try:
-        raw = bytes.fromhex(public_key[len("hmac:"):].strip())
+        raw = bytes.fromhex(public_key[len("hmac:") :].strip())
     except (ValueError, AttributeError):
         return None
     return raw if len(raw) >= 16 else None
@@ -169,11 +169,10 @@ def _verify_asymmetric(nonce: str, signature: str, public_key: str) -> bool:
             key.verify(raw_sig, message, padding.PKCS1v15(), hashes.SHA256())
         else:  # Tipo de clave no soportado: generico.
             return False
-    except Exception:  # noqa: BLE001 - todo fallo cripto es firma invalida
-        try:
-            _ = InvalidSignature
-        except Exception:  # pragma: no cover - referencia al import
-            pass
+    except InvalidSignature:
+        return False
+    except Exception:
+        logger.debug("verificacion asimetrica fallida", exc_info=True)
         return False
     return True
 
@@ -305,9 +304,7 @@ def request_challenge(
         # Rama ciega: mismo error que cualquier fallo posterior.
         raise LoginInvalidError(INVALID_MESSAGE)
     try:
-        nonce, expires_at = nonce_domain.issue_nonce(
-            user.id, device_id=device_id, now=now
-        )
+        nonce, expires_at = nonce_domain.issue_nonce(user.id, device_id=device_id, now=now)
     except ValueError as exc:
         raise LoginInvalidError(INVALID_MESSAGE) from exc
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
@@ -453,9 +450,7 @@ def login_with_device(
         ip=ip,
     )
     access_token = create_access_token(subject=str(user.id))
-    _emit_login_succeeded(
-        session, user_id=user.id, session_id=row.id, device_id=binding.device_id
-    )
+    _emit_login_succeeded(session, user_id=user.id, session_id=row.id, device_id=binding.device_id)
     _audit_auth_event(
         session,
         user_id=user.id,

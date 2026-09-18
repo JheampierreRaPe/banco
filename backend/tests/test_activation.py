@@ -153,31 +153,25 @@ def test_service_rules_no_commit_no_code_in_logs_lazy_notify():
     content = ACTIVATION_SERVICE_PATH.read_text(encoding="utf-8")
     assert ".commit(" not in content, "el servicio hace flush; el endpoint confirma"
     assert "float(" not in content, "sin float"
-    assert "    from app.modules.notifications.service import" in content, (
-        "notificacion solo via fachada send con import perezoso (E1-T03/E1-T08)"
-    )
+    assert (
+        "    from app.modules.notifications.service import" in content
+    ), "notificacion solo via fachada send con import perezoso (E1-T03/E1-T08)"
     top_imports = "\n".join(
-        line
-        for line in content.splitlines()
-        if line.startswith("from app.") or line.startswith("import app.")
+        line for line in content.splitlines() if line.startswith(("from app.", "import app."))
     )
     assert "notifications" not in top_imports, "notifications no debe importarse a nivel modulo"
     assert "outbox" not in top_imports, "el evento lo encola otp_service; aqui no se duplica"
-    code_imports = [
-        line
-        for line in content.splitlines()
-        if line.startswith("from ") or line.startswith("import ")
-    ]
+    code_imports = [line for line in content.splitlines() if line.startswith(("from ", "import "))]
     for forbidden in ("onboard_customer", "kyc_proxy"):
-        assert not any(forbidden in line for line in code_imports), (
-            f"prohibido importar/tocar {forbidden}"
-        )
+        assert not any(
+            forbidden in line for line in code_imports
+        ), f"prohibido importar/tocar {forbidden}"
     log_lines = [line for line in content.splitlines() if "logger." in line]
     assert log_lines, "el servicio debe loguear sin PII"
     for line in log_lines:
-        assert "plain" not in line and "code" not in line.replace("template_code", ""), (
-            f"codigo en claro en logs: {line.strip()}"
-        )
+        assert "plain" not in line and "code" not in line.replace(
+            "template_code", ""
+        ), f"codigo en claro en logs: {line.strip()}"
     api_content = ACTIVATION_API_PATH.read_text(encoding="utf-8")
     assert "plain" not in api_content, "el router jamas maneja el codigo en claro"
 
@@ -316,18 +310,14 @@ def test_resend_ok_registers_notification(
     assert stale.json()["error"]["code"] == "INVALID_OTP"
 
 
-def test_resend_limit_after_max_resends(
-    activation_client: TestClient, activation_session: Session
-):
+def test_resend_limit_after_max_resends(activation_client: TestClient, activation_session: Session):
     from app.modules.identity.service import otp_service
 
     user, _ = _make_pending_user(activation_session)
     for _ in range(otp_service.OTP_MAX_RESENDS):
         ok = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
         assert ok.status_code == 200
-    limited = activation_client.post(
-        "/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}
-    )
+    limited = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "RESEND_LIMIT"
 
@@ -369,16 +359,18 @@ def test_resend_rate_limit_returns_429(
 
     user, _ = _make_pending_user(activation_session)
     assert (
-        activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}).status_code
+        activation_client.post(
+            "/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}
+        ).status_code
         == 200
     )
     assert (
-        activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}).status_code
+        activation_client.post(
+            "/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}
+        ).status_code
         == 200
     )
-    limited = activation_client.post(
-        "/api/v1/auth/otp/resend", json={"user_ref": str(user.id)}
-    )
+    limited = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "RATE_LIMITED"
 

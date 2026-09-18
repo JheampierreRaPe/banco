@@ -142,10 +142,6 @@ def downgrade() -> None:
     op.drop_index("ix_audit_log_created", table_name="audit_log", schema="audit")
     op.drop_index("ix_audit_log_entity", table_name="audit_log", schema="audit")
     op.drop_table("audit_log", schema="audit")
-    op.drop_index(
-        "ix_kyc_verifications_created", table_name="kyc_verifications", schema="identity"
-    )
-    op.drop_index(
-        "ix_kyc_verifications_user", table_name="kyc_verifications", schema="identity"
-    )
+    op.drop_index("ix_kyc_verifications_created", table_name="kyc_verifications", schema="identity")
+    op.drop_index("ix_kyc_verifications_user", table_name="kyc_verifications", schema="identity")
     op.drop_table("kyc_verifications", schema="identity")

@@ -34,20 +34,10 @@ from app.core.db import Base, get_db
 from app.main import app
 
 SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "service"
-    / "sessions.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "service" / "sessions.py"
 )
 API_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "api"
-    / "sessions.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "api" / "sessions.py"
 )
 
 
@@ -169,17 +159,17 @@ def test_static_rules_no_commit_hash_only_no_redis_documented():
     assert "session.inactivity_seconds" in service, "clave config.parameters documentada"
     assert "create_access_token" in service, "reutiliza el JWT existente"
     assert "jwt.encode(" not in service, "no inventa tokens: usa create_access_token"
-    assert "import redis" not in service and "from redis" not in service, (
-        "sin Redis en el repo: la revocacion vive en la tabla"
-    )
+    assert (
+        "import redis" not in service and "from redis" not in service
+    ), "sin Redis en el repo: la revocacion vive en la tabla"
     assert "hash_refresh_token" in service, "solo el hash del refresh se persiste"
     log_lines = [line for line in service.splitlines() if "logger." in line]
     assert log_lines, "el servicio debe loguear sin PII"
     for line in log_lines:
         lowered = line.lower()
-        assert "refresh_token" not in lowered and "signature" not in lowered, (
-            f"secreto en logs: {line.strip()}"
-        )
+        assert (
+            "refresh_token" not in lowered and "signature" not in lowered
+        ), f"secreto en logs: {line.strip()}"
 
     api = API_PATH.read_text(encoding="utf-8")
     assert ".commit(" in api, "el endpoint confirma la transaccion"
@@ -223,15 +213,13 @@ def test_refresh_valid_rotates_old_invalid_new_works(
 
     sessions_session.expire_all()
     old_row = identity_repo.get_session_by_refresh_hash(sessions_session, _hash(old_refresh))
-    assert old_row is not None and old_row.revoked_at is not None, (
-        "el refresh presentado queda revocado"
-    )
+    assert (
+        old_row is not None and old_row.revoked_at is not None
+    ), "el refresh presentado queda revocado"
     new_row = identity_repo.get_session_by_refresh_hash(
         sessions_session, _hash(data["refresh_token"])
     )
-    assert new_row is not None and new_row.revoked_at is None, (
-        "el refresh nuevo esta vigente"
-    )
+    assert new_row is not None and new_row.revoked_at is None, "el refresh nuevo esta vigente"
     assert new_row.user_id == user.id and new_row.device_id == "pixel-8-pro"
 
     # El nuevo refresh funciona (segunda rotacion).
@@ -253,9 +241,7 @@ def test_refresh_token_never_stored_in_clear(
 
     sessions_session.expire_all()
     rows = list(
-        sessions_session.scalars(
-            sa.select(UserSession).where(UserSession.user_id == user.id)
-        ).all()
+        sessions_session.scalars(sa.select(UserSession).where(UserSession.user_id == user.id)).all()
     )
     assert rows, "hay sesiones"
     for row in rows:
@@ -281,9 +267,7 @@ def test_expired_refresh_rejected_and_session_closed(
     assert row is not None and row.revoked_at is not None, "vencido cierra la sesion"
 
 
-def test_unknown_refresh_is_invalid(
-    sessions_client: TestClient, sessions_session: Session
-):
+def test_unknown_refresh_is_invalid(sessions_client: TestClient, sessions_session: Session):
     _make_user(sessions_session)
     resp = sessions_client.post(
         "/api/v1/auth/refresh", json={"refresh_token": secrets.token_urlsafe(32)}
@@ -301,31 +285,23 @@ def test_reuse_of_revoked_refresh_revokes_chain(
     user = _make_user(sessions_session)
     old_refresh, _ = _open_session(sessions_session, user.id)
 
-    first = sessions_client.post(
-        "/api/v1/auth/refresh", json={"refresh_token": old_refresh}
-    )
+    first = sessions_client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
     assert first.status_code == 200, first.text
     new_refresh = first.json()["data"]["refresh_token"]
 
     # Reuso del viejo: posible robo -> toda la cadena revocada + error.
-    reuse = sessions_client.post(
-        "/api/v1/auth/refresh", json={"refresh_token": old_refresh}
-    )
+    reuse = sessions_client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
     assert reuse.status_code == 401
     assert reuse.json()["error"]["code"] == "REFRESH_REUSED"
 
     sessions_session.expire_all()
-    successor = identity_repo.get_session_by_refresh_hash(
-        sessions_session, _hash(new_refresh)
-    )
-    assert successor is not None and successor.revoked_at is not None, (
-        "el sucesor legitimo tambien muere ante el reuso"
-    )
+    successor = identity_repo.get_session_by_refresh_hash(sessions_session, _hash(new_refresh))
+    assert (
+        successor is not None and successor.revoked_at is not None
+    ), "el sucesor legitimo tambien muere ante el reuso"
 
     # El sucesor ya no sirve (cadena muerta).
-    after = sessions_client.post(
-        "/api/v1/auth/refresh", json={"refresh_token": new_refresh}
-    )
+    after = sessions_client.post("/api/v1/auth/refresh", json={"refresh_token": new_refresh})
     assert after.status_code == 401
     assert after.json()["error"]["code"] == "REFRESH_REUSED"
 
@@ -349,15 +325,11 @@ def test_logout_revokes_subsequent_refresh_rejected(
     row = identity_repo.get_session_by_refresh_hash(sessions_session, _hash(refresh))
     assert row is not None and row.revoked_at is not None, "logout revoca la sesion"
 
-    after = sessions_client.post(
-        "/api/v1/auth/refresh", json={"refresh_token": refresh}
-    )
+    after = sessions_client.post("/api/v1/auth/refresh", json={"refresh_token": refresh})
     assert after.status_code == 401, "refresh posterior al logout se rechaza"
 
 
-def test_logout_idempotent_unknown_or_twice(
-    sessions_client: TestClient, sessions_session: Session
-):
+def test_logout_idempotent_unknown_or_twice(sessions_client: TestClient, sessions_session: Session):
     user = _make_user(sessions_session)
     refresh, _ = _open_session(sessions_session, user.id)
 
@@ -377,9 +349,7 @@ def test_logout_idempotent_unknown_or_twice(
 
 
 # ---------------------------------------------------------------- Inactividad
-def test_inactivity_closes_session(
-    sessions_client: TestClient, sessions_session: Session
-):
+def test_inactivity_closes_session(sessions_client: TestClient, sessions_session: Session):
     from app.modules.identity import repository as identity_repo
     from app.modules.identity.service import sessions as sessions_service
 
@@ -397,9 +367,7 @@ def test_inactivity_closes_session(
 
     sessions_session.expire_all()
     row = identity_repo.get_session_by_refresh_hash(sessions_session, _hash(refresh))
-    assert row is not None and row.revoked_at is not None, (
-        "inactividad excedida cierra la sesion"
-    )
+    assert row is not None and row.revoked_at is not None, "inactividad excedida cierra la sesion"
 
 
 def test_inactivity_within_window_allows_refresh(
@@ -473,9 +441,7 @@ def test_inactivity_unit_boundary():
         )
         db.commit()
         # Envejecer created_at mas alla de la ventana + margen.
-        row.created_at = moment - timedelta(
-            seconds=sessions_service.INACTIVITY_SECONDS + 10
-        )
+        row.created_at = moment - timedelta(seconds=sessions_service.INACTIVITY_SECONDS + 10)
         db.commit()
         db.expire_all()
         try:

@@ -52,13 +52,17 @@ class FacialRequest(BaseModel):
     )
     platform: Literal["android", "ios"] | None = Field(default=None)
     biometric_type: Literal["FACE", "FINGERPRINT"] | None = Field(default=None)
-    device_info: dict | None = Field(default=None, description="Modelo/SO (se guarda en la sesion).")
+    device_info: dict | None = Field(
+        default=None, description="Modelo/SO (se guarda en la sesion)."
+    )
     ip: str | None = Field(default=None, min_length=1, max_length=45)
 
 
 class FacialData(BaseModel):
     access_token: str
-    refresh_token: str = Field(description="Opaco, de un solo despliegue: solo su hash se persiste.")
+    refresh_token: str = Field(
+        description="Opaco, de un solo despliegue: solo su hash se persiste."
+    )
     token_type: str = Field(default="Bearer")
     session_id: str
     expires_in: int = Field(ge=0, description="Vigencia del refresh en segundos.")

@@ -80,14 +80,22 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(sa.String(320), nullable=True)
     phone: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     status: Mapped[str] = mapped_column(
-        sa.String(20), nullable=False, default="PENDING_ACTIVATION",
+        sa.String(20),
+        nullable=False,
+        default="PENDING_ACTIVATION",
         server_default="PENDING_ACTIVATION",
     )
     kyc_status: Mapped[str] = mapped_column(
-        sa.String(20), nullable=False, default="PENDING", server_default="PENDING",
+        sa.String(20),
+        nullable=False,
+        default="PENDING",
+        server_default="PENDING",
     )
     risk_profile: Mapped[str] = mapped_column(
-        sa.String(20), nullable=False, default="STANDARD", server_default="STANDARD",
+        sa.String(20),
+        nullable=False,
+        default="STANDARD",
+        server_default="STANDARD",
     )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
@@ -130,16 +138,24 @@ class Credential(Base):
     password_hash: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     pin_hash: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     biometric_enabled: Mapped[bool] = mapped_column(
-        sa.Boolean(), nullable=False, default=False, server_default="false",
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default="false",
     )
     failed_attempts: Mapped[int] = mapped_column(
-        sa.SmallInteger(), nullable=False, default=0, server_default="0",
+        sa.SmallInteger(),
+        nullable=False,
+        default=0,
+        server_default="0",
     )
     locked_until: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True,
+        sa.DateTime(timezone=True),
+        nullable=True,
     )
     password_updated_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True,
+        sa.DateTime(timezone=True),
+        nullable=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
@@ -187,9 +203,7 @@ class KycVerification(Base):
     document_json: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
     liveness_json: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
     face_match_json: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
-    challenge_token_hash: Mapped[str | None] = mapped_column(
-        sa.String(128), nullable=True
-    )
+    challenge_token_hash: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
@@ -243,9 +257,7 @@ class OtpCode(Base):
         ),
         sa.CheckConstraint("attempts >= 0", name="ck_otp_codes_attempts_min"),
         sa.CheckConstraint("max_attempts >= 1", name="ck_otp_codes_max_attempts_min"),
-        sa.CheckConstraint(
-            "resend_count >= 0", name="ck_otp_codes_resend_count_min"
-        ),
+        sa.CheckConstraint("resend_count >= 0", name="ck_otp_codes_resend_count_min"),
         sa.Index("ix_otp_codes_user_purpose_status", "user_id", "purpose", "status"),
         sa.Index("ix_otp_codes_expires_at", "expires_at"),
         {"schema": SCHEMA},
@@ -256,20 +268,29 @@ class OtpCode(Base):
     purpose: Mapped[str] = mapped_column(sa.String(30), nullable=False)
     destination: Mapped[str | None] = mapped_column(sa.String(255), nullable=True)
     code_hash: Mapped[str] = mapped_column(sa.String(128), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(
-        sa.DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(
-        sa.SmallInteger(), nullable=False, default=0, server_default="0",
+        sa.SmallInteger(),
+        nullable=False,
+        default=0,
+        server_default="0",
     )
     max_attempts: Mapped[int] = mapped_column(
-        sa.SmallInteger(), nullable=False, default=3, server_default="3",
+        sa.SmallInteger(),
+        nullable=False,
+        default=3,
+        server_default="3",
     )
     resend_count: Mapped[int] = mapped_column(
-        sa.SmallInteger(), nullable=False, default=0, server_default="0",
+        sa.SmallInteger(),
+        nullable=False,
+        default=0,
+        server_default="0",
     )
     status: Mapped[str] = mapped_column(
-        sa.String(20), nullable=False, default="PENDING",
+        sa.String(20),
+        nullable=False,
+        default="PENDING",
         server_default="PENDING",
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -279,7 +300,8 @@ class OtpCode(Base):
         nullable=False,
     )
     consumed_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True,
+        sa.DateTime(timezone=True),
+        nullable=True,
     )
 
 
@@ -305,9 +327,7 @@ class DeviceBinding(Base):
 
     __tablename__ = "device_bindings"
     __table_args__ = (
-        sa.UniqueConstraint(
-            "user_id", "device_id", name="uq_device_bindings_user_device"
-        ),
+        sa.UniqueConstraint("user_id", "device_id", name="uq_device_bindings_user_device"),
         sa.CheckConstraint(
             "status IN ('ACTIVE', 'REVOKED')",
             name="ck_device_bindings_status",
@@ -328,14 +348,17 @@ class DeviceBinding(Base):
     platform: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     biometric_type: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     status: Mapped[str] = mapped_column(
-        sa.String(15), nullable=False, default="ACTIVE",
+        sa.String(15),
+        nullable=False,
+        default="ACTIVE",
         server_default="ACTIVE",
     )
     registered_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
     last_used_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True,
+        sa.DateTime(timezone=True),
+        nullable=True,
     )
 
 
@@ -359,9 +382,7 @@ class UserSession(Base):
 
     __tablename__ = "sessions"
     __table_args__ = (
-        sa.UniqueConstraint(
-            "refresh_token_hash", name="uq_sessions_refresh_token_hash"
-        ),
+        sa.UniqueConstraint("refresh_token_hash", name="uq_sessions_refresh_token_hash"),
         sa.ForeignKeyConstraint(
             ["user_id"],
             [f"{SCHEMA}.users.id"],
@@ -379,11 +400,10 @@ class UserSession(Base):
     device_id: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     device_info: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
     ip: Mapped[str | None] = mapped_column(sa.String(45), nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(
-        sa.DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), nullable=True,
+        sa.DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False

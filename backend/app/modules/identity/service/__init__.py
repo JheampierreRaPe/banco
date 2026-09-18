@@ -111,11 +111,7 @@ def _ensure_initial_activation_otp(
     existing = identity_repo.get_active_otp(session, user_id, ACTIVATION_PURPOSE)
     if existing is not None:
         expires_at = existing.expires_at
-        aware = (
-            expires_at
-            if expires_at.tzinfo is not None
-            else expires_at.replace(tzinfo=UTC)
-        )
+        aware = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=UTC)
         if aware > datetime.now(UTC):
             return
     contact = (phone or email or "").strip() or None
@@ -178,7 +174,7 @@ def onboard_customer(
         raise TypeError(f"kyc_result debe ser dict, recibido: {kyc_result!r}")
     overall = kyc_result.get("overall_result")
     if not isinstance(overall, bool):
-        raise ValueError("kyc_result.overall_result debe ser bool")
+        raise TypeError("kyc_result.overall_result debe ser bool")
     if not overall:
         return {
             "status": "REJECTED",
@@ -240,9 +236,7 @@ def onboard_customer(
         },
     )
     session.flush()
-    _ensure_initial_activation_otp(
-        session, user_id=user.id, phone=phone, email=email
-    )
+    _ensure_initial_activation_otp(session, user_id=user.id, phone=phone, email=email)
     session.flush()
     return {
         "status": "ONBOARDED",

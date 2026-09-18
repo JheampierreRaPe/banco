@@ -35,9 +35,7 @@ def sqlite_session():
         cur.close()
 
     event.listen(engine, "connect", _attach)
-    Base.metadata.create_all(
-        engine, tables=[Base.metadata.tables["audit.audit_log"]]
-    )
+    Base.metadata.create_all(engine, tables=[Base.metadata.tables["audit.audit_log"]])
     session = Session(bind=engine, autoflush=False, expire_on_commit=False)
     try:
         yield session

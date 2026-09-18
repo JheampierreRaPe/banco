@@ -37,12 +37,7 @@ from app.core.db import Base, get_db
 from app.main import app
 
 DOMAIN_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "domain"
-    / "nonce.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "domain" / "nonce.py"
 )
 SERVICE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -191,9 +186,7 @@ def test_static_rules_nonce_ttl_single_use_no_forbidden_imports():
     ), "JWT solo desde core.security (firmas conocidas)"
     assert "jwt.encode(" not in service, "no inventa tokens: usa create_access_token"
     top_imports = "\n".join(
-        line
-        for line in service.splitlines()
-        if line.startswith("from app.") or line.startswith("import app.")
+        line for line in service.splitlines() if line.startswith(("from app.", "import app."))
     )
     for forbidden in ("kyc_proxy", "otp_service", "activation", "onboard_customer"):
         assert forbidden not in top_imports, f"prohibido tocar {forbidden}"
@@ -202,9 +195,9 @@ def test_static_rules_nonce_ttl_single_use_no_forbidden_imports():
     assert log_lines, "el servicio debe loguear sin PII"
     for line in log_lines:
         lowered = line.lower()
-        assert "signature" not in lowered and "refresh" not in lowered, (
-            f"secreto en logs: {line.strip()}"
-        )
+        assert (
+            "signature" not in lowered and "refresh" not in lowered
+        ), f"secreto en logs: {line.strip()}"
 
 
 # ---------------------------------------------------------------- Camino feliz
@@ -253,9 +246,11 @@ def test_facial_success_returns_tokens_and_persists_session(
     assert row.user_id == user.id
     assert row.device_id == "pixel-8-pro"
     assert row.revoked_at is None
-    assert data["refresh_token"] not in resp.text.replace(
-        f'"refresh_token":"{data["refresh_token"]}"', ""
-    ) or True  # el refresh solo sale una vez, en su campo
+    assert (
+        data["refresh_token"]
+        not in resp.text.replace(f'"refresh_token":"{data["refresh_token"]}"', "")
+        or True
+    )  # el refresh solo sale una vez, en su campo
 
     events = _login_events(login_session, user.id)
     assert len(events) == 1, "1x auth.login_succeeded via outbox"
@@ -284,9 +279,7 @@ def test_session_row_matches_refresh_hash_and_device(
     from app.modules.identity.models import UserSession
 
     rows = list(
-        login_session.scalars(
-            sa.select(UserSession).where(UserSession.user_id == user.id)
-        ).all()
+        login_session.scalars(sa.select(UserSession).where(UserSession.user_id == user.id)).all()
     )
     assert len(rows) == 1
     expected_hash = hashlib.sha256(data["refresh_token"].encode()).hexdigest()
@@ -347,9 +340,7 @@ def test_invalid_signature_matches_unknown_user_body(
     assert bad_sig.json()["error"]["code"] == "INVALID_LOGIN"
 
 
-def test_unknown_device_matches_invalid_signature(
-    login_client: TestClient, login_session: Session
-):
+def test_unknown_device_matches_invalid_signature(login_client: TestClient, login_session: Session):
     user, secret_hex = _make_enrolled_user(login_session)
     challenge = _challenge(login_client, str(user.id))
     headers = {"X-Request-Id": "probe-device"}
@@ -367,9 +358,7 @@ def test_unknown_device_matches_invalid_signature(
     assert no_binding.json()["error"]["code"] == "INVALID_LOGIN"
 
 
-def test_expired_nonce_returns_expired(
-    login_client: TestClient, login_session: Session
-):
+def test_expired_nonce_returns_expired(login_client: TestClient, login_session: Session):
     from datetime import timedelta
 
     from app.modules.identity.service import device_login as device_login_service
@@ -394,9 +383,7 @@ def test_expired_nonce_returns_expired(
     assert resp.json()["error"]["code"] == "EXPIRED_NONCE"
 
 
-def test_challenge_unknown_user_is_generic(
-    login_client: TestClient, login_session: Session
-):
+def test_challenge_unknown_user_is_generic(login_client: TestClient, login_session: Session):
     _make_enrolled_user(login_session)
     headers = {"X-Request-Id": "probe-challenge"}
     unknown = login_client.post(

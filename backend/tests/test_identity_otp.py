@@ -35,12 +35,7 @@ IDENTITY_MODELS_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "models" / "__init__.py"
 )
 OTP_REPO_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "repository"
-    / "otp.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "repository" / "otp.py"
 )
 OTP_SERVICE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -78,17 +73,16 @@ def test_table_registered_with_schema_columns_constraints():
     table = Base.metadata.tables["identity.otp_codes"]
     assert table.schema == "identity"
     assert {c.name for c in table.columns} == OTP_COLUMNS, (
-        f"columnas 03b#4.5 + resend_count, recibido: "
-        f"{sorted(c.name for c in table.columns)}"
+        f"columnas 03b#4.5 + resend_count, recibido: " f"{sorted(c.name for c in table.columns)}"
     )
     assert isinstance(table.columns["purpose"].type, sa.String)
     assert table.columns["purpose"].type.length == 30
     assert isinstance(table.columns["code_hash"].type, sa.String)
     assert table.columns["code_hash"].type.length == 128
     assert isinstance(table.columns["status"].type, sa.String)
-    assert table.columns["destination"].nullable is True, (
-        "destination nulable (desviacion documentada: canal aun no resuelto)"
-    )
+    assert (
+        table.columns["destination"].nullable is True
+    ), "destination nulable (desviacion documentada: canal aun no resuelto)"
     for fk in table.foreign_keys:
         assert fk.column.table.schema == "identity", (
             f"FK fuera del schema propio: identity.otp_codes -> "
@@ -100,9 +94,11 @@ def test_table_registered_with_schema_columns_constraints():
     for token in ("ACTIVATION", "RECOVERY", "PAYMENT", "LOGIN", "PENDING", "USED", "EXPIRED"):
         assert token in checks, f"CK sin {token}: {checks}"
     index_cols = {tuple(i.columns.keys()) for i in table.indexes}
-    assert ("user_id", "purpose", "status") in index_cols, (
-        f"falta indice 03b#15 (user_id, purpose, status): {index_cols}"
-    )
+    assert (
+        "user_id",
+        "purpose",
+        "status",
+    ) in index_cols, f"falta indice 03b#15 (user_id, purpose, status): {index_cols}"
     assert ("expires_at",) in index_cols, "falta indice 03b#15 (expires_at)"
 
 
@@ -121,16 +117,15 @@ def test_only_hash_with_salt_no_commit_no_code_in_logs():
         assert "plain" not in line, f"codigo en claro en logs: {line.strip()}"
     assert "code_hash" not in " ".join(log_lines), "hash fuera de los logs"
     # `outbox` y `notifications` solo via import perezoso (sin ciclos).
-    assert "    from app.core.outbox import" in svc_content, (
-        "user.activated solo via outbox con import perezoso (E1-T03)"
-    )
-    assert "    from app.modules.notifications.service import" in svc_content, (
-        "notificacion solo via fachada send con import perezoso"
-    )
+    assert (
+        "    from app.core.outbox import" in svc_content
+    ), "user.activated solo via outbox con import perezoso (E1-T03)"
+    assert (
+        "    from app.modules.notifications.service import" in svc_content
+    ), "notificacion solo via fachada send con import perezoso"
     assert "from app.core.outbox import" not in svc_content.splitlines()[0:30].__str__() or True
     top_imports = "\n".join(
-        line for line in svc_content.splitlines()
-        if line.startswith("from app.") or line.startswith("import app.")
+        line for line in svc_content.splitlines() if line.startswith(("from app.", "import app."))
     )
     assert "outbox" not in top_imports, "outbox no debe importarse a nivel modulo"
     assert "notifications" not in top_imports, "notifications no debe importarse a nivel modulo"
@@ -151,9 +146,9 @@ def test_service_and_repository_signatures():
         assert params[0].name == "session", f"{fn_name}: primer parametro session"
         for expected in required_kwonly:
             assert expected in sig.parameters, f"{fn_name} sin {expected}"
-            assert sig.parameters[expected].kind is inspect.Parameter.KEYWORD_ONLY, (
-                f"{fn_name}.{expected} debe ser keyword-only"
-            )
+            assert (
+                sig.parameters[expected].kind is inspect.Parameter.KEYWORD_ONLY
+            ), f"{fn_name}.{expected} debe ser keyword-only"
 
     for fn_name in ("create_otp", "get_active", "mark_used", "mark_expired", "bump_attempts"):
         assert hasattr(otp_repo, fn_name), f"repositorio otp sin {fn_name}"
@@ -170,9 +165,9 @@ def test_service_and_repository_signatures():
         "OtpMaxResendsExceededError",
         "OtpResendTooSoonError",
     ):
-        assert issubclass(getattr(svc, exc_name), ValueError), (
-            f"{exc_name} debe ser ValueError (mapeable a 4xx en E1-T10)"
-        )
+        assert issubclass(
+            getattr(svc, exc_name), ValueError
+        ), f"{exc_name} debe ser ValueError (mapeable a 4xx en E1-T10)"
 
 
 def test_constants_match_parameters_seed():
@@ -290,9 +285,7 @@ def test_generate_and_validate_ok_single_use_with_activation_event(sqlite_sessio
     assert row.code_hash != plain and "$" in row.code_hash
     assert len(row.code_hash) <= 128
 
-    validated = svc.validate_otp(
-        sqlite_session, user_id=user_id, purpose="ACTIVATION", code=plain
-    )
+    validated = svc.validate_otp(sqlite_session, user_id=user_id, purpose="ACTIVATION", code=plain)
     assert validated.id == row.id
     assert validated.status == "USED"
     assert validated.consumed_at is not None
@@ -324,9 +317,7 @@ def test_expired_otp_rejected(sqlite_session: Session):
 
     user_id = _make_user(sqlite_session)
     base = _utcnow()
-    row, plain = svc.generate_otp(
-        sqlite_session, user_id=user_id, purpose="LOGIN", now=base
-    )
+    row, plain = svc.generate_otp(sqlite_session, user_id=user_id, purpose="LOGIN", now=base)
     with pytest.raises(svc.OtpExpiredError):
         svc.validate_otp(
             sqlite_session,
@@ -369,9 +360,7 @@ def test_resend_invalidates_previous_enforces_wait_and_max(sqlite_session: Sessi
 
     user_id = _make_user(sqlite_session)
     base = _utcnow()
-    _, first = svc.generate_otp(
-        sqlite_session, user_id=user_id, purpose="ACTIVATION", now=base
-    )
+    _, first = svc.generate_otp(sqlite_session, user_id=user_id, purpose="ACTIVATION", now=base)
 
     with pytest.raises(svc.OtpResendTooSoonError) as too_soon:
         svc.resend_otp(sqlite_session, user_id=user_id, purpose="ACTIVATION", now=base)
@@ -398,9 +387,7 @@ def test_resend_invalidates_previous_enforces_wait_and_max(sqlite_session: Sessi
 
     # El anterior quedo invalidado: ya no valida (el activo es el ultimo).
     with pytest.raises(svc.OtpInvalidError):
-        svc.validate_otp(
-            sqlite_session, user_id=user_id, purpose="ACTIVATION", code=codes[0]
-        )
+        svc.validate_otp(sqlite_session, user_id=user_id, purpose="ACTIVATION", code=codes[0])
     validated = svc.validate_otp(
         sqlite_session, user_id=user_id, purpose="ACTIVATION", code=codes[-1]
     )
@@ -408,13 +395,14 @@ def test_resend_invalidates_previous_enforces_wait_and_max(sqlite_session: Sessi
     sqlite_session.rollback()
 
     # Un ciclo nuevo (`generate`) reinicia el contador de reenvios.
-    fresh_row, fresh_plain = svc.generate_otp(
-        sqlite_session, user_id=user_id, purpose="ACTIVATION"
-    )
+    fresh_row, fresh_plain = svc.generate_otp(sqlite_session, user_id=user_id, purpose="ACTIVATION")
     assert fresh_row.resend_count == 0
-    assert svc.validate_otp(
-        sqlite_session, user_id=user_id, purpose="ACTIVATION", code=fresh_plain
-    ).status == "USED"
+    assert (
+        svc.validate_otp(
+            sqlite_session, user_id=user_id, purpose="ACTIVATION", code=fresh_plain
+        ).status
+        == "USED"
+    )
     sqlite_session.rollback()
 
 
@@ -435,9 +423,7 @@ def test_integration_postgres_otp_cycle(db_session: Session):
 
     row, plain = svc.generate_otp(db_session, user_id=user.id, purpose="ACTIVATION")
     assert row.status == "PENDING"
-    validated = svc.validate_otp(
-        db_session, user_id=user.id, purpose="ACTIVATION", code=plain
-    )
+    validated = svc.validate_otp(db_session, user_id=user.id, purpose="ACTIVATION", code=plain)
     assert validated.status == "USED"
     events = list(
         db_session.scalars(
@@ -479,9 +465,7 @@ def test_migration_up_down_on_test_database(db_session: Session):
     try:
         assert inspect(db_session.get_bind()).has_table("otp_codes", schema="identity")
         _alembic("downgrade", "0013_identity_kyc_audit")
-        assert not inspect(db_session.get_bind()).has_table(
-            "otp_codes", schema="identity"
-        )
+        assert not inspect(db_session.get_bind()).has_table("otp_codes", schema="identity")
     finally:
         _alembic("upgrade", "head")
     assert inspect(db_session.get_bind()).has_table("otp_codes", schema="identity")

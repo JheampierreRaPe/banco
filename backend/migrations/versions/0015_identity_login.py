@@ -54,9 +54,7 @@ def upgrade() -> None:
             ["identity.users.id"],
             name="fk_device_bindings_user",
         ),
-        sa.UniqueConstraint(
-            "user_id", "device_id", name="uq_device_bindings_user_device"
-        ),
+        sa.UniqueConstraint("user_id", "device_id", name="uq_device_bindings_user_device"),
         sa.CheckConstraint(
             "status IN ('ACTIVE', 'REVOKED')",
             name="ck_device_bindings_status",
@@ -90,9 +88,7 @@ def upgrade() -> None:
             ["identity.users.id"],
             name="fk_sessions_user",
         ),
-        sa.UniqueConstraint(
-            "refresh_token_hash", name="uq_sessions_refresh_token_hash"
-        ),
+        sa.UniqueConstraint("refresh_token_hash", name="uq_sessions_refresh_token_hash"),
         schema="identity",
     )
     op.create_index(
@@ -120,7 +116,5 @@ def downgrade() -> None:
     op.drop_index("ix_sessions_device", table_name="sessions", schema="identity")
     op.drop_index("ix_sessions_user", table_name="sessions", schema="identity")
     op.drop_table("sessions", schema="identity")
-    op.drop_index(
-        "ix_device_bindings_user", table_name="device_bindings", schema="identity"
-    )
+    op.drop_index("ix_device_bindings_user", table_name="device_bindings", schema="identity")
     op.drop_table("device_bindings", schema="identity")

@@ -23,17 +23,26 @@ class PinLoginRequest(BaseModel):
     """Entrada de `POST /auth/login/pin` (PIN de contingencia, HU03 CA-02)."""
 
     user_ref: str = Field(min_length=1, max_length=64, description="UUID del usuario en texto.")
-    pin: str = Field(min_length=1, max_length=128, description="PIN en claro (solo transito, nunca se persiste).")
-    device_id: str | None = Field(
-        default=None, min_length=1, max_length=128, description="Dispositivo origen (se guarda en la sesion)."
+    pin: str = Field(
+        min_length=1, max_length=128, description="PIN en claro (solo transito, nunca se persiste)."
     )
-    device_info: dict | None = Field(default=None, description="Modelo/SO (se guarda en la sesion).")
+    device_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Dispositivo origen (se guarda en la sesion).",
+    )
+    device_info: dict | None = Field(
+        default=None, description="Modelo/SO (se guarda en la sesion)."
+    )
     ip: str | None = Field(default=None, min_length=1, max_length=45)
 
 
 class PinLoginData(BaseModel):
     access_token: str
-    refresh_token: str = Field(description="Opaco, de un solo despliegue: solo su hash se persiste.")
+    refresh_token: str = Field(
+        description="Opaco, de un solo despliegue: solo su hash se persiste."
+    )
     token_type: str = Field(default="Bearer")
     session_id: str
     expires_in: int = Field(ge=0, description="Vigencia del refresh en segundos.")

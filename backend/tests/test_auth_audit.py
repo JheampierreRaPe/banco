@@ -26,6 +26,7 @@ import json
 import secrets
 import uuid
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -52,12 +53,7 @@ PIN_SERVICE_PATH = (
     / "pin_login.py"
 )
 SESSIONS_SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "app"
-    / "modules"
-    / "identity"
-    / "service"
-    / "sessions.py"
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "service" / "sessions.py"
 )
 
 PIN = "482917"
@@ -164,9 +160,7 @@ def _make_pin_user(session: Session, *, pin: str = PIN):
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
     )
-    identity_repo.create_credential(
-        session, user.id, pin_hash=pin_login_service.hash_pin(pin)
-    )
+    identity_repo.create_credential(session, user.id, pin_hash=pin_login_service.hash_pin(pin))
     session.commit()
     return user
 
@@ -208,13 +202,13 @@ def test_static_rules_audit_via_facade_no_direct_write_no_commit():
         assert ".commit(" not in content, f"flush sin commit en {path.name}"
         assert "AuditLog" not in content, f"{path.name} no toca el modelo AuditLog"
         assert "audit.models" not in content, f"{path.name} no importa audit.models"
-        assert "audit.service" in content and "record" in content, (
-            f"{path.name} debe llamar a la fachada audit.record"
-        )
+        assert (
+            "audit.service" in content and "record" in content
+        ), f"{path.name} debe llamar a la fachada audit.record"
         assert "auth.failed_attempt" in content, f"{path.name} sin failed_attempt"
-        assert "auth.login_succeeded" in content or "LOGIN_SUCCEEDED" in content, (
-            f"{path.name} sin login_succeeded"
-        )
+        assert (
+            "auth.login_succeeded" in content or "LOGIN_SUCCEEDED" in content
+        ), f"{path.name} sin login_succeeded"
 
 
 # ---------------------------------------------------------------- Facial
@@ -252,7 +246,6 @@ def test_facial_success_audits_login_and_chain_valid(audit_session: Session):
     assert len(row.hash) == 64
     assert verify_chain(rows) is True
 
-    dump = _audit_dump(rows) + nonce + secret_hex
     # La firma HMAC del nonce jamas se persiste en auditoria.
     assert _sign_hmac(secret_hex, nonce) not in _audit_dump(rows)
     assert nonce not in _audit_dump(rows)
@@ -335,9 +328,12 @@ def test_pin_success_and_failure_audit_without_pii(audit_session: Session):
     assert "pbkdf2" not in dump, "ni el hash del PIN va a auditoria"
     for row in rows:
         assert row.after_json is not None
-        assert set(row.after_json) <= {"method", "at", "session_id", "reason"}, (
-            f"metadata minima sin PII: {sorted(row.after_json)}"
-        )
+        assert set(row.after_json) <= {
+            "method",
+            "at",
+            "session_id",
+            "reason",
+        }, f"metadata minima sin PII: {sorted(row.after_json)}"
         assert row.after_json.get("method") == "pin"
 
 
@@ -431,7 +427,7 @@ def test_chain_valid_after_n_events(audit_session: Session):
     rows = _audit_rows(audit_session)
     assert len(rows) == 5
     assert [row.seq for row in rows] == [1, 2, 3, 4, 5]
-    for previous, current in zip(rows, rows[1:]):
+    for previous, current in pairwise(rows):
         assert current.prev_hash == previous.hash
     assert rows[0].prev_hash is None
     assert verify_chain(rows) is True
@@ -455,8 +451,6 @@ def test_audit_best_effort_does_not_break_login(
     assert out["session_id"], "el login exitoso no se rompe si audit falla"
 
     with pytest.raises(pin_login_service.PinInvalidError):
-        pin_login_service.login_with_pin(
-            audit_session, user_ref=str(user.id), pin=WRONG_PIN
-        )
+        pin_login_service.login_with_pin(audit_session, user_ref=str(user.id), pin=WRONG_PIN)
 
     assert _audit_rows(audit_session) == [], "nada de audit persiste si la fachada falla"

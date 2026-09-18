@@ -73,9 +73,7 @@ def _reject_biometric_material(*payloads: dict | None, field: str) -> None:
                     f"{field} contiene material biometrico prohibido (clave: {text!r})"
                 )
             if kind == "value" and lowered.startswith(_DATA_URI_PREFIXES):
-                raise ValueError(
-                    f"{field} contiene material biometrico prohibido (data-URI)"
-                )
+                raise ValueError(f"{field} contiene material biometrico prohibido (data-URI)")
 
 
 def _coerce_user_id(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -111,9 +109,7 @@ def save_verification(
     """
     uid = _coerce_user_id(user_id)
     if not isinstance(overall_result, bool):
-        raise TypeError(
-            f"overall_result debe ser bool, recibido: {overall_result!r}"
-        )
+        raise TypeError(f"overall_result debe ser bool, recibido: {overall_result!r}")
     if not isinstance(provider, str) or not provider.strip():
         raise ValueError("provider es obligatorio")
     if len(provider.strip()) > 50:
@@ -152,9 +148,7 @@ def save_verification(
         challenge_token_hash=(
             challenge_token_hash.strip() if challenge_token_hash is not None else None
         ),
-        failure_reason=(
-            failure_reason.strip() if failure_reason is not None else None
-        ),
+        failure_reason=(failure_reason.strip() if failure_reason is not None else None),
     )
     session.add(row)
     session.flush()
@@ -176,9 +170,7 @@ def save_verification(
     return row
 
 
-def get_verification(
-    session: Session, verification_id: uuid.UUID | str
-) -> KycVerification | None:
+def get_verification(session: Session, verification_id: uuid.UUID | str) -> KycVerification | None:
     """Lee un intento de KYC por id (`None` si no existe)."""
     if isinstance(verification_id, uuid.UUID):
         key = verification_id
@@ -192,9 +184,7 @@ def get_verification(
     return session.get(KycVerification, key)
 
 
-def list_by_user(
-    session: Session, user_id: uuid.UUID | str | None
-) -> list[KycVerification]:
+def list_by_user(session: Session, user_id: uuid.UUID | str | None) -> list[KycVerification]:
     """Intentos de KYC de un usuario (mas recientes primero)."""
     stmt = (
         sa.select(KycVerification)

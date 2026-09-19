@@ -13,15 +13,31 @@ class KycDependencies {
   KycDependencies._();
 
   static KycService? _service;
+  static KycEvaluationService? _evaluationService;
   static KycFrameSource? _frameSource;
   static KycFlowController? _controller;
 
   /// Configura el servicio real. Lo llama el orquestador (`app_router.dart`).
   /// [frameSource] es opcional: sin ella se usa el mock (tests); en el APK
   /// físico el orquestador inyecta `CameraFrameSource()` (fotos reales).
-  static void configure({required KycService service, KycFrameSource? frameSource}) {
+  ///
+  /// [evaluationService] (F-T23) es opcional: por defecto se usa el propio
+  /// [service] cuando implementa [KycEvaluationService] (es el caso de
+  /// `HttpKycService`), de modo que `app_router.dart` no cambia.
+  static void configure({
+    required KycService service,
+    KycFrameSource? frameSource,
+    KycEvaluationService? evaluationService,
+  }) {
     _service = service;
     _frameSource = frameSource;
+    // `KycService` y `KycEvaluationService` son interfaces no relacionadas:
+    // Dart no promueve el tipo, por eso el cast explicito (seguro dentro del
+    // `is`). En produccion `HttpKycService` implementa ambas.
+    final inferred = service is KycEvaluationService
+        ? service as KycEvaluationService
+        : null;
+    _evaluationService = evaluationService ?? inferred;
     _controller?.dispose();
     _controller = null;
   }
@@ -38,8 +54,11 @@ class KycDependencies {
         'antes de navegar a /kyc.',
       );
     }
-    return _controller =
-        KycFlowController(service: service, frameSource: _frameSource);
+    return _controller = KycFlowController(
+      service: service,
+      frameSource: _frameSource,
+      evaluationService: _evaluationService,
+    );
   }
 
   @visibleForTesting
@@ -47,5 +66,6 @@ class KycDependencies {
     _controller?.dispose();
     _controller = null;
     _service = null;
+    _evaluationService = null;
   }
 }

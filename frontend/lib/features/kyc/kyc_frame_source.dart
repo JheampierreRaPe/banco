@@ -50,8 +50,18 @@ KycCameraLens preferredLensForTask(String task) =>
 /// El [KycFlowController] recibe la fuente por constructor; por defecto usa
 /// [MockKycFrameSource] para que los tests existentes sigan verdes.
 abstract class KycFrameSource {
-  /// Captura a demanda los frames de [task] (foto por tarea, NO video).
+  /// Captura a demanda una RAFAGA de frames de [task] (NO video).
+  ///
+  /// F-T23: la fuente real toma 10-15 fotos con intervalos de ~150-200 ms
+  /// (total ~2.5 s) y las entrega EN MEMORIA, validando cada frame. El mock
+  /// entrega su secuencia dummy de inmediato.
   Future<List<Uint8List>> captureFramesForTask(String task);
+
+  /// Captura UNA sola foto del documento (lente trasera, F-T23).
+  ///
+  /// Se usa antes de las tareas de liveness y viaja en
+  /// `document.image_b64` del submit.
+  Future<Uint8List> captureDocumentFrame();
 
   /// Libera recursos (controlador de camara, si aplica).
   Future<void> dispose();
@@ -67,7 +77,49 @@ class MockKycFrameSource implements KycFrameSource {
       generateMockFrames(task: task);
 
   @override
+  Future<Uint8List> captureDocumentFrame() async =>
+      generateMockFrames(task: 'document', count: 1).first;
+
+  @override
   Future<void> dispose() async {}
+}
+
+/// Configuracion de la ráfaga de frames (F-T23), inyectable en tests.
+const int kKycBurstFrames = 12;
+const Duration kKycFrameInterval = Duration(milliseconds: 180);
+
+/// Seam de espera entre frames: en tests se inyecta un no-op (sin tiempo real).
+typedef KycBurstDelay = Future<void> Function(Duration duration);
+
+/// Espera real entre frames (default de produccion).
+Future<void> defaultBurstDelay(Duration duration) =>
+    Future<void>.delayed(duration);
+
+/// Captura una RAFAGA con intervalos, validando cada frame.
+///
+/// Seam puro y testeable sin camara ni tiempo real (F-T23):
+/// [captureOne] entrega un frame ya leido en memoria; [delay] marca el
+/// intervalo entre tomas (por defecto `Future.delayed`). El primer frame es
+/// inmediato y luego se espera [interval] antes de cada toma siguiente, de
+/// modo que N frames tardan ~(N-1)*interval (12 frames a 180 ms ≈ 2.0 s de
+/// espera + el tiempo de captura ≈ 2.5 s totales).
+Future<List<Uint8List>> captureBurstFrames({
+  required Future<Uint8List> Function() captureOne,
+  int frames = kKycBurstFrames,
+  Duration interval = kKycFrameInterval,
+  KycBurstDelay delay = defaultBurstDelay,
+}) async {
+  if (frames < 1) {
+    throw ArgumentError.value(frames, 'frames', 'La ráfaga exige >=1 frame.');
+  }
+  final out = <Uint8List>[];
+  for (var i = 0; i < frames; i++) {
+    if (i > 0) await delay(interval);
+    final bytes = await captureOne();
+    validateFrameBytes(bytes);
+    out.add(bytes);
+  }
+  return out;
 }
 
 /// El usuario denego el permiso de camara: reintentable.

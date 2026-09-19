@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import 'presentation/kyc_document_page.dart';
 import 'presentation/kyc_result_page.dart';
 import 'presentation/kyc_start_page.dart';
 import 'presentation/kyc_task_page.dart';
@@ -12,11 +13,16 @@ import 'presentation/kyc_task_page.dart';
 ///
 /// Cableado: antes de navegar a `/kyc`, el orquestador llama
 /// `KycDependencies.configure(service: HttpKycService(apiClient))`; las
-/// paginas comparten ese controlador entre los tres pasos.
+/// paginas comparten ese controlador entre los pasos
+/// (`/kyc` -> `/kyc/document` -> `/kyc/task` -> `/kyc/result`).
 final List<GoRoute> kycRoutes = [
   GoRoute(
     path: '/kyc',
     builder: (context, state) => const KycStartPage(),
+  ),
+  GoRoute(
+    path: '/kyc/document',
+    builder: (context, state) => const KycDocumentPage(),
   ),
   GoRoute(
     path: '/kyc/task',

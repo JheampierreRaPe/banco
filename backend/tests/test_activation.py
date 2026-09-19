@@ -109,10 +109,18 @@ def activation_client(activation_session: Session, monkeypatch):
         activation_service.reset_activation_rate_limits()
 
 
-def _make_pending_user(session: Session, *, destination: str | None = "+51999888777"):
-    """Usuario `PENDING_ACTIVATION` + OTP `ACTIVATION` vigente (retorna `(user, plain)`)."""
+def _make_pending_user(
+    session: Session, *, destination: str | None = "+51999888777", with_pin: bool = True
+):
+    """Usuario `PENDING_ACTIVATION` + OTP `ACTIVATION` vigente (retorna `(user, plain)`).
+
+    Con `with_pin=True` (default) la credencial trae `pin_hash`: la invariante
+    E1-T24..T28 exige PIN para pasar a `ACTIVE`. `with_pin=False` prueba el
+    camino `PIN_REQUIRED`.
+    """
     from app.modules.identity import repository as identity_repo
     from app.modules.identity.service import otp_service
+    from app.modules.identity.service import pin_login as pin_login_service
 
     suffix = uuid.uuid4().hex[:8]
     user = identity_repo.create_user(
@@ -123,6 +131,11 @@ def _make_pending_user(session: Session, *, destination: str | None = "+51999888
         last_name="Lovelace",
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
+    )
+    identity_repo.create_credential(
+        session,
+        user.id,
+        pin_hash=pin_login_service.hash_pin("4829") if with_pin else None,
     )
     _, plain = otp_service.generate_otp(
         session, user_id=user.id, purpose="ACTIVATION", destination=destination
@@ -220,6 +233,28 @@ def test_activate_is_idempotent_without_duplicate_event(
     assert len(_outbox_activated(activation_session, user.id)) == 1
 
 
+def test_activate_without_pin_returns_pin_required_and_stays_pending(
+    activation_client: TestClient, activation_session: Session
+):
+    """Sin `pin_hash` no hay `ACTIVE`: 409 `PIN_REQUIRED` y estado intacto (E1-T28)."""
+    from app.modules.identity import repository as identity_repo
+
+    user, plain = _make_pending_user(activation_session, with_pin=False)
+
+    resp = activation_client.post(
+        "/api/v1/auth/activate", json={"user_ref": str(user.id), "code": plain}
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "PIN_REQUIRED"
+    assert plain not in resp.text
+
+    activation_session.expire_all()
+    assert identity_repo.get_user(activation_session, user.id).status == "PENDING_ACTIVATION"
+    pending = identity_repo.get_active_otp(activation_session, user.id, "ACTIVATION")
+    assert pending is not None and pending.status == "PENDING", "el OTP no se consume al revertir"
+    assert _outbox_activated(activation_session, user.id) == []
+
+
 # ---------------------------------------------------------------- Invalidos / expirados / no filtracion
 def test_invalid_code_matches_unknown_user_body(
     activation_client: TestClient, activation_session: Session
@@ -299,8 +334,10 @@ def test_resend_ok_registers_notification(
 
     rows = _notifications_for(activation_session, user.id)
     assert len(rows) == 1, "reenvio registra la notificacion de entrega"
-    assert rows[0].template_code == "otp_code"
+    assert rows[0].channel == "email"
+    assert rows[0].template_code == "otp_code_email"
     assert rows[0].status == "SENT"
+    assert rows[0].payload_json["recipient"] == user.email
 
     # El anterior quedo invalidado: ya no activa.
     stale = activation_client.post(
@@ -308,6 +345,64 @@ def test_resend_ok_registers_notification(
     )
     assert stale.status_code == 400
     assert stale.json()["error"]["code"] == "INVALID_OTP"
+
+
+def test_resend_falls_back_to_sms_without_email(
+    activation_client: TestClient, activation_session: Session
+):
+    """Reenvio sin email: fallback SMS con `users.phone` (E1-T26)."""
+    from app.modules.identity import repository as identity_repo
+    from app.modules.identity.service import otp_service
+
+    phone = "+51999888777"
+    user = identity_repo.create_user(
+        activation_session,
+        doc_type="DNI",
+        doc_number_hash="hash-" + uuid.uuid4().hex,
+        first_name="Ada",
+        last_name="Lovelace",
+        phone=phone,
+    )
+    otp_service.generate_otp(
+        activation_session, user_id=user.id, purpose="ACTIVATION", destination=phone
+    )
+    activation_session.commit()
+
+    resp = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
+    assert resp.status_code == 200
+
+    rows = _notifications_for(activation_session, user.id)
+    assert len(rows) == 1
+    assert rows[0].channel == "sms"
+    assert rows[0].template_code == "otp_code"
+    assert rows[0].payload_json["recipient"] == phone
+
+
+def test_resend_best_effort_when_provider_fails(
+    activation_client: TestClient,
+    activation_session: Session,
+    monkeypatch,
+    caplog,
+):
+    """Fallo del proveedor: el reenvio se completa igual y sin PII en logs (E1-T26)."""
+    import logging
+
+    from app.modules.notifications import service as notifications_service
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("proveedor caido")
+
+    monkeypatch.setattr(notifications_service, "send", _boom)
+    user, _ = _make_pending_user(activation_session)
+    email, phone = user.email, user.phone
+
+    with caplog.at_level(logging.WARNING):
+        resp = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["resend_count"] == 1
+    assert email not in caplog.text
+    assert phone not in caplog.text
 
 
 def test_resend_limit_after_max_resends(activation_client: TestClient, activation_session: Session):

@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.notification_sender import (
     CHANNELS,
+    GmailNotificationSender,
     MockNotificationSender,
     NotificationProviderError,
     NotificationSender,
@@ -55,6 +56,8 @@ DEFAULT_BACKOFF_BASE_SECONDS = 1
 
 # Proveedores SMS seleccionables por env `SMS_PROVIDER` (default `mock`).
 SMS_PROVIDERS = ("mock", "twilio")
+# Proveedores email seleccionables por env `EMAIL_PROVIDER` (default `mock`).
+EMAIL_PROVIDERS = ("mock", "gmail")
 
 
 def default_sender() -> NotificationSender:
@@ -86,6 +89,40 @@ def default_sender() -> NotificationSender:
             from_number=os.getenv("TWILIO_FROM_NUMBER", ""),
         )
     raise ValueError(f"SMS_PROVIDER debe ser uno de {SMS_PROVIDERS}, recibido: {provider!r}")
+
+
+def email_sender() -> NotificationSender:
+    """Resuelve el sender de email por env `EMAIL_PROVIDER` (E1-T25).
+
+    - `EMAIL_PROVIDER=mock` (o ausente) -> `MockNotificationSender` (default,
+      sin red, sin secretos).
+    - `EMAIL_PROVIDER=gmail` -> `GmailNotificationSender` con credenciales de
+      `GMAIL_USER` / `GMAIL_APP_PASSWORD` (solo `.env`; nunca en el repo).
+    - Otro valor -> `ValueError` (falla rapido, sin reintento).
+    """
+    provider = (os.getenv("EMAIL_PROVIDER") or "mock").strip().lower() or "mock"
+    if provider == "mock":
+        return MockNotificationSender()
+    if provider == "gmail":
+        return GmailNotificationSender(
+            gmail_user=os.getenv("GMAIL_USER", ""),
+            app_password=os.getenv("GMAIL_APP_PASSWORD", ""),
+        )
+    raise ValueError(f"EMAIL_PROVIDER debe ser uno de {EMAIL_PROVIDERS}, recibido: {provider!r}")
+
+
+def sender_for_channel(channel: str) -> NotificationSender:
+    """Routing de sender por canal (E1-T25), sin alterar el contrato SMS.
+
+    - `sms` -> `SMS_PROVIDER` via `default_sender()` (mock|twilio).
+    - `email` -> `EMAIL_PROVIDER` via `email_sender()` (mock|gmail).
+    - `push` (u otro canal valido) -> mock.
+    """
+    if channel == "sms":
+        return default_sender()
+    if channel == "email":
+        return email_sender()
+    return MockNotificationSender()
 
 
 def compute_backoff_seconds(attempts: int, base_seconds: int) -> int:
@@ -152,7 +189,7 @@ def send(
         raise TypeError("data debe ser dict")
     if max_attempts < 1:
         raise ValueError("max_attempts debe ser >= 1")
-    sender = sender if sender is not None else default_sender()
+    sender = sender if sender is not None else sender_for_channel(channel)
 
     template = _resolve_template(session, template_code)
     if template["channel"] != channel:
@@ -245,12 +282,12 @@ def retry_notification(
     reenvia (idempotente por estado). Re-renderiza con el `payload` guardado;
     el destinatario sale del `payload` salvo override explicito.
     """
-    sender = sender if sender is not None else default_sender()
     row = repo.get_notification(session, notification_id)
     if row is None:
         raise ValueError(f"notificacion inexistente: {notification_id}")
     if row.status == "SENT":
         return row
+    sender = sender if sender is not None else sender_for_channel(row.channel)
     if row.template_code is None:
         raise ValueError("notificacion sin plantilla: no reintentable")
     template = _resolve_template(session, row.template_code)

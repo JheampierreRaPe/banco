@@ -50,8 +50,7 @@ class PinSetupController extends ChangeNotifier {
   bool get isPinAlreadySet => _status == PinSetupStatus.pinAlreadySet;
 
   static const String codeHint =
-      'Tu código de activación anterior ya se usó. Si necesitas uno nuevo, '
-      'pídelo con “Enviarme un código nuevo” e ingrésalo aquí junto con tu PIN.';
+      'Ingresa el código de 6 dígitos que enviamos a tu correo y crea tu PIN.';
   static const String invalidCodeMessage =
       'El código es inválido o venció. Pide un código nuevo.';
   static const String alreadySetMessage =
@@ -62,7 +61,7 @@ class PinSetupController extends ChangeNotifier {
       'El PIN solo puede contener dígitos.';
   static const String codeMessage = 'Ingresa los 6 dígitos del código.';
   static const String resentMessage =
-      'Te enviamos un nuevo código. Revisa tus mensajes.';
+      'Te enviamos un nuevo código. Revisa tu correo.';
 
   void setCode(String value) {
     if (_code != value) {
@@ -134,14 +133,15 @@ class PinSetupController extends ChangeNotifier {
   }
 
   /// Pide un código nuevo con el MISMO servicio de `activation`
-  /// (`POST /auth/otp/resend`, invalida el anterior).
+  /// (`POST /auth/otp/resend`, invalida el anterior). El canal es `email`
+  /// (E1-T26): el OTP del alta viaja por correo.
   Future<bool> resend() async {
     if (_isResending || _status == PinSetupStatus.success) return false;
     _isResending = true;
     _errorMessage = null;
     notifyListeners();
     try {
-      await _resendService.resend(userRef: _userRef);
+      await _resendService.resend(userRef: _userRef, channel: 'email');
       _isResending = false;
       _infoMessage = resentMessage;
       notifyListeners();

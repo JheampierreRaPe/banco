@@ -12,6 +12,12 @@ Sin auth: es un endpoint pre-sesion (el usuario aun no tiene tokens). El
 formato invalido se mapea a `INVALID_CREDENTIALS` generico (sin filtrar
 existencia). El PIN viaja como texto libre (`1..128`, sin validar patron
 para no crear un oraculo 422-vs-401) y jamas se refleja en logs.
+
+E1-T27: `device_public_key` (`"hmac:<hex>"`), `platform` (`android|ios`) y
+`biometric_type` (`FACE|FINGERPRINT`) son opcionales. No se valida el enum de
+`platform`/`biometric_type` en el esquema: el servicio los ignora si son
+invalidos (best-effort, sin romper el login ni delatar el PIN con un 422).
+`device_public_key` jamas se refleja en logs ni en la respuesta.
 """
 
 from __future__ import annotations
@@ -36,6 +42,34 @@ class PinLoginRequest(BaseModel):
         default=None, description="Modelo/SO (se guarda en la sesion)."
     )
     ip: str | None = Field(default=None, min_length=1, max_length=45)
+    device_public_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4096,
+        description=(
+            "Clave publica del dispositivo para firmar el nonce, formato 'hmac:<hex>' "
+            "(o PEM Ed25519/EC). Opcional: sin ella el login no registra binding "
+            "(compatibilidad hacia atras). Nunca se refleja en logs."
+        ),
+    )
+    platform: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+        description=(
+            "Plataforma del dispositivo (`android`/`ios`). Un valor invalido se ignora "
+            "al registrar el binding: el login continua (sin oraculo 422-vs-401 sobre el PIN)."
+        ),
+    )
+    biometric_type: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+        description=(
+            "Biometria local (`FACE`/`FINGERPRINT`). Un valor invalido se ignora al "
+            "registrar el binding: el login continua."
+        ),
+    )
 
 
 class PinLoginData(BaseModel):

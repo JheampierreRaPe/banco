@@ -18,6 +18,9 @@ via `AppError`:
   inexistente o `user_ref` malformado (respuesta identica: no filtra
   existencia ni estado).
 - 400 `EXPIRED_OTP`: codigo vencido.
+- 409 `PIN_REQUIRED`: OTP valido pero la credencial aun no tiene PIN; la
+  activacion canonica con un solo OTP es `POST /auth/pin/setup` (que fija el
+  PIN y activa). No se activa ninguna cuenta sin PIN.
 - 429 `RESEND_LIMIT`: maximo de reenvios o espera minima entre reenvios
   (`details.retry_after_seconds` cuando aplica).
 - 429 `RATE_LIMITED`: ventana en memoria de reenvios excedida (prod: Redis).
@@ -70,6 +73,11 @@ def activate_account(
     except activation_service.ActivationInvalidError as exc:
         db.rollback()
         raise AppError(code="INVALID_OTP", message=str(exc), status_code=400) from exc
+    except activation_service.ActivationPinRequiredError as exc:
+        # OTP valido pero sin PIN: se revierte (no se consume el OTP) y se
+        # indica el flujo canonico sin filtrar existencia (solo con codigo).
+        db.rollback()
+        raise AppError(code="PIN_REQUIRED", message=str(exc), status_code=409) from exc
     db.commit()
     return {"data": result, "meta": {"request_id": _request_id(request)}}
 

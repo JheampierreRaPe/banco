@@ -16,12 +16,20 @@ class _UnavailableSource implements KycFrameSource {
       throw KycCameraUnavailable('test: sin cámara');
 
   @override
+  Future<Uint8List> captureDocumentFrame() =>
+      throw KycCameraUnavailable('test: sin cámara');
+
+  @override
   Future<void> dispose() async {}
 }
 
 class _DeniedSource implements KycFrameSource {
   @override
   Future<List<Uint8List>> captureFramesForTask(String task) =>
+      throw KycCameraPermissionDenied('test: permiso denegado, reintenta');
+
+  @override
+  Future<Uint8List> captureDocumentFrame() =>
       throw KycCameraPermissionDenied('test: permiso denegado, reintenta');
 
   @override
@@ -41,6 +49,7 @@ class _FakeKycService implements KycService {
     required String challengeToken,
     required String documentType,
     required String documentNumber,
+    required KycApplicant applicant,
     required Map<String, List<Uint8List>> framesByTask,
   }) async =>
       const KycSubmitResult(overallResult: true, detailCode: 'OK');

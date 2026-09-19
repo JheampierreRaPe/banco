@@ -24,6 +24,7 @@ class _FakeKycService implements KycService {
     required String challengeToken,
     required String documentType,
     required String documentNumber,
+    required KycApplicant applicant,
     required Map<String, List<Uint8List>> framesByTask,
   }) async =>
       const KycSubmitResult(overallResult: true, detailCode: 'OK');
@@ -67,6 +68,44 @@ void main() {
       ),
     );
     expect(button.onPressed, isNotNull);
+  });
+
+  testWidgets(
+      'KycTaskPage no lanza setState durante build al montar el viewfinder',
+      (tester) async {
+    // Regresión: con fuente real, KycCameraPreview.initState notificaba
+    // onReadyChanged(false) de forma SÍNCRONA durante el build y el padre
+    // respondía con setState -> "setState() called during build".
+    final src = _DeniedSource();
+    addTearDown(src.dispose);
+    final c = KycFlowController(service: _FakeKycService(), frameSource: src);
+    addTearDown(c.dispose);
+    await c.loadChallenge();
+
+    await tester.pumpWidget(MaterialApp.router(routerConfig: _router(c)));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Iniciando cámara…'), findsNothing);
+    expect(find.textContaining('Permiso'), findsOneWidget);
+    expect(find.text('Reintentar'), findsOneWidget);
+  });
+
+  testWidgets(
+      'KycCameraPreview no notifica sincrónicamente en build (padre setState)',
+      (tester) async {
+    // Mínimo: un padre que hace setState en onReadyChanged como KycTaskPage.
+    final src = _DeniedSource();
+    addTearDown(src.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: _SetStateOnReadyParent(source: src),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Reintentar'), findsOneWidget);
   });
 
   group('KycCameraPreview anti-bloqueo (fuente real con doubles)', () {
@@ -151,6 +190,30 @@ void main() {
     addTearDown(src.dispose);
     expect(src.openTimeout, const Duration(seconds: 15));
   });
+}
+
+/// Padre mínimo que replica a `KycTaskPage`: hace `setState` en cada aviso de
+/// `onReadyChanged`. Si el hijo notifica durante build, revienta.
+class _SetStateOnReadyParent extends StatefulWidget {
+  const _SetStateOnReadyParent({required this.source});
+
+  final CameraFrameSource source;
+
+  @override
+  State<_SetStateOnReadyParent> createState() => _SetStateOnReadyParentState();
+}
+
+class _SetStateOnReadyParentState extends State<_SetStateOnReadyParent> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: KycCameraPreview(
+        task: 'front',
+        source: widget.source,
+        onReadyChanged: (_) => setState(() {}),
+      ),
+    );
+  }
 }
 
 /// Simula un error CRUDO no-CameraException (p. ej. PlatformException /

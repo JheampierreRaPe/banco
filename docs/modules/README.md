@@ -11,7 +11,15 @@ eventos (`outbox`/`inbox`).
   `sessions`, `roles`, `user_roles`, `access_recovery`.
 - **Expone:** `/auth/*`, `/me`; eventos `kyc.completed`, `user.activated`, `auth.login_succeeded`,
   `auth.failed_attempt`.
+- **KYC (HU01):** proxy al microservicio: `challenge`, `evaluate` (paso en vivo con rafaga
+  `frames_b64`, E1-T29) y `submit` (varios frames por tarea o `image_b64`; propaga `failed_step`,
+  `step_results`, `overall_reason`). `/api/v1/document/validate` valida la legibilidad del documento
+  (base64 -> `file` multipart; `{is_valid, issues, checks}`, E1-T30). No persiste frames ni
+  imagenes; `verify-full` y `/api/v1/document/validate` con timeout dedicado
+  (`KYC_VERIFY_TIMEOUT_SECONDS`, `KYC_DOCUMENT_TIMEOUT_SECONDS`).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
+- **OTP de activacion:** viaja por `email` (`users.email`, plantilla `otp_code_email`) con
+  fallback `sms` (`users.phone`, plantilla `otp_code`); entrega best-effort (E1-T26).
 - **Puede llamar a:** adaptador `KycProvider`, `notifications`, `audit`.
 - **Prohibido:** tocar cuentas, ledger o transacciones.
 

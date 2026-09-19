@@ -15,30 +15,69 @@ abstract class KycService {
   /// `POST /auth/kyc/challenge` con cuerpo vacio.
   Future<KycChallenge> challenge();
 
-  /// `POST /auth/kyc/submit` con la forma del proxy pre-registro:
-  /// `{challenge_token, document: {type, image_b64}, segments: [{task, image_b64}]}`.
+  /// `POST /auth/kyc/submit` con el contrato ampliado (E1-T24 / F-T19):
+  /// `{challenge_token,
+  ///   document: {type, number, image_b64},
+  ///   applicant: {first_name, last_name, email, phone},
+  ///   segments: [{task, frames_b64, image_b64}]}`.
   ///
-  /// [documentNumber] se registra en el controlador para la UX (pantalla de
-  /// inicio) pero NO se transmite: el proxy pre-registro no expone campo para
-  /// el numero (ver `backend/tests/test_kyc_proxy.py`). Si el contrato crece,
-  /// agregarlo aqui sin tocar las pantallas.
+  /// El cliente solo envia datos crudos; el backend valida y decide
+  /// (cliente delgado, docs/19). [documentType] llega con el valor de la UI y
+  /// se traduce al del contrato (`Pasaporte -> PASSPORT`).
   Future<KycSubmitResult> submit({
     required String challengeToken,
     required String documentType,
     required String documentNumber,
+    required KycApplicant applicant,
     required Map<String, List<Uint8List>> framesByTask,
   });
 }
 
+/// Capacidades ampliadas del KYC (E1-T29 / F-T23): evaluacion de un paso en
+/// vivo y submit con la imagen real del documento capturada aparte.
+///
+/// Se declara como interfaz SEPARADA (no como miembros nuevos de [KycService])
+/// para no romper los dobles de test existentes: [KycFlowController] la recibe
+/// opcional y, en produccion, [HttpKycService] la implementa. `HttpKycService`
+/// cumple [KycService] y [KycEvaluationService] a la vez.
+abstract class KycEvaluationService {
+  /// `POST /auth/kyc/evaluate` (E1-T29): manda la ráfaga completa del paso y
+  /// devuelve `passed`/`reason` reales.
+  Future<KycTaskEvaluation> evaluate({
+    required String challengeToken,
+    required String step,
+    required List<Uint8List> frames,
+  });
+
+  /// `POST /auth/kyc/submit` con `frames_b64` (todos los frames) por segmento
+  /// y la imagen real del documento en `document.image_b64`.
+  Future<KycSubmitResult> submitWithDocument({
+    required String challengeToken,
+    required String documentType,
+    required String documentNumber,
+    required KycApplicant applicant,
+    required Map<String, List<Uint8List>> framesByTask,
+    Uint8List? documentImage,
+  });
+
+  /// `POST /auth/kyc/document/validate` (E1-T30 / F-T26): manda la foto del
+  /// documento en base64 y devuelve la decision del servidor (`is_valid` +
+  /// `issues`). `is_valid=false` NO es error HTTP: es un 200 con los motivos
+  /// (cliente delgado, docs/19). La imagen no se persiste ni se registra.
+  Future<KycDocumentValidation> validateDocument({required Uint8List image});
+}
+
 /// Implementacion HTTP sobre [ApiClient] (capa de F-T01).
-class HttpKycService implements KycService {
+class HttpKycService implements KycService, KycEvaluationService {
   HttpKycService(this._api);
 
   final ApiClient _api;
 
   /// Rutas relativas (el `baseUrl` de `ApiClient` ya incluye `/api/v1`).
   static const String challengePath = '/auth/kyc/challenge';
+  static const String evaluatePath = '/auth/kyc/evaluate';
   static const String submitPath = '/auth/kyc/submit';
+  static const String documentValidatePath = '/auth/kyc/document/validate';
 
   @override
   Future<KycChallenge> challenge() async {
@@ -48,34 +87,97 @@ class HttpKycService implements KycService {
   }
 
   @override
+  Future<KycTaskEvaluation> evaluate({
+    required String challengeToken,
+    required String step,
+    required List<Uint8List> frames,
+  }) async {
+    if (frames.isEmpty) {
+      throw ArgumentError('evaluate sin frames capturados', 'frames');
+    }
+    final payload = {
+      'challenge_token': challengeToken,
+      'step': step,
+      // Ráfaga completa, en orden; el microservicio exige >=5 por tarea.
+      'frames_b64': [for (final frame in frames) base64Encode(frame)],
+    };
+    final response = await _api.post(evaluatePath, data: payload);
+    return KycTaskEvaluation.fromData(
+      _dataOf(response.data),
+      fallbackStep: step,
+    );
+  }
+
+  @override
   Future<KycSubmitResult> submit({
     required String challengeToken,
     required String documentType,
     required String documentNumber,
+    required KycApplicant applicant,
     required Map<String, List<Uint8List>> framesByTask,
+  }) =>
+      submitWithDocument(
+        challengeToken: challengeToken,
+        documentType: documentType,
+        documentNumber: documentNumber,
+        applicant: applicant,
+        framesByTask: framesByTask,
+      );
+
+  @override
+  Future<KycSubmitResult> submitWithDocument({
+    required String challengeToken,
+    required String documentType,
+    required String documentNumber,
+    required KycApplicant applicant,
+    required Map<String, List<Uint8List>> framesByTask,
+    Uint8List? documentImage,
   }) {
-    // documentNumber intencionalmente no enviado (ver contrato arriba).
     final usable = framesByTask.entries
         .where((e) => e.value.isNotEmpty)
         .toList(growable: false);
     if (usable.isEmpty) {
       throw ArgumentError('submit sin frames capturados', 'framesByTask');
     }
+    // Imagen del documento real (cámara trasera, F-T23); fallback legacy al
+    // primer frame de liveness cuando no se capturó aparte.
+    final documentBytes = documentImage ?? usable.first.value.first;
     final payload = {
       'challenge_token': challengeToken,
       'document': {
-        'type': documentType,
-        // Imagen del documento = primer frame de la primera tarea capturada.
-        'image_b64': base64Encode(usable.first.value.first),
+        'type': mapDocumentTypeToApi(documentType),
+        'number': documentNumber,
+        'image_b64': base64Encode(documentBytes),
       },
+      'applicant': applicant.toJson(),
       'segments': [
         for (final e in usable)
-          {'task': e.key, 'image_b64': base64Encode(e.value.first)},
+          {
+            'task': e.key,
+            // Ráfaga completa por segmento (E1-T29); el backend exige >=5.
+            // `frames_b64` es la fuente unica: NO se envia tambien `image_b64`
+            // con el primer frame (el adapter lo concatenaria y lo duplicaria).
+            'frames_b64': [
+              for (final frame in e.value) base64Encode(frame),
+            ],
+          },
       ],
     };
     return _api
         .post(submitPath, data: payload)
         .then((response) => KycSubmitResult.fromData(_dataOf(response.data)));
+  }
+
+  @override
+  Future<KycDocumentValidation> validateDocument({
+    required Uint8List image,
+  }) async {
+    // La imagen viaja en base64, igual que evaluate/submit; el backend la
+    // reenvia como multipart al microservicio. Solo datos crudos: la decision
+    // es del servidor (cliente delgado, docs/19).
+    final payload = {'image_b64': base64Encode(image)};
+    final response = await _api.post(documentValidatePath, data: payload);
+    return KycDocumentValidation.fromData(_dataOf(response.data));
   }
 
   /// Extrae el `data` del envelope docs/05 `{data, meta}`.

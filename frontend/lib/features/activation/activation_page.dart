@@ -222,7 +222,7 @@ class _ActivationPageState extends State<ActivationPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Ingresa el código de 6 dígitos que te enviamos por SMS.',
+                'Ingresa el código de 6 dígitos que te enviamos por correo.',
               ),
               const SizedBox(height: 8),
               Row(

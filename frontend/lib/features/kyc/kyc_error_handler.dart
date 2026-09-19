@@ -48,6 +48,7 @@ class KycErrorInfo {
     this.attempts = 0,
     this.maxAttempts = KycErrorHandler.defaultMaxAttemptsPerTask,
     this.folio,
+    this.task,
   });
 
   /// `error.code` del servidor, o el seudocódigo `TASK_NOT_PASSED` cuando
@@ -74,8 +75,46 @@ class KycErrorInfo {
   /// Folio de derivación (solo cuando [action] es `manualReview`).
   final String? folio;
 
+  /// Tarea/paso en el que ocurrió el fallo (F-T23), si aplica.
+  final String? task;
+
   /// `true` cuando ya no quedan reintentos para la tarea.
   bool get attemptsExhausted => attempts >= maxAttempts;
+}
+
+/// Traduce el `reason` del microservicio a un mensaje accionable en español.
+///
+/// El cliente no decide: solo explica (docs/19). Si el motivo no se reconoce
+/// se devuelve el texto original (nunca se oculta) o un genérico accionable
+/// cuando viene vacío.
+String kycReasonMessage(String? reason) {
+  final raw = (reason ?? '').trim();
+  if (raw.isEmpty) {
+    return 'No pasaste la prueba de vida. Reintenta con buena luz y '
+        'movimientos lentos.';
+  }
+  final code = raw.toUpperCase();
+  bool has(List<String> keys) => keys.any(code.contains);
+  // Orden: primero los motivos mas especificos.
+  if (has(['MISMATCH', 'NO_MATCH', 'DOCUMENT_MISMATCH', 'FACE_DOES_NOT_MATCH'])) {
+    return 'Tu rostro no coincide con la fotografía del documento.';
+  }
+  if (has(['CONSISTEN', 'INCONSISTEN', 'DIFFERENT_PERSON'])) {
+    return 'Tu rostro no se mantuvo consistente durante la prueba.';
+  }
+  if (has(['MIN_FRAME', 'FEW_FRAME', 'FRAMES', 'TOO_FEW'])) {
+    return 'Se capturaron muy pocos frames. Acércate y repite la tarea.';
+  }
+  if (has(['BLINK', 'PARPADE'])) {
+    return 'No detectamos el parpadeo. Hazlo lento y frente a la cámara.';
+  }
+  if (has(['POSE', 'LANDMARK'])) {
+    return 'No pudimos estimar la pose de tu rostro. Mantente de frente.';
+  }
+  if (has(['MOVEMENT', 'MOTION', 'MOVIMIENTO', 'INSUFFICIENT'])) {
+    return 'Detectamos poco movimiento. Sigue la instrucción con calma.';
+  }
+  return raw;
 }
 
 /// Clasificador de errores del flujo KYC (puro Dart, sin widgets).
@@ -228,6 +267,7 @@ class KycErrorHandler {
         attempts: attempts,
         maxAttempts: maxAttempts,
         folio: folio ?? newManualReviewFolio(),
+        task: task,
       );
     }
     return KycErrorInfo(
@@ -239,6 +279,7 @@ class KycErrorHandler {
       serverReason: serverReason,
       attempts: attempts,
       maxAttempts: maxAttempts,
+      task: task,
     );
   }
 

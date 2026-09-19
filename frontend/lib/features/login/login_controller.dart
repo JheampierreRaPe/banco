@@ -22,6 +22,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/errors/api_exception.dart';
 import '../../core/http/api_client.dart';
+import '../../core/session/session_identity_store.dart';
 import '../../core/session/session_repository.dart';
 import '../biometrics/login_controller.dart' as bio;
 
@@ -38,16 +39,36 @@ class LoginController extends ChangeNotifier {
     required ApiClient api,
     required SessionRepository session,
     required bio.LoginController biometricLogin,
+    SessionIdentityStore? identity,
+    String? platform,
+    String? biometricType,
     this.inactivityTimeoutSeconds = kLoginInactivityTimeoutSeconds,
   })  : _api = api,
         _session = session,
-        _biometricLogin = biometricLogin {
+        _biometricLogin = biometricLogin,
+        _identity = identity,
+        _platform = platform,
+        _biometricType = biometricType {
     _remainingSeconds = inactivityTimeoutSeconds;
   }
 
   final ApiClient _api;
   final SessionRepository _session;
   final bio.LoginController _biometricLogin;
+
+  /// Store F-T20 para recordar el ultimo `user_ref` tras un login exitoso.
+  /// Puede ser `null` (tests sin store): en ese caso no se persiste nada.
+  final SessionIdentityStore? _identity;
+
+  /// Plataforma explicita (`android`/`ios`); `null` = resolver del sistema.
+  final String? _platform;
+
+  /// Tipo biometrico (`FACE`/`FINGERPRINT`) si se conoce; `null` = omitir.
+  final String? _biometricType;
+
+  /// Tipos aceptados por el backend para `biometric_type`.
+  static const String biometricTypeFace = 'FACE';
+  static const String biometricTypeFingerprint = 'FINGERPRINT';
 
   /// Ruta relativa (`ApiClient` ya incluye `/api/v1` en su `baseUrl`).
   static const String pinPath = '/auth/login/pin';
@@ -108,30 +129,40 @@ class LoginController extends ChangeNotifier {
     notifyListeners();
 
     var ok = false;
-    await _biometricLogin.loginWithBiometrics(
-      userRef: userRef,
-      deviceId: deviceId,
-      reason: reason,
-    );
-    if (_biometricLogin.succeeded) {
-      ok = await _saveSession(_biometricLogin.sessionResult);
-      if (ok) {
-        _succeeded = true;
-        stopInactivityTimer();
+    try {
+      await _biometricLogin.loginWithBiometrics(
+        userRef: userRef,
+        deviceId: deviceId,
+        reason: reason,
+      );
+      if (_biometricLogin.succeeded) {
+        ok = await _saveSession(_biometricLogin.sessionResult);
+        if (ok) {
+          _succeeded = true;
+          stopInactivityTimer();
+          await _rememberUser(userRef);
+        } else {
+          _errorMessage = genericAuthErrorMessage;
+        }
+      } else if (_biometricLogin.pinFallbackRequired) {
+        _showPinFallback = true;
+        _infoMessage = pinFallbackMessage;
       } else {
+        // Facial invalido, challenge roto, red, etc.: mensaje generico para no
+        // filtrar que via fallo.
         _errorMessage = genericAuthErrorMessage;
       }
-    } else if (_biometricLogin.pinFallbackRequired) {
-      _showPinFallback = true;
-      _infoMessage = pinFallbackMessage;
-    } else {
-      // Facial invalido, challenge roto, red, etc.: mensaje generico para no
-      // filtrar que via fallo.
+    } on ApiException {
       _errorMessage = genericAuthErrorMessage;
+    } catch (_) {
+      // Fallo inesperado (p. ej. derivar la clave del dispositivo o el secure
+      // storage al guardar la sesion): mensaje generico sin filtrar detalles y
+      // el usuario puede reintentar. El `_busy` se libera SIEMPRE en finally.
+      _errorMessage = genericAuthErrorMessage;
+    } finally {
+      _busy = false;
+      notifyListeners();
     }
-
-    _busy = false;
-    notifyListeners();
     return ok;
   }
 
@@ -151,28 +182,48 @@ class LoginController extends ChangeNotifier {
     notifyListeners();
 
     var ok = false;
-    if (pin.isEmpty) {
-      _errorMessage = genericAuthErrorMessage;
-    } else {
-      try {
-        final res = await _api.post(
-          pinPath,
-          data: {'user_ref': userRef, 'device_id': deviceId, 'pin': pin},
-        );
+    try {
+      if (pin.isEmpty) {
+        _errorMessage = genericAuthErrorMessage;
+      } else {
+        // Binding best-effort: la clave PUBLICA del dispositivo + plataforma +
+        // tipo biometrico (si se conoce). El secreto nunca sale del
+        // almacenamiento seguro ni se loguea (docs/16 reglas 7 y 10).
+        final data = <String, dynamic>{
+          'user_ref': userRef,
+          'device_id': deviceId,
+          'pin': pin,
+          'device_public_key': await _session.getOrCreateDeviceBindingKey(),
+        };
+        final platform = _effectivePlatform();
+        if (platform != null) {
+          data['platform'] = platform;
+        }
+        if (_biometricType != null && _biometricType.isNotEmpty) {
+          data['biometric_type'] = _biometricType;
+        }
+        final res = await _api.post(pinPath, data: data);
         ok = await _saveSession(_dataOf(res.data));
         if (ok) {
           _succeeded = true;
           stopInactivityTimer();
+          await _rememberUser(userRef);
         } else {
           _errorMessage = genericAuthErrorMessage;
         }
-      } on ApiException {
-        _errorMessage = genericAuthErrorMessage;
       }
+    } on ApiException {
+      _errorMessage = genericAuthErrorMessage;
+    } catch (_) {
+      // Fallo al derivar la clave del dispositivo (secreto corrupto) o del
+      // secure storage: NO rompe el login de forma opaca; se trata como error
+      // generico (sin filtrar) y se permite reintentar. `_busy` se libera
+      // SIEMPRE en finally (hallazgo del validador).
+      _errorMessage = genericAuthErrorMessage;
+    } finally {
+      _busy = false;
+      notifyListeners();
     }
-
-    _busy = false;
-    notifyListeners();
     return ok;
   }
 
@@ -234,6 +285,35 @@ class LoginController extends ChangeNotifier {
     final refresh = data?['refresh_token'] as String?;
     await _session.saveSession(accessToken: access, refreshToken: refresh);
     return true;
+  }
+
+  /// Persiste el ultimo `user_ref` (F-T20) tras exito facial o PIN.
+  ///
+  /// Best-effort: un fallo del store no tumba el login ya concedido. El
+  /// `user_ref` nunca se loguea (docs/16 reglas 7 y 10).
+  Future<void> _rememberUser(String userRef) async {
+    if (userRef.isEmpty) return;
+    final store = _identity ?? sessionIdentityStoreFactory?.call();
+    if (store == null) return;
+    try {
+      await store.saveUserRef(userRef);
+    } catch (_) {
+      // Silencio deliberado: no se registra el `user_ref` ni el error.
+    }
+  }
+
+  /// `android`/`ios` segun el SO; `null` en plataformas no moviles.
+  String? _effectivePlatform() {
+    final explicit = _platform;
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'android';
+      case TargetPlatform.iOS:
+        return 'ios';
+      default:
+        return null;
+    }
   }
 
   /// Extrae el `data` del envelope docs/05 `{data, meta}`.

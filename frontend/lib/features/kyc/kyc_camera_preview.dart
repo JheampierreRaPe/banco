@@ -1,5 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'camera_frame_source.dart';
 import 'kyc_frame_source.dart';
@@ -63,6 +64,11 @@ class _KycCameraPreviewState extends State<KycCameraPreview> {
   CameraController? _controller;
   String _deniedMessage = '';
 
+  /// Token de la ultima peticion de inicializacion. Un resultado atrasado
+  /// (misma clave de tarea, pero peticion vieja) se descarta en vez de
+  /// publicar un controller que pudo quedar reemplazado/cerrado (F-T24).
+  int _initRequest = 0;
+
   @override
   void initState() {
     super.initState();
@@ -78,41 +84,74 @@ class _KycCameraPreviewState extends State<KycCameraPreview> {
     }
   }
 
+  /// `setState` seguro: si el scheduler NO está idle (initState/didUpdateWidget
+  /// corren durante `persistentCallbacks`), difiere a post-frame. Evita
+  /// "setState() or markNeedsBuild() called during build".
+  void _safeSetState(VoidCallback fn) {
+    if (!mounted) return;
+    if (WidgetsBinding.instance.schedulerPhase != SchedulerPhase.idle) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(fn);
+      });
+      return;
+    }
+    setState(fn);
+  }
+
+  /// Notifica «preview listo» sin tocar al padre durante build.
+  ///
+  /// El padre (`KycTaskPage._onPreviewReady`) hace `setState`; invocarlo
+  /// sincrónicamente desde [initState]/[didUpdateWidget] provocaba
+  /// "setState() called during build" (defecto real, 3234 repeticiones en
+  /// logcat). Si el scheduler no está idle se difiere a post-frame; siempre se
+  /// verifica [mounted] antes de llamar (nunca notifica a un state muerto).
+  void _notifyReady(bool ready) {
+    if (!mounted) return;
+    if (WidgetsBinding.instance.schedulerPhase != SchedulerPhase.idle) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onReadyChanged?.call(ready);
+      });
+      return;
+    }
+    widget.onReadyChanged?.call(ready);
+  }
+
   Future<void> _initForCurrentTask() async {
-    setState(() {
+    final request = ++_initRequest;
+    _safeSetState(() {
       _status = _PreviewStatus.initializing;
       _controller = null;
     });
-    widget.onReadyChanged?.call(false);
+    _notifyReady(false);
     try {
       final controller =
           await widget.source.previewControllerForTask(widget.task);
-      if (!mounted) return;
-      setState(() {
+      if (!mounted || request != _initRequest) return;
+      _safeSetState(() {
         _controller = controller;
         _status = _PreviewStatus.ready;
       });
-      widget.onReadyChanged?.call(true);
+      _notifyReady(true);
     } on KycCameraPermissionDenied catch (e) {
-      if (!mounted) return;
-      setState(() {
+      if (!mounted || request != _initRequest) return;
+      _safeSetState(() {
         _status = _PreviewStatus.denied;
         _deniedMessage = e.userMessage;
       });
-      widget.onReadyChanged?.call(false);
+      _notifyReady(false);
     } on KycCameraUnavailable {
       // Fallback documentado: sin cámara se muestra el placeholder mock;
       // el submit usa generateMockFrames (ver KycFlowController).
-      if (!mounted) return;
-      setState(() => _status = _PreviewStatus.unavailable);
-      widget.onReadyChanged?.call(true);
+      if (!mounted || request != _initRequest) return;
+      _safeSetState(() => _status = _PreviewStatus.unavailable);
+      _notifyReady(true);
     } catch (_) {
       // Anti-bloqueo: cualquier error no contemplado (PlatformException,
       // MissingPluginException, StateError, ...) cae aquí y muestra el
       // placeholder mock en vez de dejar el spinner infinito.
-      if (!mounted) return;
-      setState(() => _status = _PreviewStatus.unavailable);
-      widget.onReadyChanged?.call(true);
+      if (!mounted || request != _initRequest) return;
+      _safeSetState(() => _status = _PreviewStatus.unavailable);
+      _notifyReady(true);
     }
   }
 
@@ -122,6 +161,26 @@ class _KycCameraPreviewState extends State<KycCameraPreview> {
 
   @override
   Widget build(BuildContext context) {
+    // Guarda F-T24: no montar CameraPreview sobre un controller que ya no es
+    // el vigente (fue reemplazado/cerrado por un cambio de lente). Evita
+    // "A CameraController was used after being disposed.".
+    final controller = _controller;
+    if (_status == _PreviewStatus.ready &&
+        (controller == null ||
+            !widget.source.isControllerCurrent(controller))) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const KycPreviewPlaceholder.unavailable(),
+          const SizedBox(height: 8),
+          FilledButton.tonal(
+            onPressed: _retry,
+            child: const Text('Reintentar'),
+          ),
+        ],
+      );
+    }
     return switch (_status) {
       _PreviewStatus.initializing => const SizedBox(
           height: 240,

@@ -356,13 +356,15 @@ def test_overall_false_creates_nothing(sqlite_session: Session):
     assert _pending_outbox(sqlite_session, "kyc.completed") == []
 
 
-def test_onboard_emits_initial_otp_end_to_end_activate_ok(sqlite_session: Session):
-    """B1 (fase 5): alta -> OTP `PENDING` emitido -> `POST /auth/activate` -> `ACTIVE`.
+def test_onboard_initial_otp_end_to_end_pin_setup_activates(sqlite_session: Session):
+    """B1 (fase 5, regla E1-T28): alta -> OTP `PENDING` -> `/auth/pin/setup` -> `ACTIVE`.
 
-    E2E por API publica salvo la lectura del codigo en BD de prueba (el
-    codigo en claro solo viaja en la notificacion `otp_code`; se lee del
-    `payload` persistido). Sin llamadas directas a `otp_service` entre el
-    alta y la activacion: el OTP lo emite `onboard_customer`.
+    La activacion canonica con un solo OTP fija el PIN y activa. `/auth/activate`
+    ya NO activa sin PIN (409 `PIN_REQUIRED`, estado intacto); se prueba primero
+    ese rechazo y despues el camino feliz por `/auth/pin/setup`. E2E por API
+    publica salvo la lectura del codigo en BD de prueba (el codigo en claro
+    solo viaja en la notificacion `otp_code`; se lee del `payload` persistido).
+    Sin llamadas directas a `otp_service`: el OTP lo emite `onboard_customer`.
     """
     from fastapi.testclient import TestClient
 
@@ -387,9 +389,16 @@ def test_onboard_emits_initial_otp_end_to_end_activate_ok(sqlite_session: Sessio
     note = sqlite_session.scalars(
         sa.select(Notification).where(Notification.user_id == user.id)
     ).first()
-    assert note is not None and note.template_code == "otp_code"
+    assert note is not None
+    assert note.channel == "email"
+    assert note.template_code == "otp_code_email"
+    assert note.payload_json["recipient"] == user.email
     plain = note.payload_json["data"]["code"]
     assert isinstance(plain, str) and len(plain) == 6 and plain.isdigit()
+
+    # El alta se confirma antes de las llamadas API: el 409 `PIN_REQUIRED`
+    # revierte su propia transaccion y no debe arrastrar el alta ya persistida.
+    sqlite_session.commit()
 
     def _override():
         yield sqlite_session
@@ -397,19 +406,130 @@ def test_onboard_emits_initial_otp_end_to_end_activate_ok(sqlite_session: Sessio
     app.dependency_overrides[get_db] = _override
     try:
         with TestClient(app) as client:
-            resp = client.post(
+            rejected = client.post(
                 "/api/v1/auth/activate",
                 json={"user_ref": str(user.id), "code": plain},
+            )
+            assert rejected.status_code == 409, rejected.text
+            assert rejected.json()["error"]["code"] == "PIN_REQUIRED"
+            assert plain not in rejected.text
+
+            sqlite_session.expire_all()
+            assert repo.get_user(sqlite_session, user.id).status == "PENDING_ACTIVATION"
+            still_pending = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
+            assert still_pending is not None and still_pending.status == "PENDING"
+
+            resp = client.post(
+                "/api/v1/auth/pin/setup",
+                json={"user_ref": str(user.id), "code": plain, "pin": "4829"},
             )
     finally:
         app.dependency_overrides.pop(get_db, None)
 
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert resp.json()["data"] == {"user_id": str(user.id), "status": "ACTIVE"}
     assert plain not in resp.text
 
     sqlite_session.expire_all()
     assert repo.get_user(sqlite_session, user.id).status == "ACTIVE"
+    assert repo.get_credential(sqlite_session, user.id).pin_hash is not None
+
+
+# ---------------------------------------------------------------- E1-T26: routing email
+def test_onboard_delivers_activation_otp_by_email(sqlite_session: Session):
+    """Alta con email: notificacion `email`/`otp_code_email` y destino el email (E1-T26)."""
+    from app.modules.identity import repository as repo
+    from app.modules.identity.service import onboard_customer
+    from app.modules.notifications.models import Notification
+
+    kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}")
+    result = onboard_customer(sqlite_session, **kwargs)
+    assert result["status"] == "ONBOARDED"
+
+    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
+    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
+    assert otp is not None and otp.status == "PENDING"
+    assert otp.destination == kwargs["email"]
+
+    note = sqlite_session.scalars(
+        sa.select(Notification).where(Notification.user_id == user.id)
+    ).one()
+    assert note.channel == "email"
+    assert note.template_code == "otp_code_email"
+    assert note.payload_json["recipient"] == kwargs["email"]
+    plain = note.payload_json["data"]["code"]
+    assert plain not in str(result), "el codigo no aparece en la respuesta del alta"
+
+
+def test_onboard_falls_back_to_sms_without_email(sqlite_session: Session):
+    """Alta sin email: fallback `sms`/`otp_code` con `users.phone` (E1-T26)."""
+    from app.modules.identity import repository as repo
+    from app.modules.identity.service import onboard_customer
+    from app.modules.notifications.models import Notification
+
+    kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}", email=None)
+    result = onboard_customer(sqlite_session, **kwargs)
+    assert result["status"] == "ONBOARDED"
+
+    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
+    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
+    assert otp is not None and otp.destination == kwargs["phone"]
+
+    note = sqlite_session.scalars(
+        sa.select(Notification).where(Notification.user_id == user.id)
+    ).one()
+    assert note.channel == "sms"
+    assert note.template_code == "otp_code"
+    assert note.payload_json["recipient"] == kwargs["phone"]
+
+
+def test_onboard_best_effort_when_provider_fails(sqlite_session: Session, monkeypatch, caplog):
+    """Fallo del proveedor: el alta se completa igual y sin PII/codigo en logs (E1-T26)."""
+    import logging
+
+    from app.modules.identity import repository as repo
+    from app.modules.identity.service import onboard_customer
+    from app.modules.notifications import service as notifications_service
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("proveedor caido")
+
+    monkeypatch.setattr(notifications_service, "send", _boom)
+    kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}")
+
+    with caplog.at_level(logging.WARNING):
+        result = onboard_customer(sqlite_session, **kwargs)
+
+    assert result["status"] == "ONBOARDED"
+    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
+    assert user is not None and user.status == "PENDING_ACTIVATION"
+    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
+    assert otp is not None and otp.status == "PENDING"
+    assert kwargs["email"] not in caplog.text
+    assert kwargs["phone"] not in caplog.text
+
+
+def test_onboard_without_contact_still_completes(sqlite_session: Session, caplog):
+    """Sin email ni telefono: no hay entrega, pero el alta no se revierte (E1-T26)."""
+    import logging
+
+    from app.modules.identity import repository as repo
+    from app.modules.identity.service import onboard_customer
+    from app.modules.notifications.models import Notification
+
+    kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}", email=None, phone=None)
+    with caplog.at_level(logging.WARNING):
+        result = onboard_customer(sqlite_session, **kwargs)
+
+    assert result["status"] == "ONBOARDED"
+    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
+    assert user is not None
+    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
+    assert otp is not None and otp.destination is None
+    rows = sqlite_session.scalars(
+        sa.select(Notification).where(Notification.user_id == user.id)
+    ).all()
+    assert rows == []
 
 
 # ---------------------------------------------------------------- Parte C: Postgres

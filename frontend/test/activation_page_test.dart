@@ -69,6 +69,14 @@ Future<void> _enterCode(WidgetTester tester, String code) async {
 }
 
 void main() {
+  testWidgets('copy de correo (sin SMS) en la pantalla de activación',
+      (tester) async {
+    await _pump(tester, FakeActivationService());
+
+    expect(find.textContaining('correo'), findsOneWidget);
+    expect(find.textContaining('SMS'), findsNothing);
+  });
+
   testWidgets('ingreso correcto navega a /pin-setup (sin auto-login)',
       (tester) async {
     await _pump(tester, FakeActivationService());

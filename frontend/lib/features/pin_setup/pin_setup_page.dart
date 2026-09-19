@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/activation/activation_service.dart';
 
 import 'pin_setup_controller.dart';
@@ -9,16 +10,18 @@ import 'pin_setup_service.dart';
 
 /// Pantalla de creación de PIN (standalone, ruta `/pin-setup?userRef=`).
 ///
-/// - Explica que el código de activación ya se usó y ofrece
-///   "Enviarme un código nuevo" (mismo endpoint de reenvío de `activation`).
-/// - Campos: código (6) + PIN (4-6, obscurecido con toggle) + confirmar PIN.
-/// - En éxito navega a `/login`. No modifica `ActivationPage`.
+/// - Pantalla unica del alta: pide el código que llega por correo + PIN +
+///   confirmación. `POST /auth/pin/setup` consume el OTP `ACTIVATION` y deja
+///   la cuenta `ACTIVE` (E1-T28); el cliente no valida ni activa (docs/19).
+/// - Ofrece "Enviarme un código nuevo" (reenvio por canal email).
+/// - En éxito navega a `/login?userRef=&deviceId=` (sin auto-login).
 class PinSetupPage extends StatefulWidget {
   const PinSetupPage({
     super.key,
     required this.userRef,
     required this.setupService,
     required this.resendService,
+    this.identity,
   });
 
   /// Referencia del usuario (viaja como `user_ref` al backend).
@@ -29,6 +32,11 @@ class PinSetupPage extends StatefulWidget {
 
   /// Servicio de reenvío de `activation` (MISMO endpoint, sin duplicar).
   final ActivationService resendService;
+
+  /// Store de identidad para resolver el `device_id` estable. Inyectable en
+  /// tests; por defecto el fijado por el orquestador
+  /// ([sessionIdentityStoreFactory]).
+  final SessionIdentityStore? identity;
 
   @override
   State<PinSetupPage> createState() => _PinSetupPageState();
@@ -41,6 +49,7 @@ class _PinSetupPageState extends State<PinSetupPage> {
   final _confirmController = TextEditingController();
   bool _obscurePin = true;
   bool _obscureConfirm = true;
+  bool _navigated = false;
 
   @override
   void initState() {
@@ -56,10 +65,28 @@ class _PinSetupPageState extends State<PinSetupPage> {
   void _onControllerChanged() {
     if (!mounted) return;
     if (_controller.status == PinSetupStatus.success) {
-      context.go('/login');
+      _navigateToLogin();
       return;
     }
     setState(() {});
+  }
+
+  /// Al exito (o si el PIN ya existia) navega a `/login?userRef=&deviceId=`.
+  /// El `device_id` estable lo aporta el store de identidad (F-T20).
+  Future<void> _navigateToLogin() async {
+    if (_navigated) return;
+    _navigated = true;
+    final store = widget.identity ?? sessionIdentityStoreFactory?.call();
+    String deviceId = '';
+    try {
+      deviceId = await store?.getOrCreateDeviceId() ?? '';
+    } catch (_) {
+      deviceId = '';
+    }
+    if (!mounted) return;
+    final ref = Uri.encodeComponent(widget.userRef);
+    final device = Uri.encodeComponent(deviceId);
+    context.go('/login?userRef=$ref&deviceId=$device');
   }
 
   @override
@@ -205,7 +232,7 @@ class _PinSetupPageState extends State<PinSetupPage> {
               if (c.isPinAlreadySet)
                 OutlinedButton(
                   key: const Key('pin-setup-goto-login'),
-                  onPressed: () => context.go('/login'),
+                  onPressed: _navigateToLogin,
                   child: const Text('Ir a iniciar sesión'),
                 )
               else

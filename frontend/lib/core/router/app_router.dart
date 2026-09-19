@@ -19,6 +19,7 @@ import '../../features/welcome/welcome_routes.dart';
 import '../../features/welcome/welcome_seen_store.dart';
 import '../http/api_client.dart';
 import '../session/secure_key_value_storage.dart';
+import '../session/session_identity_store.dart';
 import '../session/session_repository.dart';
 
 /// Orquestador de navegación (go_router con guarda de sesión + primera vez).
@@ -47,6 +48,7 @@ bool _isPublicLocation(String location) {
       location == '/activate' ||
       location == '/pin-setup' ||
       location == '/kyc' ||
+      location == '/kyc/document' ||
       location == '/kyc/task' ||
       location == '/kyc/result';
 }
@@ -62,8 +64,15 @@ GoRouter buildRouter(
   String initialLocation = '/home',
   ApiClient? api,
   WelcomeSeenStore? welcomeSeen,
+  SessionIdentityStore? identity,
 }) {
   final client = api ?? ApiClient.create(session: session);
+  // Identidad local (F-T20): `user_ref` + `device_id` hidratados por `main`
+  // antes del primer frame. En tests se inyecta un store en memoria.
+  final identityStore = identity ??
+      sessionIdentityStoreFactory?.call() ??
+      SecureSessionIdentityStore(storage: FlutterSecureStorageAdapter());
+  sessionIdentityStoreFactory = () => identityStore;
   KycDependencies.configure(
     service: HttpKycService(client),
     frameSource: CameraFrameSource(),
@@ -77,6 +86,8 @@ GoRouter buildRouter(
         api: client,
         session: session,
         reader: SystemBiometricReader(),
+        userRef: identityStore.userRef ?? '',
+        deviceId: identityStore.deviceId ?? '',
       );
   final seen = welcomeSeen ??
       welcomeSeenStoreFactory?.call() ??

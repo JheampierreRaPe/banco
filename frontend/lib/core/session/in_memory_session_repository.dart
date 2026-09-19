@@ -56,6 +56,13 @@ class InMemorySessionRepository extends ChangeNotifier
     return _deviceSecret!;
   }
 
+  /// Clave publica de binding (`"hmac:<hex>"`) derivada del secreto en
+  /// memoria (F-T22). Requerida por el contrato (implementa el seam), estable
+  /// e idempotente; el secreto no se expone.
+  @override
+  Future<String> getOrCreateDeviceBindingKey() async =>
+      deviceBindingKeyFromSecret(await getOrCreateDeviceSecret());
+
   @override
   Future<void> clearOnLogout() async {
     _accessToken = null;

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 import httpx
 import pytest
 
@@ -22,6 +25,7 @@ from app.adapters.kyc_provider import (
 
 API_KEY = "test-key-123"
 SESSION = "sess-001"
+PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 10).decode()
 
 
 def _settings(**overrides) -> KycSettings:
@@ -90,6 +94,22 @@ def test_mock_rejects_unknown_mode():
         MockKycProvider(mode="otro")
 
 
+def test_mock_validate_document_success_and_failure():
+    ok = MockKycProvider(mode="success").validate_document(session_id=SESSION)
+    assert ok.is_valid is True
+    assert ok.issues == []
+    assert isinstance(ok.checks, dict)
+
+    bad = MockKycProvider(mode="failure").validate_document(session_id=SESSION)
+    assert bad.is_valid is False
+    assert bad.issues and isinstance(bad.issues[0], str)
+
+    with pytest.raises(KycTimeoutError):
+        MockKycProvider(mode="timeout").validate_document(session_id=SESSION)
+    with pytest.raises(KycUnavailableError):
+        MockKycProvider(mode="down").validate_document(session_id=SESSION)
+
+
 # ------------------------------------------------------------- HTTP real (transporte simulado)
 def test_http_success_maps_endpoints_and_keeps_key_in_header_only():
     captured: list = []
@@ -133,6 +153,199 @@ def test_http_invalid_request_raises_kyc_invalid_without_retry():
         provider.evaluate_liveness(session_id=SESSION, task="???")
     assert exc.value.code == KYC_INVALID
     assert len(captured) == 1  # 4xx no se reintenta
+
+
+def test_http_4xx_dict_detail_propagates_step_and_reason():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"detail": {"step": "blink", "reason": "no_face_detected"}})
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    with pytest.raises(KycInvalidError) as exc:
+        provider.evaluate_liveness(session_id=SESSION, task="blink")
+    assert exc.value.step == "blink"
+    assert exc.value.reason == "no_face_detected"
+    assert exc.value.code == KYC_INVALID
+
+
+def test_http_4xx_string_detail_becomes_reason():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"detail": "not enough frames"})
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    with pytest.raises(KycInvalidError) as exc:
+        provider.evaluate_liveness(session_id=SESSION, task="blink")
+    assert exc.value.step == ""
+    assert exc.value.reason == "not enough frames"
+
+
+def test_http_evaluate_maps_step_reason_frames_and_burst():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "step": "blink",
+                "passed": True,
+                "reason": "ok",
+                "frames_analyzed": 6,
+                "details": {"eyes": 2},
+            },
+        )
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    result = provider.evaluate_liveness(
+        session_id=SESSION, task="blink", payload={"token": "tok", "frames_base64": ["a", "b"]}
+    )
+    assert (result.step, result.reason, result.frames_analyzed) == ("blink", "ok", 6)
+    assert result.details == {"eyes": 2}
+    sent = json.loads(captured[-1].content.decode())
+    assert sent == {"token": "tok", "step": "blink", "frames_base64": ["a", "b"]}
+
+
+def test_http_verify_full_uses_dedicated_timeout_and_burst():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "overall_result": True,
+                "overall_reason": "OK",
+                "liveness": {
+                    "steps_verified": ["arriba", "parpadeo"],
+                    "steps_total": ["arriba", "abajo", "parpadeo"],
+                    "step_results": {"blink": {"passed": True, "reason": "ok"}},
+                },
+            },
+        )
+
+    provider = HttpKycProvider(
+        settings=_settings(timeout_seconds=3.0, verify_timeout_seconds=60.0),
+        client=_client(handler, captured),
+    )
+    frames = [PNG_B64, PNG_B64, PNG_B64]
+    result = provider.verify_full(
+        session_id="tok",
+        payload={
+            "document_type": "DNI",
+            "document_image_b64": PNG_B64,
+            "segments": [{"task": "blink", "frames_b64": frames}],
+        },
+    )
+    assert result.overall_result is True
+    assert result.steps_verified == ["arriba", "parpadeo"]
+    assert result.steps_total == ["arriba", "abajo", "parpadeo"]
+    assert result.step_results["blink"]["passed"] is True
+    timeout = captured[-1].extensions.get("timeout")
+    assert timeout is not None
+    assert set(timeout.values()) == {60.0}
+    assert b"blink" in captured[-1].content
+    assert frames[0].encode() in captured[-1].content
+
+
+def test_http_verify_full_derives_failed_step_and_reason():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "overall_result": False,
+                "overall_reason": "LIVENESS_FAILED",
+                "liveness": {
+                    "steps_verified": ["turn-left"],
+                    "steps_total": ["blink", "turn-left", "parpadeo"],
+                    "step_results": {
+                        "blink": {"passed": False, "reason": "eyes_not_detected"},
+                        "turn-left": {"passed": True, "reason": "ok"},
+                    },
+                },
+            },
+        )
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    result = provider.verify_full(
+        session_id="tok",
+        payload={
+            "document_type": "DNI",
+            "document_image_b64": PNG_B64,
+            "segments": [{"task": "blink", "image_b64": PNG_B64}],
+        },
+    )
+    assert result.failed_step == "blink"
+    assert result.overall_reason == "LIVENESS_FAILED"
+    assert result.step_results["blink"]["reason"] == "eyes_not_detected"
+
+
+def test_http_verify_full_accepts_real_guided_step_lists_without_crashing():
+    """Forma REAL del microservicio: `steps_verified`/`steps_total` son listas.
+
+    Antes del fix el adapter hacia `int(lista)` -> TypeError con el payload real
+    (`liveness_service.py:267-268`), lo que reventaba el submit con 500.
+    """
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "overall_result": False,
+                "overall_reason": "Falló: abajo, parpadeo",
+                "liveness": {
+                    "steps_verified": ["arriba"],
+                    "steps_total": ["arriba", "abajo", "parpadeo"],
+                    "step_results": {
+                        "arriba": {"passed": True, "reason": "ok"},
+                        "abajo": {"passed": False, "reason": "movement_not_detected"},
+                        "parpadeo": {"passed": False, "reason": "no_blink"},
+                    },
+                },
+                "face_match": {"distance": 0.81},
+            },
+        )
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    result = provider.verify_full(
+        session_id="tok",
+        payload={
+            "document_type": "DNI",
+            "document_image_b64": PNG_B64,
+            "segments": [{"task": "arriba", "frames_b64": [PNG_B64] * 5}],
+        },
+    )
+    assert result.steps_total == ["arriba", "abajo", "parpadeo"]
+    assert result.steps_verified == ["arriba"]
+    assert result.failed_step == "abajo"
+    assert result.overall_reason == "Falló: abajo, parpadeo"
+    assert result.distance == 0.81
+
+
+def test_http_verify_full_does_not_duplicate_first_frame_with_image_b64():
+    """`frames_b64` es la fuente unica: no concatena `image_b64` (primer frame)."""
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"overall_result": True, "detail_code": "OK"})
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    provider.verify_full(
+        session_id="tok",
+        payload={
+            "document_type": "DNI",
+            "document_image_b64": PNG_B64,
+            "segments": [
+                {"task": "arriba", "frames_b64": ["AAA", "BBB", "CCC"], "image_b64": "AAA"}
+            ],
+        },
+    )
+    body = captured[-1].content
+    # El primer frame solo aparece una vez: con el bug previo se duplicaba.
+    assert body.count(b'"AAA"') == 1
 
 
 def test_http_timeout_retries_then_raises_kyc_timeout():
@@ -185,6 +398,95 @@ def test_http_returns_never_expose_api_key():
     assert API_KEY not in challenge.expose_token()
 
 
+def test_http_validate_document_sends_multipart_and_uses_dedicated_timeout():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"is_valid": True, "issues": [], "checks": {"legible": True}}
+        )
+
+    provider = HttpKycProvider(
+        settings=_settings(timeout_seconds=3.0, document_timeout_seconds=15.0),
+        client=_client(handler, captured),
+    )
+    result = provider.validate_document(session_id=SESSION, image_b64=PNG_B64)
+    assert result.is_valid is True
+    assert result.issues == []
+    assert result.checks == {"legible": True}
+
+    request = captured[-1]
+    assert request.url.path == "/api/v1/document/validate"
+    assert str(request.url) == "http://kyc.local/api/v1/document/validate"
+    assert provider.DOCUMENT_VALIDATE_PATH == "/api/v1/document/validate"
+    assert request.headers["X-API-Key"] == API_KEY
+    assert API_KEY not in request.content.decode("latin-1")
+    assert b'name="file"' in request.content
+    timeout = request.extensions.get("timeout")
+    assert timeout is not None
+    assert set(timeout.values()) == {15.0}
+
+
+def test_http_validate_document_normalizes_wrapped_data():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "is_valid": False,
+                    "issues": ["blurry", "glare"],
+                    "checks": {"resolution": "low"},
+                }
+            },
+        )
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    result = provider.validate_document(session_id=SESSION, image_b64=PNG_B64)
+    assert result.is_valid is False
+    assert result.issues == ["blurry", "glare"]
+    assert result.checks == {"resolution": "low"}
+
+
+def test_http_validate_document_tolerates_unexpected_issue_and_check_shapes():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"is_valid": False, "issues": "blurry", "checks": [1, 2]})
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    result = provider.validate_document(session_id=SESSION, image_b64=PNG_B64)
+    assert result.is_valid is False
+    assert result.issues == ["blurry"]
+    assert result.checks == {}
+
+
+def test_http_validate_document_4xx_raises_kyc_invalid_without_retry():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"detail": "not an image"})
+
+    provider = HttpKycProvider(settings=_settings(), client=_client(handler, captured))
+    with pytest.raises(KycInvalidError) as exc:
+        provider.validate_document(session_id=SESSION, image_b64=PNG_B64)
+    assert exc.value.code == KYC_INVALID
+    assert exc.value.reason == "not an image"
+    assert len(captured) == 1
+
+
+def test_http_validate_document_5xx_raises_unavailable():
+    captured: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "boom"})
+
+    provider = HttpKycProvider(settings=_settings(max_retries=0), client=_client(handler, captured))
+    with pytest.raises(KycUnavailableError):
+        provider.validate_document(session_id=SESSION, image_b64=PNG_B64)
+
+
 # ------------------------------------------------------------- Fabrica
 def test_factory_selects_mock_or_http_from_env(monkeypatch):
     monkeypatch.setenv("KYC_PROVIDER", "mock")
@@ -211,6 +513,8 @@ def test_settings_from_env_with_documented_defaults(monkeypatch):
         "KYC_BASE_URL",
         "KYC_API_KEY",
         "KYC_TIMEOUT_SECONDS",
+        "KYC_VERIFY_TIMEOUT_SECONDS",
+        "KYC_DOCUMENT_TIMEOUT_SECONDS",
         "KYC_MAX_RETRIES",
         "KYC_BACKOFF_BASE_SECONDS",
         "KYC_BREAKER_FAILURES",
@@ -219,3 +523,16 @@ def test_settings_from_env_with_documented_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     settings = KycSettings.from_env()
     assert (settings.base_url, settings.max_retries) == ("http://localhost:8000", 2)
+    assert settings.timeout_seconds == 3.0
+    assert settings.verify_timeout_seconds == 60.0
+    assert settings.document_timeout_seconds == 15.0
+
+
+def test_settings_verify_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("KYC_VERIFY_TIMEOUT_SECONDS", "45")
+    assert KycSettings.from_env().verify_timeout_seconds == 45.0
+
+
+def test_settings_document_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("KYC_DOCUMENT_TIMEOUT_SECONDS", "20")
+    assert KycSettings.from_env().document_timeout_seconds == 20.0

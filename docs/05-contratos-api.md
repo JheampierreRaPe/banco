@@ -83,6 +83,8 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | Metodo | Ruta | Proposito |
 |---|---|---|
 | POST | `/auth/kyc/challenge` | Inicia el flujo KYC (proxy al microservicio). |
+| POST | `/auth/kyc/evaluate` | Evalua un paso de liveness en vivo (rafaga `frames_b64`). |
+| POST | `/auth/kyc/document/validate` | Valida la legibilidad del documento (proxy; E1-T30). |
 | POST | `/auth/kyc/submit` | Envia documento + segmentos de liveness y obtiene resultado. |
 | POST | `/auth/activate` | Valida OTP y activa la cuenta (HU02). |
 | POST | `/auth/otp/resend` | Reenvia OTP con control de intentos. |
@@ -93,6 +95,29 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/logout` | Revoca la sesion. |
 | POST | `/auth/recover` | Recuperacion con dispositivo confiable + OTP (HU04). |
 | GET | `/me` | Perfil y productos del usuario. |
+
+Detalle del flujo KYC (`identity`, E1-T29):
+
+- `POST /auth/kyc/challenge` -> `data: {token, steps: [str], expires_in: int}`.
+- `POST /auth/kyc/evaluate` -> request `{challenge_token, step, frames_b64: [str]}`
+  y `data: {step, passed, reason, frames_analyzed, details}`.
+- `POST /auth/kyc/submit` -> cada segmento acepta `frames_b64: [str]` (rafaga; fuente
+  unica) **o** `image_b64: str` (compatibilidad, un solo frame); `document` lleva
+  `{type, number, image_b64}` y `applicant` los datos del titular. La respuesta amplia
+  `data` con:
+  - `steps_verified: [str]` — **nombres** de los pasos de liveness verificados (no un
+    conteo; para totales en UI usar `len`).
+  - `steps_total: [str]` — **nombres** de todos los pasos del desafio.
+  - `failed_step: str | null` — paso que fallo (del microservicio o derivado del primer
+    `step_results` con `passed:false`).
+  - `step_results: {paso: {passed, reason, details}}` — detalle por paso.
+  - `overall_reason: str` — motivo integral del microservicio (se conserva ademas de
+    `detail_code`).
+- `POST /auth/kyc/document/validate` (E1-T30) -> request `{image_b64: str}` y
+  `data: {is_valid: bool, issues: [str], checks: {}}`. `is_valid=false` es un 200 con los
+  `issues` (no es error HTTP); solo los fallos de transporte/validacion se mapean a
+  422/503/504/429. El backend valida base64/tamano/magic bytes y reenvia la imagen como
+  `file` multipart (`KYC_DOCUMENT_TIMEOUT_SECONDS`, default 15 s); no persiste imagenes.
 
 ### 6.2 Cuentas y beneficiarios (`accounts`) - HU05, HU07
 
@@ -195,6 +220,7 @@ El modulo `identity` consume (no reimplementa):
 | POST | `/api/v1/liveness/challenge` | Obtiene token y secuencia de pasos. |
 | POST | `/api/v1/liveness/evaluate` | Valida una tarea por vez. |
 | POST | `/api/v1/identity/verify-full` | Resultado integral del KYC. |
+| POST | `/api/v1/document/validate` | Valida la legibilidad del documento (`file` multipart). |
 
 Reglas de integracion:
 - **El microservicio KYC se consume solo durante la creacion de cuenta (HU01).** No se usa para

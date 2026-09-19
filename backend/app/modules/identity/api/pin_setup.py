@@ -1,9 +1,10 @@
 """Endpoint del fijado inicial del PIN (addendum E1-T14, HU02/HU03).
 
 `POST /auth/pin/setup {user_ref, code, pin}` -> consume el OTP `ACTIVATION`
-y fija `pin_hash` una sola vez (cierra el hueco de `onboard_customer`, que
-crea la credencial sin PIN). Sin el, `POST /auth/login/pin` jamas funciona
-para usuarios creados por la app.
+y fija `pin_hash` una sola vez, dejando `users.status = ACTIVE` en la MISMA
+transaccion (un solo OTP para activar + crear PIN, decision E1-T28; cierra el
+hueco de `onboard_customer`, que crea la credencial sin PIN). Sin el,
+`POST /auth/login/pin` jamas funciona para usuarios creados por la app.
 
 Montado bajo `/api/v1` por `app.main` via `iter_routers` (este `router` lo
 recoge `api/__init__.py`; sin registro extra). Sin logica en el router
@@ -22,10 +23,11 @@ via `AppError`:
   servicio (uso directo).
 
 Transaccion: el servicio hace `flush`; el endpoint confirma (`commit`) en
-exito y ante 409 (el OTP validado queda consumido: la validacion exitosa es
-un hecho consumado); revierte (`rollback`) ante 401 como E1-T10 (nada debe
-sobrevivir a una validacion fallida). El PIN jamas sale en logs ni
-respuestas. OpenAPI automatico por FastAPI (`response_model`).
+exito (activacion + PIN + consumo del OTP en una sola transaccion) y ante 409
+(el OTP validado queda consumido: la validacion exitosa es un hecho
+consumado); revierte (`rollback`) ante 401 como E1-T10 (nada debe sobrevivir
+a una validacion fallida). El PIN jamas sale en logs ni respuestas. OpenAPI
+automatico por FastAPI (`response_model`).
 """
 
 from __future__ import annotations

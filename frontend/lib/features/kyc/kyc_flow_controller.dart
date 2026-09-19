@@ -18,6 +18,28 @@ typedef KycTaskEvaluator = Future<bool> Function(
   List<Uint8List> frames,
 );
 
+/// Evaluador que devuelve el detalle REAL del servidor (F-T23):
+/// `passed` + `reason` de `POST /auth/kyc/evaluate`.
+typedef KycDetailedTaskEvaluator = Future<KycTaskEvaluation> Function(
+  String task,
+  List<Uint8List> frames,
+);
+
+/// Validador del documento inyectable (tests): recibe la imagen en memoria y
+/// devuelve la decision del servidor (F-T26). En produccion se usa
+/// [KycEvaluationService.validateDocument] (`HttpKycService`).
+typedef KycDocumentValidator = Future<KycDocumentValidation> Function(
+  Uint8List image,
+);
+
+/// Fase de presentacion de la tarea vigente (F-T25).
+///
+/// Solo informa a la UI que parte del trabajo esta en curso: capturar la
+/// rafaga ([capturing]) vs. esperar la evaluacion del servidor ([evaluating]).
+/// Es estado de presentacion para el overlay; NO decide nada (cliente delgado,
+/// docs/19) ni altera el resultado, que siempre lo da el backend.
+enum KycTaskPhase { idle, capturing, evaluating }
+
 /// Estado del flujo KYC guiado por el servidor (E1-T05).
 ///
 /// Reglas (docs/13 §1.4 + brief):
@@ -41,20 +63,29 @@ typedef KycTaskEvaluator = Future<bool> Function(
 class KycFlowController extends ChangeNotifier {
   KycFlowController({
     required this._service,
-    KycTaskEvaluator? taskEvaluator,
+    this._taskEvaluator,
+    this._detailedTaskEvaluator,
+    this._evaluationService,
+    this._documentValidator,
     KycFrameSource? frameSource,
     this._maxAttemptsPerTask = KycErrorHandler.defaultMaxAttemptsPerTask,
-  })  : _taskEvaluator = taskEvaluator ?? _mockPassEvaluator,
-        _frameSource = frameSource ?? MockKycFrameSource();
-
-  static Future<bool> _mockPassEvaluator(
-    String task,
-    List<Uint8List> frames,
-  ) async =>
-      true;
+  }) : _frameSource = frameSource ?? MockKycFrameSource();
 
   final KycService _service;
-  final KycTaskEvaluator _taskEvaluator;
+
+  /// Evaluador booleano inyectado por tests legacy; `null` en produccion.
+  final KycTaskEvaluator? _taskEvaluator;
+
+  /// Evaluador detallado (tests y cables que ya traen `reason`).
+  final KycDetailedTaskEvaluator? _detailedTaskEvaluator;
+
+  /// Servicio real de evaluacion/submit (E1-T29). En produccion lo provee
+  /// `HttpKycService` (via `KycDependencies`); `null` en los tests legacy.
+  final KycEvaluationService? _evaluationService;
+
+  /// Validador del documento inyectado por tests (F-T26). En produccion se
+  /// resuelve con [_evaluationService] (`HttpKycService.validateDocument`).
+  final KycDocumentValidator? _documentValidator;
 
   /// Fuente de frames inyectable (seam E1-T05).
   ///
@@ -87,19 +118,34 @@ class KycFlowController extends ChangeNotifier {
   String? get manualReviewFolio => _manualReviewFolio;
   String _documentType = 'DNI';
   String _documentNumber = '';
+  KycApplicant? _applicant;
   int _stepIndex = 0;
   final Map<String, List<Uint8List>> _framesByTask = {};
   final Set<String> _passedTasks = {};
   final Map<String, int> _attemptsByTask = {};
   bool _busy = false;
+  KycTaskPhase _taskPhase = KycTaskPhase.idle;
   String? _errorMessage;
   KycSubmitResult? _result;
+
+  /// Foto real del documento (cámara trasera, F-T23). Solo en memoria.
+  Uint8List? _documentImage;
+
+  /// Resultado de la validacion del documento (E1-T30 / F-T26).
+  KycDocumentValidation? _documentValidation;
+  List<String> _documentIssues = const [];
+  String? _documentValidationError;
+  bool _validatingDocument = false;
 
   KycChallenge? get challenge => _challenge;
   String? get token => _challenge?.token;
   List<String> get steps => _challenge?.steps ?? const [];
   String get documentType => _documentType;
   String get documentNumber => _documentNumber;
+
+  /// Datos del titular capturados en la pantalla de inicio (F-T19). Viven solo
+  /// en memoria; nunca se registran en logs.
+  KycApplicant? get applicant => _applicant;
   int get currentStepIndex => _stepIndex;
 
   String? get currentStep {
@@ -110,6 +156,9 @@ class KycFlowController extends ChangeNotifier {
 
   bool get isLastStep => steps.isNotEmpty && _stepIndex >= steps.length - 1;
   bool get busy => _busy;
+
+  /// Fase vigente de la tarea para el overlay de la pantalla (F-T25).
+  KycTaskPhase get taskPhase => _taskPhase;
   String? get errorMessage => _errorMessage;
   KycSubmitResult? get result => _result;
 
@@ -120,6 +169,28 @@ class KycFlowController extends ChangeNotifier {
   int attemptsOf(String task) => _attemptsByTask[task] ?? 0;
   bool taskPassed(String task) => _passedTasks.contains(task);
   int framesCountOf(String task) => _framesByTask[task]?.length ?? 0;
+
+  /// Foto del documento capturada (cámara trasera) o `null` si aun no.
+  Uint8List? get documentImage => _documentImage;
+
+  /// `true` cuando ya se capturo la foto del documento (F-T23).
+  bool get hasDocumentImage => _documentImage != null;
+
+  /// Resultado de la validacion del documento (E1-T30), o `null` si aun no.
+  KycDocumentValidation? get documentValidation => _documentValidation;
+
+  /// `true` mientras el servidor valida el documento (indicador en UI).
+  bool get validatingDocument => _validatingDocument;
+
+  /// Motivos devueltos por el servidor cuando el documento es invalido.
+  List<String> get documentIssues => _documentIssues;
+
+  /// Mensaje de error de transporte al validar (reintentable, sin perder la
+  /// captura). `null` si no hubo fallo de red/servicio.
+  String? get documentValidationError => _documentValidationError;
+
+  /// `true` si el ultimo documento validado fue aceptado por el servidor.
+  bool get documentIsValid => _documentValidation?.isValid == true;
 
   /// Intentos restantes para [task] antes de derivar a revisión (E1-T06).
   int attemptsLeftOf(String task) =>
@@ -143,6 +214,12 @@ class KycFlowController extends ChangeNotifier {
   void setDocument({required String type, required String number}) {
     _documentType = type;
     _documentNumber = number;
+    notifyListeners();
+  }
+
+  /// Guarda los datos del titular (F-T19). Se propagan hasta el submit.
+  void setApplicant(KycApplicant applicant) {
+    _applicant = applicant;
     notifyListeners();
   }
 
@@ -173,6 +250,133 @@ class KycFlowController extends ChangeNotifier {
     }
   }
 
+  /// Captura UNA foto real del documento con la camara trasera (F-T23).
+  ///
+  /// Deja los bytes en [documentImage] (solo memoria). Sin camara cae al mock
+  /// documentado ([generateMockFrames]) para no bloquear el flujo en CI. El
+  /// permiso denegado expone el mensaje y permite reintentar con el boton.
+  Future<void> captureDocument() async {
+    if (_busy) return;
+    _busy = true;
+    _errorMessage = null;
+    // Una captura nueva descarta la validacion anterior (evita mostrar issues
+    // obsoletos mientras se recaptura).
+    _documentValidation = null;
+    _documentIssues = const [];
+    _documentValidationError = null;
+    notifyListeners();
+    try {
+      try {
+        _documentImage = await _frameSource.captureDocumentFrame();
+      } on KycCameraPermissionDenied catch (e) {
+        _errorMessage = e.userMessage;
+        return;
+      } on KycCameraUnavailable {
+        // Fallback documentado: sin camara se sigue con el mock en memoria.
+        _documentImage =
+            generateMockFrames(task: 'document', count: 1).first;
+      }
+    } on FormatException catch (e) {
+      _errorMessage = 'La foto del documento no es valida: ${e.message}';
+    } on ArgumentError catch (e) {
+      _errorMessage = 'La foto del documento no es valida: ${e.message}';
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Inicia la re-captura del documento (F-T27).
+  ///
+  /// Descarta de forma explicita la captura y la validacion previas (foto,
+  /// `is_valid`, `issues` y error de transporte) y deja el flujo listo para
+  /// volver a montar el preview en vivo y tomar una foto nueva. No toca la
+  /// camara: el controller vigente se reutiliza al re-montar el preview.
+  ///
+  /// Se limpia la foto previa (documentado) para que [hasDocumentImage] vuelva
+  /// a `false` y la pagina vuelva al estado "Capturar documento". Si la nueva
+  /// captura falla (p. ej. permiso denegado) el usuario puede reintentar.
+  void startDocumentRecapture() {
+    if (_busy) return;
+    _documentImage = null;
+    _documentValidation = null;
+    _documentIssues = const [];
+    _documentValidationError = null;
+    _errorMessage = null;
+    notifyListeners();
+  }
+
+  /// Valida la foto capturada contra el servidor (E1-T30 / F-T26).
+  ///
+  /// Devuelve `true` SOLO si el servidor acepta el documento (`is_valid`).
+  /// `is_valid=false` no es un error: deja los motivos en [documentIssues] y
+  /// no avanza. Un fallo de red conserva [documentImage] y expone
+  /// [documentValidationError] para reintentar la validacion sin recapturar.
+  Future<bool> validateDocument() async {
+    final image = _documentImage;
+    if (image == null || _busy) return false;
+    _busy = true;
+    _validatingDocument = true;
+    _documentValidationError = null;
+    notifyListeners();
+    try {
+      final validator = _documentValidator;
+      final KycDocumentValidation outcome;
+      if (validator != null) {
+        outcome = await validator(image);
+      } else {
+        final service = _evaluationService;
+        // Tests legacy sin validador real: se preserva el avance directo.
+        outcome = service == null
+            ? const KycDocumentValidation(isValid: true)
+            : await service.validateDocument(image: image);
+      }
+      _documentValidation = outcome;
+      _documentIssues = outcome.issues;
+      return outcome.isValid;
+    } on ApiException catch (e) {
+      // Fallo de transporte: no se pierde la captura; se puede reintentar.
+      _lastError = KycErrorHandler.fromApiException(e);
+      _documentValidation = null;
+      _documentIssues = const [];
+      _documentValidationError = e.message;
+      return false;
+    } finally {
+      _busy = false;
+      _validatingDocument = false;
+      notifyListeners();
+    }
+  }
+
+  /// Resuelve el resultado de [step] con la cadena de evaluadores (F-T23):
+  /// detallado explicito > booleano explicito (tests legacy) > servicio real
+  /// `evaluate` > mock que pasa (compatibilidad).
+  Future<KycTaskEvaluation> _evaluate(
+    String step,
+    List<Uint8List> frames,
+  ) async {
+    final detailed = _detailedTaskEvaluator;
+    if (detailed != null) return detailed(step, frames);
+    final evaluator = _taskEvaluator;
+    if (evaluator != null) {
+      return KycTaskEvaluation(
+        step: step,
+        passed: await evaluator(step, frames),
+      );
+    }
+    final service = _evaluationService;
+    final token = _challenge?.token;
+    if (service != null && token != null) {
+      return service.evaluate(
+        challengeToken: token,
+        step: step,
+        frames: frames,
+      );
+    }
+    // Sin evaluador real configurado (tests legacy): se mantiene el mock.
+    return KycTaskEvaluation(step: step, passed: true);
+  }
+
   /// Captura frames de la tarea actual (fuente inyectada) y la resuelve:
   /// - `passed:true` -> avanza (o queda listo para submit si era la ultima).
   /// - `passed:false` -> MISMA tarea, crece [attemptsOf], mensaje de reintento.
@@ -189,6 +393,7 @@ class KycFlowController extends ChangeNotifier {
     final step = currentStep;
     if (step == null || _busy) return;
     _busy = true;
+    _taskPhase = KycTaskPhase.capturing;
     _errorMessage = null;
     notifyListeners();
     try {
@@ -204,17 +409,24 @@ class KycFlowController extends ChangeNotifier {
       }
       _framesByTask[step] = frames;
       _attemptsByTask[step] = attemptsOf(step) + 1;
-      final passed = await _taskEvaluator(step, frames);
-      if (passed) {
+      // F-T25: la rafaga ya termino; ahora el servidor evalua. Se notifica
+      // ANTES de esperar para que el overlay cambie a "Verificando..." sin
+      // ocultar el viewfinder.
+      _taskPhase = KycTaskPhase.evaluating;
+      notifyListeners();
+      final evaluation = await _evaluate(step, frames);
+      if (evaluation.passed) {
         _passedTasks.add(step);
         _lastError = null;
         if (!isLastStep) _stepIndex++;
       } else {
         // `passed:false` NO es error HTTP: es estado reintentable (E1-T06).
+        // Se conserva el motivo real del servidor (F-T23) para mostrarlo.
         final info = KycErrorHandler.forTaskNotPassed(
           task: step,
           attempts: attemptsOf(step),
           maxAttempts: _maxAttemptsPerTask,
+          serverReason: evaluation.reason,
           folio: _manualReviewFolio,
         );
         _lastError = info;
@@ -238,6 +450,7 @@ class KycFlowController extends ChangeNotifier {
       _errorMessage = e.message;
     } finally {
       _busy = false;
+      _taskPhase = KycTaskPhase.idle;
       notifyListeners();
     }
   }
@@ -245,17 +458,39 @@ class KycFlowController extends ChangeNotifier {
   /// Envia documento + segmentos. En fallo de red conserva todo el estado.
   Future<void> submit() async {
     final current = _challenge;
+    final applicant = _applicant;
     if (current == null || _busy || !readyToSubmit) return;
+    if (applicant == null || !applicant.isComplete) {
+      _errorMessage = 'Completa los datos del titular antes de enviar.';
+      notifyListeners();
+      return;
+    }
     _busy = true;
     _errorMessage = null;
     notifyListeners();
+    final framesByTask =
+        Map<String, List<Uint8List>>.unmodifiable(_framesByTask);
     try {
-      _result = await _service.submit(
-        challengeToken: current.token,
-        documentType: _documentType,
-        documentNumber: _documentNumber,
-        framesByTask: Map<String, List<Uint8List>>.unmodifiable(_framesByTask),
-      );
+      final service = _evaluationService;
+      if (service != null) {
+        // Produccion: envia `frames_b64` (todos) + `document.image_b64`.
+        _result = await service.submitWithDocument(
+          challengeToken: current.token,
+          documentType: _documentType,
+          documentNumber: _documentNumber,
+          applicant: applicant,
+          framesByTask: framesByTask,
+          documentImage: _documentImage,
+        );
+      } else {
+        _result = await _service.submit(
+          challengeToken: current.token,
+          documentType: _documentType,
+          documentNumber: _documentNumber,
+          applicant: applicant,
+          framesByTask: framesByTask,
+        );
+      }
     } on ApiException catch (e) {
       final info = KycErrorHandler.fromApiException(e);
       _lastError = info;
@@ -320,6 +555,11 @@ class KycFlowController extends ChangeNotifier {
     _attemptsByTask.clear();
     _errorMessage = null;
     _result = null;
+    _documentImage = null;
+    _documentValidation = null;
+    _documentIssues = const [];
+    _documentValidationError = null;
+    _validatingDocument = false;
     notifyListeners();
   }
 }

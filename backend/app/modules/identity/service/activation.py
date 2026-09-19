@@ -14,6 +14,11 @@ de reenvios del ciclo) y notifica best-effort via la fachada
 `notifications.send` (import perezoso, mismo patron que E1-T03/E1-T08: un
 fallo de envio se loguea sin PII ni codigo y NO revierte el reenvio).
 
+Routing de entrega (E1-T26): el OTP de activacion viaja por **correo**
+(`users.email`, canal `email`/plantilla `otp_code_email`); si no hay email,
+cae a **SMS** (`users.phone`, canal `sms`/plantilla `otp_code`); el
+`otp_codes.destination` persistido guarda el destino efectivo resuelto.
+
 Reglas transversales:
 
 - No filtrar existencia: usuario inexistente o `user_ref` malformado
@@ -51,23 +56,43 @@ logger = logging.getLogger(__name__)
 #: Proposito OTP de este flujo (el unico que activa cuentas).
 ACTIVATION_PURPOSE = "ACTIVATION"
 
-#: Plantilla de entrega del codigo (canal `sms`, placeholders
+#: Canales del routing de entrega (E1-T26).
+EMAIL_CHANNEL = "email"
+SMS_CHANNEL = "sms"
+
+#: Plantilla de entrega del codigo por correo (E1-T25, placeholders
 #: `{code, ttl_minutes}` segun `notifications.domain.templates`).
+OTP_EMAIL_TEMPLATE_CODE = "otp_code_email"
+
+#: Plantilla SMS del codigo (fallback, `{code, ttl_minutes}`).
 OTP_TEMPLATE_CODE = "otp_code"
 
-#: Canal por defecto del reenvio (el de la plantilla `otp_code`).
-DEFAULT_RESEND_CHANNEL = "sms"
+#: Canal preferido del reenvio (E1-T26: el OTP viaja por correo; SMS es
+#: el fallback cuando no hay `users.email`).
+DEFAULT_RESEND_CHANNEL = EMAIL_CHANNEL
 
 #: Mensajes genericos estables (identicos exista o no el usuario).
 INVALID_MESSAGE = "Codigo de activacion invalido"
 EXPIRED_MESSAGE = "Codigo de activacion vencido, solicite uno nuevo"
 RESEND_LIMIT_MESSAGE = "Limite de reenvios alcanzado, genere un codigo nuevo"
+#: La cuenta debe tener PIN antes de quedar ACTIVE (invariante E1-T24..T28).
+PIN_REQUIRED_MESSAGE = "La cuenta requiere configurar el PIN para activarse"
 
 
 class ActivationInvalidError(ValueError):
     """Codigo invalido, sin OTP pendiente, usuario inexistente o ref malformada.
 
     Un solo tipo/mensaje para no filtrar existencia (-> `INVALID_OTP`).
+    """
+
+
+class ActivationPinRequiredError(ValueError):
+    """OTP valido pero la credencial no tiene `pin_hash` (-> 409 `PIN_REQUIRED`).
+
+    Solo se alcanza con un OTP valido (no filtra existencia sin codigo): la
+    activacion canonica con un solo OTP es `/auth/pin/setup`, que fija el PIN
+    y pasa a ACTIVE en la misma transaccion. No debe existir una cuenta ACTIVE
+    sin PIN.
     """
 
 
@@ -151,16 +176,50 @@ def reset_activation_rate_limits() -> None:
         _BUCKETS.clear()
 
 
+# ------------------------------------------------------- Routing de entrega
+def resolve_activation_delivery(
+    *,
+    email: str | None,
+    phone: str | None,
+    destination: str | None = None,
+    channel: str | None = None,
+) -> tuple[str, str, str] | None:
+    """Resuelve `(canal, plantilla, destinatario)` del OTP (E1-T26).
+
+    Destino efectivo email -> sms: `users.email` viaja por `email` con la
+    plantilla `otp_code_email`; si no hay email, `users.phone` por `sms` con
+    `otp_code`. `channel` explicito fuerza el canal (toma `destination` si
+    llega, si no el dato del usuario). Sin destino resoluble retorna `None`
+    (best-effort: se omite la entrega sin abortar el alta/reenvio).
+    """
+    explicit = (destination or "").strip()
+    preferred = (channel or "").strip().lower()
+    mail = (email or "").strip()
+    tel = (phone or "").strip()
+    if preferred == EMAIL_CHANNEL:
+        recipient = explicit or mail
+        return (EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, recipient) if recipient else None
+    if preferred == SMS_CHANNEL:
+        recipient = explicit or tel
+        return (SMS_CHANNEL, OTP_TEMPLATE_CODE, recipient) if recipient else None
+    if mail:
+        return EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, mail
+    if tel:
+        return SMS_CHANNEL, OTP_TEMPLATE_CODE, tel
+    if explicit:
+        if "@" in explicit:
+            return EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, explicit
+        return SMS_CHANNEL, OTP_TEMPLATE_CODE, explicit
+    return None
+
+
 # ------------------------------------------------------- Notificacion best-effort
 def _notify_resend(
     session: Session,
     *,
     user_id: uuid.UUID,
-    destination: str | None,
-    phone: str | None,
-    email: str | None,
+    route: tuple[str, str, str] | None,
     plain_code: str,
-    channel: str | None,
 ) -> None:
     """Entrega el codigo via fachada `notifications.send` (best-effort).
 
@@ -169,19 +228,18 @@ def _notify_resend(
     loguea sin PII ni codigo y NO revierte el reenvio: el codigo ya quedo
     persistido (hash) y el cliente puede pedir otro reenvio.
     """
+    if route is None:
+        logger.warning("activation notify_skipped reason=%s", "sin_destinatario")
+        return
+    resolved, template_code, recipient = route
     try:
         from app.modules.notifications.service import send as notifications_send
 
-        resolved = (channel or DEFAULT_RESEND_CHANNEL).strip() or DEFAULT_RESEND_CHANNEL
-        recipient = (destination or phone or email or "").strip()
-        if not recipient:
-            logger.warning("activation notify_skipped reason=%s", "sin_destinatario")
-            return
         notifications_send(
             session,
             channel=resolved,
             recipient=recipient,
-            template_code=OTP_TEMPLATE_CODE,
+            template_code=template_code,
             data={
                 "code": plain_code,
                 "ttl_minutes": max(1, otp_service.OTP_TTL_SECONDS // 60),
@@ -189,7 +247,12 @@ def _notify_resend(
             user_id=user_id,
         )
     except Exception as exc:  # noqa: BLE001 - best-effort documentado
-        logger.warning("activation notify_failed error=%s", type(exc).__name__)
+        logger.warning(
+            "activation notify_failed channel=%s template=%s error=%s",
+            resolved,
+            template_code,
+            type(exc).__name__,
+        )
 
 
 # ------------------------------------------------------- Orquestacion
@@ -200,6 +263,11 @@ def activate_account(session: Session, *, user_ref: str, code: str) -> dict:
     (que ya encolo `user.activated`; no se duplica). Si ya estaba `ACTIVE`
     retorna idempotente sin exigir OTP. Cualquier otro estado no activable
     (`BLOCKED`/`CLOSED`) responde generico para no filtrar estado.
+
+    Invariante E1-T24..T28: antes de pasar a `ACTIVE` la credencial DEBE tener
+    `pin_hash`; si no lo tiene se lanza `ActivationPinRequiredError`
+    (-> 409 `PIN_REQUIRED`) y el endpoint revierte, de modo que la activacion
+    canonica con un solo OTP es `/auth/pin/setup`.
     """
     uid = _coerce_user_id(user_ref)
     user = identity_repo.get_user(session, uid) if uid is not None else None
@@ -222,6 +290,11 @@ def activate_account(session: Session, *, user_ref: str, code: str) -> dict:
     except (otp_service.OtpError, ValueError) as exc:
         # `OtpNotFound/Invalid/AttemptsExceeded` + codigo malformado: generico.
         raise ActivationInvalidError(INVALID_MESSAGE) from exc
+
+    credential = identity_repo.get_credential(session, user.id)
+    if credential is None or not credential.pin_hash:
+        # OTP valido pero sin PIN: no se activa (no existira ACTIVE sin PIN).
+        raise ActivationPinRequiredError(PIN_REQUIRED_MESSAGE)
 
     user.status = "ACTIVE"
     session.flush()
@@ -255,12 +328,19 @@ def resend_activation_otp(
     if user.status == "ACTIVE":
         raise ActivationInvalidError(INVALID_MESSAGE)
 
+    route = resolve_activation_delivery(
+        email=user.email,
+        phone=user.phone,
+        destination=destination,
+        channel=channel,
+    )
+    recipient = route[2] if route is not None else None
     try:
         row, plain = otp_service.resend_otp(
             session,
             user_id=user.id,
             purpose=ACTIVATION_PURPOSE,
-            destination=destination,
+            destination=recipient,
             wait_seconds=wait_seconds,
         )
     except otp_service.OtpMaxResendsExceededError as exc:
@@ -274,15 +354,7 @@ def resend_activation_otp(
     except (otp_service.OtpError, ValueError) as exc:
         raise ActivationInvalidError(INVALID_MESSAGE) from exc
 
-    _notify_resend(
-        session,
-        user_id=user.id,
-        destination=row.destination,
-        phone=user.phone,
-        email=user.email,
-        plain_code=plain,
-        channel=channel,
-    )
+    _notify_resend(session, user_id=user.id, route=route, plain_code=plain)
     remaining = row.expires_at
     try:
         aware = remaining if remaining.tzinfo is not None else remaining.replace(tzinfo=UTC)
@@ -300,12 +372,17 @@ def resend_activation_otp(
 __all__ = [
     "ACTIVATION_PURPOSE",
     "DEFAULT_RESEND_CHANNEL",
+    "EMAIL_CHANNEL",
     "EXPIRED_MESSAGE",
     "INVALID_MESSAGE",
+    "OTP_EMAIL_TEMPLATE_CODE",
     "OTP_TEMPLATE_CODE",
+    "PIN_REQUIRED_MESSAGE",
     "RESEND_LIMIT_MESSAGE",
+    "SMS_CHANNEL",
     "ActivationExpiredError",
     "ActivationInvalidError",
+    "ActivationPinRequiredError",
     "ActivationRateLimitedError",
     "ActivationResendLimitError",
     "activate_account",
@@ -314,4 +391,5 @@ __all__ = [
     "resend_activation_otp",
     "resend_rate_limit_cfg",
     "reset_activation_rate_limits",
+    "resolve_activation_delivery",
 ]

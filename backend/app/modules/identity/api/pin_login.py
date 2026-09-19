@@ -1,8 +1,11 @@
 """Endpoint del login con PIN (E1-T14, HU03 CA-02/CA-03).
 
-`POST /auth/login/pin {user_ref, pin[, device_id/device_info/ip]}` ->
+`POST /auth/login/pin {user_ref, pin[, device_id/device_info/ip,
+device_public_key/platform/biometric_type]}` ->
 verifica el PIN (hash PBKDF2, tiempo constante, contador de intentos y
-bloqueo temporal tras 5 fallos) y devuelve JWT corto + refresh opaco.
+bloqueo temporal tras 5 fallos) y devuelve JWT corto + refresh opaco. Con
+`device_public_key` + `device_id`, tras el exito registra/refresca el
+`device_binding` best-effort (E1-T27; un fallo no rompe el login).
 
 Montado bajo `/api/v1` por `app.main` via `iter_routers` (este `router` lo
 recoge `api/__init__.py`; sin registro extra). Sin logica en el router
@@ -65,6 +68,9 @@ def login_pin(body: PinLoginRequest, request: Request, db: Session = Depends(get
             device_id=body.device_id,
             device_info=body.device_info,
             ip=body.ip,
+            device_public_key=body.device_public_key,
+            platform=body.platform,
+            biometric_type=body.biometric_type,
         )
     except pin_login_service.PinLockedError as exc:
         # El bloqueo/la notificacion ya quedaron en `flush`: se confirman

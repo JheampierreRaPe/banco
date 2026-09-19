@@ -53,6 +53,38 @@ void main() {
     expect(await repo.getOrCreateDeviceSecret(), first);
   });
 
+  test('device binding key: estable, formato hmac:<hex> y no expone secreto',
+      () async {
+    final repo = SecureSessionRepository(storage: InMemorySecureStorage());
+
+    final first = await repo.getOrCreateDeviceBindingKey();
+
+    // Idempotente y formato exacto que espera el backend (64 hex minusculas).
+    expect(await repo.getOrCreateDeviceBindingKey(), first);
+    expect(first, matches(RegExp(r'^hmac:[0-9a-f]{64}$')));
+
+    // Derivada de los MISMOS bytes que firma F-T03 (base64url de F-T02).
+    final secret = await repo.getOrCreateDeviceSecret();
+    final expectedHex = base64Url
+        .decode(secret)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    expect(first, 'hmac:$expectedHex');
+    expect(first, isNot(contains(secret)));
+  });
+
+  test('binding key rota si clearOnInvalidRefresh borra el device secret',
+      () async {
+    final repo = SecureSessionRepository(storage: InMemorySecureStorage());
+    final before = await repo.getOrCreateDeviceBindingKey();
+
+    await repo.clearOnInvalidRefresh();
+
+    final after = await repo.getOrCreateDeviceBindingKey();
+    expect(after, isNot(before));
+    expect(after, matches(RegExp(r'^hmac:[0-9a-f]{64}$')));
+  });
+
   test('clearOnInvalidRefresh borra todo y rota el device secret', () async {
     final storage = InMemorySecureStorage();
     final repo = SecureSessionRepository(storage: storage);

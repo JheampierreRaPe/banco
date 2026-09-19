@@ -1,4 +1,5 @@
 import 'package:banca_online/core/errors/api_exception.dart';
+import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/activation/activation_service.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_controller.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_page.dart';
@@ -31,6 +32,7 @@ class FakePinSetupService implements PinSetupService {
 /// Fake del MISMO contrato de reenvío de `activation` (sin red).
 class FakeResendService implements ActivationService {
   int calls = 0;
+  String? lastChannel;
 
   @override
   Future<ActivationResult> activate({
@@ -42,6 +44,7 @@ class FakeResendService implements ActivationService {
   @override
   Future<ResendResult> resend({required String userRef, String? channel}) async {
     calls++;
+    lastChannel = channel;
     return const ResendResult(
       userId: 'u-1',
       resendCount: 1,
@@ -52,8 +55,9 @@ class FakeResendService implements ActivationService {
 
 GoRouter _router(
   FakePinSetupService setup,
-  FakeResendService resend,
-) =>
+  FakeResendService resend, {
+  SessionIdentityStore? identity,
+}) =>
     GoRouter(
       initialLocation: '/pin-setup',
       routes: [
@@ -63,12 +67,22 @@ GoRouter _router(
             userRef: 'u-1',
             setupService: setup,
             resendService: resend,
+            identity: identity,
           ),
         ),
         GoRoute(
           path: '/login',
-          builder: (context, state) =>
-              const Scaffold(body: Text('login-ok')),
+          builder: (context, state) => Scaffold(
+            body: Column(
+              children: [
+                const Text('login-ok'),
+                Text(
+                  'query:${state.uri.queryParameters['userRef']}/'
+                  '${state.uri.queryParameters['deviceId']}',
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -76,10 +90,11 @@ GoRouter _router(
 Future<void> _pump(
   WidgetTester tester,
   FakePinSetupService setup,
-  FakeResendService resend,
-) async {
+  FakeResendService resend, {
+  SessionIdentityStore? identity,
+}) async {
   await tester.pumpWidget(
-    MaterialApp.router(routerConfig: _router(setup, resend)),
+    MaterialApp.router(routerConfig: _router(setup, resend, identity: identity)),
   );
   await tester.pumpAndSettle();
 }
@@ -97,10 +112,11 @@ Future<void> _fill(
 }
 
 void main() {
-  testWidgets('setup OK navega a /login (servicio mockeado)',
+  testWidgets('setup OK navega a /login?userRef=&deviceId= (servicio mockeado)',
       (tester) async {
     final setup = FakePinSetupService();
-    await _pump(tester, setup, FakeResendService());
+    final identity = InMemorySessionIdentityStore();
+    await _pump(tester, setup, FakeResendService(), identity: identity);
 
     await _fill(tester, code: '123456', pin: '1234', confirm: '1234');
     await tester.tap(find.byKey(const Key('pin-setup-submit')));
@@ -109,6 +125,25 @@ void main() {
     expect(setup.calls, 1);
     expect(setup.lastArgs['pin'], '1234');
     expect(find.text('login-ok'), findsOneWidget);
+    expect(identity.deviceId, isNotNull);
+    expect(find.text('query:u-1/${identity.deviceId}'), findsOneWidget);
+  });
+
+  testWidgets('reenvio usa el canal email y el copy menciona correo',
+      (tester) async {
+    final resend = FakeResendService();
+    await _pump(tester, FakePinSetupService(), resend);
+
+    expect(PinSetupController.codeHint, contains('correo'));
+    expect(find.text(PinSetupController.codeHint), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('pin-setup-resend')));
+    await tester.pumpAndSettle();
+
+    expect(resend.calls, 1);
+    expect(resend.lastChannel, 'email');
+    expect(PinSetupController.resentMessage, contains('correo'));
+    expect(find.text(PinSetupController.resentMessage), findsOneWidget);
   });
 
   testWidgets('PINs que no coinciden bloquean el envío', (tester) async {

@@ -28,6 +28,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/http/api_client.dart';
+import '../../core/session/session_identity_store.dart';
 import '../../core/session/session_repository.dart';
 import '../../core/widgets/error_view.dart';
 import '../biometrics/biometric_reader.dart';
@@ -42,19 +43,32 @@ class LoginRouteDeps {
     required this.api,
     required this.session,
     required this.reader,
+    this.identity,
     this.userRef = '',
     this.deviceId = '',
+    this.platform,
+    this.biometricType,
   });
 
   final ApiClient api;
   final SessionRepository session;
   final BiometricReader reader;
 
+  /// Store F-T20 para recordar el ultimo `user_ref` tras el exito. Si es
+  /// `null` se usa [sessionIdentityStoreFactory] (o se omite el guardado).
+  final SessionIdentityStore? identity;
+
   /// Referencia del usuario si ya se conoce (p. ej. ultimo usuario).
   final String userRef;
 
   /// Identificador del dispositivo (viaja como `device_id`).
   final String deviceId;
+
+  /// `android`/`ios`; `null` = resolver del SO en el controlador.
+  final String? platform;
+
+  /// `FACE`/`FINGERPRINT` si se conoce; `null` = omitir.
+  final String? biometricType;
 }
 
 /// Fabrica de dependencias de `/login` (en tests se asigna un fake).
@@ -98,6 +112,9 @@ final List<GoRoute> loginRoutes = [
           api: deps.api,
           biometrics: biometrics,
         ),
+        identity: deps.identity ?? sessionIdentityStoreFactory?.call(),
+        platform: deps.platform,
+        biometricType: deps.biometricType,
       );
       return LoginPage(
         controller: controller,

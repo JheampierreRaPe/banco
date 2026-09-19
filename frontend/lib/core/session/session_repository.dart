@@ -1,4 +1,21 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
+
+/// Derivacion pura de la clave publica de binding a partir del `device_secret`
+/// (base64url de 32 bytes de F-T02): devuelve `"hmac:<hex>"` en hex
+/// minusculas, el mismo material con el que F-T03 firma el `nonce`.
+///
+/// Es material PUBLICO (identifica al dispositivo): el secreto en bytes nunca
+/// se devuelve ni se loguea (docs/16 reglas 7 y 10).
+String deviceBindingKeyFromSecret(String deviceSecret) {
+  final bytes = base64Url.decode(deviceSecret);
+  final buffer = StringBuffer('hmac:');
+  for (final byte in bytes) {
+    buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+  }
+  return buffer.toString();
+}
 
 /// Seam de sesion.
 ///
@@ -34,6 +51,16 @@ abstract class SessionRepository implements Listenable {
   /// Secreto de dispositivo para la firma de nonce (seam F-T03): lo crea
   /// (32 bytes aleatorios seguros, base64) si no existe y lo conserva.
   Future<String> getOrCreateDeviceSecret();
+
+  /// Clave PUBLICA de binding derivada del `device_secret` (F-T03/F-T22):
+  /// `"hmac:<hex>"` estable e idempotente. Solo viaja esta forma publica al
+  /// backend (`POST /auth/login/pin`); el secreto nunca sale del
+  /// almacenamiento seguro ni se loguea (docs/16 reglas 7 y 10).
+  ///
+  /// Implementacion por defecto reutilizada por los repositorios en memoria
+  /// de test; [SecureSessionRepository] la especializa para documentarlo.
+  Future<String> getOrCreateDeviceBindingKey() async =>
+      deviceBindingKeyFromSecret(await getOrCreateDeviceSecret());
 
   /// Limpieza local al cerrar sesion: borra tokens, CONSERVA el secreto de
   /// dispositivo (identifica al dispositivo, no a la sesion: dispositivo

@@ -7,11 +7,13 @@
 // - Inactividad expira la sesion (reloj manual via `tick()`).
 import 'package:banca_online/core/http/api_client.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
+import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/biometrics/biometric_reader.dart';
 import 'package:banca_online/features/biometrics/biometric_service.dart';
 import 'package:banca_online/features/biometrics/login_controller.dart' as bio;
 import 'package:banca_online/features/login/login_controller.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uuid/uuid.dart';
 
@@ -79,6 +81,7 @@ class _HttpMock {
           }
           if (options.path.endsWith(LoginController.pinPath)) {
             pinCalls++;
+            lastPinPayload = Map<String, dynamic>.from(options.data as Map);
             final pin = (options.data as Map)['pin'] as String?;
             if (pin == '1234') {
               handler.resolve(
@@ -120,12 +123,16 @@ class _HttpMock {
   int challengeCalls = 0;
   int facialCalls = 0;
   int pinCalls = 0;
+  Map<String, dynamic>? lastPinPayload;
 }
 
 LoginController _controller({
   required InMemorySessionRepository session,
   required _HttpMock http,
   required BiometricReader reader,
+  SessionIdentityStore? identity,
+  String? platform,
+  String? biometricType,
   int inactivityTimeoutSeconds = kLoginInactivityTimeoutSeconds,
 }) {
   final api = ApiClient.create(
@@ -139,8 +146,32 @@ LoginController _controller({
     api: api,
     session: session,
     biometricLogin: bio.LoginController(api: api, biometrics: biometrics),
+    identity: identity,
+    platform: platform,
+    biometricType: biometricType,
     inactivityTimeoutSeconds: inactivityTimeoutSeconds,
   );
+}
+
+/// Sesion que falla al derivar la clave de binding (p. ej. secreto corrupto).
+class _ThrowingBindingSession extends InMemorySessionRepository {
+  bool throwOnBinding = true;
+
+  @override
+  Future<String> getOrCreateDeviceBindingKey() async {
+    if (throwOnBinding) throw StateError('secreto corrupto');
+    return super.getOrCreateDeviceBindingKey();
+  }
+}
+
+/// Sesion que falla al guardar (p. ej. secure storage caido).
+class _ThrowingSaveSession extends InMemorySessionRepository {
+  @override
+  Future<void> saveSession({
+    required String accessToken,
+    String? refreshToken,
+  }) async =>
+      throw StateError('secure storage caido');
 }
 
 void main() {
@@ -214,6 +245,135 @@ void main() {
     expect(session.currentAccessToken, 'acc-pin');
   });
 
+  test('loginWithPin envia device_public_key, platform y biometric_type',
+      () async {
+    final session = InMemorySessionRepository();
+    final http = _HttpMock();
+    final controller = _controller(
+      session: session,
+      http: http,
+      reader: FakeBiometricReader(available: false),
+      platform: 'android',
+      biometricType: 'FINGERPRINT',
+    );
+    addTearDown(controller.dispose);
+
+    final bindingKey = await session.getOrCreateDeviceBindingKey();
+    final ok = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(ok, isTrue);
+    final payload = http.lastPinPayload!;
+    expect(payload['user_ref'], 'u-1');
+    expect(payload['device_id'], 'd-1');
+    expect(payload['device_public_key'], bindingKey);
+    expect(
+      payload['device_public_key'],
+      matches(RegExp(r'^hmac:[0-9a-f]{64}$')),
+    );
+    expect(payload['platform'], 'android');
+    expect(payload['biometric_type'], 'FINGERPRINT');
+  });
+
+  test('loginWithPin omite biometric_type cuando no se conoce', () async {
+    final session = InMemorySessionRepository();
+    final http = _HttpMock();
+    final controller = _controller(
+      session: session,
+      http: http,
+      reader: FakeBiometricReader(available: false),
+      platform: 'ios',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    final payload = http.lastPinPayload!;
+    expect(payload.containsKey('biometric_type'), isFalse);
+    expect(payload['platform'], 'ios');
+  });
+
+  test('exito con PIN guarda el ultimo user_ref (F-T20)', () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.loginWithPin(
+      userRef: 'u-pin',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(identity.userRef, 'u-pin');
+    expect(await identity.readUserRef(), 'u-pin');
+  });
+
+  test('exito biometrico guarda el ultimo user_ref (F-T20)', () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: true, succeeds: true),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithBiometrics(
+      userRef: 'u-face',
+      deviceId: 'd-1',
+      reason: 'Confirma tu identidad para ingresar',
+    );
+
+    expect(ok, isTrue);
+    expect(identity.userRef, 'u-face');
+  });
+
+  test('no loguea PIN, user_ref ni device_public_key', () async {
+    final logs = <String>[];
+    final original = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      logs.add(message ?? '');
+    };
+    addTearDown(() => debugPrint = original);
+
+    final session = InMemorySessionRepository();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: false),
+      identity: InMemorySessionIdentityStore(),
+      platform: 'android',
+      biometricType: 'FACE',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.loginWithPin(
+      userRef: 'u-secreto',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    final joined = logs.join('\n');
+    expect(joined, isNot(contains('1234')));
+    expect(joined, isNot(contains('u-secreto')));
+    expect(joined, isNot(contains('hmac:')));
+    expect(joined, isNot(contains('device_public_key')));
+  });
+
   test('PIN incorrecto y facial invalido: MISMO mensaje generico', () async {
     final session = InMemorySessionRepository();
     final http = _HttpMock(facialFails: true);
@@ -246,6 +406,63 @@ void main() {
     expect(controller.errorMessage, LoginController.genericAuthErrorMessage);
     expect(controller.errorMessage, facialMessage);
     expect(controller.errorMessage, isNot(contains('pin')));
+  });
+
+  test('loginWithPin libera busy y reintenta si falla la clave del dispositivo',
+      () async {
+    final session = _ThrowingBindingSession();
+    final http = _HttpMock();
+    final controller = _controller(
+      session: session,
+      http: http,
+      reader: FakeBiometricReader(available: false),
+    );
+    addTearDown(controller.dispose);
+
+    final first = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(first, isFalse);
+    expect(controller.busy, isFalse);
+    expect(controller.errorMessage, LoginController.genericAuthErrorMessage);
+    expect(controller.errorMessage, isNot(contains('secreto')));
+    // No se envio el PIN porque la clave fallo antes del POST.
+    expect(http.pinCalls, 0);
+
+    // Reintento posible una vez que la clave se puede derivar.
+    session.throwOnBinding = false;
+    final second = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+    expect(second, isTrue);
+    expect(controller.busy, isFalse);
+    expect(controller.succeeded, isTrue);
+    expect(http.pinCalls, 1);
+  });
+
+  test('loginWithBiometrics libera busy si falla guardar la sesion', () async {
+    final session = _ThrowingSaveSession();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: true, succeeds: true),
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithBiometrics(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      reason: 'Confirma tu identidad para ingresar',
+    );
+
+    expect(ok, isFalse);
+    expect(controller.busy, isFalse);
+    expect(controller.errorMessage, LoginController.genericAuthErrorMessage);
   });
 
   test('inactividad expira la sesion (reloj manual)', () async {

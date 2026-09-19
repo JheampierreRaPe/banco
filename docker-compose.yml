@@ -60,6 +60,10 @@ services:
       KYC_PROVIDER: ${KYC_PROVIDER:-mock}
       KYC_BASE_URL: ${KYC_BASE_URL:-http://kyc:8000}
       KYC_API_KEY: ${KYC_API_KEY:-change-me}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-mock}
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      DOC_HASH_PEPPER: ${DOC_HASH_PEPPER:-change-me}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

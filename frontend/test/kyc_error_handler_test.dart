@@ -181,4 +181,20 @@ void main() {
       expect(folio, contains('20260918'));
     });
   });
+
+  group('kycReasonMessage (traduccion de motivos, F-T23)', () {
+    test('mapea los motivos del microservicio a mensajes ES', () {
+      expect(kycReasonMessage('MIN_FRAMES'), contains('frames'));
+      expect(kycReasonMessage('NO_BLINK'), contains('parpadeo'));
+      expect(kycReasonMessage('POSE_NOT_ESTIMATED'), contains('pose'));
+      expect(kycReasonMessage('INSUFFICIENT_MOVEMENT'), contains('movimiento'));
+      expect(kycReasonMessage('FACE_NOT_CONSISTENT'), contains('consistente'));
+      expect(kycReasonMessage('FACE_MISMATCH'), contains('documento'));
+    });
+
+    test('motivo desconocido no se oculta; vacio -> generico accionable', () {
+      expect(kycReasonMessage('LOW_QUALITY'), 'LOW_QUALITY');
+      expect(kycReasonMessage(null), contains('prueba de vida'));
+    });
+  });
 }

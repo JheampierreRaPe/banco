@@ -1,5 +1,6 @@
 import 'package:banca_online/core/router/app_router.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
+import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/login/login_routes.dart';
 import 'package:banca_online/features/welcome/welcome_seen_store.dart';
 import 'package:flutter/material.dart';
@@ -127,5 +128,33 @@ void main() {
     // Tras el ensamblado de fase 6, /login es la pantalla real (E1-T16).
     expect(find.text('Inicia sesión'), findsOneWidget);
     expect(find.text('Iniciar sesión'), findsNothing);
+  });
+
+  testWidgets('buildRouter hidrata userRef/deviceId en LoginRouteDeps',
+      (tester) async {
+    debugDisableLoginAutoTick = true;
+    addTearDown(() => debugDisableLoginAutoTick = false);
+    final session = InMemorySessionRepository();
+    final seen = InMemoryWelcomeSeenStore(initialSeen: true);
+    addTearDown(seen.dispose);
+    final identity = InMemorySessionIdentityStore(
+      userRef: 'user-123',
+      deviceId: 'device-abc',
+    );
+    final router = buildRouter(
+      session,
+      welcomeSeen: seen,
+      identity: identity,
+      initialLocation: '/login',
+    );
+    addTearDown(router.dispose);
+
+    final deps = loginRouteDepsFactory!();
+    expect(deps.userRef, 'user-123');
+    expect(deps.deviceId, 'device-abc');
+
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await _pumpSettled(tester);
+    expect(find.text('Inicia sesión'), findsOneWidget);
   });
 }

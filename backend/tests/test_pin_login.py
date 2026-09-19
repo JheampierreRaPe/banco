@@ -16,6 +16,12 @@
   correcto) -> `ACCOUNT_LOCKED`; bloqueo vencido -> exito (desbloqueo por
   tiempo); inexistente vs mal PIN: cuerpo IDENTICO y costo similar (rama
   ciega con hash ficticio); errores sin `locked_until`/contadores.
+- E1-T27: primer login con `device_public_key` -> crea `device_bindings`
+  (`ACTIVE`, `last_used_at` coherente, sin duplicar fila); segundo login ->
+  `touch_binding` (una sola fila, no pisa la `public_key`); sin clave -> no
+  binding; fallo de persistencia -> tokens igual (best-effort); `platform`/
+  `biometric_type` invalidos se ignoran sin romper el login; `device_public_key`
+  jamas en logs y auditoria de binding via fachada.
 - Reglas estaticas (servicio sin `commit`, sin KYC/OTP/activation/onboard,
   reutiliza `create_access_token` y las constantes de emision de
   `device_login`; constantes `MAX_FAILED_ATTEMPTS = 5` documentadas como
@@ -57,12 +63,20 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _aware(value: datetime | None) -> datetime | None:
+    """Normaliza a UTC (SQLite devuelve datetimes naive en pruebas)."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 @pytest.fixture()
 def pin_session():
     """Sesion SQLite aislada (`identity`/`shared`/`notifications` via ATTACH)."""
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
 
+    import app.modules.audit.models as _a  # noqa: F401 (registro)
     import app.modules.identity.models as _i  # noqa: F401 (registro)
     import app.modules.notifications.models as _n  # noqa: F401 (registro)
     import app.modules.shared.models as _s  # noqa: F401 (registro)
@@ -73,7 +87,7 @@ def pin_session():
 
     def _attach(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
-        for schema in ("identity", "shared", "notifications"):
+        for schema in ("identity", "shared", "notifications", "audit"):
             cur.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
         cur.close()
 
@@ -84,9 +98,11 @@ def pin_session():
             Base.metadata.tables["identity.users"],
             Base.metadata.tables["identity.credentials"],
             Base.metadata.tables["identity.sessions"],
+            Base.metadata.tables["identity.device_bindings"],
             Base.metadata.tables["shared.outbox"],
             Base.metadata.tables["notifications.notifications"],
             Base.metadata.tables["notifications.notification_templates"],
+            Base.metadata.tables["audit.audit_log"],
         ],
     )
     session = Session(bind=engine, autoflush=False, expire_on_commit=False)
@@ -167,6 +183,24 @@ def _lock_notifications(pin_session: Session, user_id: uuid.UUID) -> list:
         Notification.user_id == user_id,
         Notification.template_code == "login_alert",
     )
+    return list(pin_session.scalars(stmt).all())
+
+
+def _bindings(pin_session: Session, user_id: uuid.UUID) -> list:
+    from app.modules.identity.models import DeviceBinding
+
+    pin_session.expire_all()
+    stmt = sa.select(DeviceBinding).where(DeviceBinding.user_id == user_id)
+    return list(pin_session.scalars(stmt).all())
+
+
+def _audit_rows(pin_session: Session, action: str | None = None) -> list:
+    from app.modules.audit.models import AuditLog
+
+    pin_session.expire_all()
+    stmt = sa.select(AuditLog).order_by(AuditLog.seq.asc())
+    if action is not None:
+        stmt = stmt.where(AuditLog.action == action)
     return list(pin_session.scalars(stmt).all())
 
 
@@ -390,3 +424,161 @@ def test_unknown_vs_wrong_pin_timing_similar(pin_client: TestClient, pin_session
 def test_openapi_includes_pin_path(pin_client: TestClient):
     spec = pin_client.get("/openapi.json").json()
     assert "/api/v1/auth/login/pin" in spec["paths"]
+
+
+# ---------------------------------------------------------------- E1-T27 binding
+def _new_device_key() -> str:
+    return "hmac:" + uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def test_first_pin_login_registers_device_binding(pin_client: TestClient, pin_session: Session):
+    user = _make_pin_user(pin_session)
+    key = _new_device_key()
+    resp = pin_client.post(
+        "/api/v1/auth/login/pin",
+        json={
+            "user_ref": str(user.id),
+            "pin": PIN,
+            "device_id": "device-1",
+            "device_public_key": key,
+            "platform": "android",
+            "biometric_type": "FACE",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert key not in resp.text, "la clave publica no se refleja"
+
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1, "el primer login crea el binding"
+    row = rows[0]
+    assert row.device_id == "device-1"
+    assert row.public_key == key
+    assert row.status == "ACTIVE"
+    assert row.platform == "android"
+    assert row.biometric_type == "FACE"
+    assert row.last_used_at is not None, "last_used_at coherente desde el alta"
+    assert row.registered_at is not None
+
+
+def test_second_pin_login_touches_binding_single_row(pin_client: TestClient, pin_session: Session):
+    user = _make_pin_user(pin_session)
+    key = _new_device_key()
+    payload = {
+        "user_ref": str(user.id),
+        "pin": PIN,
+        "device_id": "device-1",
+        "device_public_key": key,
+        "platform": "ios",
+        "biometric_type": "FINGERPRINT",
+    }
+    assert pin_client.post("/api/v1/auth/login/pin", json=payload).status_code == 200
+
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1
+    old = _utcnow() - timedelta(days=1)
+    rows[0].last_used_at = old
+    pin_session.commit()
+
+    second = pin_client.post(
+        "/api/v1/auth/login/pin", json={**payload, "device_public_key": _new_device_key()}
+    )
+    assert second.status_code == 200, second.text
+
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1, "el segundo login no duplica la fila"
+    assert rows[0].public_key == key, "touch no pisa la public_key registrada"
+    used_at = _aware(rows[0].last_used_at)
+    assert used_at is not None and used_at > old, "touch refresca last_used_at"
+
+
+def test_pin_login_without_device_key_does_not_bind(pin_client: TestClient, pin_session: Session):
+    user = _make_pin_user(pin_session)
+    resp = pin_client.post(
+        "/api/v1/auth/login/pin",
+        json={"user_ref": str(user.id), "pin": PIN, "device_id": "device-x"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _bindings(pin_session, user.id) == [], "sin clave no se registra binding"
+    assert _audit_rows(pin_session, "auth.device_binding") == []
+
+
+def test_binding_failure_is_best_effort(pin_client: TestClient, pin_session: Session, monkeypatch):
+    from app.modules.identity import repository as identity_repo
+
+    user = _make_pin_user(pin_session)
+    key = _new_device_key()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("fallo de persistencia simulado")
+
+    monkeypatch.setattr(identity_repo, "register_binding", _boom)
+    resp = pin_client.post(
+        "/api/v1/auth/login/pin",
+        json={
+            "user_ref": str(user.id),
+            "pin": PIN,
+            "device_id": "device-1",
+            "device_public_key": key,
+            "platform": "android",
+        },
+    )
+    assert resp.status_code == 200, "el login no se rompe si falla el binding"
+    data = resp.json()["data"]
+    assert data["access_token"] and data["refresh_token"]
+    assert _bindings(pin_session, user.id) == []
+
+    audits = _audit_rows(pin_session, "auth.device_binding")
+    assert any(
+        (row.after_json or {}).get("result") == "failed" for row in audits
+    ), "se audita el intento fallido via fachada"
+
+
+def test_invalid_platform_and_biometric_are_ignored(pin_client: TestClient, pin_session: Session):
+    user = _make_pin_user(pin_session)
+    key = _new_device_key()
+    resp = pin_client.post(
+        "/api/v1/auth/login/pin",
+        json={
+            "user_ref": str(user.id),
+            "pin": PIN,
+            "device_id": "device-1",
+            "device_public_key": key,
+            "platform": "windows",
+            "biometric_type": "IRIS",
+        },
+    )
+    assert resp.status_code == 200, "metadatos invalidos no rompen el login"
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1, "el binding se registra ignorando el enum invalido"
+    assert rows[0].platform is None
+    assert rows[0].biometric_type is None
+
+
+def test_device_public_key_not_logged_and_binding_audited(
+    pin_client: TestClient, pin_session: Session, caplog
+):
+    import logging
+
+    user = _make_pin_user(pin_session)
+    key = _new_device_key()
+    with caplog.at_level(logging.DEBUG):
+        resp = pin_client.post(
+            "/api/v1/auth/login/pin",
+            json={
+                "user_ref": str(user.id),
+                "pin": PIN,
+                "device_id": "device-1",
+                "device_public_key": key,
+                "platform": "android",
+                "biometric_type": "FACE",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    assert key not in caplog.text, "device_public_key jamas sale en logs"
+
+    audits = _audit_rows(pin_session, "auth.device_binding")
+    assert len(audits) == 1, "el alta se audita via fachada"
+    after = audits[0].after_json or {}
+    assert after.get("result") == "registered"
+    assert "device_public_key" not in after
+    assert key not in str(after), "sin secretos en la auditoria"

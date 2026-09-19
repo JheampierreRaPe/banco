@@ -18,10 +18,18 @@ Flujo (`POST /auth/pin/setup {user_ref, code, pin}`):
    existencia ni estado). El OTP valido ES la autorizacion (sin sesion
    previa); por eso el 409 de abajo solo se alcanza con OTP valido (no se
    puede sondear el estado del PIN sin codigo).
-3. Si la credencial ya tiene `pin_hash` -> `PinAlreadySetError`
+3. Exige `user.status == PENDING_ACTIVATION` (unico estado activable): si
+   esta `BLOCKED`/`CLOSED`/`ACTIVE` u otro -> `PinSetupInvalidError` (401
+   generico, sin filtrar estado).
+4. Si la credencial ya tiene `pin_hash` -> `PinAlreadySetError`
    (`PIN_ALREADY_SET`, 409): el PIN solo se fija una vez (no hay re-fijado).
-4. Si no, fija `pin_hash = hash_pin(pin)` (PBKDF2 de `pin_login`, sin
-   reinventar cripto) y retorna `{user_id, status}` (forma de E1-T10).
+5. Si no, fija `pin_hash = hash_pin(pin)` (PBKDF2 de `pin_login`, sin
+   reinventar cripto) y, en la MISMA transaccion (un solo OTP, decision
+   E1-T28), transiciona `users.status: PENDING_ACTIVATION -> ACTIVE`;
+   retorna `{user_id, status}` con `status='ACTIVE'` (forma de E1-T10).
+   El `user.activated` ya lo enlista `validate_otp` via outbox: aqui NO se
+   re-emite. Se fija primero el PIN y despues el estado para que un fallo no
+   deje la cuenta `ACTIVE` sin PIN.
 
 Convencion: `flush` sin `commit`; quien llama decide la transaccion (el
 endpoint confirma en exito y ante 409 para que el consumo del OTP persista;
@@ -48,6 +56,10 @@ logger = logging.getLogger(__name__)
 
 #: Proposito OTP de este flujo (el mismo que activa E1-T10 en HU02).
 SETUP_PURPOSE = "ACTIVATION"
+
+#: Unico estado activable: solo `PENDING_ACTIVATION` puede fijar PIN y pasar
+#: a `ACTIVE` (BLOCKED/CLOSED/ACTIVE -> error generico, sin filtrar estado).
+ACTIVATABLE_STATUS = "PENDING_ACTIVATION"
 
 #: Mensaje generico estable (identico exista o no el usuario o el OTP).
 INVALID_MESSAGE = "Codigo de configuracion invalido"
@@ -119,13 +131,14 @@ def _audit_pin_setup(session: Session, *, user_id: uuid.UUID) -> None:
 
 
 def setup_pin(session: Session, *, user_ref: str, code: str, pin: str) -> dict:
-    """Fija el PIN inicial una sola vez (`flush`, sin `commit`).
+    """Fija el PIN inicial y activa la cuenta con un solo OTP (`flush`, sin `commit`).
 
-    Exito: consume el OTP `ACTIVATION`, fija `pin_hash` y retorna
-    `{"user_id", "status"}` (el `status` actual del usuario). Fallos:
-    formato de PIN debil -> `ValueError` (422); codigo/usuario invalidos ->
-    `PinSetupInvalidError` (401 generico); PIN ya fijado ->
-    `PinAlreadySetError` (409).
+    Exito: consume el OTP `ACTIVATION`, fija `pin_hash` y transiciona
+    `users.status` a `ACTIVE` en la misma sesion; retorna
+    `{"user_id", "status"}` con `status='ACTIVE'`. El `user.activated` ya lo
+    enlista `validate_otp` (no se duplica). Fallos: formato de PIN debil ->
+    `ValueError` (422); codigo/usuario invalidos -> `PinSetupInvalidError`
+    (401 generico); PIN ya fijado -> `PinAlreadySetError` (409).
     """
     uid = _coerce_user_id(user_ref)
     if uid is None:
@@ -145,10 +158,15 @@ def setup_pin(session: Session, *, user_ref: str, code: str, pin: str) -> dict:
         # Inalcanzable con OTP valido en la practica (el OTP cuelga del
         # usuario), pero generico por si la cuenta se borro entremedio.
         raise PinSetupInvalidError(INVALID_MESSAGE)
+    if user.status != ACTIVATABLE_STATUS:
+        # BLOCKED/CLOSED/ACTIVE u otro: error generico, sin filtrar estado
+        # (el OTP valido ya se consumio; el endpoint revierte al ser 401).
+        raise PinSetupInvalidError(INVALID_MESSAGE)
     if credential.pin_hash:
         raise PinAlreadySetError(ALREADY_SET_MESSAGE)
 
     credential.pin_hash = pin_login_service.hash_pin(pin)
+    user.status = "ACTIVE"
     session.flush()
     _audit_pin_setup(session, user_id=user.id)
     logger.info("pin_setup ok")
@@ -156,6 +174,7 @@ def setup_pin(session: Session, *, user_ref: str, code: str, pin: str) -> dict:
 
 
 __all__ = [
+    "ACTIVATABLE_STATUS",
     "ALREADY_SET_MESSAGE",
     "AUDIT_PIN_SETUP",
     "INVALID_MESSAGE",

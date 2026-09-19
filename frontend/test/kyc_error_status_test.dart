@@ -36,6 +36,7 @@ class FakeKycService implements KycService {
     required String challengeToken,
     required String documentType,
     required String documentNumber,
+    required KycApplicant applicant,
     required Map<String, List<Uint8List>> framesByTask,
   }) async =>
       const KycSubmitResult(overallResult: true, detailCode: 'OK');

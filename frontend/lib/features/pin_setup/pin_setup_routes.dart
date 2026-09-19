@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/session/session_identity_store.dart';
 import '../../core/widgets/error_view.dart';
 import '../activation/activation_service.dart';
 import 'pin_setup_page.dart';
@@ -52,6 +53,7 @@ final List<GoRoute> pinSetupRoutes = [
         userRef: userRef,
         setupService: setupFactory(),
         resendService: resendFactory(),
+        identity: sessionIdentityStoreFactory?.call(),
       );
     },
   ),

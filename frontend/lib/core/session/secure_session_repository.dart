@@ -86,6 +86,14 @@ class SecureSessionRepository extends ChangeNotifier
     return secret;
   }
 
+  /// Clave publica de binding (`"hmac:<hex>"`) derivada del `device.secret`
+  /// (F-T22): estable e idempotente, sin exponer el secreto. Es el material
+  /// que F-T03 usa para firmar el `nonce`; solo su forma publica viaja al
+  /// backend. Nunca se loguea (docs/16 reglas 7 y 10).
+  @override
+  Future<String> getOrCreateDeviceBindingKey() async =>
+      deviceBindingKeyFromSecret(await getOrCreateDeviceSecret());
+
   @override
   Future<void> clearOnLogout() async {
     await _storage.delete(accessTokenKey);

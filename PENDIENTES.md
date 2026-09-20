@@ -48,6 +48,12 @@
 - `R22` OTP en claro en `notifications.payload_json`; `R23` notificacion best-effort antes del commit; `R24` constantes de canal sin uso; `R25` fallback dev de `DOC_HASH_PEPPER`; `R26` `device_public_key` equivale al secreto de firma (migrar a Ed25519/EC); `R27` `biometric_type` omitido.
 - Twilio en trial (SMS bloqueado, error 572006); `JWT_SECRET=change-me` (rotar en prod); pendientes `redis/argon2/cryptography/local_auth/openpyxl/file_saver`; `permission_handler` para pre-chequeo de camara; `kyc-service/` no versionado (secretos); diseno visual (`docs/20`, `docs/design`) pendiente tras validar logica.
 
+### P7 (ABIERTO - a validar por el dueno) - Validacion del challenge reporta "el rostro no se mantuvo consistente" (face_match)
+- Estado: **abierto - a validar por el dueno** (sin causa raiz aun; no inventar).
+- Sintoma: al validar el challenge de liveness, el reporte indica "el rostro no se mantuvo consistente" en el paso `face_match`.
+- Accion: el dueno lo validara mas adelante. Registrar evidencia (mensaje/`overall_reason`/`step_results`) antes de fijar causa. Linea a explorar (no confirmada): frontalidad de `best_frame` y umbrales del microservicio (ver P5 y `docs/17#6`).
+- Diario: ver `DIARIO.md` (entrada 2026-09-20).
+
 ## 4. Comandos de verificacion rapida
 
 ```powershell

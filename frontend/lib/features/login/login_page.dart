@@ -17,6 +17,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/widgets/app_version_label.dart';
 import 'login_controller.dart';
 
 /// Formatea segundos a `MM:SS` para el contador visible de inactividad.
@@ -202,6 +203,9 @@ class _LoginPageState extends State<LoginPage> {
                     key: const Key('login-info'),
                     style: TextStyle(color: theme.colorScheme.primary),
                   ),
+                // Version visible del build (F-T30): discreta, al pie.
+                const SizedBox(height: 24),
+                const Center(child: AppVersionLabel()),
               ],
             ),
           ),

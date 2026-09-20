@@ -1,7 +1,9 @@
 import 'dart:typed_data';
 
+import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/errors/api_exception.dart';
 import 'package:banca_online/core/session/session_identity_store.dart';
+import 'package:banca_online/core/widgets/app_version_label.dart';
 import 'package:banca_online/features/kyc/kyc_flow_controller.dart';
 import 'package:banca_online/features/kyc/kyc_models.dart';
 import 'package:banca_online/features/kyc/kyc_service.dart';
@@ -114,6 +116,17 @@ Future<void> _captureDocument(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('start muestra la version visible del build (F-T30)',
+      (tester) async {
+    final controller = KycFlowController(service: const FakeKycService());
+    addTearDown(controller.dispose);
+    await _pumpKyc(tester, controller);
+
+    expect(find.byType(AppVersionLabel), findsOneWidget);
+    expect(find.byKey(const Key('app-version')), findsOneWidget);
+    expect(find.text('Version $kAppVersion'), findsOneWidget);
+  });
+
   testWidgets('start muestra los campos de titular y documento',
       (tester) async {
     final controller = KycFlowController(service: const FakeKycService());

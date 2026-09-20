@@ -5,8 +5,10 @@
 // - PIN correcto entra; PIN incorrecto -> mensaje generico.
 // - Inactividad expira la sesion (timeout corto inyectado + `tick()` manual;
 //   `autoTick: false` para que `pumpAndSettle` no espere al `Timer` real).
+import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/http/api_client.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
+import 'package:banca_online/core/widgets/app_version_label.dart';
 import 'package:banca_online/features/biometrics/biometric_reader.dart';
 import 'package:banca_online/features/biometrics/biometric_service.dart';
 import 'package:banca_online/features/biometrics/login_controller.dart' as bio;
@@ -143,6 +145,15 @@ Future<void> _pump(WidgetTester tester, _Harness h) async {
 }
 
 void main() {
+  testWidgets('muestra la version visible del build (F-T30)', (tester) async {
+    final h = _Harness(reader: FakeBiometricReader(available: false));
+    await _pump(tester, h);
+
+    expect(find.byType(AppVersionLabel), findsOneWidget);
+    expect(find.byKey(const Key('app-version')), findsOneWidget);
+    expect(find.text('Version $kAppVersion'), findsOneWidget);
+  });
+
   testWidgets('biometria exitosa navega a /home', (tester) async {
     final h = _Harness(reader: FakeBiometricReader());
     await _pump(tester, h);

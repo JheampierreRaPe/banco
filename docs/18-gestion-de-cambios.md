@@ -42,6 +42,7 @@ Resumen: **lo que no bloquea -> backlog; lo que invalida lo que se esta construy
 | SCR-001 | 2026-09-12 | Ejecucion en dos campos (PC servidor + movil por LAN) con cliente delgado estricto | Formalizar el reparto cliente-servidor pedido por el equipo | Tecnico / Arquitectura | `02`, `05`, `13`, `19`, briefs frontend | entra ahora | Sprint 1 | hecho |
 | SCR-002 | 2026-09-12 | Guia de diseno UI y tokens para los dos frontends | Definir como especificar el diseno (tokens + mockups; sin CSS para Flutter) | Tecnico / Documentacion | `docs/20`, `docs/design/`, briefs UI | entra ahora | Sprint 1 | hecho |
 | SCR-003 | 2026-09-16 | Integrar el design system "Eucalipto y Ocre" (YAML) en la documentacion y definir `success`/`warning` | Fijar la paleta para que el frontend de prueba se construya con esos estilos | Diseno / Documentacion | `docs/20`, `docs/design/mockups.md`, briefs UI | entra ahora | Sprint 1 | hecho |
+| SCR-004 | 2026-09-20 | Version visible de la app en entry, login y crear cuenta, con fuente unica y esquema de versionado documentado | Confirmar que build esta instalado en el movil y fijar el esquema acordado | Ajuste / Documentacion | `13`, `18`, `README`, brief `F-T30`, `frontend` | entra ahora | Sprint 1 | en curso |
 
 Plantilla para agregar una fila:
 
@@ -75,3 +76,33 @@ Plantilla para agregar una fila:
 - [ ] CA y pruebas incluidos.
 - [ ] Impacto en ledger/saldos evaluado si aplica.
 - [ ] Sprint re-planificado si cambia el alcance.
+
+## 8. Versionado visible de la app
+
+Esquema de versionado acordado por el dueño (literal), para la app Flutter:
+
+- Arrancar en `1.1.010`.
+- Mientras se corrige el error actual (camara KYC), cada nueva version sube
+  `+0.0.001` (`1.1.011`, `1.1.012`, ...).
+- Una vez funcional y se pase a otros apartados del Sprint 1 que deben verse en
+  Flutter, se varia a `0.1.0`.
+- Al acabar el sprint, `1.0.0`.
+
+Reglas de implementacion:
+
+- **Fuente unica:** la version se define en un solo lugar,
+  `frontend/lib/core/app_version.dart` (`const String kAppVersion =
+  String.fromEnvironment('APP_VERSION', defaultValue: '1.1.010');`),
+  sobreescribible por `--dart-define=APP_VERSION=<valor>`. Cambiar la version
+  por build no toca ninguna pantalla.
+- **Widget compartido:** `frontend/lib/core/widgets/app_version_label.dart`
+  (`AppVersionLabel`, `Key('app-version')`) renderiza `Version <kAppVersion>`.
+  Se monta en las TRES pantallas: `/entry` (`entry_page.dart`), `/login`
+  (`login_page.dart`) y `/kyc` (`kyc_start_page.dart`). Es discreto
+  (`label-sm` + color de texto secundario) y no rompe los estados de cada
+  pantalla.
+- **`pubspec.yaml` y semver:** el `version:` de pubspec no acepta cero a la
+  izquierda en el patch, por lo que se usa `version: 1.1.10+1`; el TEXTO visible
+  (el que identifica el build) sigue siendo `1.1.010` desde `kAppVersion`. Sin
+  dependencias nuevas.
+- Registrado como `SCR-004` (fila de la seccion 4).

@@ -1,3 +1,4 @@
+import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/router/app_router.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
 import 'package:banca_online/core/session/secure_key_value_storage.dart';
@@ -76,6 +77,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Verifica tu identidad'), findsOneWidget);
+  });
+
+  testWidgets('entry real muestra la version visible del build (F-T30)',
+      (tester) async {
+    final session = InMemorySessionRepository();
+    final seen = InMemoryWelcomeSeenStore(initialSeen: true);
+    addTearDown(seen.dispose);
+    await tester.pumpWidget(_harness(session, seen, initial: '/entry'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('app-version')), findsOneWidget);
+    expect(find.text('Version $kAppVersion'), findsOneWidget);
   });
 
   testWidgets('/kyc sigue publica sin sesion', (tester) async {

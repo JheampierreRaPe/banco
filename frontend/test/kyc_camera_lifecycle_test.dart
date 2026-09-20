@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:banca_online/features/kyc/camera_frame_source.dart';
@@ -30,11 +31,21 @@ const CameraDescription _back = CameraDescription(
 /// Reproduce en CI el defecto "A CameraController was used after being
 /// disposed." sin camara fisica (F-T24).
 class _FakeCameraController extends CameraController {
-  _FakeCameraController({required CameraLensDirection lens})
-      : super(
+  _FakeCameraController({
+    required CameraLensDirection lens,
+    this.tag = '',
+    this.timeline,
+  }) : super(
           lens == CameraLensDirection.front ? _front : _back,
           ResolutionPreset.low,
         );
+
+  /// Identificador del doble para registrar el orden de eventos (F-T32).
+  final String tag;
+
+  /// Timeline compartida: registra `initialize:<tag>` / `dispose:<tag>` para
+  /// aseverar el orden close-before-open.
+  final List<String>? timeline;
 
   bool disposed = false;
   bool usedAfterDispose = false;
@@ -42,6 +53,7 @@ class _FakeCameraController extends CameraController {
 
   @override
   Future<void> initialize() async {
+    timeline?.add('initialize:$tag');
     value = value.copyWith(
       isInitialized: true,
       previewSize: const Size(720, 1280),
@@ -73,60 +85,100 @@ class _FakeCameraController extends CameraController {
 
   @override
   Future<void> dispose() async {
+    timeline?.add('dispose:$tag');
     disposed = true;
     await super.dispose();
   }
+}
+
+/// Maximo de controllers inicializados a la vez a lo largo de [timeline].
+///
+/// Un controller "vivo" cuenta desde `initialize:` hasta su `dispose:`. El
+/// invariante close-before-open exige que nunca haya 2 a la vez.
+int _maxConcurrent(List<String> timeline) {
+  var live = 0;
+  var max = 0;
+  for (final event in timeline) {
+    if (event.startsWith('initialize:')) {
+      live++;
+      if (live > max) max = live;
+    } else if (event.startsWith('dispose:')) {
+      live--;
+    }
+  }
+  return max;
 }
 
 CameraFrameSource _source({
   int burstFrames = 3,
   KycBurstDelay? burstDelay,
   List<_FakeCameraController>? created,
-}) =>
-    CameraFrameSource(
-      burstFrames: burstFrames,
-      frameInterval: Duration.zero,
-      burstDelay: burstDelay ?? (_) async {},
-      camerasLoader: () async => const <CameraDescription>[_front, _back],
-      controllerFactory: (description, resolution) {
-        final controller = _FakeCameraController(
-          lens: description.lensDirection,
-        );
-        created?.add(controller);
-        return controller;
-      },
-    );
+  List<String>? timeline,
+}) {
+  var sequence = 0;
+  return CameraFrameSource(
+    burstFrames: burstFrames,
+    frameInterval: Duration.zero,
+    burstDelay: burstDelay ?? (_) async {},
+    camerasLoader: () async => const <CameraDescription>[_front, _back],
+    controllerFactory: (description, resolution) {
+      final controller = _FakeCameraController(
+        lens: description.lensDirection,
+        tag: '${description.name}#${sequence++}',
+        timeline: timeline,
+      );
+      created?.add(controller);
+      return controller;
+    },
+  );
+}
 
 void main() {
   group('CameraFrameSource: ciclo de vida seguro (F-T24)', () {
     test(
-        'regresion: recrear el preview durante la rafaga no usa un controller disposeado',
+        'regresion: el cambio de lente durante la rafaga no usa un controller disposeado',
         () async {
       final created = <_FakeCameraController>[];
       late final CameraFrameSource source;
-      var previewRecreations = 0;
+      final gate = Completer<void>();
+      var switchRequested = false;
       source = _source(
         created: created,
-        // Cambio de lente (documento -> tareas) EN MEDIO de la rafaga, como
-        // cuando el preview se re-crea mientras la captura sigue en curso.
+        // Cambio de lente (documento -> tareas) EN MEDIO de la rafaga: no
+        // ocurre en el flujo real, pero la seguridad F-T24 exige no cerrar el
+        // controller que atiende la captura; la apertura espera al drenado.
         burstDelay: (_) async {
-          previewRecreations++;
-          await source.previewControllerForTask('document');
+          if (!switchRequested) {
+            switchRequested = true;
+            unawaited(source.previewControllerForTask('document'));
+          }
+          await gate.future;
         },
       );
       addTearDown(source.dispose);
 
-      final frames = await source.captureFramesForTask('front');
+      final capture = source.captureFramesForTask('front');
+      // Primer frame tomado; la rafaga queda esperando el gate.
+      await Future<void>.delayed(Duration.zero);
+      final front = created.first;
+      expect(
+        front.disposed,
+        isFalse,
+        reason: 'no se cierra el controller con una captura en curso',
+      );
+
+      gate.complete();
+      final frames = await capture;
 
       expect(frames.length, 3);
-      expect(previewRecreations, 2);
       expect(
         created.any((c) => c.usedAfterDispose),
         isFalse,
         reason: 'ningun takePicture debe tocar un controller disposeado',
       );
-      // El controller de la rafaga (frontal) se cierra solo al terminar.
-      expect(created.first.disposed, isTrue);
+      // El controller de la rafaga (frontal) se cierra al drenar/terminar.
+      await pumpEventQueue();
+      expect(front.disposed, isTrue);
     });
 
     test(
@@ -215,6 +267,80 @@ void main() {
         throwsA(isA<KycCameraUnavailable>()),
       );
       expect(controller.usedAfterDispose, isFalse);
+    });
+  });
+
+  group('CameraFrameSource: close-before-open (F-T32)', () {
+    test(
+        'trasera -> frontal: la trasera se cierra ANTES de inicializar la frontal',
+        () async {
+      final timeline = <String>[];
+      final source = _source(timeline: timeline);
+      addTearDown(source.dispose);
+
+      await source.previewControllerForTask('document');
+      await source.previewControllerForTask('front');
+
+      // Orden EXACTO: primero dispose(viejo), luego initialize(nuevo).
+      expect(
+        timeline,
+        <String>[
+          'initialize:fake-back#0',
+          'dispose:fake-back#0',
+          'initialize:fake-front#1',
+        ],
+      );
+      expect(
+        _maxConcurrent(timeline),
+        1,
+        reason: 'nunca dos sesiones de camara vivas a la vez',
+      );
+    });
+
+    test(
+        'frontal -> trasera: la frontal se cierra ANTES de inicializar la trasera',
+        () async {
+      final timeline = <String>[];
+      final source = _source(timeline: timeline);
+      addTearDown(source.dispose);
+
+      await source.previewControllerForTask('front');
+      await source.previewControllerForTask('document');
+
+      expect(
+        timeline,
+        <String>[
+          'initialize:fake-front#0',
+          'dispose:fake-front#0',
+          'initialize:fake-back#1',
+        ],
+      );
+      expect(_maxConcurrent(timeline), 1);
+    });
+
+    test('ciclo completo sin sesiones concurrentes ni doble initialize',
+        () async {
+      final timeline = <String>[];
+      final source = _source(timeline: timeline);
+      addTearDown(source.dispose);
+
+      await source.previewControllerForTask('document');
+      await source.previewControllerForTask('front');
+      await source.previewControllerForTask('document');
+      // Reutilizacion: pedir la lente vigente otra vez NO reabre.
+      await source.previewControllerForTask('document');
+
+      expect(_maxConcurrent(timeline), 1);
+      expect(
+        timeline.where((event) => event.startsWith('initialize:')).length,
+        3,
+        reason: 'una inicializacion por cambio de lente, sin reaperturas',
+      );
+      expect(
+        timeline.where((event) => event.startsWith('dispose:')).length,
+        2,
+        reason: 'cada controller anterior se cierra exactamente una vez',
+      );
     });
   });
 

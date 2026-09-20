@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/widgets/app_version_label.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../kyc_dependencies.dart';
@@ -200,6 +201,9 @@ class _KycStartPageState extends State<KycStartPage> {
                       onRetry: _continue,
                     ),
                   ],
+                  // Version visible del build (F-T30): discreta, al pie.
+                  const SizedBox(height: 24),
+                  const Center(child: AppVersionLabel()),
                 ],
               ),
             ),

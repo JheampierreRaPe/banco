@@ -139,6 +139,11 @@ class CameraFrameSource implements KycFrameSource {
   final List<CameraController> _retired = <CameraController>[];
   final Set<CameraController> _closed = <CameraController>{};
 
+  /// Aperturas de otra lente que esperan a que drenen las capturas en curso
+  /// antes de abrir su controller (close-before-open: nunca dos sesiones de
+  /// camara vivas a la vez).
+  final List<Completer<void>> _drainWaiters = <Completer<void>>[];
+
   /// `true` cuando hay un controlador inicializado, vigente y no cerrado.
   bool get isInitialized {
     final controller = _controller;
@@ -186,9 +191,13 @@ class CameraFrameSource implements KycFrameSource {
 
   /// Apertura real, siempre bajo el mutex [_openChain].
   ///
-  /// NO disposa el controller vigente al inicio; abre el nuevo y solo despues
-  /// retira el anterior (diferido si hay capturas en curso). Así el preview o
-  /// la rafaga que todavía lo usan no quedan apuntando a un disposed.
+  /// Close-before-open (F-T32): con `_activeCaptures == 0` el controller
+  /// anterior se CIERRA (`await _close`) ANTES de crear/`initialize()` el nuevo,
+  /// de modo que nunca coexistan dos sesiones de camara (la mayoria de equipos
+  /// no soporta camara concurrente y la segunda queda muda -> viewfinder negro).
+  /// Si hay una captura en curso no se puede cerrar el controller que la
+  /// atiende (F-T24): se espera a que drene antes de abrir el nuevo. Ese caso no
+  /// ocurre en el flujo real (el cambio de lente sucede tras capturar).
   Future<void> _open(KycCameraLens lens) async {
     if (_disposed) {
       throw KycCameraUnavailable(
@@ -199,6 +208,25 @@ class CameraFrameSource implements KycFrameSource {
     final current = _controller;
     if (current != null && _activeLens == lens && _isUsable(current)) {
       return;
+    }
+
+    // Nunca solapar dos sesiones: si una captura mantiene vivo el controller
+    // vigente, esperar a que drene ANTES de abrir el nuevo.
+    if (_activeCaptures > 0) {
+      await _waitForCapturesToDrain();
+    }
+    if (_disposed) {
+      throw KycCameraUnavailable('La fuente de cámara ya fue cerrada.');
+    }
+
+    // Cerrar el controller anterior ANTES de inicializar el nuevo.
+    final previous = _controller;
+    if (previous != null) {
+      await _close(previous);
+      if (identical(_controller, previous)) {
+        _controller = null;
+        _activeLens = null;
+      }
     }
 
     final cameras = await _loadCameras();
@@ -213,8 +241,8 @@ class CameraFrameSource implements KycFrameSource {
     final factory = controllerFactory;
     // F-T27: el documento (lente trasera) captura en alta resolucion; el
     // liveness conserva `medium`. El controller sigue siendo compartido por
-    // lente (F-T24): al cambiar de lente se recrea solo una vez y el anterior
-    // se retira de forma diferida.
+    // lente (F-T24): al cambiar de lente se recrea una sola vez y el anterior
+    // ya quedo cerrado antes de llegar aqui (close-before-open, F-T32).
     final preset =
         lens == KycCameraLens.back ? documentResolution : resolution;
     final controller = factory != null
@@ -253,13 +281,17 @@ class CameraFrameSource implements KycFrameSource {
       throw KycCameraUnavailable('La fuente de cámara ya fue cerrada.');
     }
 
-    final previous = _controller;
     _controller = controller;
     _activeLens = lens;
     _generation++;
-    if (previous != null && !identical(previous, controller)) {
-      _retire(previous);
-    }
+  }
+
+  /// Espera a que las capturas en curso drenen (ver [_drainWaiters]).
+  Future<void> _waitForCapturesToDrain() {
+    if (_activeCaptures == 0) return Future<void>.value();
+    final completer = Completer<void>();
+    _drainWaiters.add(completer);
+    return completer.future;
   }
 
   Future<List<CameraDescription>> _loadCameras() async {
@@ -310,11 +342,24 @@ class CameraFrameSource implements KycFrameSource {
     await controller.dispose();
   }
 
-  /// Cierra los controllers retirados cuando ya no hay capturas en curso.
+  /// Cierra los controllers retirados cuando ya no hay capturas en curso y
+  /// libera las aperturas que esperaban ese drenado.
   void _drainRetired() {
     if (_activeCaptures > 0) return;
     for (final controller in List<CameraController>.of(_retired)) {
       unawaited(_close(controller));
+    }
+    _releaseDrainWaiters();
+  }
+
+  /// Completa a las aperturas que esperaban el drenado (nunca las deja
+  /// colgadas, p. ej. si la fuente se dispone mientras esperan).
+  void _releaseDrainWaiters() {
+    if (_drainWaiters.isEmpty) return;
+    final waiters = List<Completer<void>>.of(_drainWaiters);
+    _drainWaiters.clear();
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.complete();
     }
   }
 
@@ -433,5 +478,7 @@ class CameraFrameSource implements KycFrameSource {
         await _close(retired);
       }
     }
+    // Nunca deja colgada una apertura que esperaba el drenado.
+    _releaseDrainWaiters();
   }
 }

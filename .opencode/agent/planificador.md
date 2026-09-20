@@ -4,7 +4,7 @@ mode: subagent
 model: opencode-go/deepseek-v4.1-flash
 permission:
   edit: allow
-  bash: ask
+  bash: allow
 ---
 
 <!-- Si el dueño quiere fijar el modelo "muse spark 1.3", agregar en el frontmatter:

@@ -58,3 +58,21 @@ curl.exe -s -X POST http://localhost:8000/api/v1/auth/kyc/challenge -H "Content-
 ```
 APK debug: `frontend/build/app/outputs/flutter-apk/app-debug.apk`
 (IP PC `192.168.1.42`; celular por depuracion inalambrica `192.168.1.45:46003`.)
+
+## 5. Subagentes (opencode) - obligatorio para delegar
+
+El repo define 4 subagentes en `.opencode/agent/` (versionados con el proyecto), todos con
+`model: opencode-go/deepseek-v4.1-flash` y `mode: subagent`:
+
+| Agente | Uso | Permisos |
+|---|---|---|
+| `planificador` | Crea briefs en `docs/tasks/<ID>.md` (no escribe codigo) | edit allow, bash ask |
+| `worker` | Implementa UNA tarea (su brief) + pruebas + reporte §6 | edit allow, bash allow |
+| `fixer` | Corrige solo los defectos indicados + regresion | edit allow, bash allow |
+| `validador` | SOLO LECTURA: suites + dictamen con severidad | edit deny, bash allow |
+
+- El orquestador los invoca con la herramienta `Task` (`subagent_type: "worker"`, etc.).
+- **Reiniciar opencode** despues de editar `.opencode/` (la config se carga al arrancar).
+- Si se prefiere el tier gratuito, cambiar a `model: opencode/muse-spark-1.3-contributor-free`.
+- Modelo actual: `opencode-go/deepseek-v4.1-flash` (se cambia por agente editando su `model:`).
+- `explore` es built-in (solo lectura) y sigue disponible para investigacion.

@@ -15,6 +15,7 @@ import '../../features/kyc/kyc_service.dart';
 import '../../features/login/login_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
+import '../../features/recovery/recovery_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../../features/welcome/welcome_seen_store.dart';
 import '../http/api_client.dart';
@@ -31,7 +32,8 @@ import '../session/session_repository.dart';
 /// - Sin sesion y bienvenida ya vista: puerta de entrada `/entry`
 ///   (eleccion "Iniciar sesión" / "Crear cuenta").
 /// - Rutas públicas (pre-login, sin sesión): `/welcome`, `/entry`, `/login`,
-///   `/kyc*`, `/activate`, `/pin-setup`. Todo lo demás exige sesión.
+///   `/kyc*`, `/activate`, `/pin-setup`, `/recovery`, `/recovery/otp`. Todo lo
+///   demás exige sesión.
 /// - Sin sesión en ruta no pública y sin haber visto la bienvenida ->
 ///   `/welcome`; si ya la vio -> `/entry` (antes era `/login`).
 /// - `/welcome` ya vista -> `/entry`.
@@ -47,6 +49,8 @@ bool _isPublicLocation(String location) {
       location == '/login' ||
       location == '/activate' ||
       location == '/pin-setup' ||
+      location == '/recovery' ||
+      location == '/recovery/otp' ||
       location == '/kyc' ||
       location == '/kyc/document' ||
       location == '/kyc/task' ||
@@ -89,6 +93,11 @@ GoRouter buildRouter(
         userRef: identityStore.userRef ?? '',
         deviceId: identityStore.deviceId ?? '',
       );
+  recoveryRouteDepsFactory = () => RecoveryRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+      );
   final seen = welcomeSeen ??
       welcomeSeenStoreFactory?.call() ??
       SecureWelcomeSeenStore(storage: FlutterSecureStorageAdapter());
@@ -127,6 +136,7 @@ GoRouter buildRouter(
       ...activationRoutes,
       ...pinSetupRoutes,
       ...loginRoutes,
+      ...recoveryRoutes,
       ...accountsRoutes,
       ...homeRoutes,
     ],

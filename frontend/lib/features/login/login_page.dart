@@ -190,6 +190,13 @@ class _LoginPageState extends State<LoginPage> {
                   onPressed: c.busy ? null : _submitPin,
                   child: const Text('Ingresar con PIN'),
                 ),
+                // Enlace aditivo de recuperación (F-T29): navega a `/recovery`
+                // sin tocar la lógica de biometría/PIN ni el estado del login.
+                TextButton(
+                  key: const Key('login-recovery-link'),
+                  onPressed: () => context.go('/recovery'),
+                  child: const Text('Recuperar acceso'),
+                ),
                 const SizedBox(height: 16),
                 if (c.errorMessage != null)
                   Text(

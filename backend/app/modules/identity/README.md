@@ -17,6 +17,10 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
   `user_id`/`status`/`account_id`. Duplicados de documento/email -> 409
   `DUPLICATE_DOCUMENT`/`DUPLICATE_EMAIL`.
 - `POST /auth/activate` y `POST /auth/otp/resend` (`api/activation.py`).
+- `POST /auth/recovery/request` y `POST /auth/recovery/verify` (`api/recovery.py`,
+  E1-T31): recuperacion pre-sesion por email (OTP `RECOVERY` solo por email, apertura
+  de sesion + `user_ref`, binding del dispositivo nuevo y fila `access_recovery`
+  `method='OTP'`; consume `F-T29`).
 - Login biometrico/PIN, sesiones y recuperacion (`api/device_login.py`,
   `api/pin_login.py`, `api/pin_setup.py`, `api/sessions.py`).
 

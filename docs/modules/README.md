@@ -20,6 +20,13 @@ eventos (`outbox`/`inbox`).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion:** viaja por `email` (`users.email`, plantilla `otp_code_email`) con
   fallback `sms` (`users.phone`, plantilla `otp_code`); entrega best-effort (E1-T26).
+- **OTP de recuperacion (E1-T31, HU04):** `POST /auth/recovery/request {email}` (siempre
+  200 sin enumerar; cooldown reutilizando el `PENDING` vigente; rate-limit por `email+IP`)
+  y `POST /auth/recovery/verify {email, code[, device_id/device_public_key]}` (abre
+  sesion + `user_ref`, registra `device_bindings` y `access_recovery method='OTP'`).
+   Solo canal `email` (nunca SMS); errores `INVALID_RECOVERY_CODE` (mismo 401
+   generico tambien para OTP vencido/bloqueado: sin oraculo) / `RATE_LIMITED`
+   (solo ventana por `email+IP`); consume `F-T29`.
 - **Puede llamar a:** adaptador `KycProvider`, `notifications`, `audit`.
 - **Prohibido:** tocar cuentas, ledger o transacciones.
 

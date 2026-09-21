@@ -419,8 +419,64 @@ DEVICE_PLATFORMS = ("android", "ios")
 #: Tipos de biometria del dispositivo (`03b#4.3`: `FACE`/`FINGERPRINT`).
 BIOMETRIC_TYPES = ("FACE", "FINGERPRINT")
 
+#: Metodos de recuperacion de acceso (`03b#4.8`: `DEVICE_BIOMETRIC`/`OTP`).
+ACCESS_RECOVERY_METHODS = ("DEVICE_BIOMETRIC", "OTP")
+
+
+class AccessRecovery(Base):
+    """Recuperacion de acceso concedida (`03b#4.8`, E1-T31, HU04).
+
+    Columnas exactas de `03b#4.8` (`user_id`, `method`,
+    `verification_result`, `device_id`, `new_credential_set`,
+    `notified_channels`, `created_at`). `user_id` es FK contenida en
+    `identity.users` (mismo schema, regla de oro 4).
+
+    Sin PII ni secretos en `verification_result`: solo el resultado
+    (`{"result": "ok", "at": ...}`); jamas el email, el OTP ni su hash
+    (el hash vive en `otp_codes.code_hash`, el email en `users.email`).
+    E1-T31 inserta `method='OTP'`, `new_credential_set=false` (aqui no
+    hay cambio de credencial, a diferencia de la HU04 canonica).
+
+    NOTA esquema: la tabla la crea la migracion
+    `0017_identity_access_recovery` (columnas, `CHECK` de `method`, FK e
+    indice identicos a este modelo; `JSONB` en Postgres equiparado a
+    `sa.JSON` por `migrations/env.py::compare_type`, sin drift).
+    """
+
+    __tablename__ = "access_recovery"
+    __table_args__ = (
+        sa.CheckConstraint(
+            "method IN ('DEVICE_BIOMETRIC', 'OTP')",
+            name="ck_access_recovery_method",
+        ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            [f"{SCHEMA}.users.id"],
+            name="fk_access_recovery_user",
+        ),
+        sa.Index("ix_access_recovery_user", "user_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    method: Mapped[str] = mapped_column(sa.String(30), nullable=False)
+    verification_result: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
+    new_credential_set: Mapped[bool] = mapped_column(
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    notified_channels: Mapped[list | None] = mapped_column(sa.JSON(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+
 
 __all__ = [
+    "ACCESS_RECOVERY_METHODS",
     "BIOMETRIC_TYPES",
     "DEVICE_BINDING_STATUSES",
     "DEVICE_PLATFORMS",
@@ -430,6 +486,7 @@ __all__ = [
     "OTP_STATUSES",
     "SCHEMA",
     "USER_STATUSES",
+    "AccessRecovery",
     "Credential",
     "DeviceBinding",
     "KycVerification",

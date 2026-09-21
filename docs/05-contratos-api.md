@@ -94,7 +94,28 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/refresh` | Renueva tokens. |
 | POST | `/auth/logout` | Revoca la sesion. |
 | POST | `/auth/recover` | Recuperacion con dispositivo confiable + OTP (HU04). |
+| POST | `/auth/recovery/request` | Solicita OTP de recuperacion por email, siempre 200 sin enumerar (E1-T31; consume `F-T29`). |
+| POST | `/auth/recovery/verify` | Valida el OTP, abre sesion y liga el dispositivo nuevo (E1-T31; consume `F-T29`). |
 | GET | `/me` | Perfil y productos del usuario. |
+
+> Decision E1-T31: el `/auth/recover` canonico de HU04 (dispositivo confiable +
+> `nonce` firmado + cambio de credencial) queda como esta. Los dos endpoints nuevos
+> son pre-sesion para el caso "sin `user_ref` local" (reinstalar/borrar datos):
+> `request {email}` -> `data: {accepted: true, ttl_seconds, resend_wait_seconds}`
+> (constantes globales, identico exista o no el email; `429 RATE_LIMITED` por
+> `email+IP`); `verify {email, code[, device_id/device_public_key/platform/
+> biometric_type]}` -> `data: {access_token, refresh_token, token_type: "Bearer",
+> session_id, expires_in, user_ref, device_bound}` (`user_ref = str(user.id)`, lo
+> persiste `F-T29`; `device_bound=true` solo si se REGISTRO un binding nuevo).
+> Errores: `401 INVALID_RECOVERY_CODE` (mismo cuerpo para email no registrado, no
+> elegible, sin OTP, codigo incorrecto, OTP vencido y OTP bloqueado por intentos
+> agotados: vencido/bloqueado colapsan al generico para no filtrar existencia;
+> ya NO existe `400 EXPIRED_OTP` en este flujo —fix anti-oraculo E1-T31, ver
+> `docs/tasks/E1-T31.md` §6.1; `F-T29` debe tratar el vencimiento como generico
+> con reintento), `429 RATE_LIMITED` (solo ventana de solicitud/verificacion por
+> `email+IP`). OTP `RECOVERY` solo por
+> email (plantilla `otp_code_email`; nunca SMS), cooldown reutilizando el `PENDING`
+> vigente, auditoria `auth.recovery_requested` / `auth.access_recovered` (sin PII).
 
 Detalle del flujo KYC (`identity`, E1-T29):
 

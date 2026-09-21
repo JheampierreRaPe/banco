@@ -1,7 +1,7 @@
 ---
 description: Worker de implementacion de Banca Online Integral. Ejecuta UNA tarea (docs/tasks/<ID>.md) en su frontera, escribe codigo + pruebas, corre lint/tests y reporta la seccion 6. No commitea.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
+model: opencode-go/muse-spark-1.3-contributor
 permission:
   edit: allow
   bash: allow

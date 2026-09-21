@@ -1,7 +1,7 @@
 ---
 description: Fixer de Banca Online Integral. Corrige SOLO los defectos indicados (archivo:linea), agrega prueba de regresion, corre las suites y reporta. No amplia alcance ni commitea.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
+model: opencode-go/muse-spark-1.3-contributor
 permission:
   edit: allow
   bash: allow

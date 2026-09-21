@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../core/errors/api_exception.dart';
+import 'camera_frame_source.dart';
 import 'kyc_error_handler.dart';
 import 'kyc_frame_capture.dart';
 import 'kyc_frame_source.dart';
@@ -499,6 +502,11 @@ class KycFlowController extends ChangeNotifier {
       }
       _errorMessage = e.message;
     } finally {
+      // F-T33: el submit exitoso navega con `push('/kyc/result')`, así que el
+      // `dispose` de la página NO corre; la sesión se libera aquí mismo.
+      if (_result != null) {
+        await releaseCamera();
+      }
       _busy = false;
       notifyListeners();
     }
@@ -543,8 +551,33 @@ class KycFlowController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Punto único de teardown de la sesión de cámara (F-T33).
+  ///
+  /// Cierra la sesión vigente (`CameraFrameSource.closeSession`, con espera
+  /// acotada H-03) SIN borrar el estado del flujo (`result`, tareas,
+  /// documento): `/kyc/result` sigue leyendo `result` tras el submit, y el
+  /// reintento (`reset()` + `/kyc`) reabre una sesión nueva al capturar (la
+  /// fuente es reutilizable; ningún controller cerrado se reutiliza, F-T24).
+  /// Con fuente mock es no-op. Nunca lanza (best-effort de recursos).
+  Future<void> releaseCamera() async {
+    final source = _frameSource;
+    if (source is CameraFrameSource) {
+      try {
+        await source.closeSession();
+      } catch (_) {
+        // Best-effort: liberar la cámara nunca rompe el flujo ni la
+        // navegación (el siguiente `open` reintenta de todos modos).
+      }
+    }
+  }
+
   /// Reinicia el flujo (vuelve a empezar desde el tipo/número de documento).
+  ///
+  /// F-T33: también libera la sesión de cámara vigente (best-effort, sin
+  /// await: `reset` es síncrono) para que el reintento no deje la sesión
+  /// previa viva; la siguiente captura reabre una sesión nueva.
   void reset() {
+    unawaited(releaseCamera());
     _challenge = null;
     _challengeIssuedAt = null;
     _lastError = null;
@@ -561,5 +594,13 @@ class KycFlowController extends ChangeNotifier {
     _documentValidationError = null;
     _validatingDocument = false;
     notifyListeners();
+  }
+
+  /// F-T33: al destruir el controlador se libera la sesión de cámara
+  /// (best-effort, sin await: `dispose` es síncrono). No borra el estado.
+  @override
+  void dispose() {
+    unawaited(releaseCamera());
+    super.dispose();
   }
 }

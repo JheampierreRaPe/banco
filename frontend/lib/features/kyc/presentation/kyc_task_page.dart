@@ -166,6 +166,11 @@ class _KycTaskPageState extends State<KycTaskPage> {
   @override
   void dispose() {
     _prepTimer?.cancel();
+    // F-T33: salir de `/kyc/task` (pop o back del sistema) libera la sesión
+    // de cámara en el punto único (`KycFlowController.releaseCamera`). No
+    // borra el estado del flujo ni crea un controlador nuevo al salir.
+    final c = widget.controller ?? KycDependencies.controllerIfExists;
+    if (c != null) unawaited(c.releaseCamera());
     super.dispose();
   }
 

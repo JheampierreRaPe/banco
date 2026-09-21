@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -32,6 +34,17 @@ class KycDocumentPage extends StatefulWidget {
 class _KycDocumentPageState extends State<KycDocumentPage> {
   KycFlowController _resolve(BuildContext context) =>
       widget.controller ?? KycDependencies.controller;
+
+  @override
+  void dispose() {
+    // F-T33: salir de `/kyc/document` (pop o back del sistema) libera la
+    // sesión de cámara en el punto único (`KycFlowController.releaseCamera`).
+    // El avance a `/kyc/task` es `push` (esta página no se dispone), así que
+    // no hay liberación prematura: el cambio de lente lo cubre F-T32.
+    final c = widget.controller ?? KycDependencies.controllerIfExists;
+    if (c != null) unawaited(c.releaseCamera());
+    super.dispose();
+  }
 
   Future<void> _capture(KycFlowController c) async {
     await c.captureDocument();

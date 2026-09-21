@@ -107,6 +107,22 @@ class CameraFrameSource implements KycFrameSource {
   /// `const`) para que los tests puedan inyectar una cota corta.
   Duration openTimeout = const Duration(seconds: 15);
 
+  /// Cota anti-bloqueo para UNA foto (`takePicture`, H-03 / F-T33).
+  ///
+  /// Si la captura no resuelve a tiempo se lanza [KycCameraUnavailable] para
+  /// que el teardown ([closeSession]/[dispose]) nunca quede diferido
+  /// indefinidamente por una captura colgada. 10 s en producción; inyectable
+  /// en tests con una cota corta.
+  Duration captureTimeout = const Duration(seconds: 10);
+
+  /// Cota máxima que el teardown espera a que drenen las capturas en curso
+  /// antes de forzar el cierre (H-03 / F-T33).
+  ///
+  /// El caso normal drena por sí solo (F-T24: la captura en curso termina y su
+  /// controller se cierra al terminar); solo si se agota la cota se fuerza el
+  /// cierre para no retener la cámara. 3 s en producción; inyectable en tests.
+  Duration disposeTimeout = const Duration(seconds: 3);
+
   /// Enumerador de cámaras inyectable en tests (F-T24); `null` = real.
   final Future<List<CameraDescription>> Function()? camerasLoader;
 
@@ -124,6 +140,14 @@ class CameraFrameSource implements KycFrameSource {
   /// capturas en curso.
   int _generation = 0;
   int get generation => _generation;
+
+  /// Época de sesión (F-T33): se incrementa en cada [closeSession] para
+  /// invalidar las aperturas que empezaron ANTES del teardown. Sin esto, un
+  /// `previewControllerForTask` que seguía en vuelo al salir de la pantalla
+  /// publicaría un controller vivo después del cierre (fuga). Las aperturas
+  /// que empiezan DESPUÉS del cierre capturan la época nueva y proceden con
+  /// normalidad (el reintento reabre solo).
+  int _session = 0;
 
   /// Mutex de apertura: serializa [_open] para que dos llamadas concurrentes
   /// (p. ej. `initState` del preview + `Capturar`) no creen dos controllers ni
@@ -204,6 +228,9 @@ class CameraFrameSource implements KycFrameSource {
         'La fuente de cámara ya fue cerrada.',
       );
     }
+    // Época vigente al empezar: si el teardown corre en medio de esta
+    // apertura, se aborta en vez de publicar un controller tras el cierre.
+    final epoch = _session;
     // Revalidar DENTRO del mutex: otra apertura pudo dejarla lista.
     final current = _controller;
     if (current != null && _activeLens == lens && _isUsable(current)) {
@@ -215,7 +242,7 @@ class CameraFrameSource implements KycFrameSource {
     if (_activeCaptures > 0) {
       await _waitForCapturesToDrain();
     }
-    if (_disposed) {
+    if (_disposed || epoch != _session) {
       throw KycCameraUnavailable('La fuente de cámara ya fue cerrada.');
     }
 
@@ -275,8 +302,9 @@ class CameraFrameSource implements KycFrameSource {
       );
     }
 
-    if (_disposed) {
-      // La fuente se cerró mientras se abría: no publicar.
+    if (_disposed || epoch != _session) {
+      // La fuente se cerró (o se liberó la sesión) mientras se abría: no
+      // publicar un controller vivo tras el teardown.
       await controller.dispose();
       throw KycCameraUnavailable('La fuente de cámara ya fue cerrada.');
     }
@@ -323,17 +351,6 @@ class CameraFrameSource implements KycFrameSource {
       throw KycCameraUnavailable('El dispositivo no tiene cámaras.');
     }
     return cameras;
-  }
-
-  /// Retira [controller]: lo cierra ya si no hay capturas, o lo difiere al
-  /// drenar la última captura en curso (nunca se cierra en uso).
-  void _retire(CameraController controller) {
-    if (_closed.contains(controller)) return;
-    if (_activeCaptures > 0) {
-      if (!_retired.contains(controller)) _retired.add(controller);
-      return;
-    }
-    unawaited(_close(controller));
   }
 
   Future<void> _close(CameraController controller) async {
@@ -443,12 +460,24 @@ class CameraFrameSource implements KycFrameSource {
     }
     late final XFile photo;
     try {
-      photo = await controller.takePicture();
+      // Acotada por [captureTimeout] (H-03): una captura colgada falla con
+      // error tipado en vez de diferir el teardown indefinidamente.
+      photo = await controller.takePicture().timeout(
+            captureTimeout,
+            onTimeout: () => throw KycCameraUnavailable(
+              'La captura tardó demasiado '
+              '(${captureTimeout.inSeconds} s). Vuelve a intentarlo.',
+            ),
+          );
     } on CameraException catch (e) {
       if (e.code == 'CameraAccessDenied') {
         throw KycCameraPermissionDenied();
       }
       throw KycCameraUnavailable('Falló la captura de foto (${e.code}).');
+    } on KycCameraUnavailable {
+      // Timeout de captura (H-03) u otra causa ya tipada: no re-envolver
+      // para que el mensaje claro ("tardó demasiado…") llegue a la UI.
+      rethrow;
     } catch (e) {
       throw KycCameraUnavailable(
         'Falló la captura de foto (${e.runtimeType}).',
@@ -462,23 +491,51 @@ class CameraFrameSource implements KycFrameSource {
     }
   }
 
+  /// Cierra la sesión de cámara vigente SIN marcar la fuente como disposeada
+  /// (F-T33: punto único de teardown vía `KycFlowController.releaseCamera`).
+  ///
+  /// Cierra el controller vigente y los retirados con espera ACOTADA al
+  /// drenado ([disposeTimeout]): el caso normal drena solo (F-T24, nunca se
+  /// cierra un controller con captura en curso si termina a tiempo); si la
+  /// cota se agota, se fuerza el cierre para no retener la cámara (H-03).
+  /// La fuente queda REUTILIZABLE: la siguiente captura/preview reabre una
+  /// sesión nueva (el reintento funciona sin "used after dispose": los
+  /// controllers cerrados nunca se reutilizan, `_closed`/`_session`).
+  /// Idempotente y nunca deja colgada una apertura en espera.
+  Future<void> closeSession() async {
+    // Invalida las aperturas que empezaron antes de este teardown.
+    _session++;
+    final controller = _controller;
+    _controller = null;
+    _activeLens = null;
+    if (controller != null && !_closed.contains(controller)) {
+      if (!_retired.contains(controller)) _retired.add(controller);
+    }
+    if (_activeCaptures > 0) {
+      final waiter = Completer<void>();
+      _drainWaiters.add(waiter);
+      try {
+        await waiter.future.timeout(disposeTimeout);
+      } on TimeoutException {
+        // Cota agotada con captura colgada (H-03): se suelta la espera para
+        // forzar el cierre abajo en vez de diferirlo indefinidamente.
+        _drainWaiters.remove(waiter);
+      }
+    }
+    for (final retired in List<CameraController>.of(_retired)) {
+      await _close(retired);
+    }
+    // Despierta aperturas en espera para que reabran una sesión nueva (o
+    // aborten si la fuente se disposeó: `_open` revalida época/`_disposed`).
+    _releaseDrainWaiters();
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    final controller = _controller;
-    _controller = null;
-    _activeLens = null;
-    if (controller != null) {
-      // Si hay una captura en curso, se difiere el cierre al drenar.
-      _retire(controller);
-    }
-    if (_activeCaptures == 0) {
-      for (final retired in List<CameraController>.of(_retired)) {
-        await _close(retired);
-      }
-    }
-    // Nunca deja colgada una apertura que esperaba el drenado.
-    _releaseDrainWaiters();
+    // Cierre final: reutiliza el teardown acotado y además invalida la
+    // fuente (las operaciones posteriores lanzan `KycCameraUnavailable`).
+    await closeSession();
   }
 }

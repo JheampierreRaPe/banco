@@ -67,8 +67,31 @@ abstract class KycEvaluationService {
   Future<KycDocumentValidation> validateDocument({required Uint8List image});
 }
 
+/// Consulta del titular por documento (E1-T35 / F-T44).
+///
+/// Se declara como interfaz SEPARADA (no como miembros nuevos de [KycService])
+/// para no romper los dobles de test existentes: la pantalla de inicio la
+/// recibe opcional y, en produccion, [HttpKycService] la implementa.
+/// `HttpKycService` cumple [KycService], [KycEvaluationService] y
+/// [KycDocumentLookupService] a la vez.
+///
+/// Cliente delgado (docs/19 §4): solo llama al backend
+/// (`POST /auth/kyc/document/lookup`); jamas a la API externa ni conoce su
+/// key. Sin PII en logs: no se registra el numero ni la respuesta.
+abstract class KycDocumentLookupService {
+  /// `POST /auth/kyc/document/lookup` (E1-T35): `{type, number}` con el tipo
+  /// ya mapeado por [mapDocumentTypeToApi] y devuelve el titular normalizado
+  /// ([KycDocumentOwner]): persona natural (`first_name`/`last_name`) o RUC
+  /// de persona juridica (`business_name`).
+  Future<KycDocumentOwner> lookupDocument({
+    required String type,
+    required String number,
+  });
+}
+
 /// Implementacion HTTP sobre [ApiClient] (capa de F-T01).
-class HttpKycService implements KycService, KycEvaluationService {
+class HttpKycService
+    implements KycService, KycEvaluationService, KycDocumentLookupService {
   HttpKycService(this._api);
 
   final ApiClient _api;
@@ -78,6 +101,9 @@ class HttpKycService implements KycService, KycEvaluationService {
   static const String evaluatePath = '/auth/kyc/evaluate';
   static const String submitPath = '/auth/kyc/submit';
   static const String documentValidatePath = '/auth/kyc/document/validate';
+
+  /// Ruta de consulta del titular por documento (E1-T35 / F-T44).
+  static const String documentLookupPath = '/auth/kyc/document/lookup';
 
   @override
   Future<KycChallenge> challenge() async {
@@ -178,6 +204,21 @@ class HttpKycService implements KycService, KycEvaluationService {
     final payload = {'image_b64': base64Encode(image)};
     final response = await _api.post(documentValidatePath, data: payload);
     return KycDocumentValidation.fromData(_dataOf(response.data));
+  }
+
+  @override
+  Future<KycDocumentOwner> lookupDocument({
+    required String type,
+    required String number,
+  }) async {
+    // Solo datos crudos al backend (E1-T35); el servidor consulta al
+    // proveedor y normaliza. La key externa nunca esta en el cliente.
+    final payload = {
+      'type': mapDocumentTypeToApi(type),
+      'number': number,
+    };
+    final response = await _api.post(documentLookupPath, data: payload);
+    return KycDocumentOwner.fromData(_dataOf(response.data));
   }
 
   /// Extrae el `data` del envelope docs/05 `{data, meta}`.

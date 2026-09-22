@@ -354,6 +354,8 @@ void main() {
       final controller = KycFlowController(
         service: _FakeKycService(),
         frameSource: source,
+        documentValidator: (image) async =>
+            const KycDocumentValidation(isValid: true),
       );
       addTearDown(controller.dispose);
       await controller.loadChallenge();
@@ -364,11 +366,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      // Captura del documento con lente trasera y navega a las tareas.
+      // Captura del documento con lente trasera (F-T45: Capturado) y
+      // Continuar valida y navega a las tareas solo con is_valid:true.
       final captureDocument = find.byKey(const Key('captureDocumentButton'));
       await tester.ensureVisible(captureDocument);
       await tester.pumpAndSettle();
       await tester.tap(captureDocument);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+      await tester.tap(find.byKey(const Key('kycDocumentContinue')));
       await tester.pumpAndSettle();
       // F-T38: el AppBar del fig dice "Reconocimiento facial".
       expect(find.text('Reconocimiento facial'), findsOneWidget);

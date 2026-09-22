@@ -183,6 +183,10 @@ void main() {
           .ensureVisible(find.byKey(const Key('captureDocumentButton')));
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
       await tester.pumpAndSettle();
+      // F-T45: Continuar valida y navega solo con is_valid:true.
+      await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+      await tester.tap(find.byKey(const Key('kycDocumentContinue')));
+      await tester.pumpAndSettle();
 
       // Liveness: el preview se re-liga a la lente frontal vigente (nueva
       // generacion), sin placeholder ni superficie del controller anterior.
@@ -399,6 +403,12 @@ void main() {
               find.byKey(const Key('captureDocumentButton')),
             );
             await tester.tap(find.byKey(const Key('captureDocumentButton')));
+            await tester.pumpAndSettle();
+            // F-T45: Continuar valida y navega solo con is_valid:true.
+            await tester.ensureVisible(
+              find.byKey(const Key('kycDocumentContinue')),
+            );
+            await tester.tap(find.byKey(const Key('kycDocumentContinue')));
             await tester.pumpAndSettle();
 
             // El ciclo se completo (documento -> liveness, con captura real de

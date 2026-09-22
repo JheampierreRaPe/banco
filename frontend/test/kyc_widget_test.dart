@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/errors/api_exception.dart';
 import 'package:banca_online/core/session/session_identity_store.dart';
+import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/core/widgets/app_version_label.dart';
 import 'package:banca_online/features/kyc/kyc_flow_controller.dart';
 import 'package:banca_online/features/kyc/kyc_models.dart';
@@ -41,17 +42,43 @@ class FakeKycService implements KycService {
       );
 }
 
+/// Doble del lookup de titular (F-T44, E1-T35): devuelve Ana Perez por
+/// defecto para conservar el flujo happy path (los nombres solo los llena la
+/// API; los campos son `readOnly`).
+class FakeKycDocumentLookup implements KycDocumentLookupService {
+  const FakeKycDocumentLookup({
+    this.owner = const KycDocumentOwner(
+      documentType: 'DNI',
+      firstName: 'Ana',
+      lastName: 'Perez',
+    ),
+  });
+
+  final KycDocumentOwner owner;
+
+  @override
+  Future<KycDocumentOwner> lookupDocument({
+    required String type,
+    required String number,
+  }) async =>
+      owner;
+}
+
 /// Router de prueba con las 3 paginas compartiendo [controller].
 GoRouter _testRouter(
   KycFlowController controller, {
   SessionIdentityStore? identity,
+  KycDocumentLookupService lookupService = const FakeKycDocumentLookup(),
 }) =>
     GoRouter(
       initialLocation: '/kyc',
       routes: [
         GoRoute(
           path: '/kyc',
-          builder: (context, state) => KycStartPage(controller: controller),
+          builder: (context, state) => KycStartPage(
+            controller: controller,
+            lookupService: lookupService,
+          ),
         ),
         GoRoute(
           path: '/kyc/document',
@@ -80,9 +107,12 @@ Future<void> _pumpKyc(
   WidgetTester tester,
   KycFlowController controller, {
   SessionIdentityStore? identity,
+  KycDocumentLookupService lookupService = const FakeKycDocumentLookup(),
 }) async {
   await tester.pumpWidget(
-    MaterialApp.router(routerConfig: _testRouter(controller, identity: identity)),
+    MaterialApp.router(
+        routerConfig:
+            _testRouter(controller, identity: identity, lookupService: lookupService)),
   );
   await tester.pumpAndSettle();
 }
@@ -101,9 +131,9 @@ Future<void> _tapText(WidgetTester tester, String label) async {
   await tester.pumpAndSettle();
 }
 
+/// Completa la pantalla de inicio F-T44: email + numero, `Validar documento`
+/// (los nombres los rellena el lookup mock; son `readOnly`) y `Continuar`.
 Future<void> _completeStartPage(WidgetTester tester) async {
-  await tester.enterText(find.byKey(const Key('firstNameField')), 'Ana');
-  await tester.enterText(find.byKey(const Key('lastNameField')), 'Perez');
   await tester.enterText(
     find.byKey(const Key('emailField')),
     'ana@example.com',
@@ -112,14 +142,47 @@ Future<void> _completeStartPage(WidgetTester tester) async {
     find.byKey(const Key('docNumberField')),
     '12345678',
   );
+  await tester.pump();
+  await tester.ensureVisible(find.byKey(const Key('validateDocumentButton')));
+  await tester.tap(find.byKey(const Key('validateDocumentButton')));
+  await tester.pumpAndSettle();
   await _tapContinue(tester);
 }
 
-/// F-T23: tras los datos, el flujo pasa por `/kyc/document`; captura la foto
-/// (mock en tests) y continua a las tareas de liveness.
+/// `Continuar` habilitado (`null` = bloqueado, F-T44 exige documento
+/// validado por el servidor).
+bool _continuarEnabled(WidgetTester tester) =>
+    tester
+        .widget<AppPrimaryButton>(
+          find.widgetWithText(AppPrimaryButton, 'Continuar'),
+        )
+        .onPressed !=
+    null;
+
+/// F-T23/F-T45: tras los datos, el flujo pasa por `/kyc/document`; captura
+/// la foto (mock en tests, solo estado Capturado) y pulsa `Continuar` para
+/// validar contra el servidor y avanzar a liveness solo con `is_valid: true`.
 Future<void> _captureDocument(WidgetTester tester) async {
   expect(find.text('Escanea tu DNI'), findsOneWidget);
   await tester.tap(find.byKey(const Key('captureDocumentButton')));
+  await tester.pumpAndSettle();
+  // F-T45: la captura sola no navega; Continuar dispara la validacion.
+  await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+  await tester.tap(find.byKey(const Key('kycDocumentContinue')));
+  await tester.pumpAndSettle();
+}
+
+/// Captura SIN validar (deja el estado Capturado, F-T45).
+Future<void> _captureOnly(WidgetTester tester) async {
+  expect(find.text('Escanea tu DNI'), findsOneWidget);
+  await tester.tap(find.byKey(const Key('captureDocumentButton')));
+  await tester.pumpAndSettle();
+}
+
+/// Pulsa Continuar del paso de documento (dispara la validacion, F-T45).
+Future<void> _continueDocument(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+  await tester.tap(find.byKey(const Key('kycDocumentContinue')));
   await tester.pumpAndSettle();
 }
 
@@ -149,14 +212,14 @@ void main() {
     expect(find.byKey(const Key('docNumberField')), findsOneWidget);
   });
 
-  testWidgets('start valida numero vacio y no pide desafio', (tester) async {
+  testWidgets('start exige documento validado: Continuar bloqueado en vacio',
+      (tester) async {
     final controller = KycFlowController(service: const FakeKycService());
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
-    await _tapContinue(tester);
-
-    expect(find.text('Ingresa el numero de documento'), findsOneWidget);
+    // F-T44: sin `Validar documento` no se puede continuar ni pedir desafio.
+    expect(_continuarEnabled(tester), isFalse);
     expect(controller.challenge, isNull);
   });
 
@@ -166,28 +229,43 @@ void main() {
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
-    await tester.enterText(find.byKey(const Key('firstNameField')), 'Ana');
-    await tester.enterText(find.byKey(const Key('lastNameField')), 'Perez');
+    // Valida el documento primero (nombres desde la API); sin email,
+    // Continuar sigue bloqueado.
     await tester.enterText(
       find.byKey(const Key('docNumberField')),
       '12345678',
     );
-    await _tapContinue(tester);
-    expect(find.text('Ingresa tu email'), findsOneWidget);
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('validateDocumentButton')));
+    await tester.tap(find.byKey(const Key('validateDocumentButton')));
+    await tester.pumpAndSettle();
+    expect(_continuarEnabled(tester), isFalse);
     expect(controller.challenge, isNull);
 
     await tester.enterText(
       find.byKey(const Key('emailField')),
       'ana-sin-arroba',
     );
-    await _tapContinue(tester);
-    expect(find.text('Ingresa un email valido'), findsOneWidget);
+    await tester.pump();
+    expect(_continuarEnabled(tester), isFalse);
+    expect(controller.challenge, isNull);
+
+    await tester.enterText(
+      find.byKey(const Key('emailField')),
+      'ana@example.com',
+    );
+    await tester.pump();
+    expect(_continuarEnabled(tester), isTrue);
     expect(controller.challenge, isNull);
   });
 
   testWidgets('flujo completo happy path hasta resultado exitoso',
       (tester) async {
-    final controller = KycFlowController(service: const FakeKycService());
+    final controller = KycFlowController(
+      service: const FakeKycService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
@@ -213,7 +291,11 @@ void main() {
     // Guardado tardio (F-T39/SCR-005): el resultado ya NO persiste el
     // `user_ref`; solo el paso success lo guarda.
     final identity = InMemorySessionIdentityStore();
-    final controller = KycFlowController(service: const FakeKycService());
+    final controller = KycFlowController(
+      service: const FakeKycService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller, identity: identity);
 
@@ -236,7 +318,11 @@ void main() {
 
   testWidgets('sin user_id no navega y avisa (no se inventa la referencia)',
       (tester) async {
-    final controller = KycFlowController(service: _NoUserIdSubmitService());
+    final controller = KycFlowController(
+      service: _NoUserIdSubmitService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
@@ -272,6 +358,8 @@ void main() {
     final controller = KycFlowController(
       service: const FakeKycService(),
       taskEvaluator: (task, frames) async => ++calls >= 2,
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
     );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
@@ -292,7 +380,11 @@ void main() {
 
   testWidgets('resultado fallido muestra el motivo del servidor',
       (tester) async {
-    final controller = KycFlowController(service: _FailingSubmitService());
+    final controller = KycFlowController(
+      service: _FailingSubmitService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
@@ -312,7 +404,11 @@ void main() {
   testWidgets(
       'navegacion F-T23: /kyc -> /kyc/document -> /kyc/task -> /kyc/result',
       (tester) async {
-    final controller = KycFlowController(service: const FakeKycService());
+    final controller = KycFlowController(
+      service: const FakeKycService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
@@ -321,9 +417,11 @@ void main() {
     expect(find.text('Escanea tu DNI'), findsOneWidget);
     expect(controller.hasDocumentImage, isFalse);
 
+    // F-T45: captura + Continuar valida y avanza solo con is_valid:true.
     await tester.tap(find.byKey(const Key('captureDocumentButton')));
     await tester.pumpAndSettle();
     expect(controller.hasDocumentImage, isTrue);
+    await _continueDocument(tester);
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
 
     await _tapText(tester, 'Capturar');
@@ -340,6 +438,8 @@ void main() {
     var calls = 0;
     final controller = KycFlowController(
       service: const FakeKycService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
       detailedTaskEvaluator: (task, frames) async {
         calls++;
         return calls == 1
@@ -379,7 +479,11 @@ void main() {
 
   testWidgets('resultado fallido muestra el paso y el motivo traducido',
       (tester) async {
-    final controller = KycFlowController(service: _FailedStepSubmitService());
+    final controller = KycFlowController(
+      service: _FailedStepSubmitService(),
+      documentValidator: (image) async =>
+          const KycDocumentValidation(isValid: true),
+    );
     addTearDown(controller.dispose);
     await _pumpKyc(tester, controller);
 
@@ -434,8 +538,10 @@ void main() {
     await _pumpKyc(tester, controller);
 
     await _completeStartPage(tester);
-    await tester.tap(find.byKey(const Key('captureDocumentButton')));
-    await tester.pumpAndSettle();
+    // F-T45: captura deja Capturado; Continuar dispara la validacion.
+    await _captureOnly(tester);
+    expect(find.text('Foto capturada'), findsOneWidget);
+    await _continueDocument(tester);
 
     // No avanzo: sigue en documento, con los motivos en espanol.
     expect(find.text('Escanea tu DNI'), findsOneWidget);
@@ -445,7 +551,7 @@ void main() {
     expect(controller.hasDocumentImage, isTrue);
 
     // Reintento de captura: "Volver a tomar" resetea y re-monta el preview
-    // (F-T27); una nueva captura valida de nuevo y ahora si avanza.
+    // (F-T27); una nueva captura + Continuar valida de nuevo y ahora avanza.
     await tester.ensureVisible(find.byKey(const Key('recaptureDocumentButton')));
     await tester.tap(find.byKey(const Key('recaptureDocumentButton')));
     await tester.pumpAndSettle();
@@ -453,6 +559,7 @@ void main() {
     await tester.ensureVisible(find.byKey(const Key('captureDocumentButton')));
     await tester.tap(find.byKey(const Key('captureDocumentButton')));
     await tester.pumpAndSettle();
+    await _continueDocument(tester);
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
     expect(calls, 2);
   });
@@ -472,18 +579,19 @@ void main() {
     await _pumpKyc(tester, controller);
 
     await _completeStartPage(tester);
-    await tester.tap(find.byKey(const Key('captureDocumentButton')));
-    await tester.pumpAndSettle();
+    // F-T45: captura deja Capturado; Continuar dispara la validacion.
+    await _captureOnly(tester);
+    await _continueDocument(tester);
 
     // Se muestra el error y NO se avanza; la captura sigue en memoria.
-    expect(find.textContaining('Sin conexion'), findsOneWidget);
+    expect(find.textContaining('Sin conexi'), findsOneWidget);
     expect(find.textContaining('Paso 1 de 2'), findsNothing);
     expect(controller.hasDocumentImage, isTrue);
     final image = controller.documentImage;
 
     // Reintenta la validacion sin recapturar: conserva la misma imagen.
-    await tester.ensureVisible(find.text('Reintentar validacion'));
-    await tester.tap(find.text('Reintentar validacion'));
+    await tester.ensureVisible(find.text('Reintentar validación'));
+    await tester.tap(find.text('Reintentar validación'));
     await tester.pumpAndSettle();
     expect(controller.documentImage, image);
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);

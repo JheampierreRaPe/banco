@@ -8,10 +8,17 @@
 library;
 
 /// Tipos de documento que ofrece la UI (valores mostrados al usuario).
-const List<String> kKycDocumentTypes = ['DNI', 'CE', 'Pasaporte'];
+///
+/// F-T44 (crearCuenta-1Datos `0:1350`): la pantalla de inicio solo ofrece
+/// `DNI · RUC`; el `document.type` del submit reutiliza
+/// [mapDocumentTypeToApi] (la aceptacion de `RUC` por `submit`, hoy
+/// `DNI|CE|PASSPORT`, sigue pendiente de confirmar en el backend).
+const List<String> kKycDocumentTypes = ['DNI', 'RUC'];
 
 /// Mapea el tipo de documento de la UI al aceptado por el backend
-/// (`DNI|CE|PASSPORT`). `Pasaporte -> PASSPORT`; `DNI`/`CE` se envian igual.
+/// (`DNI|CE|PASSPORT`, mas `RUC` pendiente de confirmar).
+///
+/// `Pasaporte -> PASSPORT`; `DNI`/`CE`/`RUC` se envian igual.
 ///
 /// El cliente solo traduce el valor de presentacion al del contrato; la
 /// validacion de que el tipo exista la hace el servidor (cliente delgado).
@@ -22,9 +29,72 @@ String mapDocumentTypeToApi(String uiType) {
       return 'PASSPORT';
     case 'DNI':
     case 'CE':
+    case 'RUC':
       return uiType;
     default:
       return uiType;
+  }
+}
+
+/// Titular recuperado por documento (E1-T35 / F-T44).
+///
+/// Forma de `POST /auth/kyc/document/lookup`:
+/// `data: {document_type, first_name, last_name, business_name}`.
+/// Persona natural: `first_name`/`last_name` con valores y `business_name`
+/// vacio; RUC de persona juridica: `business_name` con la razon social y
+/// `first_name`/`last_name` vacios.
+///
+/// Vive SOLO en memoria durante el flujo; no se persiste ni se registra en
+/// logs (sin PII en logs, docs/16 §2.7).
+class KycDocumentOwner {
+  const KycDocumentOwner({
+    required this.documentType,
+    this.firstName = '',
+    this.lastName = '',
+    this.businessName = '',
+  });
+
+  /// Tipo normalizado por el servidor (`DNI`/`RUC`).
+  final String documentType;
+
+  /// Nombres de persona natural (vacios en RUC de persona juridica).
+  final String firstName;
+
+  /// Apellidos de persona natural (vacios en RUC de persona juridica).
+  final String lastName;
+
+  /// Razon social en RUC de persona juridica (vacia en persona natural).
+  final String businessName;
+
+  /// `true` cuando el documento es de persona juridica: la razon social se
+  /// muestra donde iria el nombre y los apellidos quedan vacios.
+  bool get isBusiness => businessName.trim().isNotEmpty;
+
+  /// Parsea el `data` del envelope docs/05. Lanza [FormatException] si falta
+  /// el tipo o si no trae ningun nombre (respuesta sin titular).
+  factory KycDocumentOwner.fromData(Map<String, dynamic> data) {
+    final type = data['document_type']?.toString() ?? '';
+    final firstName = data['first_name']?.toString() ?? '';
+    final lastName = data['last_name']?.toString() ?? '';
+    final businessName = data['business_name']?.toString() ?? '';
+    if (type.isEmpty) {
+      throw const FormatException(
+        'Respuesta de consulta de documento sin tipo',
+      );
+    }
+    if (firstName.trim().isEmpty &&
+        lastName.trim().isEmpty &&
+        businessName.trim().isEmpty) {
+      throw const FormatException(
+        'Respuesta de consulta de documento sin titular',
+      );
+    }
+    return KycDocumentOwner(
+      documentType: type,
+      firstName: firstName,
+      lastName: lastName,
+      businessName: businessName,
+    );
   }
 }
 

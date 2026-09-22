@@ -188,8 +188,21 @@ void main() {
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
       await tester.pumpAndSettle();
 
-      // Invalido: issues visibles, preview retirado y UNA captura hecha.
+      // F-T45: la captura sola deja Capturado (sin issues, sin navegar).
+      expect(find.text('Foto capturada'), findsOneWidget);
+      expect(find.byKey(const Key('kycDocumentContinue')), findsOneWidget);
+      expect(find.byKey(const Key('kycDocumentIssues')), findsNothing);
+      expect(rec.pictures, 1);
+
+      // Continuar dispara la validacion: invalido -> No legible.
+      await tester
+          .ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+      await tester.tap(find.byKey(const Key('kycDocumentContinue')));
+      await tester.pumpAndSettle();
+
+      // Invalido: issues visibles, preview de advertencia y UNA captura hecha.
       expect(find.byKey(const Key('kycDocumentIssues')), findsOneWidget);
+      expect(find.text('Foto con problemas de lectura'), findsOneWidget);
       expect(find.byType(KycCameraPreview), findsNothing);
       expect(rec.pictures, 1);
 
@@ -215,11 +228,14 @@ void main() {
       expect(find.byKey(const Key('recaptureDocumentButton')), findsNothing);
 
       // Nueva captura habilitada: SEGUNDA foto, sin tocar controller disposed.
+      // F-T45: queda en Capturado hasta pulsar Continuar (2 de 2 capturas).
       await tester
           .ensureVisible(find.byKey(const Key('captureDocumentButton')));
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
       await tester.pumpAndSettle();
       expect(rec.pictures, 2);
+      expect(find.text('Foto capturada'), findsOneWidget);
+      expect(find.text('2 de 2 capturas'), findsOneWidget);
       expect(rec.anyUsedAfterDispose, isFalse);
       expect(tester.takeException(), isNull);
     });

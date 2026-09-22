@@ -162,8 +162,42 @@ class KycDocumentValidateResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class DocumentLookupRequest(BaseModel):
+    """Entrada de `POST /auth/kyc/document/lookup` (E1-T35).
+
+    El formato estricto (`type in {DNI,RUC}`, `number` solo digitos con
+    longitud exacta DNI=8/RUC=11) lo valida el `service/` para devolver el
+    envoltorio 05#4 (`422 VALIDATION_ERROR`) en lugar del 422 de FastAPI.
+    """
+
+    type: str = Field(description="Tipo de documento: DNI|RUC.")
+    number: str = Field(description="Numero de documento (solo digitos, 8|11).")
+
+
+class DocumentLookupData(BaseModel):
+    """Titular normalizado (E1-T35, HU01).
+
+    Persona natural: `first_name`/`last_name` con valores y `business_name`
+    vacio. RUC de persona juridica: `business_name` con la razon social y
+    `first_name`/`last_name` vacios. Campos no editables en el cliente.
+    """
+
+    document_type: str = Field(description="Tipo consultado: DNI|RUC.")
+    first_name: str = Field(default="", description="Nombres (persona natural).")
+    last_name: str = Field(default="", description="Apellidos (persona natural).")
+    business_name: str = Field(default="", description="Razon social (RUC juridica).")
+
+
+class DocumentLookupResponse(BaseModel):
+    data: DocumentLookupData
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
     "KYC_DOC_TYPES",
+    "DocumentLookupData",
+    "DocumentLookupRequest",
+    "DocumentLookupResponse",
     "KycApplicantPayload",
     "KycChallengeData",
     "KycChallengeRequest",

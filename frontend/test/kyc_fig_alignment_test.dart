@@ -41,12 +41,37 @@ class _FakeKycService implements KycService {
       const KycSubmitResult(overallResult: true, detailCode: 'OK');
 }
 
-GoRouter _router(KycFlowController controller) => GoRouter(
+/// Doble del lookup de titular (F-T44/E1-T35): sin red, sin PII real.
+/// Devuelve el titular canónico para DNI válido; la UI lo vuelca en
+/// `Nombres`/`Apellidos` (`readOnly`) y habilita `Continuar`.
+class _FakeDocumentLookup implements KycDocumentLookupService {
+  const _FakeDocumentLookup();
+
+  @override
+  Future<KycDocumentOwner> lookupDocument({
+    required String type,
+    required String number,
+  }) async =>
+      const KycDocumentOwner(
+        documentType: 'DNI',
+        firstName: 'Ana',
+        lastName: 'Perez',
+      );
+}
+
+GoRouter _router(
+  KycFlowController controller, {
+  KycDocumentLookupService lookupService = const _FakeDocumentLookup(),
+}) =>
+    GoRouter(
       initialLocation: '/kyc',
       routes: [
         GoRoute(
           path: '/kyc',
-          builder: (context, state) => KycStartPage(controller: controller),
+          builder: (context, state) => KycStartPage(
+            controller: controller,
+            lookupService: lookupService,
+          ),
         ),
         GoRoute(
           path: '/kyc/document',
@@ -71,22 +96,45 @@ GoRouter _router(KycFlowController controller) => GoRouter(
       ],
     );
 
-Future<void> _pumpStart(WidgetTester tester, KycFlowController c) async {
-  await tester.pumpWidget(MaterialApp.router(routerConfig: _router(c)));
+Future<void> _pumpStart(
+  WidgetTester tester,
+  KycFlowController c, {
+  KycDocumentLookupService lookupService = const _FakeDocumentLookup(),
+}) async {
+  await tester.pumpWidget(
+    MaterialApp.router(
+      routerConfig: _router(c, lookupService: lookupService),
+    ),
+  );
   await tester.pumpAndSettle();
 }
 
+/// Flujo documentado F-T44: número + correo y `Validar documento` (el
+/// lookup rellena `Nombres`/`Apellidos` `readOnly`). Sin PII real.
 Future<void> _fillStartForm(WidgetTester tester) async {
-  await tester.enterText(find.byKey(const Key('firstNameField')), 'Ana');
-  await tester.enterText(find.byKey(const Key('lastNameField')), 'Perez');
-  await tester.enterText(
-    find.byKey(const Key('emailField')),
-    'ana@example.com',
-  );
   await tester.enterText(
     find.byKey(const Key('docNumberField')),
     '12345678',
   );
+  await tester.enterText(
+    find.byKey(const Key('emailField')),
+    'ana@example.com',
+  );
+  await tester.pump();
+}
+
+Future<void> _validarDocumento(WidgetTester tester) async {
+  await tester.ensureVisible(find.byKey(const Key('validateDocumentButton')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('validateDocumentButton')));
+  await tester.pumpAndSettle();
+}
+
+/// `fill + Validar + Continuar`: la ruta documentada hasta `/kyc/document`.
+Future<void> _fillValidateAndContinue(WidgetTester tester) async {
+  await _fillStartForm(tester);
+  await _validarDocumento(tester);
+  await _tapContinuar(tester);
 }
 
 Future<void> _tapContinuar(WidgetTester tester) async {
@@ -113,20 +161,60 @@ void main() {
       expect(find.text('Crear cuenta'), findsOneWidget);
       expect(find.text('Paso 1 de 4 · Datos'), findsOneWidget);
       expect(find.text('Empecemos por ti'), findsOneWidget);
+      // F-T44 (`pantalla crearCuenta-1Datos` `0:1201`, `Sub` `0:1272`):
+      // el subtítulo canónico dice "documento", no "DNI".
       expect(
-        find.text('Ingresa tus datos tal como figuran en tu DNI.'),
+        find.text('Ingresa tus datos tal como figuran en tu documento.'),
         findsOneWidget,
       );
-      expect(find.text('Número de DNI'), findsOneWidget);
+      expect(
+        find.text('Ingresa tus datos tal como figuran en tu DNI.'),
+        findsNothing,
+      );
+      expect(find.text('Tipo de documento'), findsOneWidget);
+      expect(find.text('Opciones: DNI · RUC'), findsOneWidget);
+      expect(find.text('Número de documento'), findsOneWidget);
+      expect(find.text('Validar documento'), findsOneWidget);
       expect(find.text('Nombres'), findsOneWidget);
       expect(find.text('Apellidos'), findsOneWidget);
       expect(find.text('Correo electrónico'), findsOneWidget);
-      expect(find.text('8 dígitos'), findsOneWidget);
+      expect(find.text('Teléfono (opcional)'), findsOneWidget);
+      expect(find.text('Solo números · 8 dígitos'), findsOneWidget);
+      expect(find.text('12345678'), findsOneWidget);
       expect(
         find.textContaining('Aquí te enviaremos tus constancias'),
         findsOneWidget,
       );
       expect(find.textContaining('Validaremos tu identidad'), findsOneWidget);
+      expect(
+        find.text(
+          'Validaremos tu identidad con una foto de tu documento y '
+          'reconocimiento facial.',
+        ),
+        findsOneWidget,
+      );
+      // Nombres/Apellidos solo los llena la API (F-T44): no editables.
+      final firstInner = find.descendant(
+        of: find.byKey(const Key('firstNameField')),
+        matching: find.byType(TextField),
+      );
+      expect(
+        tester.widget<TextField>(firstInner).readOnly,
+        isTrue,
+      );
+      final lastInner = find.descendant(
+        of: find.byKey(const Key('lastNameField')),
+        matching: find.byType(TextField),
+      );
+      expect(
+        tester.widget<TextField>(lastInner).readOnly,
+        isTrue,
+      );
+      // `Continuar` nace bloqueado hasta validar el documento (F-T44).
+      final continuar = tester.widget<AppPrimaryButton>(
+        find.widgetWithText(AppPrimaryButton, 'Continuar'),
+      );
+      expect(continuar.onPressed, isNull);
       expect(find.text('Continuar'), findsOneWidget);
       expect(find.byType(AppVersionLabel), findsOneWidget);
 
@@ -141,15 +229,24 @@ void main() {
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      await _tapContinuar(tester);
-
-      expect(find.byKey(const Key('kycFormErrorBanner')), findsOneWidget);
-      expect(
-        find.text('Revisa los campos marcados para continuar'),
-        findsOneWidget,
+      // F-T44: con el formulario vacío `Continuar` nace DESHABILITADO
+      // (gate de documento validado) y el banner no existe todavía.
+      final continuar = tester.widget<AppPrimaryButton>(
+        find.widgetWithText(AppPrimaryButton, 'Continuar'),
       );
-      expect(find.text('Ingresa el numero de documento'), findsOneWidget);
+      expect(continuar.onPressed, isNull);
+      expect(find.byKey(const Key('kycFormErrorBanner')), findsNothing);
+
+      // Intentar avanzar sin validar no navega ni pide challenge: el gate
+      // bloquea más fuerte que el banner antiguo (fail-closed de F-T44).
+      await tester.tap(find.text('Continuar'), warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Crear cuenta'), findsOneWidget);
+      expect(find.text('Escanea tu DNI'), findsNothing);
       expect(c.challenge, isNull);
+      expect(c.documentNumber, isEmpty);
+      expect(find.byKey(const Key('kycFormErrorBanner')), findsNothing);
     });
 
     testWidgets('cargando y error del challenge conservan el estilo',
@@ -158,12 +255,16 @@ void main() {
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      await _fillStartForm(tester);
-      await _tapContinuar(tester);
+      // F-T44: la navegación exige documento validado + correo válido; se
+      // conduce por la ruta documentada (lookup Fake -> Validar -> Continuar).
+      await _fillValidateAndContinue(tester);
 
       // Avanzó al documento: el challenge se pidió y el estilo se conserva.
       expect(find.text('Escanea tu DNI'), findsOneWidget);
       expect(c.challenge, isNotNull);
+      expect(c.challenge?.token, 'tok-abc');
+      expect(c.documentNumber, '12345678');
+      expect(c.applicant?.email, 'ana@example.com');
     });
   });
 
@@ -177,8 +278,8 @@ void main() {
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      await _fillStartForm(tester);
-      await _tapContinuar(tester);
+      // F-T44+F-T45: se llega vía lookup válido (gate de "Continuar").
+      await _fillValidateAndContinue(tester);
 
       expect(find.text('Verifica tu identidad'), findsOneWidget);
       expect(find.text('Paso 2 de 4 · Documento'), findsOneWidget);
@@ -205,13 +306,18 @@ void main() {
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      await _fillStartForm(tester);
-      await _tapContinuar(tester);
+      // F-T44+F-T45: se llega vía lookup válido (gate de "Continuar").
+      await _fillValidateAndContinue(tester);
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
+      await tester.pumpAndSettle();
+      // F-T45: captura deja Capturado; Continuar valida y deja No legible.
+      await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+      await tester.tap(find.byKey(const Key('kycDocumentContinue')));
       await tester.pumpAndSettle();
 
       expect(find.text('No pudimos leer tu DNI'), findsOneWidget);
       expect(find.text('No legible'), findsOneWidget);
+      expect(find.text('Foto con problemas de lectura'), findsOneWidget);
       expect(find.byKey(const Key('kycDocumentIssues')), findsOneWidget);
       expect(find.textContaining('borrosa'), findsOneWidget);
       expect(find.text('Volver a tomar'), findsOneWidget);
@@ -291,13 +397,21 @@ void main() {
 
   group('F-T38 resultado conserva failed_step y estilos', () {
     testWidgets('fallo muestra el paso y el motivo con tokens', (tester) async {
-      final c = KycFlowController(service: _FailingSubmitService());
+      final c = KycFlowController(
+        service: _FailingSubmitService(),
+        documentValidator: (image) async =>
+            const KycDocumentValidation(isValid: true),
+      );
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      await _fillStartForm(tester);
-      await _tapContinuar(tester);
+      // F-T44+F-T45: se alcanza el resultado por el flujo documentado
+      // (lookup válido -> captura -> validación -> liveness -> submit).
+      await _fillValidateAndContinue(tester);
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('kycDocumentContinue')));
+      await tester.tap(find.byKey(const Key('kycDocumentContinue')));
       await tester.pumpAndSettle();
       await _tapTaskButton(tester, 'Capturar');
       await _tapTaskButton(tester, 'Capturar');

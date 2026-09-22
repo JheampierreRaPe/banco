@@ -17,21 +17,19 @@ import '../kyc_dependencies.dart';
 import '../kyc_flow_controller.dart';
 import 'kyc_fig_widgets.dart';
 
-/// Paso previo a las tareas de liveness (F-T23): captura UNA foto real del
-/// documento con la camara trasera.
+/// Paso de documento con los 5 estados del `.fig` (F-T45, pagina
+/// `crear-cuenta-2documento`): sin captura (`0:1312`), Capturado (`0:1384`),
+/// Validando (`0:1419`), No legible (`0:1457`) y Error de red (`0:1498`).
 ///
-/// Diseño canónico (F-T38): fig `0:354` "Captura DNI" (título
-/// `Escanea tu DNI`, tarjeta `Frente del DNI`, botón `Tomar foto`, pie de
-/// seguridad) y fig `0:121` "DNI no legible" (borde `error-carmine`, badge
-/// `No legible`, `No pudimos leer tu DNI`, consejos y `Volver a tomar`).
-/// Solo presentación: la lógica de captura/validación no cambia.
+/// FAIL-CLOSED: solo se navega a `/kyc/task` cuando el backend responde
+/// `is_valid: true`. `Tomar foto` solo captura (estado Capturado); la
+/// validacion la dispara `Continuar`. `Continuar` habilitado SOLO en
+/// Capturado/Validado. Maximo 2 intentos: al agotarlos sin `is_valid: true`
+/// el paso queda BLOQUEADO en No legible, sin avance.
 ///
-/// Cliente delgado (docs/19): la app solo captura y envia; el backend valida
-/// el documento. La foto vive solo en memoria ([KycFlowController.documentImage])
-/// y viaja en `document.image_b64` del submit. No se guarda en disco.
-///
-/// La ruta `/kyc/document` se intercala entre `/kyc` y `/kyc/task` sin romper
-/// los demas pasos. Con fuente mock (tests/CI) el placeholder permite avanzar.
+/// Cliente delgado (docs/19): la app solo captura y muestra; la decision
+/// (`is_valid` + `issues`) es del servidor. La foto vive solo en memoria y
+/// nunca se loggea ni se persiste.
 class KycDocumentPage extends StatefulWidget {
   const KycDocumentPage({super.key, this.controller});
 
@@ -58,28 +56,26 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
     super.dispose();
   }
 
+  /// F-T45: la captura SOLO deja el estado Capturado. No valida ni navega.
   Future<void> _capture(KycFlowController c) async {
     await c.captureDocument();
-    if (!mounted) return;
-    if (c.errorMessage != null) return; // permiso/formato: reintentar aqui.
-    if (!c.hasDocumentImage) return;
-    await _validateAndContinue(c);
   }
 
   /// Reintenta la validacion SIN recapturar (fallo de red/servicio). La foto
-  /// capturada sigue en memoria.
+  /// capturada sigue en memoria. Solo navega si el servidor acepta.
   Future<void> _retryValidation(KycFlowController c) async {
     if (!c.hasDocumentImage) return;
     await _validateAndContinue(c);
   }
 
   /// Valida el documento en el servidor; solo navega al challenge si el
-  /// servidor lo acepta. Si es invalido o hay fallo de red, permanece en la
-  /// pantalla con los motivos/error (cliente delgado, docs/19).
+  /// servidor responde `is_valid: true`. Cualquier `false`, error, estado
+  /// intermedio o paso bloqueado se queda en la pantalla (fail-closed).
   Future<void> _validateAndContinue(KycFlowController c) async {
+    if (c.documentBlocked) return;
     final isOk = await c.validateDocument();
     if (!mounted) return;
-    if (isOk) {
+    if (isOk && c.documentIsValid) {
       await context.push('/kyc/task');
     }
   }
@@ -114,8 +110,36 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
           final source = c.frameSource;
           final isLive = source is CameraFrameSource;
           final captured = c.hasDocumentImage;
+          final validating = c.validatingDocument;
+          final validation = c.documentValidation;
+          final validationError = c.documentValidationError;
+          final attempts = c.documentAttempts.clamp(
+            0,
+            KycFlowController.maxDocumentAttempts,
+          );
+          final blocked = c.documentBlocked;
           final issues = c.documentIssues;
-          final isInvalid = c.documentValidation?.isValid == false;
+          // Bloqueado tras 2 fallos: fuerza el estado No legible aunque el
+          // ultimo fallo haya sido de red (CA-07).
+          final isNoLegible = captured &&
+              !validating &&
+              (validation?.isValid == false || blocked) &&
+              (validationError == null || blocked);
+          final isErrorRed =
+              captured && !validating && validationError != null && !blocked;
+          final isValidated = captured &&
+              !validating &&
+              validation?.isValid == true &&
+              !blocked &&
+              validationError == null;
+          final isCaptured = captured &&
+              !validating &&
+              validation == null &&
+              validationError == null &&
+              !blocked;
+          // Gate F-T45: Continuar habilitado SOLO en Capturado/Validado.
+          final canContinue =
+              (isCaptured || isValidated) && !c.busy && !blocked;
           return SingleChildScrollView(
             padding: const EdgeInsets.all(AppSpacing.stackMd),
             child: Column(
@@ -135,7 +159,7 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
                 ),
                 const SizedBox(height: AppSpacing.stackSm),
                 Text(
-                  captured ? '1 de 2 capturas' : '0 de 2 capturas',
+                  '$attempts de 2 capturas',
                   style: AppTypography.labelSm.copyWith(
                     color: AppColors.secondaryText,
                   ),
@@ -144,21 +168,25 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
                 _DocumentCaptureCard(
                   isLive: isLive,
                   captured: captured,
-                  isInvalid: isInvalid,
-                  issues: issues,
-                  validating: c.validatingDocument,
+                  isCaptured: isCaptured,
+                  isValidated: isValidated,
+                  isNoLegible: isNoLegible,
+                  isErrorRed: isErrorRed,
+                  validating: validating,
                   busy: c.busy,
-                  documentBytes: c.documentImage?.length,
+                  blocked: blocked,
+                  issues: issues,
                   source: source,
                   onCapture: () => _capture(c),
                   onRecapture: () => c.startDocumentRecapture(),
                 ),
-                if (c.documentValidationError != null) ...[
+                if (isErrorRed) ...[
                   const SizedBox(height: AppSpacing.stackMd),
                   ErrorView(
                     key: const Key('kycDocumentValidationError'),
-                    message: c.documentValidationError!,
-                    retryLabel: 'Reintentar validacion',
+                    message:
+                        'Sin conexión. Revisa tu internet e inténtalo de nuevo.',
+                    retryLabel: 'Reintentar validación',
                     onRetry: c.busy ? null : () => _retryValidation(c),
                   ),
                 ],
@@ -170,12 +198,15 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
                   ),
                 ],
                 const SizedBox(height: AppSpacing.stackLg),
-                AppPrimaryButton(
-                  label: 'Continuar',
-                  onPressed: !captured || c.busy || isInvalid
-                      ? null
-                      : () => _validateAndContinue(c),
-                ),
+                // Sin captura no existe Continuar (fig 0:1312). En el resto
+                // de estados se muestra, bloqueado salvo Capturado/Validado.
+                if (captured)
+                  AppPrimaryButton(
+                    key: const Key('kycDocumentContinue'),
+                    label: 'Continuar',
+                    onPressed:
+                        canContinue ? () => _validateAndContinue(c) : null,
+                  ),
                 const SizedBox(height: AppSpacing.stackLg),
                 const KycSecurityFooter(
                   message:
@@ -191,21 +222,28 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
   }
 }
 
-/// Tarjeta de captura del fig (`0:354` válida, `0:121` no legible).
+/// Tarjeta de captura con los 5 estados del fig (F-T45).
 ///
-/// La lógica vive en la página; aquí solo cambia el borde a
-/// `error-carmine`, el badge `No legible` y los consejos cuando el servidor
-/// rechaza el documento. Conserva las claves de regresión
-/// (`captureDocumentButton`, `recaptureDocumentButton`, `kycDocumentIssues`).
+/// - Sin captura (`0:1312`): `Tomar foto`, sin `Continuar` (lo oculta la pagina).
+/// - Capturado (`0:1384`): preview `✔ Foto capturada`, sin captura ni bytes.
+/// - Validando (`0:1419`): preview `✔` + `Validando documento...`.
+/// - No legible (`0:1457`): borde `error-carmine`, badge `No legible`,
+///   preview `⚠ Foto con problemas de lectura`, `IssuesCard` y
+///   `Volver a tomar` (deshabilitado si el paso quedo BLOQUEADO).
+/// - Error de red (`0:1498`): preview `✔`, sin captura ni `Volver a tomar`
+///   (el `ErrorBox` + `Reintentar validación` los pinta la pagina).
 class _DocumentCaptureCard extends StatelessWidget {
   const _DocumentCaptureCard({
     required this.isLive,
     required this.captured,
-    required this.isInvalid,
-    required this.issues,
+    required this.isCaptured,
+    required this.isValidated,
+    required this.isNoLegible,
+    required this.isErrorRed,
     required this.validating,
     required this.busy,
-    required this.documentBytes,
+    required this.blocked,
+    required this.issues,
     required this.source,
     required this.onCapture,
     required this.onRecapture,
@@ -213,11 +251,14 @@ class _DocumentCaptureCard extends StatelessWidget {
 
   final bool isLive;
   final bool captured;
-  final bool isInvalid;
-  final List<String> issues;
+  final bool isCaptured;
+  final bool isValidated;
+  final bool isNoLegible;
+  final bool isErrorRed;
   final bool validating;
   final bool busy;
-  final int? documentBytes;
+  final bool blocked;
+  final List<String> issues;
   final Object source;
   final VoidCallback onCapture;
   final VoidCallback onRecapture;
@@ -229,7 +270,7 @@ class _DocumentCaptureCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(AppRadii.lg),
-        border: isInvalid
+        border: isNoLegible
             ? Border.all(color: AppColors.errorCarmine, width: 1.5)
             : null,
         // Sombra canonica `shadow.card` (docs/20 §5): tinte de
@@ -261,7 +302,7 @@ class _DocumentCaptureCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (isInvalid)
+              if (isNoLegible)
                 const AppStatusChip.error(label: 'No legible'),
             ],
           ),
@@ -269,31 +310,9 @@ class _DocumentCaptureCard extends StatelessWidget {
           _PreviewArea(
             isLive: isLive,
             captured: captured,
-            isInvalid: isInvalid,
+            isNoLegible: isNoLegible,
             source: source,
           ),
-          if (captured && !isInvalid) ...[
-            const SizedBox(height: AppSpacing.stackSm),
-            Row(
-              children: [
-                const Icon(
-                  Icons.check_circle_outline,
-                  size: AppSpacing.stackLg,
-                  color: AppColors.success,
-                ),
-                const SizedBox(width: AppSpacing.stackSm),
-                Expanded(
-                  child: Text(
-                    'Documento capturado (${documentBytes ?? 0} '
-                    'bytes, solo en memoria).',
-                    style: AppTypography.bodyMd.copyWith(
-                      color: AppColors.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
           if (validating) ...[
             const SizedBox(height: AppSpacing.stackSm),
             const Row(
@@ -309,69 +328,128 @@ class _DocumentCaptureCard extends StatelessWidget {
               ],
             ),
           ],
-          if (isInvalid) ...[
+          if (isNoLegible) ...[
             const SizedBox(height: AppSpacing.stackMd),
             _DocumentIssuesCard(issues: issues),
           ],
           const SizedBox(height: AppSpacing.stackMd),
-          // F-T27: UNA sola accion de captura. Sin foto -> captura
-          // normal. Con foto (valida o invalida) -> re-captura, que
-          // limpia el estado ([KycFlowController.startDocumentRecapture])
-          // y re-monta el preview en vivo (captured vuelve a false).
-          // Textos del fig: `Tomar foto` / `Volver a tomar`.
-          AppPrimaryButton(
-            key: Key(
-              captured ? 'recaptureDocumentButton' : 'captureDocumentButton',
+          // F-T45: acciones por estado. Sin captura -> `Tomar foto`.
+          // No legible (no bloqueado) -> `Volver a tomar`. Capturado,
+          // Validando y Error de red no muestran accion de captura.
+          if (!captured)
+            AppPrimaryButton(
+              key: const Key('captureDocumentButton'),
+              label: 'Tomar foto',
+              icon: Icons.photo_camera_back_outlined,
+              loading: busy && !validating,
+              onPressed: busy ? null : onCapture,
+            )
+          else if (isNoLegible)
+            AppPrimaryButton(
+              key: const Key('recaptureDocumentButton'),
+              label: 'Volver a tomar',
+              icon: Icons.refresh_outlined,
+              loading: false,
+              onPressed: (busy || blocked) ? null : onRecapture,
             ),
-            label: captured ? 'Volver a tomar' : 'Tomar foto',
-            icon: Icons.photo_camera_back_outlined,
-            loading: busy && !validating,
-            onPressed: busy
-                ? null
-                : (captured ? onRecapture : onCapture),
-          ),
         ],
       ),
     );
   }
 }
 
-/// Área del viewfinder o del placeholder mock.
+/// Área del viewfinder según el estado (F-T45).
+///
+/// - Sin captura: preview en vivo o `Vista previa de la cámara`.
+/// - Capturado/Validando/ErrorRed/Validado: `✔ Foto capturada`.
+/// - No legible: `⚠ Foto con problemas de lectura` (reemplaza los consejos).
 class _PreviewArea extends StatelessWidget {
   const _PreviewArea({
     required this.isLive,
     required this.captured,
-    required this.isInvalid,
+    required this.isNoLegible,
     required this.source,
   });
 
   final bool isLive;
   final bool captured;
-  final bool isInvalid;
+  final bool isNoLegible;
   final Object source;
 
   @override
   Widget build(BuildContext context) {
     final frameColor =
-        isInvalid ? AppColors.errorCarmine : AppColors.primaryContainer;
+        isNoLegible ? AppColors.errorCarmine : AppColors.primaryContainer;
     Widget inner;
-    // F-T24: una vez capturado el documento se retira el preview
-    // en vivo. Asi, al navegar a `/kyc/task` (lente frontal), la
-    // pagina ya no referencia el controller trasero que sera
-    // reemplazado, evitando el uso tras dispose.
-    // F-T27: "Volver a tomar" limpia la captura previa
-    // ([KycFlowController.startDocumentRecapture]) y con ello
-    // `captured` vuelve a false, de modo que este bloque
-    // re-monta el preview en vivo y el usuario puede tomar una
-    // foto nueva.
-    if (isLive && !captured) {
+    if (isNoLegible) {
+      inner = Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.warning_amber_outlined,
+            size: AppSpacing.stackLg,
+            color: AppColors.errorCarmine,
+          ),
+          const SizedBox(width: AppSpacing.stackSm),
+          Flexible(
+            child: Text(
+              'Foto con problemas de lectura',
+              style: AppTypography.bodyMd.copyWith(
+                color: AppColors.errorCarmine,
+              ),
+            ),
+          ),
+        ],
+      );
+    } else if (captured) {
+      inner = Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.check_circle_outline,
+            size: AppSpacing.stackLg,
+            color: AppColors.success,
+          ),
+          const SizedBox(width: AppSpacing.stackSm),
+          Flexible(
+            child: Text(
+              'Foto capturada',
+              style: AppTypography.bodyMd.copyWith(
+                color: AppColors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      );
+    } else if (isLive) {
+      // F-T24: una vez capturado se retira el preview en vivo; con
+      // `startDocumentRecapture` (`captured=false`) se re-monta.
       inner = KycCameraPreview(
         key: const ValueKey('document-preview'),
         task: 'document',
         source: source as CameraFrameSource,
       );
     } else {
-      inner = const KycPreviewPlaceholder();
+      inner = Text(
+        'Vista previa de la cámara',
+        textAlign: TextAlign.center,
+        style: AppTypography.bodyMd.copyWith(
+          color: AppColors.secondaryText,
+        ),
+      );
+    }
+    // El preview en vivo necesita su altura natural; los estados de texto
+    // se centran con padding amplio.
+    if (inner is KycCameraPreview) {
+      return Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.def),
+          border: Border.all(color: frameColor.withValues(alpha: 0.4)),
+        ),
+        padding: const EdgeInsets.all(AppSpacing.stackSm),
+        child: inner,
+      );
     }
     return Container(
       decoration: BoxDecoration(
@@ -379,8 +457,11 @@ class _PreviewArea extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadii.def),
         border: Border.all(color: frameColor.withValues(alpha: 0.4)),
       ),
-      padding: const EdgeInsets.all(AppSpacing.stackSm),
-      child: inner,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.stackSm,
+        vertical: AppSpacing.stackLg,
+      ),
+      child: Center(child: inner),
     );
   }
 }
@@ -452,15 +533,6 @@ class _DocumentIssuesCard extends StatelessWidget {
                   ],
                 ),
               ),
-            const SizedBox(height: AppSpacing.stackSm),
-            Text(
-              'Evita reflejos y sombras sobre el documento. Apoya el DNI '
-              'en una superficie plana y encuadra las cuatro esquinas '
-              'dentro del marco.',
-              style: AppTypography.labelSm.copyWith(
-                color: AppColors.secondaryText,
-              ),
-            ),
           ],
         ),
       ),
@@ -479,6 +551,9 @@ String documentIssueMessage(String issue) {
   }
   final code = raw.toUpperCase();
   bool has(List<String> keys) => keys.any(code.contains);
+  if (has(['VALIDATOR_UNAVAILABLE'])) {
+    return 'No pudimos validar tu documento. Vuelve a intentarlo.';
+  }
   if (has(['BLUR', 'BORROS', 'SHARP', 'FOCUS'])) {
     return 'La imagen esta borrosa. Apoya el documento y evita mover la camara.';
   }

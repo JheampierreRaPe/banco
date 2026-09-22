@@ -14,9 +14,17 @@ eventos (`outbox`/`inbox`).
 - **KYC (HU01):** proxy al microservicio: `challenge`, `evaluate` (paso en vivo con rafaga
   `frames_b64`, E1-T29) y `submit` (varios frames por tarea o `image_b64`; propaga `failed_step`,
   `step_results`, `overall_reason`). `/api/v1/document/validate` valida la legibilidad del documento
-  (base64 -> `file` multipart; `{is_valid, issues, checks}`, E1-T30). No persiste frames ni
-  imagenes; `verify-full` y `/api/v1/document/validate` con timeout dedicado
-  (`KYC_VERIFY_TIMEOUT_SECONDS`, `KYC_DOCUMENT_TIMEOUT_SECONDS`).
+   (base64 -> `file` multipart; `{is_valid, issues, checks}`, E1-T30). No persiste frames ni
+   imagenes; `verify-full` y `/api/v1/document/validate` con timeout dedicado
+   (`KYC_VERIFY_TIMEOUT_SECONDS`, `KYC_DOCUMENT_TIMEOUT_SECONDS`).
+- **Titular por documento (E1-T35, HU01):** `POST /auth/kyc/document/lookup
+  {type: DNI|RUC, number}` -> `{document_type, first_name, last_name,
+  business_name}` (persona natural: nombres/apellidos; RUC juridica: razon
+  social en `business_name`; consume `F-T44`). Proxy server-side a apiinti
+  (`GET /dni/{numero}`, `GET /ruc/{numero}` con `Authorization: Bearer
+  <APIINTI_API_KEY>`; parseo tolerante en un unico punto; errores neutros
+  `VALIDATION_ERROR`/`DOCUMENT_NOT_FOUND`/`DOC_LOOKUP_UNAVAILABLE`/
+  `RATE_LIMITED`; sin persistencia; rate limit en memoria compartido con KYC).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega

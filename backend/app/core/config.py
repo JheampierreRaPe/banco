@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     kyc_base_url: str = "http://localhost:8000"
     kyc_api_key: str = "change-me"
 
+    # Consulta del titular por documento (E1-T35, HU01): proxy server-side a
+    # https://app.apiinti.dev/api/v1 (GET /dni/{numero}, /ruc/{numero}) con
+    # `Authorization: Bearer <APIINTI_API_KEY>`. La key vive en el `.env` de
+    # la raiz y llega al contenedor por `docker-compose.yml`; nunca al cliente.
+    apiinti_base_url: str = "https://app.apiinti.dev/api/v1"
+    apiinti_api_key: str = ""
+    doc_lookup_provider: str = "mock"
+    doc_lookup_mock_mode: str = "success"
+    doc_lookup_timeout_seconds: float = 5.0
+    doc_lookup_max_retries: int = 2
+    doc_lookup_backoff_base_seconds: float = 0.1
+    doc_lookup_breaker_failures: int = 3
+    doc_lookup_breaker_cooldown_seconds: float = 30.0
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

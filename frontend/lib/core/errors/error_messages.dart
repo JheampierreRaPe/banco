@@ -24,6 +24,12 @@ const Map<String, String> apiErrorMessagesEs = {
       'La operacion requiere revision adicional de cumplimiento.',
   'NOT_AUTHORIZED': 'No tienes permiso para esta operacion.',
   'NOT_FOUND': 'No encontramos lo que buscas.',
+  'DOCUMENT_NOT_FOUND':
+      'No encontramos ese documento. Revisa los datos e intentalo de nuevo.',
+  'DOC_LOOKUP_UNAVAILABLE':
+      'El servicio de consulta no esta disponible. Intentalo mas tarde.',
+  'RATE_LIMITED':
+      'Demasiados intentos. Espera un momento e intentalo de nuevo.',
   'NETWORK_ERROR':
       'Sin conexion. Revisa tu internet e intentalo de nuevo.',
   'TIMEOUT_ERROR': 'El servidor esta tardando. Intentalo de nuevo.',

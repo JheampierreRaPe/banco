@@ -134,6 +134,14 @@ class KycFlowController extends ChangeNotifier {
   /// Foto real del documento (cámara trasera, F-T23). Solo en memoria.
   Uint8List? _documentImage;
 
+  /// Intentos de captura del documento (F-T45): el contador del `.fig`
+  /// (`0/1 de 2 capturas`) es un maximo de intentos. Al agotarlos sin
+  /// `is_valid: true` el paso queda BLOQUEADO (fail-closed).
+  int _documentAttempts = 0;
+
+  /// Maximo de intentos de captura/validacion del documento (F-T45).
+  static const int maxDocumentAttempts = 2;
+
   /// Resultado de la validacion del documento (E1-T30 / F-T26).
   KycDocumentValidation? _documentValidation;
   List<String> _documentIssues = const [];
@@ -194,6 +202,19 @@ class KycFlowController extends ChangeNotifier {
 
   /// `true` si el ultimo documento validado fue aceptado por el servidor.
   bool get documentIsValid => _documentValidation?.isValid == true;
+
+  /// Numero de intentos de captura consumidos (0..[maxDocumentAttempts]).
+  int get documentAttempts => _documentAttempts;
+
+  /// `true` cuando se agotaron los intentos sin `is_valid: true` (F-T45).
+  /// El paso queda BLOQUEADO en No legible: sin `Continuar` y sin avance.
+  ///
+  /// Solo bloquea DESPUES de fallar (validacion `false` o error de red con
+  /// captura): la segunda captura aun puede validarse una vez.
+  bool get documentBlocked =>
+      _documentAttempts >= maxDocumentAttempts &&
+      !documentIsValid &&
+      (_documentValidation != null || _documentValidationError != null);
 
   /// Intentos restantes para [task] antes de derivar a revisión (E1-T06).
   int attemptsLeftOf(String task) =>
@@ -258,8 +279,14 @@ class KycFlowController extends ChangeNotifier {
   /// Deja los bytes en [documentImage] (solo memoria). Sin camara cae al mock
   /// documentado ([generateMockFrames]) para no bloquear el flujo en CI. El
   /// permiso denegado expone el mensaje y permite reintentar con el boton.
+  ///
+  /// F-T45: cada foto valida cuenta como intento ([documentAttempts]); al
+  /// agotar [maxDocumentAttempts] sin `is_valid: true` no se captura mas
+  /// (paso BLOQUEADO). Solo habilita el estado Capturado: no valida ni
+  /// navega (la validacion la dispara `Continuar`).
   Future<void> captureDocument() async {
     if (_busy) return;
+    if (documentBlocked) return;
     _busy = true;
     _errorMessage = null;
     // Una captura nueva descarta la validacion anterior (evita mostrar issues
@@ -284,6 +311,10 @@ class KycFlowController extends ChangeNotifier {
     } on ArgumentError catch (e) {
       _errorMessage = 'La foto del documento no es valida: ${e.message}';
     } finally {
+      if (_documentImage != null && _errorMessage == null) {
+        _documentAttempts =
+            (_documentAttempts + 1).clamp(0, maxDocumentAttempts);
+      }
       _busy = false;
       notifyListeners();
     }
@@ -301,6 +332,9 @@ class KycFlowController extends ChangeNotifier {
   /// captura falla (p. ej. permiso denegado) el usuario puede reintentar.
   void startDocumentRecapture() {
     if (_busy) return;
+    // F-T45: bloqueado tras 2 intentos fallidos: no se limpia ni se permite
+    // recapturar; el paso queda en No legible sin avance.
+    if (documentBlocked) return;
     _documentImage = null;
     _documentValidation = null;
     _documentIssues = const [];
@@ -309,15 +343,19 @@ class KycFlowController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Valida la foto capturada contra el servidor (E1-T30 / F-T26).
+  /// Valida la foto capturada contra el servidor (E1-T30 / F-T26 / F-T45).
   ///
   /// Devuelve `true` SOLO si el servidor acepta el documento (`is_valid`).
   /// `is_valid=false` no es un error: deja los motivos en [documentIssues] y
   /// no avanza. Un fallo de red conserva [documentImage] y expone
   /// [documentValidationError] para reintentar la validacion sin recapturar.
+  ///
+  /// FAIL-CLOSED (F-T45): sin validador real no se acepta el documento
+  /// (antes `service == null ? isValid: true`). Nunca navega: solo informa.
   Future<bool> validateDocument() async {
     final image = _documentImage;
     if (image == null || _busy) return false;
+    if (documentBlocked) return false;
     _busy = true;
     _validatingDocument = true;
     _documentValidationError = null;
@@ -329,10 +367,16 @@ class KycFlowController extends ChangeNotifier {
         outcome = await validator(image);
       } else {
         final service = _evaluationService;
-        // Tests legacy sin validador real: se preserva el avance directo.
-        outcome = service == null
-            ? const KycDocumentValidation(isValid: true)
-            : await service.validateDocument(image: image);
+        if (service == null) {
+          // Sin backend/validador no hay decision valida: fail-closed.
+          _documentValidation = const KycDocumentValidation(
+            isValid: false,
+            issues: ['VALIDATOR_UNAVAILABLE'],
+          );
+          _documentIssues = const ['VALIDATOR_UNAVAILABLE'];
+          return false;
+        }
+        outcome = await service.validateDocument(image: image);
       }
       _documentValidation = outcome;
       _documentIssues = outcome.issues;
@@ -593,6 +637,7 @@ class KycFlowController extends ChangeNotifier {
     _documentIssues = const [];
     _documentValidationError = null;
     _validatingDocument = false;
+    _documentAttempts = 0;
     notifyListeners();
   }
 

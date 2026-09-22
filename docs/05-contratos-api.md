@@ -85,6 +85,7 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/kyc/challenge` | Inicia el flujo KYC (proxy al microservicio). |
 | POST | `/auth/kyc/evaluate` | Evalua un paso de liveness en vivo (rafaga `frames_b64`). |
 | POST | `/auth/kyc/document/validate` | Valida la legibilidad del documento (proxy; E1-T30). |
+| POST | `/auth/kyc/document/lookup` | Consulta el titular por DNI/RUC (proxy a apiinti; E1-T35). |
 | POST | `/auth/kyc/submit` | Envia documento + segmentos de liveness y obtiene resultado. |
 | POST | `/auth/activate` | Valida OTP y activa la cuenta (HU02; **deprecado pero vivo**, E1-T32/SCR-005: cabecera `Deprecation: true` y OpenAPI `deprecated`; la via canonica es `POST /auth/pin/setup`). |
 | POST | `/auth/otp/resend` | Reenvia OTP con control de intentos (entrega solo por email). |
@@ -168,6 +169,25 @@ Detalle del flujo KYC (`identity`, E1-T29):
   `issues` (no es error HTTP); solo los fallos de transporte/validacion se mapean a
   422/503/504/429. El backend valida base64/tamano/magic bytes y reenvia la imagen como
   `file` multipart (`KYC_DOCUMENT_TIMEOUT_SECONDS`, default 15 s); no persiste imagenes.
+- `POST /auth/kyc/document/lookup` (E1-T35) -> request `{type: "DNI"|"RUC", number: str}`
+  y `data: {document_type, first_name, last_name, business_name}`. Persona natural:
+  `first_name`/`last_name` con valores y `business_name` vacio; RUC de persona juridica:
+  `business_name` con la razon social y `first_name`/`last_name` vacios (campos no
+  editables en el cliente; consume `F-T44`). El backend valida el formato antes de la
+  red (`type` conocido, `number` solo digitos, DNI=8/RUC=11 -> `422 VALIDATION_ERROR`);
+  consulta desde el servidor `GET /dni/{numero}` o `GET /ruc/{numero}` contra
+  `https://app.apiinti.dev/api/v1` (`APIINTI_BASE_URL`) con `Authorization: Bearer
+  <APIINTI_API_KEY>` + `Content-Type: application/json` y normaliza la respuesta
+  (punto unico de parseo: tolera `{"data": {...}}` o plana y claves alternativas;
+  la forma exacta del JSON de apiinti se fija al probar contra el proveedor real).
+  Errores neutros sin eco del numero ni del cuerpo del proveedor: `404
+  DOCUMENT_NOT_FOUND`, `503/504 DOC_LOOKUP_UNAVAILABLE`, `429 RATE_LIMITED`
+  (ventana en memoria compartida con el proxy KYC; prod: Redis/middleware). La key
+  vive solo en el entorno del backend (`.env` de la raiz, cableada por
+  `docker-compose.yml` al servicio `backend` con `${APIINTI_API_KEY:-}`); el
+  frontend jamas la ve. Sin persistencia (pre-registro, read-only). Env:
+  `DOC_LOOKUP_PROVIDER=mock|http` (default `mock`), `DOC_LOOKUP_TIMEOUT_SECONDS`
+  (default 5), `DOC_LOOKUP_MAX_RETRIES` (default 2).
 
 ### 6.2 Cuentas y beneficiarios (`accounts`) - HU05, HU07
 

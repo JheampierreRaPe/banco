@@ -60,6 +60,13 @@ services:
       KYC_PROVIDER: ${KYC_PROVIDER:-mock}
       KYC_BASE_URL: ${KYC_BASE_URL:-http://kyc:8000}
       KYC_API_KEY: ${KYC_API_KEY:-change-me}
+      # Titular por documento via apiinti (E1-T35): la key vive en el `.env`
+      # de la raiz y solo llega al backend (nunca al cliente ni al repo).
+      APIINTI_API_KEY: ${APIINTI_API_KEY:-}
+      APIINTI_BASE_URL: ${APIINTI_BASE_URL:-https://app.apiinti.dev/api/v1}
+      DOC_LOOKUP_PROVIDER: ${DOC_LOOKUP_PROVIDER:-mock}
+      DOC_LOOKUP_TIMEOUT_SECONDS: ${DOC_LOOKUP_TIMEOUT_SECONDS:-5}
+      DOC_LOOKUP_MAX_RETRIES: ${DOC_LOOKUP_MAX_RETRIES:-2}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-mock}
       GMAIL_USER: ${GMAIL_USER:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}

@@ -331,6 +331,127 @@ void main() {
     expect(result.stepResults['blink']?.reason, 'NO_BLINK');
   });
 
+  test('lookupDocument envia type/number y parsea persona natural', () async {
+    final dio = _bareDio();
+    final service = _service(dio);
+    RequestOptions? captured;
+    _respond(
+      dio,
+      (_) => {
+        'data': {
+          'document_type': 'DNI',
+          'first_name': 'Juan Carlos',
+          'last_name': 'Perez Garcia',
+          'business_name': '',
+        },
+        'meta': {'request_id': 'req-lookup-1'},
+      },
+      onRequest: (o) => captured = o,
+    );
+
+    final owner = await service.lookupDocument(
+      type: 'DNI',
+      number: '12345678',
+    );
+
+    expect(owner.documentType, 'DNI');
+    expect(owner.firstName, 'Juan Carlos');
+    expect(owner.lastName, 'Perez Garcia');
+    expect(owner.businessName, isEmpty);
+    expect(owner.isBusiness, isFalse);
+    expect(captured!.path, HttpKycService.documentLookupPath);
+    final data = captured!.data as Map<String, dynamic>;
+    expect(data['type'], 'DNI');
+    expect(data['number'], '12345678');
+  });
+
+  test('lookupDocument parsea business_name de RUC juridica', () async {
+    final dio = _bareDio();
+    final service = _service(dio);
+    RequestOptions? captured;
+    _respond(
+      dio,
+      (_) => {
+        'data': {
+          'document_type': 'RUC',
+          'first_name': '',
+          'last_name': '',
+          'business_name': 'ACME SAC',
+        },
+      },
+      onRequest: (o) => captured = o,
+    );
+
+    final owner = await service.lookupDocument(
+      type: 'RUC',
+      number: '20123456789',
+    );
+
+    expect(owner.documentType, 'RUC');
+    expect(owner.isBusiness, isTrue);
+    expect(owner.businessName, 'ACME SAC');
+    expect(owner.firstName, isEmpty);
+    expect(owner.lastName, isEmpty);
+    final data = captured!.data as Map<String, dynamic>;
+    expect(data['type'], 'RUC');
+    expect(data['number'], '20123456789');
+  });
+
+  test('KycDocumentOwner rechaza respuesta sin titular', () {
+    expect(
+      () => KycDocumentOwner.fromData(const {
+        'document_type': 'DNI',
+        'first_name': '',
+        'last_name': '',
+        'business_name': '',
+      }),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => KycDocumentOwner.fromData(const {'first_name': 'Juan'}),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('lookupDocument propaga DOCUMENT_NOT_FOUND como ApiException',
+      () async {
+    final dio = _bareDio();
+    final service = _service(dio);
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.badResponse,
+              response: Response(
+                requestOptions: options,
+                statusCode: 404,
+                data: {
+                  'error': {
+                    'code': 'DOCUMENT_NOT_FOUND',
+                    'message': 'neutral',
+                  },
+                },
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    expect(
+      service.lookupDocument(type: 'DNI', number: '12345678'),
+      throwsA(
+        isA<ApiException>().having(
+          (e) => e.code,
+          'code',
+          'DOCUMENT_NOT_FOUND',
+        ),
+      ),
+    );
+  });
+
   test('error del backend se propaga como ApiException', () {
     final dio = _bareDio();
     final service = _service(dio);

@@ -17,6 +17,7 @@ class KycDependencies {
 
   static KycService? _service;
   static KycEvaluationService? _evaluationService;
+  static KycDocumentLookupService? _lookupService;
   static KycFrameSource? _frameSource;
   static KycFlowController? _controller;
 
@@ -26,11 +27,13 @@ class KycDependencies {
   ///
   /// [evaluationService] (F-T23) es opcional: por defecto se usa el propio
   /// [service] cuando implementa [KycEvaluationService] (es el caso de
-  /// `HttpKycService`), de modo que `app_router.dart` no cambia.
+  /// `HttpKycService`), de modo que `app_router.dart` no cambia. Lo mismo
+  /// vale para [lookupService] (F-T44, `KycDocumentLookupService`).
   static void configure({
     required KycService service,
     KycFrameSource? frameSource,
     KycEvaluationService? evaluationService,
+    KycDocumentLookupService? lookupService,
   }) {
     _service = service;
     // F-T33 (H-02): si se reemplaza la fuente, la anterior se cierra para no
@@ -40,11 +43,16 @@ class KycDependencies {
     _frameSource = frameSource;
     // `KycService` y `KycEvaluationService` son interfaces no relacionadas:
     // Dart no promueve el tipo, por eso el cast explicito (seguro dentro del
-    // `is`). En produccion `HttpKycService` implementa ambas.
+    // `is`). En produccion `HttpKycService` implementa ambas (F-T44: tambien
+    // `KycDocumentLookupService`).
     final inferred = service is KycEvaluationService
         ? service as KycEvaluationService
         : null;
     _evaluationService = evaluationService ?? inferred;
+    final inferredLookup = service is KycDocumentLookupService
+        ? service as KycDocumentLookupService
+        : null;
+    _lookupService = lookupService ?? inferredLookup;
     _controller?.dispose();
     _controller = null;
     if (previousSource is CameraFrameSource &&
@@ -74,6 +82,18 @@ class KycDependencies {
     );
   }
 
+  /// Servicio de consulta del titular por documento (F-T44). Por defecto el
+  /// propio `service` cuando implementa [KycDocumentLookupService] (es el
+  /// caso de `HttpKycService`).
+  static KycDocumentLookupService get lookupService {
+    final existing = _lookupService;
+    if (existing != null) return existing;
+    throw StateError(
+      'KycDependencies.configure(service:) debe llamarlo el orquestador '
+      'antes de validar un documento.',
+    );
+  }
+
   /// Controlador vigente SIN crearlo (las páginas lo usan en `dispose()` para
   /// liberar la cámara al salir sin instanciar un flujo nuevo).
   static KycFlowController? get controllerIfExists => _controller;
@@ -91,5 +111,6 @@ class KycDependencies {
     }
     _service = null;
     _evaluationService = null;
+    _lookupService = null;
   }
 }

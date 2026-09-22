@@ -13,9 +13,17 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
   proxy al microservicio KYC. El submit (E1-T24) recibe `document.number`,
   `applicant{first_name,last_name,email,phone}` y, si `overall_result=true`,
   integra en la misma transaccion el alta (`onboard_customer`) y la
-  persistencia del intento (`save_verification`); devuelve
-  `user_id`/`status`/`account_id`. Duplicados de documento/email -> 409
-  `DUPLICATE_DOCUMENT`/`DUPLICATE_EMAIL`.
+   persistencia del intento (`save_verification`); devuelve
+   `user_id`/`status`/`account_id`. Duplicados de documento/email -> 409
+   `DUPLICATE_DOCUMENT`/`DUPLICATE_EMAIL`.
+- `POST /auth/kyc/document/lookup` (`api/kyc.py` + `service/document_lookup.py` +
+  adaptador `DocumentLookupProvider`, E1-T35): titular por DNI/RUC via apiinti
+  (`GET /dni/{numero}`, `GET /ruc/{numero}` con `Authorization: Bearer
+  <APIINTI_API_KEY>` server-side; la key nunca sale al cliente); responde
+  `{document_type, first_name, last_name, business_name}` (RUC juridica =
+  razon social; consume `F-T44`); errores neutros `VALIDATION_ERROR` (422),
+  `DOCUMENT_NOT_FOUND` (404), `DOC_LOOKUP_UNAVAILABLE` (503/504),
+  `RATE_LIMITED` (429); sin persistencia.
 - `POST /auth/activate` y `POST /auth/otp/resend` (`api/activation.py`,
   E1-T32/SCR-005): OTP de activacion solo por email (plantilla `otp_code_email`;
   nunca SMS); `/auth/activate` deprecado pero vivo (`Deprecation: true` + OpenAPI
@@ -48,6 +56,11 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
   crear usuario.
 - `kyc_proxy` (`service/kyc_proxy.py`, E1-T02): valida imagenes (base64 +
   magic bytes) y reenvia al adaptador; nunca persiste frames.
+- `document_lookup` (`service/document_lookup.py`, E1-T35): valida
+  `type in {DNI,RUC}` + `number` solo digitos (DNI=8/RUC=11) antes de la red,
+  consulta al adaptador `DocumentLookupProvider` y normaliza
+  `first_name`/`last_name` (persona natural) o `business_name` (razon social,
+  RUC juridica); sin persistencia ni eventos; numero solo hasheado en logs.
 - OTP, activacion, login y sesiones en sus propios modulos de servicio.
 - `reset_pin` (`service/pin_reset.py`, E1-T34/SCR-005): fija el PIN con
   `email + DNI + OTP RECOVERY` (un solo 401 generico `INVALID_PIN_RESET`,

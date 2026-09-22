@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/errors/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
@@ -11,26 +13,35 @@ import '../../../core/widgets/loading_view.dart';
 import '../kyc_dependencies.dart';
 import '../kyc_flow_controller.dart';
 import '../kyc_models.dart';
+import '../kyc_service.dart';
 import 'kyc_fig_widgets.dart';
 
-/// Paso 1 del KYC: datos del titular + tipo/numero de documento, luego pide el
-/// desafio.
+/// Paso 1 del KYC: tipo/numero de documento validados por el servidor y datos
+/// del titular, luego pide el desafio.
 ///
-/// Diseño canónico (F-T38, fig `0:789` "Registro: Datos Personales" y `0:407`
-/// "Registro: Errores"): stepper `Paso 1 de 4 · Datos`, título
-/// `Empecemos por ti`, tarjeta de formulario blanca, franja informativa y
-/// pie con `Continuar`. Solo presentación: la lógica (validación de formato
-/// en UI, `challenge`, navegación) no cambia.
+/// Diseño canónico (F-T44, pagina `crearCuenta-1Datos` `0:1201`, frame
+/// `0:1256`): `FieldTipoDoc` primero (`0:1350`, `DNI · RUC`, default `DNI`) ->
+/// `FieldNumDoc` (`0:1356`, solo digitos, 8/11 segun tipo) -> `BtnValidarDoc`
+/// (`0:1361`, `Validar documento`) -> `FieldNombres` (`0:1363`) /
+/// `FieldApellidos` (`0:1367`, **`readOnly`**, solo la API los llena) ->
+/// `FieldCorreo` (`0:1371`) -> `FieldTelefono` (`0:1376`, opcional) ->
+/// `InfoStrip` (`0:1302`).
 ///
-/// Cliente delgado (F-T19, docs/19): solo captura y envia; el backend valida
-/// identidad y decide. Los tipos de documento se ofrecen como `DNI|CE|
-/// Pasaporte`; el mapeo `Pasaporte -> PASSPORT` lo hace la capa de servicio.
+/// Cliente delgado (docs/19 §4): la pantalla solo captura y envia; el titular
+/// lo devuelve `POST /auth/kyc/document/lookup` del backend (E1-T35) y se
+/// muestra tal cual (persona natural: `first_name`/`last_name`; RUC de persona
+/// juridica: `business_name` donde iria el nombre). El frontend jamas llama a
+/// la API externa ni conoce su key, y no registra PII en logs.
 class KycStartPage extends StatefulWidget {
-  const KycStartPage({super.key, this.controller});
+  const KycStartPage({super.key, this.controller, this.lookupService});
 
   /// Controlador inyectable (tests). Por defecto, el compartido de
   /// [KycDependencies] (cableado por el orquestador).
   final KycFlowController? controller;
+
+  /// Servicio de consulta del titular (tests). Por defecto, el resuelto por
+  /// [KycDependencies.lookupService] (el propio `HttpKycService`).
+  final KycDocumentLookupService? lookupService;
 
   static const List<String> documentTypes = kKycDocumentTypes;
 
@@ -47,11 +58,47 @@ class _KycStartPageState extends State<KycStartPage> {
   final _numberController = TextEditingController();
   String _docType = KycStartPage.documentTypes.first;
 
-  /// Muestra el banner de errores (fig `0:407`) tras un Continuar inválido.
+  /// Muestra el banner de errores tras un Continuar inválido.
   bool _showFormErrors = false;
+
+  /// `true` mientras `Validar documento` espera al servidor.
+  bool _validating = false;
+
+  /// `true` cuando el documento fue validado por el servidor y los nombres
+  /// vigentes son los de esa respuesta. Cambiar tipo/numero lo invalida.
+  bool _lookupValid = false;
+
+  /// Numero con el que se obtuvo [_lookupValid] (para invalidar al cambiarlo
+  /// y no arrastrar datos obsoletos). El tipo se invalida en
+  /// [_onDocTypeChanged].
+  String? _validatedNumber;
+
+  /// Error neutro de la ultima validacion (con reintento); `null` si no hay.
+  String? _lookupError;
 
   KycFlowController get _controller =>
       widget.controller ?? KycDependencies.controller;
+
+  /// Longitud exigida segun el tipo activo (DNI 8 / RUC 11).
+  int get _expectedLength => _docType == 'RUC' ? 11 : 8;
+
+  /// Ayuda dinamica del numero segun el tipo activo.
+  String get _numberHelp => 'Solo números · $_expectedLength dígitos';
+
+  /// `Validar documento` se habilita con el numero completo (solo digitos).
+  bool get _canValidate =>
+      !_validating &&
+      _numberController.text.trim().length == _expectedLength;
+
+  /// `Continuar` exige documento validado por el servidor con los datos
+  /// vigentes, nombres llenos por la API y email valido (telefono opcional).
+  bool get _canContinue {
+    if (_validating || !_lookupValid) return false;
+    if (_numberController.text.trim() != _validatedNumber) return false;
+    if (_firstNameController.text.trim().isEmpty) return false;
+    if (_validateEmail(_emailController.text) != null) return false;
+    return true;
+  }
 
   @override
   void dispose() {
@@ -72,10 +119,125 @@ class _KycStartPageState extends State<KycStartPage> {
     return null;
   }
 
+  String? _validateNumber(String? value) {
+    final number = (value ?? '').trim();
+    if (number.isEmpty) return 'Ingresa el numero de documento';
+    if (number.length != _expectedLength) {
+      return 'El numero parece incompleto';
+    }
+    return null;
+  }
+
+  KycDocumentLookupService? _resolveLookup() {
+    final injected = widget.lookupService;
+    if (injected != null) return injected;
+    try {
+      return KycDependencies.lookupService;
+    } on StateError {
+      return null;
+    }
+  }
+
+  /// Limpia los nombres recuperados y bloquea `Continuar` (datos obsoletos).
+  void _invalidateLookup() {
+    _lookupValid = false;
+    _validatedNumber = null;
+    _lookupError = null;
+    _firstNameController.clear();
+    _lastNameController.clear();
+  }
+
+  void _onDocTypeChanged(String? value) {
+    if (value == null || value == _docType) return;
+    setState(() {
+      _docType = value;
+      _invalidateLookup();
+    });
+  }
+
+  void _onNumberChanged(String value) {
+    setState(() {
+      if (_lookupValid && value.trim() != _validatedNumber) {
+        _invalidateLookup();
+      }
+    });
+  }
+
+  /// `Validar documento`: consulta el titular al backend (E1-T35) y rellena
+  /// `Nombres`/`Apellidos` (no editables). RUC de persona juridica: muestra
+  /// `business_name` donde iria el nombre y deja apellidos vacio. En `404` o
+  /// fallo de red muestra un mensaje neutro con reintento y no habilita
+  /// `Continuar`. Sin PII en logs: no se registra el numero ni la respuesta.
+  Future<void> _validateDocument() async {
+    final number = _numberController.text.trim();
+    if (_validateNumber(number) != null) {
+      if (mounted) setState(() => _showFormErrors = true);
+      _formKey.currentState?.validate();
+      return;
+    }
+    final lookup = _resolveLookup();
+    if (lookup == null) {
+      if (mounted) {
+        setState(() {
+          _lookupError =
+              'No pudimos validar tu documento. Intentalo mas tarde.';
+        });
+      }
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _validating = true;
+        _lookupError = null;
+      });
+    }
+    FocusScope.of(context).unfocus();
+    try {
+      final owner = await lookup.lookupDocument(
+        type: _docType,
+        number: number,
+      );
+      if (!mounted) return;
+      setState(() {
+        _validating = false;
+        if (owner.isBusiness) {
+          _firstNameController.text = owner.businessName;
+          _lastNameController.clear();
+        } else {
+          _firstNameController.text = owner.firstName;
+          _lastNameController.text = owner.lastName;
+        }
+        _lookupValid = true;
+        _validatedNumber = number;
+        _lookupError = null;
+        _showFormErrors = false;
+      });
+    } on ApiException catch (e) {
+      // Mensaje neutro del catalogo (sin eco del numero ni del proveedor).
+      if (!mounted) return;
+      setState(() {
+        _validating = false;
+        _invalidateLookup();
+        _lookupError = e.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _validating = false;
+        _invalidateLookup();
+        _lookupError = 'Ocurrio un error inesperado. Intentalo mas tarde.';
+      });
+    }
+  }
+
   Future<void> _continue() async {
     final form = _formKey.currentState;
-    if (form == null || !form.validate()) {
-      // Fig `0:407`: al fallar, banner + marcas de error en los campos.
+    final number = _numberController.text.trim();
+    if (!_lookupValid ||
+        number != _validatedNumber ||
+        form == null ||
+        !form.validate()) {
+      // Sin documento validado por el servidor no se avanza.
       if (mounted) setState(() => _showFormErrors = true);
       return;
     }
@@ -91,7 +253,7 @@ class _KycStartPageState extends State<KycStartPage> {
     );
     _controller.setDocument(
       type: _docType,
-      number: _numberController.text.trim(),
+      number: number,
     );
     await _controller.loadChallenge();
     if (!mounted) return;
@@ -109,7 +271,8 @@ class _KycStartPageState extends State<KycStartPage> {
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
+        preferredSize:
+            const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
         child: KycTopBar(
           title: 'Crear cuenta',
           onBack: () => context.pop(),
@@ -137,7 +300,7 @@ class _KycStartPageState extends State<KycStartPage> {
                   const KycSectionHeader(
                     title: 'Empecemos por ti',
                     subtitle:
-                        'Ingresa tus datos tal como figuran en tu DNI.',
+                        'Ingresa tus datos tal como figuran en tu documento.',
                   ),
                   const SizedBox(height: AppSpacing.stackMd),
                   if (_showFormErrors) ...[
@@ -152,29 +315,69 @@ class _KycStartPageState extends State<KycStartPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const KycFieldLabel(text: 'Número de DNI'),
+                          const KycFieldLabel(text: 'Tipo de documento'),
+                          const SizedBox(height: AppSpacing.stackSm),
+                          DropdownButtonFormField<String>(
+                            key: const Key('docTypeField'),
+                            initialValue: _docType,
+                            decoration: kycFieldDecoration(hintText: ''),
+                            items: [
+                              for (final t in KycStartPage.documentTypes)
+                                DropdownMenuItem(value: t, child: Text(t)),
+                            ],
+                            onChanged: _onDocTypeChanged,
+                          ),
+                          const KycFieldHelper(
+                            text: 'Opciones: DNI · RUC',
+                          ),
+                        ],
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const KycFieldLabel(text: 'Número de documento'),
                           const SizedBox(height: AppSpacing.stackSm),
                           TextFormField(
                             key: const Key('docNumberField'),
                             controller: _numberController,
+                            onChanged: _onNumberChanged,
                             decoration: kycFieldDecoration(
                               hintText: '12345678',
                             ),
-                            keyboardType: TextInputType.text,
-                            validator: (v) {
-                              final value = (v ?? '').trim();
-                              if (value.isEmpty) {
-                                return 'Ingresa el numero de documento';
-                              }
-                              if (value.length < 6) {
-                                return 'El numero parece incompleto';
-                              }
-                              return null;
-                            },
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            maxLength: _expectedLength,
+                            buildCounter: (
+                              context, {
+                              required int currentLength,
+                              required bool isFocused,
+                              int? maxLength,
+                            }) =>
+                                const SizedBox.shrink(),
+                            validator: _validateNumber,
                           ),
-                          const KycFieldHelper(text: '8 dígitos'),
+                          KycFieldHelper(text: _numberHelp),
                         ],
                       ),
+                      AppPrimaryButton(
+                        key: const Key('validateDocumentButton'),
+                        label: 'Validar documento',
+                        loading: _validating,
+                        onPressed:
+                            _canValidate && !_validating ? _validateDocument : null,
+                      ),
+                      if (_lookupError != null)
+                        KeyedSubtree(
+                          key: const Key('kycLookupError'),
+                          child: ErrorView(
+                            message: _lookupError!,
+                            onRetry:
+                                _validating ? null : _validateDocument,
+                          ),
+                        ),
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
@@ -184,13 +387,15 @@ class _KycStartPageState extends State<KycStartPage> {
                           TextFormField(
                             key: const Key('firstNameField'),
                             controller: _firstNameController,
+                            readOnly: true,
                             decoration: kycFieldDecoration(
                               hintText: 'Ej. Juan Carlos',
                             ),
                             textInputAction: TextInputAction.next,
-                            validator: (v) => (v ?? '').trim().isEmpty
-                                ? 'Ingresa tus nombres'
-                                : null,
+                            validator: (v) =>
+                                (v ?? '').trim().isEmpty
+                                    ? 'Valida tu documento para completar tus nombres'
+                                    : null,
                           ),
                         ],
                       ),
@@ -203,13 +408,11 @@ class _KycStartPageState extends State<KycStartPage> {
                           TextFormField(
                             key: const Key('lastNameField'),
                             controller: _lastNameController,
+                            readOnly: true,
                             decoration: kycFieldDecoration(
                               hintText: 'Ej. Pérez García',
                             ),
                             textInputAction: TextInputAction.next,
-                            validator: (v) => (v ?? '').trim().isEmpty
-                                ? 'Ingresa tus apellidos'
-                                : null,
                           ),
                         ],
                       ),
@@ -222,6 +425,9 @@ class _KycStartPageState extends State<KycStartPage> {
                           TextFormField(
                             key: const Key('emailField'),
                             controller: _emailController,
+                            onChanged: (_) {
+                              if (mounted) setState(() {});
+                            },
                             decoration: kycFieldDecoration(
                               hintText: 'ejemplo@correo.com',
                             ),
@@ -233,25 +439,6 @@ class _KycStartPageState extends State<KycStartPage> {
                             text:
                                 'Aquí te enviaremos tus constancias y el código '
                                 'para recuperar tu PIN.',
-                          ),
-                        ],
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const KycFieldLabel(text: 'Tipo de documento'),
-                          const SizedBox(height: AppSpacing.stackSm),
-                          DropdownButtonFormField<String>(
-                            key: const Key('docTypeField'),
-                            initialValue: _docType,
-                            decoration: kycFieldDecoration(hintText: ''),
-                            items: [
-                              for (final t in KycStartPage.documentTypes)
-                                DropdownMenuItem(value: t, child: Text(t)),
-                            ],
-                            onChanged: (v) =>
-                                setState(() => _docType = v ?? _docType),
                           ),
                         ],
                       ),
@@ -277,13 +464,13 @@ class _KycStartPageState extends State<KycStartPage> {
                   const SizedBox(height: AppSpacing.stackMd),
                   const KycInfoStrip(
                     message:
-                        'Validaremos tu identidad con una foto de tu DNI y '
+                        'Validaremos tu identidad con una foto de tu documento y '
                         'reconocimiento facial.',
                   ),
                   const SizedBox(height: AppSpacing.stackLg),
                   AppPrimaryButton(
                     label: 'Continuar',
-                    onPressed: _continue,
+                    onPressed: _canContinue ? _continue : null,
                   ),
                   if (_controller.errorMessage != null) ...[
                     const SizedBox(height: AppSpacing.stackMd),

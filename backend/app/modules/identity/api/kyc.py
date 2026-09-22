@@ -3,6 +3,8 @@
 `POST /auth/kyc/challenge` -> `{token, steps, expires_in}`;
 `POST /auth/kyc/evaluate` -> `{step, passed, reason, frames_analyzed, details}`;
 `POST /auth/kyc/document/validate` -> `{is_valid, issues, checks}` (E1-T30);
+`POST /auth/kyc/document/lookup` -> `{document_type, first_name, last_name,
+business_name}` (E1-T35, proxy a apiinti con `APIINTI_API_KEY` server-side);
 `POST /auth/kyc/submit` -> `{overall_result, ...}`. Montados bajo `/api/v1`
 por `app.main` via `iter_routers` (este `router` lo recoge el ensamblado;
 sin registro extra).
@@ -53,6 +55,13 @@ import uuid
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from app.adapters.document_lookup_provider import (
+    DocumentLookupProvider,
+    DocumentLookupTimeoutError,
+    DocumentLookupUnavailableError,
+    DocumentNotFoundError,
+    create_document_lookup_provider,
+)
 from app.adapters.kyc_provider import (
     KycInvalidError,
     KycProvider,
@@ -63,6 +72,8 @@ from app.adapters.kyc_provider import (
 from app.core.db import get_db
 from app.core.errors import AppError
 from app.modules.identity.schemas.kyc import (
+    DocumentLookupRequest,
+    DocumentLookupResponse,
     KycChallengeRequest,
     KycChallengeResponse,
     KycDocumentValidateRequest,
@@ -72,7 +83,7 @@ from app.modules.identity.schemas.kyc import (
     KycSubmitRequest,
     KycSubmitResponse,
 )
-from app.modules.identity.service import kyc_onboarding, kyc_proxy
+from app.modules.identity.service import document_lookup, kyc_onboarding, kyc_proxy
 
 router = APIRouter(tags=["identity"])
 
@@ -80,6 +91,11 @@ router = APIRouter(tags=["identity"])
 def get_kyc_provider() -> KycProvider:
     """Proveedor KYC por entorno (testeable via `dependency_overrides`)."""
     return create_kyc_provider()
+
+
+def get_document_lookup_provider() -> DocumentLookupProvider:
+    """Proveedor de consulta del titular por entorno (testeable via overrides)."""
+    return create_document_lookup_provider()
 
 
 def _request_id(request: Request) -> str:
@@ -303,4 +319,65 @@ def kyc_document_validate(
     return {"data": data, "meta": {"request_id": _request_id(request)}}
 
 
-__all__ = ["get_kyc_provider", "router"]
+@router.post(
+    "/auth/kyc/document/lookup",
+    response_model=DocumentLookupResponse,
+    summary="Consulta el titular por documento (proxy a apiinti)",
+)
+def kyc_document_lookup(
+    body: DocumentLookupRequest,
+    request: Request,
+    provider: DocumentLookupProvider = Depends(get_document_lookup_provider),
+) -> dict:
+    """Consulta `GET /dni/{numero}` o `GET /ruc/{numero}` desde el servidor (E1-T35, HU01).
+
+    Cliente delgado: el frontend nunca ve la `APIINTI_API_KEY` (solo el
+    backend la envia como `Authorization: Bearer`); los datos se muestran en
+    campos no editables. Sin persistencia (pre-registro, read-only).
+    `type`/`number` se validan antes de la red (422); sin datos -> 404
+    neutro; proveedor caido/timeout -> 503/504; ventana excedida -> 429.
+    """
+    # Rate limit en memoria compartido con el proxy KYC (prod: Redis/middleware).
+    _enforce_rate_limit(request, None)
+    try:
+        data = document_lookup.lookup_holder(provider, doc_type=body.type, number=body.number)
+    except (
+        document_lookup.DocumentLookupValidationError,
+        DocumentNotFoundError,
+        DocumentLookupTimeoutError,
+        DocumentLookupUnavailableError,
+    ) as exc:
+        raise _lookup_service_error(exc) from exc
+    return {"data": data, "meta": {"request_id": _request_id(request)}}
+
+
+def _lookup_service_error(exc: Exception) -> AppError:
+    """Mapea los errores de la consulta del titular al formato 05#4.
+
+    Cuerpos neutros: nunca se refleja el numero consultado ni el cuerpo del
+    proveedor (anti-enumeracion, igual que el resto del proxy KYC).
+    """
+    if isinstance(exc, document_lookup.DocumentLookupValidationError):
+        return AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422)
+    if isinstance(exc, DocumentNotFoundError):
+        return AppError(
+            code="DOCUMENT_NOT_FOUND",
+            message="No se encontraron datos para el documento indicado",
+            status_code=404,
+        )
+    if isinstance(exc, DocumentLookupTimeoutError):
+        return AppError(
+            code="DOC_LOOKUP_UNAVAILABLE",
+            message="Servicio de consulta sin respuesta, reintente luego",
+            status_code=504,
+        )
+    if isinstance(exc, DocumentLookupUnavailableError):
+        return AppError(
+            code="DOC_LOOKUP_UNAVAILABLE",
+            message="Servicio de consulta no disponible, reintente luego",
+            status_code=503,
+        )
+    raise exc
+
+
+__all__ = ["get_document_lookup_provider", "get_kyc_provider", "router"]

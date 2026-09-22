@@ -6,6 +6,7 @@ implementacion `mock` activable por configuracion.
 | Adaptador | Simula | Nota |
 |---|---|---|
 | `KycProvider` | RENIEC + OCR + liveness | **Real**: microservicio FastAPI existente; solo onboarding (HU01). |
+| `DocumentLookupProvider` | Titular por DNI/RUC (apiinti) | **Real**: `GET /dni/{n}`, `/ruc/{n}` con `Bearer APIINTI_API_KEY` server-side (E1-T35); mock por defecto. |
 | `CreditBureau` | Central de riesgo | Score/reglas simuladas. |
 | `FxRateProvider` | API de tipo de cambio | Fallback a tasa semilla. |
 | `InterbankGateway` | Red interbancaria / equipo par | **Simulador** con contrato propio (D01). |

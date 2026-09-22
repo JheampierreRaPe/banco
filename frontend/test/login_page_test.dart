@@ -1,10 +1,11 @@
-// Pruebas de widget del LoginPage (E1-T16).
+// Pruebas de widget del LoginPage (F-T40, diseño canónico `0:860`/`0:901`).
 //
-// - Biometria exitosa (fakes) navega a `/home`.
-// - Biometria no disponible -> fallback a PIN funciona.
-// - PIN correcto entra; PIN incorrecto -> mensaje generico.
-// - Inactividad expira la sesion (timeout corto inyectado + `tick()` manual;
+// - Biometría exitosa (fakes) navega a `/home`.
+// - Biometría no disponible -> fallback a PIN de 6 casillas funciona.
+// - PIN correcto entra; PIN incorrecto -> mensaje genérico.
+// - Inactividad expira la sesión (timeout corto inyectado + `tick()` manual;
 //   `autoTick: false` para que `pumpAndSettle` no espere al `Timer` real).
+// - Estado vacío sin `userRef`.
 import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/http/api_client.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
@@ -32,7 +33,11 @@ Map<String, dynamic> _sessionEnvelope(String access, String refresh) => {
     };
 
 class _Harness {
-  _Harness({required this.reader, this.inactivityTimeoutSeconds = 180}) {
+  _Harness({
+    required this.reader,
+    this.inactivityTimeoutSeconds = 180,
+    this.userRef = 'u-1',
+  }) {
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
@@ -61,7 +66,7 @@ class _Harness {
           }
           if (options.path.endsWith(LoginController.pinPath)) {
             final pin = (options.data as Map)['pin'] as String?;
-            if (pin == '1234') {
+            if (pin == '123456') {
               handler.resolve(
                 Response(
                   requestOptions: options,
@@ -116,7 +121,7 @@ class _Harness {
           path: '/login',
           builder: (context, state) => LoginPage(
             controller: controller,
-            userRef: 'u-1',
+            userRef: userRef,
             deviceId: 'd-1',
             autoTick: false,
           ),
@@ -134,6 +139,7 @@ class _Harness {
   final InMemorySessionRepository session = InMemorySessionRepository();
   final FakeBiometricReader reader;
   final int inactivityTimeoutSeconds;
+  final String userRef;
   late final LoginController controller;
   late final GoRouter router;
 }
@@ -142,6 +148,17 @@ Future<void> _pump(WidgetTester tester, _Harness h) async {
   await tester.pumpWidget(MaterialApp.router(routerConfig: h.router));
   await tester.pumpAndSettle();
   addTearDown(h.controller.dispose);
+}
+
+/// Ingresa el PIN en las 6 casillas canónicas (`0:901`).
+Future<void> _enterPin(WidgetTester tester, String pin) async {
+  for (var i = 0; i < 6; i++) {
+    await tester.enterText(
+      find.byKey(Key('login-pin-$i')),
+      pin[i],
+    );
+    await tester.pump();
+  }
 }
 
 void main() {
@@ -169,8 +186,10 @@ void main() {
     final h = _Harness(reader: FakeBiometricReader(available: false));
     await _pump(tester, h);
 
-    // El campo PIN esta siempre visible como contingencia.
-    expect(find.byKey(const Key('login-pin-field')), findsOneWidget);
+    // Las 6 casillas del PIN están siempre visibles como contingencia.
+    for (var i = 0; i < 6; i++) {
+      expect(find.byKey(Key('login-pin-$i')), findsOneWidget);
+    }
 
     await tester.tap(find.byKey(const Key('login-biometric-button')));
     await tester.pumpAndSettle();
@@ -182,11 +201,7 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.enterText(
-      find.byKey(const Key('login-pin-field')),
-      '1234',
-    );
-    await tester.pump();
+    await _enterPin(tester, '123456');
     await tester.tap(find.byKey(const Key('login-pin-submit')));
     await tester.pumpAndSettle();
 
@@ -198,11 +213,7 @@ void main() {
     final h = _Harness(reader: FakeBiometricReader(available: false));
     await _pump(tester, h);
 
-    await tester.enterText(
-      find.byKey(const Key('login-pin-field')),
-      '1234',
-    );
-    await tester.pump();
+    await _enterPin(tester, '123456');
     await tester.tap(find.byKey(const Key('login-pin-submit')));
     await tester.pumpAndSettle();
 
@@ -213,11 +224,7 @@ void main() {
     final h = _Harness(reader: FakeBiometricReader(available: false));
     await _pump(tester, h);
 
-    await tester.enterText(
-      find.byKey(const Key('login-pin-field')),
-      '0000',
-    );
-    await tester.pump();
+    await _enterPin(tester, '000000');
     await tester.tap(find.byKey(const Key('login-pin-submit')));
     await tester.pumpAndSettle();
 
@@ -227,6 +234,16 @@ void main() {
       findsOneWidget,
     );
     expect(h.session.isAuthenticated, isFalse);
+  });
+
+  testWidgets('sin userRef muestra el estado vacio', (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      userRef: '',
+    );
+    await _pump(tester, h);
+
+    expect(find.byKey(const Key('login-empty')), findsOneWidget);
   });
 
   testWidgets('inactividad expira la sesion (timeout corto inyectado)',

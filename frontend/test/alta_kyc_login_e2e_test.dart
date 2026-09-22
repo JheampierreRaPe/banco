@@ -1,18 +1,24 @@
 // E2E de navegacion del alta y login (Q-T10; HU01/HU02/HU03).
 //
-// Recorre con las PANTALLAS REALES (widget test) el flujo:
-//   KYC exitoso -> /pin-setup (un OTP + PIN) -> /login (con userRef/deviceId)
+// Recorre con las PANTALLAS REALES (widget test) el flujo F-T39:
+//   KYC exitoso -> crear PIN -> confirmar PIN -> biometrico (omitir) ->
+//   OTP (`POST /auth/pin/setup`) -> success (guarda `user_ref`) -> /login
 // y verifica que el login con PIN envia `device_public_key` ("hmac:<hex>").
 //
-// Cero red real: el KYC usa un `KycService` falso, el setup de PIN usa fakes
-// y el HTTP del login se intercepta con un `Dio` en memoria. El
-// `device_public_key` se deriva del `SessionRepository` en memoria.
+// Cero red real: el KYC usa un `KycService` falso, el setup de PIN y el
+// reenvio usan fakes y el HTTP del login se intercepta con un `Dio` en
+// memoria. El `device_public_key` se deriva del `SessionRepository` en
+// memoria.
+//
+// Regresion SCR-005: el `user_ref` NO se persiste en el resultado KYC ni en
+// los pasos previos; SOLO en la pantalla de registro exitoso.
 import 'dart:typed_data';
 
 import 'package:banca_online/core/http/api_client.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
 import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/activation/activation_service.dart';
+import 'package:banca_online/features/biometrics/biometric_offer_page.dart';
 import 'package:banca_online/features/biometrics/biometric_reader.dart';
 import 'package:banca_online/features/biometrics/biometric_service.dart';
 import 'package:banca_online/features/biometrics/login_controller.dart' as bio;
@@ -22,8 +28,11 @@ import 'package:banca_online/features/kyc/kyc_service.dart';
 import 'package:banca_online/features/kyc/presentation/kyc_result_page.dart';
 import 'package:banca_online/features/login/login_controller.dart';
 import 'package:banca_online/features/login/login_page.dart';
-import 'package:banca_online/features/pin_setup/pin_setup_page.dart';
+import 'package:banca_online/features/pin_setup/pin_confirm_page.dart';
+import 'package:banca_online/features/pin_setup/pin_create_page.dart';
+import 'package:banca_online/features/pin_setup/pin_setup_otp_page.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_service.dart';
+import 'package:banca_online/features/pin_setup/registration_success_page.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,7 +41,8 @@ import 'package:uuid/uuid.dart';
 
 const String kUserId = 'u-42';
 const String kDeviceId = 'device-e2e';
-const String kPin = '1234';
+const String kPin = '482916';
+const String kCode = '123456';
 
 Map<String, dynamic> _sessionEnvelope() => {
       'data': {
@@ -131,9 +141,20 @@ class _LoginHttpMock {
   Map<String, dynamic>? lastPinPayload;
 }
 
+/// Marca digitos en el teclado propio del fig.
+Future<void> _enterDigits(WidgetTester tester, String digits) async {
+  for (final digit in digits.split('')) {
+    final key = find.byKey(Key('pin-key-$digit'));
+    await tester.ensureVisible(key);
+    await tester.tap(key);
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets(
-      'alta KYC -> /pin-setup -> /login y el login PIN envia device_public_key',
+      'alta KYC -> PIN -> OTP -> success (guarda user_ref) -> login PIN',
       (tester) async {
     final session = InMemorySessionRepository();
     final identity = InMemorySessionIdentityStore(deviceId: kDeviceId);
@@ -165,6 +186,7 @@ void main() {
     expect(kycController.result?.overallResult, isTrue);
 
     final pinSetup = _FakePinSetupService();
+    final resend = _FakeResendService();
     final loginController = LoginController(
       api: api,
       session: session,
@@ -188,10 +210,39 @@ void main() {
         ),
         GoRoute(
           path: '/pin-setup',
-          builder: (context, state) => PinSetupPage(
+          builder: (context, state) => PinCreatePage(
             userRef: state.uri.queryParameters['userRef'] ?? '',
+          ),
+        ),
+        GoRoute(
+          path: '/pin-setup/confirm',
+          builder: (context, state) => PinConfirmPage(
+            userRef: state.uri.queryParameters['userRef'] ?? '',
+            pin: state.extra is String ? state.extra as String : '',
+          ),
+        ),
+        GoRoute(
+          path: '/pin-setup/biometrics',
+          builder: (context, state) => BiometricOfferPage(
+            userRef: state.uri.queryParameters['userRef'] ?? '',
+            pin: state.extra is String ? state.extra as String : '',
+            reader: FakeBiometricReader(available: false),
+          ),
+        ),
+        GoRoute(
+          path: '/pin-setup/otp',
+          builder: (context, state) => PinSetupOtpPage(
+            userRef: state.uri.queryParameters['userRef'] ?? '',
+            pin: state.extra is String ? state.extra as String : '',
             setupService: pinSetup,
-            resendService: _FakeResendService(),
+            resendService: resend,
+            identity: identity,
+          ),
+        ),
+        GoRoute(
+          path: '/registration-success',
+          builder: (context, state) => RegistrationSuccessPage(
+            userRef: state.uri.queryParameters['userRef'] ?? '',
             identity: identity,
           ),
         ),
@@ -215,28 +266,50 @@ void main() {
     await tester.pumpWidget(MaterialApp.router(routerConfig: router));
     await tester.pumpAndSettle();
 
-    // Paso 1: KYC exitoso -> continuar guarda user_ref y navega a /pin-setup.
+    // Paso 1: KYC exitoso -> continuar navega a crear PIN SIN guardar
+    // el `user_ref` (guardado tardio F-T39).
     expect(find.text('Verificacion exitosa'), findsOneWidget);
     await tester.tap(find.byKey(const Key('kyc-result-continue')));
     await tester.pumpAndSettle();
-    expect(identity.userRef, kUserId);
-    expect(find.text('Crea tu PIN'), findsOneWidget);
+    expect(identity.userRef, isNull);
+    expect(find.text('Crea tu PIN de seguridad'), findsOneWidget);
 
-    // Paso 2: setup de PIN (codigo + PIN) -> navega a /login con userRef/deviceId.
-    await tester.enterText(find.byKey(const Key('pin-setup-code')), '123456');
-    await tester.enterText(find.byKey(const Key('pin-setup-pin')), kPin);
-    await tester.enterText(find.byKey(const Key('pin-setup-confirm')), kPin);
-    await tester.pump();
+    // Paso 2: crear PIN -> confirmar (el PIN viaja en memoria).
+    await _enterDigits(tester, kPin);
+    expect(find.text('Confírmalo'), findsOneWidget);
+    expect(identity.userRef, isNull);
+    await _enterDigits(tester, kPin);
+
+    // Paso 3: oferta biometrica (omitir: no bloquea, fallback a PIN).
+    expect(find.text('¿Quieres entrar con tu huella?'), findsOneWidget);
+    expect(identity.userRef, isNull);
+    await tester.tap(find.byKey(const Key('biometric-skip')));
+    await tester.pumpAndSettle();
+
+    // Paso 4: OTP por email -> `POST /auth/pin/setup`.
+    expect(find.text('Revisa tu correo'), findsOneWidget);
+    await _enterDigits(tester, kCode);
     await tester.tap(find.byKey(const Key('pin-setup-submit')));
     await tester.pumpAndSettle();
 
     expect(pinSetup.calls, 1);
     expect(pinSetup.lastArgs['userRef'], kUserId);
-    expect(pinSetup.lastArgs['code'], '123456');
+    expect(pinSetup.lastArgs['code'], kCode);
+    expect(pinSetup.lastArgs['pin'], kPin);
+
+    // Paso 5: success guarda el `user_ref` (UNICO lugar) y va al login.
+    expect(find.text('¡Tu cuenta está activa!'), findsOneWidget);
+    expect(identity.userRef, kUserId);
+    await tester.tap(find.byKey(const Key('registration-success-login')));
+    await tester.pumpAndSettle();
     expect(find.text('Inicia sesión'), findsOneWidget);
 
-    // Paso 3: login con PIN; el payload viaja con userRef/deviceId + clave HMAC.
-    await tester.enterText(find.byKey(const Key('login-pin-field')), kPin);
+    // Paso 6: login con PIN (6 casillas canónicas F-T40); el payload viaja
+    // con userRef/deviceId + HMAC.
+    for (var i = 0; i < 6; i++) {
+      await tester.enterText(find.byKey(Key('login-pin-$i')), kPin[i]);
+      await tester.pump();
+    }
     await tester.pump();
     await tester.tap(find.byKey(const Key('login-pin-submit')));
     await tester.pumpAndSettle();

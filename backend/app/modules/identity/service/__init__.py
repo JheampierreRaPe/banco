@@ -14,12 +14,13 @@ Si `overall_result=false`: no crea nada y retorna el rechazo documentado.
 
 Con `overall_result=true` tambien emite el OTP inicial `ACTIVATION` en la
 misma sesion (`flush` sin `commit`) y lo notifica best-effort via la fachada
-`notifications.send`: por correo (`users.email`, plantilla `otp_code_email`
-de E1-T25) con fallback SMS (`users.phone`, plantilla `otp_code` de
-E1-T10); si la notificacion falla no se aborta el alta. Si ya existe un OTP
-`PENDING` vigente para (usuario, `ACTIVATION`) se reutiliza sin duplicar.
-El codigo en claro jamas sale en la respuesta del alta (solo viaja en la
-notificacion).
+`notifications.send` **solo por correo** (`users.email`, plantilla
+`otp_code_email` de E1-T25; E1-T32/SCR-005 elimino el fallback SMS).
+Desde E1-T34/SCR-005 (`0018_users_email_not_null`) `users.email` es
+**NOT NULL**: el alta exige email y sin email falla a nivel BD (ya no hay
+alta que "igual se complete"). Si ya existe un OTP `PENDING` vigente para
+(usuario, `ACTIVATION`) se reutiliza sin duplicar. El codigo en claro
+jamas sale en la respuesta del alta (solo viaja en la notificacion).
 """
 
 from __future__ import annotations
@@ -44,11 +45,12 @@ USER_AGGREGATE_TYPE = "user"
 #: Proposito OTP del alta (el mismo que activa E1-T10 en HU02).
 ACTIVATION_PURPOSE = "ACTIVATION"
 
-#: Routing del OTP inicial (E1-T26): correo preferido, SMS fallback.
-#: Los canales/plantillas son los de E1-T25 (`otp_code_email`) y E1-T10
-#: (`otp_code`); se resuelven con `activation.resolve_activation_delivery`.
+#: Routing del OTP inicial (E1-T26, email-only desde E1-T32/SCR-005).
+#: Los canales/plantillas SMS son legacy sin uso (compat); la entrega se
+#: resuelve con `activation.resolve_activation_delivery` (solo email).
 ACTIVATION_OTP_EMAIL_CHANNEL = "email"
 ACTIVATION_OTP_EMAIL_TEMPLATE = "otp_code_email"
+#: Legacy (E1-T10/E1-T26): conservados por compatibilidad, sin uso.
 ACTIVATION_OTP_SMS_CHANNEL = "sms"
 ACTIVATION_OTP_SMS_TEMPLATE = "otp_code"
 
@@ -102,11 +104,12 @@ def _ensure_initial_activation_otp(
     """Emite el OTP inicial `ACTIVATION` (`flush`, sin `commit`).
 
     Si ya existe un OTP `PENDING` vigente para (`user_id`, `ACTIVATION`)
-    se reutiliza (sin duplicar emision). Si no, resuelve el destino efectivo
-    (email -> phone), genera uno via `otp_service.generate_otp` en la misma
-    sesion y lo notifica best-effort por el canal/plantilla correspondiente
-    (E1-T26). El codigo en claro solo existe en memoria para la notificacion
-    (jamas se persiste ni se loguea).
+    se reutiliza (sin duplicar emision). Si no, resuelve el destino
+    **solo por email** (E1-T32/SCR-005: `phone` se recibe por compatibilidad
+    pero se ignora, nunca SMS), genera uno via `otp_service.generate_otp`
+    en la misma sesion y lo notifica best-effort por correo (plantilla
+    `otp_code_email`). El codigo en claro solo existe en memoria para la
+    notificacion (jamas se persiste ni se loguea).
     """
     # Import perezoso: `identity` no se deja importar de forma ciclica
     # (regla de oro 4, fachadas; mismo patron que `onboard_customer`).
@@ -119,7 +122,7 @@ def _ensure_initial_activation_otp(
         aware = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=UTC)
         if aware > datetime.now(UTC):
             return
-    route = resolve_activation_delivery(email=email, phone=phone)
+    route = resolve_activation_delivery(email=email, phone=None)
     recipient = route[2] if route is not None else None
     _, plain = otp_service.generate_otp(
         session,
@@ -167,10 +170,12 @@ def onboard_customer(
 
     Al final del alta exitosa emite el OTP inicial `ACTIVATION` en la misma
     sesion (`_ensure_initial_activation_otp`: reutiliza el `PENDING` vigente
-    si ya existe, si no resuelve destino email -> phone y genera uno +
-    notificacion best-effort via `notifications.send` con el canal/plantilla
-    correspondiente (E1-T26); un fallo de envio no aborta el alta). El
-    codigo en claro jamas sale en la respuesta.
+    si ya existe, si no genera uno con destino solo-email + notificacion
+    best-effort via `notifications.send` por correo (plantilla
+    `otp_code_email`); un fallo de envio no aborta el alta. El email es
+    obligatorio desde E1-T34/SCR-005 (`users.email` NOT NULL,
+    `0018_users_email_not_null`): sin email el alta falla a nivel BD.
+    El codigo en claro jamas sale en la respuesta.
 
     Con `overall_result=false` no crea nada y retorna
     `{"status": "REJECTED", "reason": ...}`.

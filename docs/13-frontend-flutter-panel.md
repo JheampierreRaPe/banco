@@ -30,7 +30,7 @@
 | Modulo | Pantallas |
 |---|---|
 | Onboarding | Bienvenida, captura de documento, guia de liveness por pasos, confirmacion de datos, OTP, creacion de PIN. |
-| Sesion | Login biometrico, login PIN, recuperar acceso, cuenta bloqueada, cerrar sesion. |
+| Sesion | Login biometrico, login PIN, recuperar acceso, restablecer PIN (flujo `/pin-reset`), cuenta bloqueada, cerrar sesion. |
 | Inicio | Dashboard de cuentas, detalle de cuenta, movimientos, filtros, exportar. |
 | Transferencias | Seleccion de origen/destino, monto/concepto, agenda de beneficiarios, confirmacion, autorizacion biometrica, comprobante. |
 | Creditos | Simulador, solicitud/consentimiento, estado del expediente, contrato, firma biometrica, cronograma, pago de cuota. |

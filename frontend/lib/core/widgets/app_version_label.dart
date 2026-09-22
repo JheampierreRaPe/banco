@@ -4,7 +4,7 @@ import '../app_version.dart';
 
 /// Etiqueta discreta con la version visible del build (F-T30).
 ///
-/// Montada por las tres pantallas relevantes (`/entry`, `/login` y `/kyc`)
+/// Montada por las pantallas relevantes (`/welcome`, `/login` y `/kyc`)
 /// usando el mismo widget y `Key('app-version')`, para confirmar que build esta
 /// instalado. El texto proviene de la fuente unica [kAppVersion]; ninguna
 /// pantalla define la version.

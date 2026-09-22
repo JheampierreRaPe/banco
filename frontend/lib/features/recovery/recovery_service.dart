@@ -7,10 +7,11 @@
 //   email (anti-oráculo). `429 RATE_LIMITED`, `422` de esquema.
 // - `POST /auth/recovery/verify` con
 //   `{email, code, device_id?, device_public_key?, platform?}` -> éxito con
-//   `data: {access_token, refresh_token, token_type, session_id, expires_in,
-//   user_ref, device_bound}`. Error único de código: `401
-//   INVALID_RECOVERY_CODE` (genérico: cubre código incorrecto, OTP vencido e
-//   intentos agotados; ya NO existe `EXPIRED_OTP`).
+//   `data: {user_ref, device_bound}` (E1-T33/SCR-005: verify YA NO abre
+//   sesión ni emite tokens; la única sesión la abre `POST /auth/login/pin`).
+//   Error único de código: `401 INVALID_RECOVERY_CODE` (genérico: cubre
+//   código incorrecto, OTP vencido e intentos agotados; ya NO existe
+//   `EXPIRED_OTP`).
 //
 // Cliente delgado (docs/19): no decide si el email existe ni si el OTP es
 // válido; solo transporta lo que responde el backend. Nunca loguea email,
@@ -41,28 +42,24 @@ class RecoveryRequestResult {
   final int resendWaitSeconds;
 }
 
-/// Resultado de `POST /auth/recovery/verify` (sesión concedida).
+/// Resultado de `POST /auth/recovery/verify` (E1-T33/SCR-005).
+///
+/// Verify YA NO abre sesión: solo devuelve la referencia del usuario para
+/// continuar a `/login?userRef=` (en el flujo recuperación/pin-reset la
+/// sesión NO se abre ahí; se abre al autenticarse en login —PIN o
+/// biometría—). Sin `access_token`/`refresh_token`/`session_id`.
 class RecoveryVerifyResult {
   const RecoveryVerifyResult({
-    required this.accessToken,
-    this.refreshToken,
-    this.tokenType = 'Bearer',
-    this.sessionId = '',
-    this.expiresIn = 0,
     required this.userRef,
     this.deviceBound = false,
   });
 
-  final String accessToken;
-  final String? refreshToken;
-  final String tokenType;
-  final String sessionId;
-  final int expiresIn;
-
-  /// Referencia del usuario para persistir (`SessionIdentityStore`, F-T20).
+  /// Referencia del usuario para persistir (`SessionIdentityStore`, F-T20)
+  /// y navegar a `/login?userRef=<user_ref>`.
   final String userRef;
 
-  /// Best-effort en el backend: `false` no bloquea la sesión concedida.
+  /// Best-effort en el backend: `true` solo si se REGISTRÓ un binding nuevo;
+  /// `false` no bloquea la continuación al login.
   final bool deviceBound;
 }
 
@@ -135,12 +132,6 @@ class HttpRecoveryService implements RecoveryService {
     final response = await _api.post<dynamic>(verifyPath, data: body);
     final data = _dataOf(response.data);
     return RecoveryVerifyResult(
-      accessToken: _string(data, 'access_token'),
-      refreshToken: _optionalString(data, const ['refresh_token']),
-      tokenType:
-          _optionalString(data, const ['token_type']) ?? 'Bearer',
-      sessionId: _optionalString(data, const ['session_id']) ?? '',
-      expiresIn: _optionalInt(data, 'expires_in') ?? 0,
       userRef: _string(data, 'user_ref'),
       deviceBound: _bool(data, 'device_bound', fallback: false),
     );
@@ -160,14 +151,6 @@ class HttpRecoveryService implements RecoveryService {
       throw ApiException(code: 'UNKNOWN', message: messageForCode('UNKNOWN'));
     }
     return '$value';
-  }
-
-  String? _optionalString(Map<String, dynamic> data, List<String> keys) {
-    for (final key in keys) {
-      final value = data[key];
-      if (value != null && '$value'.isNotEmpty) return '$value';
-    }
-    return null;
   }
 
   int _int(Map<String, dynamic> data, String key) {

@@ -86,8 +86,8 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/kyc/evaluate` | Evalua un paso de liveness en vivo (rafaga `frames_b64`). |
 | POST | `/auth/kyc/document/validate` | Valida la legibilidad del documento (proxy; E1-T30). |
 | POST | `/auth/kyc/submit` | Envia documento + segmentos de liveness y obtiene resultado. |
-| POST | `/auth/activate` | Valida OTP y activa la cuenta (HU02). |
-| POST | `/auth/otp/resend` | Reenvia OTP con control de intentos. |
+| POST | `/auth/activate` | Valida OTP y activa la cuenta (HU02; **deprecado pero vivo**, E1-T32/SCR-005: cabecera `Deprecation: true` y OpenAPI `deprecated`; la via canonica es `POST /auth/pin/setup`). |
+| POST | `/auth/otp/resend` | Reenvia OTP con control de intentos (entrega solo por email). |
 | POST | `/auth/login/challenge` | Emite `nonce` para firmar con biometria del dispositivo (HU03). |
 | POST | `/auth/login/facial` | Valida el `nonce` firmado y abre sesion (HU03, biometria local). |
 | POST | `/auth/login/pin` | Login alterno con PIN. |
@@ -95,7 +95,8 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/logout` | Revoca la sesion. |
 | POST | `/auth/recover` | Recuperacion con dispositivo confiable + OTP (HU04). |
 | POST | `/auth/recovery/request` | Solicita OTP de recuperacion por email, siempre 200 sin enumerar (E1-T31; consume `F-T29`). |
-| POST | `/auth/recovery/verify` | Valida el OTP, abre sesion y liga el dispositivo nuevo (E1-T31; consume `F-T29`). |
+| POST | `/auth/recovery/verify` | Valida el OTP sin abrir sesion y devuelve `{user_ref, device_bound}` (E1-T33/SCR-005; consume `F-T29`). |
+| POST | `/auth/pin-reset` | Fija el PIN con `email + DNI + OTP` y devuelve `{user_ref, pin_set: true}` sin abrir sesion (E1-T34/SCR-005; consumen `F-T34`..`F-T43`). |
 | GET | `/me` | Perfil y productos del usuario. |
 
 > Decision E1-T31: el `/auth/recover` canonico de HU04 (dispositivo confiable +
@@ -104,9 +105,12 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > `request {email}` -> `data: {accepted: true, ttl_seconds, resend_wait_seconds}`
 > (constantes globales, identico exista o no el email; `429 RATE_LIMITED` por
 > `email+IP`); `verify {email, code[, device_id/device_public_key/platform/
-> biometric_type]}` -> `data: {access_token, refresh_token, token_type: "Bearer",
-> session_id, expires_in, user_ref, device_bound}` (`user_ref = str(user.id)`, lo
-> persiste `F-T29`; `device_bound=true` solo si se REGISTRO un binding nuevo).
+> biometric_type]}` -> `data: {user_ref, device_bound}` (E1-T33/SCR-005:
+> `verify` ya NO abre sesion ni emite tokens; `user_ref = str(user.id)`, lo
+> persiste `F-T29`; `device_bound=true` solo si se REGISTRO un binding nuevo;
+> en el flujo recuperacion/pin-reset la sesion NO se abre ahi; se abre al
+> autenticarse en login (PIN con `POST /auth/login/pin` o biometria con
+> `POST /auth/login/facial`).
 > Errores: `401 INVALID_RECOVERY_CODE` (mismo cuerpo para email no registrado, no
 > elegible, sin OTP, codigo incorrecto, OTP vencido y OTP bloqueado por intentos
 > agotados: vencido/bloqueado colapsan al generico para no filtrar existencia;
@@ -116,6 +120,31 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > `email+IP`). OTP `RECOVERY` solo por
 > email (plantilla `otp_code_email`; nunca SMS), cooldown reutilizando el `PENDING`
 > vigente, auditoria `auth.recovery_requested` / `auth.access_recovered` (sin PII).
+>
+> Decision E1-T34/SCR-005: `POST /auth/pin-reset` cierra el flujo para el
+> usuario que recupera el acceso pero no recuerda su PIN: request
+> `{email, doc_number, code, pin}` -> `data: {user_ref, pin_set: true}`
+> (consume el OTP `RECOVERY` de `recovery.request`, fija
+> `credentials.pin_hash` + resetea `failed_attempts`/`locked_until` +
+> `access_recovery` con `new_credential_set=true`; NO abre sesion ni emite
+> tokens —en el flujo recuperacion/pin-reset la sesion NO se abre ahi; se
+> abre al autenticarse en login (PIN o biometria)—; auditoria
+> `auth.pin_reset` sin PII). El DNI se valida contra el hash HMAC
+> server-side (`doc_number_hash`, nunca en claro ni en logs).
+> Errores: `401 INVALID_PIN_RESET` (un unico cuerpo generico para email no
+> registrado, DNI que no coincide, sin OTP, codigo incorrecto, OTP vencido y
+> OTP bloqueado por intentos agotados: sin enumeracion ni oraculo de campo),
+> `429 RATE_LIMITED` (ventana por `email+IP`, verificada antes de la
+> existencia; reutiliza la ventana de verify), `422` estandar de FastAPI
+> para email/PIN malformados o PIN debil (4-6 digitos; se valida antes de
+> consumir el OTP, sin oraculo de cuenta).
+>
+> Decision E1-T32/SCR-005: el OTP de **activacion** tambien viaja **solo por
+> email** (`users.email`, plantilla `otp_code_email`; sin email no hay entrega y
+> nunca SMS; `phone`/`channel='sms'` se ignoran sin error). `POST
+> /auth/activate` queda **deprecado pero vivo** (mismo request/response/errores;
+> `Deprecation: true` + OpenAPI `deprecated`); la activacion canonica con un solo
+> OTP es `POST /auth/pin/setup`.
 
 Detalle del flujo KYC (`identity`, E1-T29):
 

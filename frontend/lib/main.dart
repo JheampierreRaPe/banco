@@ -26,5 +26,5 @@ void main() async {
     // vacio y el device_id en memoria; se rehidrata bajo demanda.
   }
   sessionIdentityStoreFactory = () => identity;
-  runApp(BancaOnlineApp(session: session));
+  runApp(BancaOnlineApp(session: session, identity: identity));
 }

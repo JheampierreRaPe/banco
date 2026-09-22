@@ -93,6 +93,14 @@ Future<void> _tapContinue(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+/// Toca un botón de la página de tareas (hace scroll previo: la página
+/// rediseñada F-T38 es más alta que el viewport de pruebas).
+Future<void> _tapText(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
 Future<void> _completeStartPage(WidgetTester tester) async {
   await tester.enterText(find.byKey(const Key('firstNameField')), 'Ana');
   await tester.enterText(find.byKey(const Key('lastNameField')), 'Perez');
@@ -110,7 +118,7 @@ Future<void> _completeStartPage(WidgetTester tester) async {
 /// F-T23: tras los datos, el flujo pasa por `/kyc/document`; captura la foto
 /// (mock en tests) y continua a las tareas de liveness.
 Future<void> _captureDocument(WidgetTester tester) async {
-  expect(find.text('Fotografia tu documento'), findsOneWidget);
+  expect(find.text('Escanea tu DNI'), findsOneWidget);
   await tester.tap(find.byKey(const Key('captureDocumentButton')));
   await tester.pumpAndSettle();
 }
@@ -187,21 +195,23 @@ void main() {
     await _captureDocument(tester);
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
 
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
 
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
     expect(find.text('Enviar verificacion'), findsOneWidget);
 
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
   });
 
-  testWidgets('exito del KYC guarda user_ref y navega a /pin-setup',
+  testWidgets('exito del KYC navega a /pin-setup SIN guardar user_ref',
       (tester) async {
+    // Guardado tardio (F-T39/SCR-005): el resultado ya NO persiste el
+    // `user_ref`; solo el paso success lo guarda.
     final identity = InMemorySessionIdentityStore();
     final controller = KycFlowController(service: const FakeKycService());
     addTearDown(controller.dispose);
@@ -209,43 +219,47 @@ void main() {
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('kyc-result-continue')));
     await tester.pumpAndSettle();
 
-    expect(identity.userRef, 'u-42');
+    expect(identity.userRef, isNull);
     expect(find.text('pin-setup-ok'), findsOneWidget);
   });
 
-  testWidgets('fallo al guardar user_ref no bloquea el alta', (tester) async {
-    final identity = _ThrowingIdentityStore();
-    final controller = KycFlowController(service: const FakeKycService());
+  testWidgets('sin user_id no navega y avisa (no se inventa la referencia)',
+      (tester) async {
+    final controller = KycFlowController(service: _NoUserIdSubmitService());
     addTearDown(controller.dispose);
-    await _pumpKyc(tester, controller, identity: identity);
+    await _pumpKyc(tester, controller);
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('kyc-result-continue')));
     await tester.pumpAndSettle();
 
-    // Best-effort: aunque falle el store, el alta continua a /pin-setup.
-    expect(find.text('pin-setup-ok'), findsOneWidget);
-    expect(find.textContaining('No pudimos guardar'), findsOneWidget);
+    // No navega: sigue en el resultado con el aviso.
+    expect(find.text('Verificacion exitosa'), findsOneWidget);
+    expect(find.text('pin-setup-ok'), findsNothing);
+    expect(
+      find.text('No pudimos obtener tu identificador. Vuelve a intentarlo.'),
+      findsOneWidget,
+    );
 
     // Drenar el temporizador del SnackBar para no dejar timers pendientes.
     await tester.pump(const Duration(seconds: 5));
@@ -265,13 +279,13 @@ void main() {
     await _completeStartPage(tester);
     await _captureDocument(tester);
 
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
     // Sigue en la misma tarea con mensaje de reintento.
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
     expect(find.textContaining('misma tarea'), findsOneWidget);
 
-    await tester.tap(find.text('Reintentar captura'));
+    await _tapText(tester, 'Reintentar captura');
     await tester.pumpAndSettle();
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
   });
@@ -284,11 +298,11 @@ void main() {
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Motivo: LOW_QUALITY'), findsOneWidget);
@@ -304,7 +318,7 @@ void main() {
 
     await _completeStartPage(tester);
     // Intermedia obligatoria de documento (camara trasera).
-    expect(find.text('Fotografia tu documento'), findsOneWidget);
+    expect(find.text('Escanea tu DNI'), findsOneWidget);
     expect(controller.hasDocumentImage, isFalse);
 
     await tester.tap(find.byKey(const Key('captureDocumentButton')));
@@ -312,11 +326,11 @@ void main() {
     expect(controller.hasDocumentImage, isTrue);
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
 
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
   });
@@ -342,7 +356,7 @@ void main() {
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
 
     // No avanzo: sigue en la misma tarea y muestra paso + motivo traducido.
@@ -358,7 +372,7 @@ void main() {
     );
 
     // Reintento de la MISMA tarea: ahora pasa y avanza.
-    await tester.tap(find.text('Reintentar captura'));
+    await _tapText(tester, 'Reintentar captura');
     await tester.pumpAndSettle();
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
   });
@@ -371,11 +385,11 @@ void main() {
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Capturar'));
+    await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enviar verificacion'));
+    await _tapText(tester, 'Enviar verificacion');
     await tester.pumpAndSettle();
 
     expect(
@@ -424,13 +438,13 @@ void main() {
     await tester.pumpAndSettle();
 
     // No avanzo: sigue en documento, con los motivos en espanol.
-    expect(find.text('Fotografia tu documento'), findsOneWidget);
+    expect(find.text('Escanea tu DNI'), findsOneWidget);
     expect(find.textContaining('Paso 1 de 2'), findsNothing);
     expect(find.byKey(const Key('kycDocumentIssues')), findsOneWidget);
     expect(find.textContaining('borrosa'), findsOneWidget);
     expect(controller.hasDocumentImage, isTrue);
 
-    // Reintento de captura: "Volver a capturar" resetea y re-monta el preview
+    // Reintento de captura: "Volver a tomar" resetea y re-monta el preview
     // (F-T27); una nueva captura valida de nuevo y ahora si avanza.
     await tester.ensureVisible(find.byKey(const Key('recaptureDocumentButton')));
     await tester.tap(find.byKey(const Key('recaptureDocumentButton')));
@@ -476,29 +490,24 @@ void main() {
   });
 }
 
-/// Store que falla al guardar el `user_ref` (secure storage caido).
-class _ThrowingIdentityStore implements SessionIdentityStore {
+/// Submit exitoso SIN `user_id` (backend legacy): no se inventa referencia.
+class _NoUserIdSubmitService implements KycService {
   @override
-  String? get userRef => null;
+  Future<KycChallenge> challenge() async => const KycChallenge(
+        token: 'tok-abc',
+        steps: ['front', 'blink'],
+        expiresIn: 300,
+      );
 
   @override
-  String? get deviceId => null;
-
-  @override
-  Future<void> load() async {}
-
-  @override
-  Future<void> saveUserRef(String userRef) async =>
-      throw StateError('secure storage caido');
-
-  @override
-  Future<String?> readUserRef() async => null;
-
-  @override
-  Future<String> getOrCreateDeviceId() async => 'd-1';
-
-  @override
-  Future<String?> readDeviceId() async => null;
+  Future<KycSubmitResult> submit({
+    required String challengeToken,
+    required String documentType,
+    required String documentNumber,
+    required KycApplicant applicant,
+    required Map<String, List<Uint8List>> framesByTask,
+  }) async =>
+      const KycSubmitResult(overallResult: true, detailCode: 'OK');
 }
 
 class _FailingSubmitService implements KycService {

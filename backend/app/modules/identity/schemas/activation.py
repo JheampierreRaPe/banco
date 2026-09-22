@@ -19,7 +19,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 #: Canales aceptados en el reenvio (espejo de `notifications.CHANNELS`;
-#: el servicio resuelve el defecto `sms`, canal de la plantilla `otp_code`).
+#: desde E1-T32 la entrega es solo email aunque se reciba otro canal por
+#: compatibilidad: `channel`/`sms`/`push` se ignoran sin error).
 OTP_CHANNELS: tuple[str, ...] = ("sms", "email", "push")
 
 
@@ -47,7 +48,8 @@ class ResendRequest(BaseModel):
 
     user_ref: str = Field(min_length=1, max_length=64, description="UUID del usuario en texto.")
     channel: Literal["sms", "email", "push"] | None = Field(
-        default=None, description="Canal de entrega (defecto: sms)."
+        default=None,
+        description="Canal de entrega (defecto: email; solo se entrega por email).",
     )
 
 

@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/errors/api_exception.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_card.dart';
+import '../../../core/widgets/app_list_item.dart';
 import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
@@ -10,8 +13,9 @@ import '../utils/format.dart';
 
 /// Detalle de cuenta + movimientos (HU05 CA-02/CA-03/CA-04).
 ///
-/// - Cabecera con disponible/retenido/contable diferenciados (mismos colores
-///   que el dashboard) y numero enmascarado tal como viene del backend.
+/// - Cabecera con disponible (success) / retenido (warning) / contable
+///   (primary) diferenciados con los tokens de `docs/20` §3.4 (F-T34) y numero
+///   enmascarado tal como viene del backend.
 /// - Lista de movimientos paginada (`page`/`page_size`) con filtros de fecha
 ///   (`date_from`/`date_to`) y direccion (`CREDIT`/`DEBIT`).
 /// - Boton "Exportar CSV": exige rango de fechas (el backend responde 422 sin
@@ -150,9 +154,17 @@ class _AccountDetailPageState extends State<AccountDetailPage> {
   bool get _hasMore => _movements.length < _total;
 
   Future<void> _refreshAll() async {
-    setState(() => _detailFuture = _loadDetail());
+    setState(() {
+      _detailFuture = _loadDetail();
+    });
     await _detailFuture.then((_) {}, onError: (_) {});
     await _loadMovements(reset: true);
+  }
+
+  void _retryDetail() {
+    setState(() {
+      _detailFuture = _loadDetail();
+    });
   }
 
   Future<void> _pickDate({required bool from}) async {
@@ -251,7 +263,7 @@ class _AccountDetailPageState extends State<AccountDetailPage> {
                     const Text(
                       'Elige un rango de fechas valido (el backend exige '
                       'rango).',
-                      style: TextStyle(color: Colors.red),
+                      style: TextStyle(color: AppColors.error),
                     ),
                   ],
                 ],
@@ -341,8 +353,7 @@ class _AccountDetailPageState extends State<AccountDetailPage> {
               message: error is ApiException
                   ? error.message
                   : 'Ocurrio un error inesperado. Intentalo mas tarde.',
-              onRetry: () =>
-                  setState(() => _detailFuture = _loadDetail()),
+              onRetry: _retryDetail,
             );
           }
           final account = snapshot.data!;
@@ -420,24 +431,27 @@ class _AccountDetailPageState extends State<AccountDetailPage> {
         message: 'No hay movimientos para los filtros elegidos.',
       );
     }
-    return Column(
-      children: [
-        ..._movements.map(_MovementTile.new),
-        if (_loadingMore)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: CircularProgressIndicator(),
-          ),
-        if (_hasMore && !_loadingMore)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: FilledButton.tonal(
-              key: const Key('loadMoreButton'),
-              onPressed: () => _loadMovements(reset: false),
-              child: const Text('Cargar mas'),
+    return AppCard(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        children: [
+          ..._movements.map(_MovementTile.new),
+          if (_loadingMore)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: CircularProgressIndicator(),
             ),
-          ),
-      ],
+          if (_hasMore && !_loadingMore)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: FilledButton.tonal(
+                key: const Key('loadMoreButton'),
+                onPressed: () => _loadMovements(reset: false),
+                child: const Text('Cargar mas'),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -450,38 +464,35 @@ class _BalanceHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${account.type} ${account.accountNumberMasked}',
-              style: theme.textTheme.titleMedium,
-            ),
-            if (account.status != null)
-              Text(account.status!, style: theme.textTheme.bodySmall),
-            const SizedBox(height: 12),
-            _AmountLine(
-              label: 'Disponible',
-              value: formatMinor(account.availableMinor, account.currency),
-              color: Colors.green.shade700,
-            ),
-            _AmountLine(
-              label: 'Retenido',
-              value: formatMinor(account.heldMinor, account.currency),
-              color: Colors.amber.shade800,
-            ),
-            const Divider(height: 16),
-            _AmountLine(
-              label: 'Contable',
-              value: formatMinor(account.balanceMinor, account.currency),
-              color: theme.colorScheme.primary,
-              bold: true,
-            ),
-          ],
-        ),
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${account.type} ${account.accountNumberMasked}',
+            style: theme.textTheme.titleMedium,
+          ),
+          if (account.status != null)
+            Text(account.status!, style: theme.textTheme.bodySmall),
+          const SizedBox(height: 12),
+          _AmountLine(
+            label: 'Disponible',
+            value: formatMinor(account.availableMinor, account.currency),
+            color: AppColors.success,
+          ),
+          _AmountLine(
+            label: 'Retenido',
+            value: formatMinor(account.heldMinor, account.currency),
+            color: AppColors.warning,
+          ),
+          const Divider(height: 16),
+          _AmountLine(
+            label: 'Contable',
+            value: formatMinor(account.balanceMinor, account.currency),
+            color: theme.colorScheme.primary,
+            bold: true,
+          ),
+        ],
       ),
     );
   }
@@ -612,26 +623,19 @@ class _MovementTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final credit = movement.isCredit;
-    final color = credit ? Colors.green.shade700 : Colors.red.shade700;
+    final color = credit ? AppColors.success : scheme.error;
     final signed = '${credit ? '+' : '-'}'
         '${formatMinor(movement.amountMinor, movement.currency)}';
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        leading: Icon(
-          credit ? Icons.arrow_downward : Icons.arrow_upward,
-          color: color,
-        ),
-        title: Text(
-          movement.description.isEmpty ? '(Sin descripcion)' : movement.description,
-        ),
-        subtitle: Text(
-          '${formatValueDate(movement.valueDate)} - '
+    return AppListItem(
+      leadingIcon: credit ? Icons.arrow_downward : Icons.arrow_upward,
+      title: movement.description.isEmpty
+          ? '(Sin descripcion)'
+          : movement.description,
+      subtitle: '${formatValueDate(movement.valueDate)} - '
           '${credit ? 'Abono' : 'Cargo'}',
-        ),
-        trailing: Text(signed, style: TextStyle(color: color)),
-      ),
+      trailing: Text(signed, style: TextStyle(color: color)),
     );
   }
 }

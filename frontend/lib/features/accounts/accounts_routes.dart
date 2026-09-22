@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import 'data/accounts_service.dart';
 import 'presentation/account_detail_page.dart';
 import 'presentation/dashboard_page.dart';
 
@@ -12,21 +13,25 @@ import 'presentation/dashboard_page.dart';
 /// - `/accounts` -> [DashboardPage] (consolidado de cuentas y saldos).
 /// - `/accounts/:accountId` -> [AccountDetailPage] (detalle + movimientos).
 ///
-/// Nota de convivencia: las paginas quedan con servicio inyectable (`service`
-/// opcional). El orquestador las montara con el `AccountsService` real cuando
-/// exista DI global de sesion/API (pendiente F-futuro); mientras tanto las
-/// rutas navegan a las pantallas y estas muestran un error accionable si el
-/// servicio no esta configurado.
+/// Nota de convivencia: las paginas reciben el servicio desde
+/// `accountsServiceFactory` (cableada por el orquestador `app_router.dart`
+/// con el `ApiClient` compartido, F-T41). Si la fabrica es `null` (DI no
+/// configurada, p. ej. en tests de rutas), las pantallas muestran un error
+/// accionable en vez de romper.
 final List<GoRoute> accountsRoutes = [
   GoRoute(
     path: '/accounts',
-    builder: (context, state) => const DashboardPage(),
+    builder: (context, state) =>
+        DashboardPage(service: accountsServiceFactory?.call()),
   ),
   GoRoute(
     path: '/accounts/:accountId',
     builder: (context, state) {
       final accountId = state.pathParameters['accountId'] ?? '';
-      return AccountDetailPage(accountId: accountId);
+      return AccountDetailPage(
+        accountId: accountId,
+        service: accountsServiceFactory?.call(),
+      );
     },
   ),
 ];

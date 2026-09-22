@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/session/session_identity_store.dart';
+import '../../core/widgets/empty_view.dart';
 import '../../core/widgets/error_view.dart';
 import '../activation/activation_service.dart';
-import 'pin_setup_page.dart';
+import '../biometrics/biometric_offer_page.dart';
+import 'pin_confirm_page.dart';
+import 'pin_create_page.dart';
+import 'pin_setup_otp_page.dart';
 import 'pin_setup_service.dart';
+import 'registration_success_page.dart';
 
-/// Fábrica del servicio de creación de PIN usado por `/pin-setup`.
+/// Fabrica del servicio de creacion de PIN usado por el paso OTP.
 ///
 /// El arranque de la app debe asignarla con dependencias reales ([ApiClient])
 /// e importar `...pinSetupRoutes` en el orquestador
@@ -16,43 +21,126 @@ typedef PinSetupServiceFactory = PinSetupService Function();
 
 PinSetupServiceFactory? pinSetupServiceFactory;
 
-/// Fábrica del servicio de reenvío (MISMO contrato de `activation`:
+/// Fabrica del servicio de reenvio (MISMO contrato de `activation`:
 /// `POST /auth/otp/resend`). No se duplica el endpoint: se reutiliza
 /// [ActivationService].
 typedef PinSetupResendServiceFactory = ActivationService Function();
 
 PinSetupResendServiceFactory? pinSetupResendServiceFactory;
 
-/// Rutas del feature `pin_setup` (ver convención en `features/README.md`).
+/// Rutas del cierre del registro (F-T39, orden PIN -> OTP -> success).
 ///
-/// - `/pin-setup?userRef=<id>`: pantalla de creación del PIN.
-/// - El feature NUNCA toca `lib/core/router/app_router.dart`: el orquestador
-///   hace `...pinSetupRoutes` en su lista `routes`.
+/// - `/pin-setup?userRef=<id>`: crear PIN (fig `0:497`).
+/// - `/pin-setup/confirm?userRef=<id>` (+ `extra` = PIN en memoria):
+///   confirmar PIN (fig `0:604`).
+/// - `/pin-setup/biometrics?userRef=<id>` (+ `extra` = PIN): oferta
+///   biometrica, opcional y sin bloqueo (fig `0:704`).
+/// - `/pin-setup/otp?userRef=<id>` (+ `extra` = PIN): OTP por email +
+///   `POST /auth/pin/setup`.
+/// - `/registration-success?userRef=<id>`: registro exitoso (fig `0:740`);
+///   UNICO lugar donde se persiste el `user_ref` (SCR-005).
+///
+/// El PIN viaja SOLO en `extra` (memoria): nunca en la ruta ni en logs.
+/// El feature NUNCA toca `lib/core/router/app_router.dart`: el orquestador
+/// hace `...pinSetupRoutes` en su lista `routes`.
 final List<GoRoute> pinSetupRoutes = [
   GoRoute(
     path: '/pin-setup',
     builder: (context, state) {
-      final setupFactory = pinSetupServiceFactory;
-      final resendFactory = pinSetupResendServiceFactory;
       final userRef = state.uri.queryParameters['userRef'] ?? '';
-      if (setupFactory == null ||
-          resendFactory == null ||
-          userRef.isEmpty) {
+      if (userRef.isEmpty) {
         return Scaffold(
           appBar: AppBar(title: const Text('Crea tu PIN')),
-          body: ErrorView(
-            message: userRef.isEmpty
-                ? 'Falta la referencia de usuario. Vuelve al registro para '
-                    'generar un nuevo código.'
-                : 'Creación de PIN no disponible en este momento. '
-                    'Inténtalo más tarde.',
+          body: EmptyView(
+            message: 'Falta la referencia de usuario. Vuelve al registro '
+                'para generar un nuevo código.',
+            actionLabel: 'Volver al registro',
+            onAction: () => context.go('/kyc'),
           ),
         );
       }
-      return PinSetupPage(
+      return PinCreatePage(userRef: userRef);
+    },
+    routes: [
+      GoRoute(
+        path: 'confirm',
+        builder: (context, state) {
+          final userRef = state.uri.queryParameters['userRef'] ?? '';
+          final pin = state.extra is String ? state.extra as String : '';
+          if (userRef.isEmpty || pin.isEmpty) {
+            return Scaffold(
+              appBar: AppBar(title: const Text('Confirma tu PIN')),
+              body: EmptyView(
+                message: 'Primero crea tu PIN para poder confirmarlo.',
+                actionLabel: 'Crear mi PIN',
+                onAction: () => context.go(
+                  '/pin-setup?userRef=${Uri.encodeComponent(userRef)}',
+                ),
+              ),
+            );
+          }
+          return PinConfirmPage(userRef: userRef, pin: pin);
+        },
+      ),
+      GoRoute(
+        path: 'biometrics',
+        builder: (context, state) {
+          final userRef = state.uri.queryParameters['userRef'] ?? '';
+          final pin = state.extra is String ? state.extra as String : '';
+          if (userRef.isEmpty || pin.isEmpty) {
+            return Scaffold(
+              appBar: AppBar(title: const Text('Acceso biométrico')),
+              body: EmptyView(
+                message: 'Primero crea tu PIN para continuar.',
+                actionLabel: 'Crear mi PIN',
+                onAction: () => context.go(
+                  '/pin-setup?userRef=${Uri.encodeComponent(userRef)}',
+                ),
+              ),
+            );
+          }
+          return BiometricOfferPage(userRef: userRef, pin: pin);
+        },
+      ),
+      GoRoute(
+        path: 'otp',
+        builder: (context, state) {
+          final setupFactory = pinSetupServiceFactory;
+          final resendFactory = pinSetupResendServiceFactory;
+          final userRef = state.uri.queryParameters['userRef'] ?? '';
+          final pin = state.extra is String ? state.extra as String : '';
+          if (setupFactory == null ||
+              resendFactory == null ||
+              userRef.isEmpty ||
+              pin.isEmpty) {
+            return Scaffold(
+              appBar: AppBar(title: const Text('Revisa tu correo')),
+              body: ErrorView(
+                message: userRef.isEmpty || pin.isEmpty
+                    ? 'Falta la referencia de usuario. Vuelve al registro '
+                        'para generar un nuevo código.'
+                    : 'Verificación no disponible en este momento. '
+                        'Inténtalo más tarde.',
+              ),
+            );
+          }
+          return PinSetupOtpPage(
+            userRef: userRef,
+            pin: pin,
+            setupService: setupFactory(),
+            resendService: resendFactory(),
+            identity: sessionIdentityStoreFactory?.call(),
+          );
+        },
+      ),
+    ],
+  ),
+  GoRoute(
+    path: '/registration-success',
+    builder: (context, state) {
+      final userRef = state.uri.queryParameters['userRef'] ?? '';
+      return RegistrationSuccessPage(
         userRef: userRef,
-        setupService: setupFactory(),
-        resendService: resendFactory(),
         identity: sessionIdentityStoreFactory?.call(),
       );
     },

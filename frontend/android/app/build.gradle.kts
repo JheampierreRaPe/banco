@@ -30,6 +30,14 @@ android {
     }
 
     buildTypes {
+        // Q-T11 (rama refactorizacion-ui): el APK debug convive con el APK de
+        // otra rama instalado por el dueno. Solo debug lleva sufijo, por lo que
+        // el applicationId resultante es
+        // `com.bancaonline.banca_online.refactorui` y no colisiona con el
+        // release (`com.bancaonline.banca_online`). Release queda intacto.
+        debug {
+            applicationIdSuffix = ".refactorui"
+        }
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.

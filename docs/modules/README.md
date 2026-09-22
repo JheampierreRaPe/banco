@@ -18,15 +18,39 @@ eventos (`outbox`/`inbox`).
   imagenes; `verify-full` y `/api/v1/document/validate` con timeout dedicado
   (`KYC_VERIFY_TIMEOUT_SECONDS`, `KYC_DOCUMENT_TIMEOUT_SECONDS`).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
-- **OTP de activacion:** viaja por `email` (`users.email`, plantilla `otp_code_email`) con
-  fallback `sms` (`users.phone`, plantilla `otp_code`); entrega best-effort (E1-T26).
-- **OTP de recuperacion (E1-T31, HU04):** `POST /auth/recovery/request {email}` (siempre
+- **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
+  plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
+  best-effort). `POST /auth/activate` deprecado pero vivo (`Deprecation: true` +
+  OpenAPI `deprecated`; la via canonica es `POST /auth/pin/setup`).
+- **OTP de recuperacion (E1-T33, HU04):** `POST /auth/recovery/request {email}` (siempre
   200 sin enumerar; cooldown reutilizando el `PENDING` vigente; rate-limit por `email+IP`)
-  y `POST /auth/recovery/verify {email, code[, device_id/device_public_key]}` (abre
-  sesion + `user_ref`, registra `device_bindings` y `access_recovery method='OTP'`).
+  y `POST /auth/recovery/verify {email, code[, device_id/device_public_key]}` (valida
+  el OTP SIN abrir sesion y devuelve `{user_ref, device_bound}`; registra
+  `device_bindings` y `access_recovery method='OTP'`; la unica sesion la abre
+  `POST /auth/login/pin`).
    Solo canal `email` (nunca SMS); errores `INVALID_RECOVERY_CODE` (mismo 401
    generico tambien para OTP vencido/bloqueado: sin oraculo) / `RATE_LIMITED`
    (solo ventana por `email+IP`); consume `F-T29`.
+- **Reseteo de PIN (E1-T34/SCR-005, HU02/HU04):** `POST /auth/pin-reset
+  {email, doc_number, code, pin}` (consume el OTP `RECOVERY`, valida el DNI
+  contra el hash HMAC server-side, fija `pin_hash` + resetea
+  `failed_attempts`/`locked_until`, registra `access_recovery` con
+  `new_credential_set=true`; devuelve `{user_ref, pin_set: true}` SIN abrir
+  sesion; la unica sesion la abre `POST /auth/login/pin`). Error unico
+  `INVALID_PIN_RESET` (mismo 401 generico para email/DNI/OTP invalidos: sin
+  enumeracion) / `RATE_LIMITED` (ventana por `email+IP`, reutiliza la de
+  verify); consumen `F-T34`..`F-T42`.
+- **`users.email` NOT NULL (E1-T34):** migracion `0018` (con pre-check que
+  aborta ante NULL; sin backfill: la demo tenia 0 NULL); el OTP solo viaja
+  por email.
+- **Parametros en `config.parameters` (E1-T34, regla de oro 6):**
+  `auth.lockout_seconds` (900), `auth.max_failed_attempts` (5),
+  `otp.resend_wait_seconds` (30), `otp.max_attempts` (3),
+  `auth.recovery_request_window_seconds`/`auth.recovery_request_max_requests`
+  (60/10) y `auth.recovery_verify_window_seconds`/
+  `auth.recovery_verify_max_requests` (60/10) —migracion `0019`, lectura
+  best-effort con fallback a las constantes—; rigen `pin_login` (lockout),
+  `otp_service` (reenvio/intentos) y `recovery`/`pin-reset` (rate-limits).
 - **Puede llamar a:** adaptador `KycProvider`, `notifications`, `audit`.
 - **Prohibido:** tocar cuentas, ledger o transacciones.
 

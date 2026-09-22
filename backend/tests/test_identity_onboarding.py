@@ -461,26 +461,17 @@ def test_onboard_delivers_activation_otp_by_email(sqlite_session: Session):
     assert plain not in str(result), "el codigo no aparece en la respuesta del alta"
 
 
-def test_onboard_falls_back_to_sms_without_email(sqlite_session: Session):
-    """Alta sin email: fallback `sms`/`otp_code` con `users.phone` (E1-T26)."""
-    from app.modules.identity import repository as repo
+def test_onboard_without_email_fails_not_null_contract(sqlite_session: Session):
+    """E1-T34/SCR-005 (`users.email` NOT NULL, OTP solo email): el alta sin
+    email ya no se completa; falla a nivel BD (sin inventar datos)."""
+    from sqlalchemy.exc import IntegrityError
+
     from app.modules.identity.service import onboard_customer
-    from app.modules.notifications.models import Notification
 
     kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}", email=None)
-    result = onboard_customer(sqlite_session, **kwargs)
-    assert result["status"] == "ONBOARDED"
-
-    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
-    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
-    assert otp is not None and otp.destination == kwargs["phone"]
-
-    note = sqlite_session.scalars(
-        sa.select(Notification).where(Notification.user_id == user.id)
-    ).one()
-    assert note.channel == "sms"
-    assert note.template_code == "otp_code"
-    assert note.payload_json["recipient"] == kwargs["phone"]
+    with pytest.raises(IntegrityError):
+        onboard_customer(sqlite_session, **kwargs)
+    sqlite_session.rollback()
 
 
 def test_onboard_best_effort_when_provider_fails(sqlite_session: Session, monkeypatch, caplog):
@@ -509,27 +500,17 @@ def test_onboard_best_effort_when_provider_fails(sqlite_session: Session, monkey
     assert kwargs["phone"] not in caplog.text
 
 
-def test_onboard_without_contact_still_completes(sqlite_session: Session, caplog):
-    """Sin email ni telefono: no hay entrega, pero el alta no se revierte (E1-T26)."""
-    import logging
+def test_onboard_without_contact_fails_not_null_contract(sqlite_session: Session):
+    """E1-T34/SCR-005: sin email ni telefono el alta tampoco procede (el
+    email es NOT NULL a nivel BD)."""
+    from sqlalchemy.exc import IntegrityError
 
-    from app.modules.identity import repository as repo
     from app.modules.identity.service import onboard_customer
-    from app.modules.notifications.models import Notification
 
     kwargs = _customer_kwargs(f"hash-{uuid.uuid4().hex}", email=None, phone=None)
-    with caplog.at_level(logging.WARNING):
-        result = onboard_customer(sqlite_session, **kwargs)
-
-    assert result["status"] == "ONBOARDED"
-    user = repo.get_by_doc_hash(sqlite_session, kwargs["kyc_result"]["doc_number_hash"])
-    assert user is not None
-    otp = repo.get_active_otp(sqlite_session, user.id, "ACTIVATION")
-    assert otp is not None and otp.destination is None
-    rows = sqlite_session.scalars(
-        sa.select(Notification).where(Notification.user_id == user.id)
-    ).all()
-    assert rows == []
+    with pytest.raises(IntegrityError):
+        onboard_customer(sqlite_session, **kwargs)
+    sqlite_session.rollback()
 
 
 # ---------------------------------------------------------------- Parte C: Postgres

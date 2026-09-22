@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/features/kyc/camera_frame_source.dart';
 import 'package:banca_online/features/kyc/kyc_camera_preview.dart';import 'package:banca_online/features/kyc/kyc_flow_controller.dart';
 import 'package:banca_online/features/kyc/kyc_frame_source.dart';
@@ -61,10 +62,10 @@ void main() {
     expect(find.byType(CameraPreview), findsNothing);
 
     // El botón Capturar NO queda bloqueado por el preview con mock.
-    final button = tester.widget<FilledButton>(
+    final button = tester.widget<AppPrimaryButton>(
       find.ancestor(
         of: find.text('Capturar'),
-        matching: find.byType(FilledButton),
+        matching: find.byType(AppPrimaryButton),
       ),
     );
     expect(button.onPressed, isNotNull);

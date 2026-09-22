@@ -370,7 +370,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(captureDocument);
       await tester.pumpAndSettle();
-      expect(find.text('Prueba de vida'), findsOneWidget);
+      // F-T38: el AppBar del fig dice "Reconocimiento facial".
+      expect(find.text('Reconocimiento facial'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       // Paso 1 (frontal): capturar y avanzar de paso sin excepcion.

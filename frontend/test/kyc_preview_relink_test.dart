@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/features/kyc/camera_frame_source.dart';
 import 'package:banca_online/features/kyc/kyc_camera_preview.dart';
 import 'package:banca_online/features/kyc/kyc_flow_controller.dart';
@@ -331,7 +332,7 @@ void main() {
       expect(find.byType(KycPreviewPlaceholder), findsOneWidget);
       expect(find.byType(KycCameraPreview), findsNothing);
       expect(find.byType(CameraPreview), findsNothing);
-      final button = tester.widget<FilledButton>(
+      final button = tester.widget<AppPrimaryButton>(
         find.byKey(const Key('kycCaptureButton')),
       );
       expect(button.onPressed, isNotNull);

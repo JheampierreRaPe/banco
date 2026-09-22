@@ -274,7 +274,7 @@ void main() {
       await tester.pumpWidget(MaterialApp.router(routerConfig: router));
       await tester.tap(find.byKey(const Key('goDocument')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Fotografia tu documento'), findsOneWidget);
+      expect(find.textContaining('Escanea tu DNI'), findsOneWidget);
       expect(created, isNotEmpty,
           reason: 'el preview debe haber abierto la sesion trasera');
       expect(tester.takeException(), isNull);

@@ -1,9 +1,11 @@
-// Pruebas del servicio HTTP de recuperación (F-T29).
+// Pruebas del servicio HTTP de recuperación (F-T40, contrato E1-T33).
 //
 // - `request` envía `{email}` a `/auth/recovery/request` y parsea
 //   `accepted`/`ttl_seconds`/`resend_wait_seconds`.
 // - `verify` envía `{email, code, device_id, device_public_key, platform}` a
-//   `/auth/recovery/verify` y parsea la sesión + `user_ref` + `device_bound`.
+//   `/auth/recovery/verify` y parsea SOLO `{user_ref, device_bound}`
+//   (E1-T33/SCR-005: verify YA NO abre sesión ni devuelve tokens; la única
+//   sesión la abre `POST /auth/login/pin`).
 // - Errores mapeados por la capa HTTP (F-T01): `401 INVALID_RECOVERY_CODE`
 //   genérico y `429 RATE_LIMITED`.
 import 'package:banca_online/core/errors/api_exception.dart';
@@ -123,13 +125,9 @@ void main() {
   });
 
   group('verify', () {
-    test('envía binding del dispositivo y parsea la sesión', () async {
+    test('envía binding del dispositivo y parsea user_ref/device_bound',
+        () async {
       _dataToReturn = {
-        'access_token': 'acc-1',
-        'refresh_token': 'ref-1',
-        'token_type': 'Bearer',
-        'session_id': 'ses-1',
-        'expires_in': 900,
         'user_ref': 'user-123',
         'device_bound': true,
       };
@@ -150,21 +148,44 @@ void main() {
         'device_public_key': 'hmac:abcd',
         'platform': 'android',
       });
-      expect(result.accessToken, 'acc-1');
-      expect(result.refreshToken, 'ref-1');
-      expect(result.sessionId, 'ses-1');
       expect(result.userRef, 'user-123');
       expect(result.deviceBound, isTrue);
+    });
+
+    test('la respuesta ya no trae tokens ni sesion (E1-T33)', () async {
+      _dataToReturn = {
+        'user_ref': 'user-123',
+        'device_bound': false,
+      };
+      final service = HttpRecoveryService(api: _api(session));
+
+      await service.verify(email: 'a@b.com', code: '123456');
+
+      // El servicio solo expone `user_ref`/`device_bound`: si el backend
+      // volviera a emitir `access_token`, el modelo ya no lo consume.
+      expect(_dataToReturn.containsKey('access_token'), isFalse);
+      expect(_dataToReturn.containsKey('refresh_token'), isFalse);
+      expect(_dataToReturn.containsKey('session_id'), isFalse);
+    });
+
+    test('device_bound ausente usa false sin romper el contrato', () async {
+      _dataToReturn = {'user_ref': 'user-123'};
+      final service = HttpRecoveryService(api: _api(session));
+
+      final result = await service.verify(
+        email: 'a@b.com',
+        code: '123456',
+      );
+
+      expect(_capturedBody, {'email': 'a@b.com', 'code': '123456'});
+      // `device_bound=false` no bloquea: la continuación al login procede.
+      expect(result.userRef, 'user-123');
+      expect(result.deviceBound, isFalse);
     });
 
     test('omite device_public_key/platform vacíos sin romper el contrato',
         () async {
       _dataToReturn = {
-        'access_token': 'acc-1',
-        'refresh_token': 'ref-1',
-        'token_type': 'Bearer',
-        'session_id': 'ses-1',
-        'expires_in': 900,
         'user_ref': 'user-123',
         'device_bound': false,
       };
@@ -176,10 +197,20 @@ void main() {
       );
 
       expect(_capturedBody, {'email': 'a@b.com', 'code': '123456'});
-      // `device_bound=false` no bloquea: la sesión viene igual.
-      expect(result.accessToken, 'acc-1');
       expect(result.userRef, 'user-123');
       expect(result.deviceBound, isFalse);
+    });
+
+    test('sin user_ref lanza UNKNOWN (contrato roto)', () async {
+      _dataToReturn = {'device_bound': true};
+      final service = HttpRecoveryService(api: _api(session));
+
+      expect(
+        () => service.verify(email: 'a@b.com', code: '123456'),
+        throwsA(
+          isA<ApiException>().having((e) => e.code, 'code', 'UNKNOWN'),
+        ),
+      );
     });
 
     test('401 propaga INVALID_RECOVERY_CODE (único error genérico)',

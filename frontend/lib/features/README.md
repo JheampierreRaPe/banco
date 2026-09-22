@@ -24,11 +24,15 @@ Reglas:
 5. Sin API keys embebidas; sin modelos de IA en el dispositivo; datos sensibles
    enmascarados por defecto.
 
-## Flujo inicial (`features/welcome` + guarda de `app_router.dart`)
+## Flujo inicial (`features/welcome` + `features/splash` + guarda de `app_router.dart`)
 
-La primera apertura muestra `/welcome` (bienvenida de la banca + botón
-"Comenzar" que persiste el flag `hasSeenWelcome` una sola vez); después, y en
-aperturas siguientes sin sesión, la puerta es `/entry` ("Iniciar sesión" →
-`/login`, "Crear cuenta" → `/kyc`). Públicas sin sesión: `/welcome`, `/entry`,
-`/login`, `/kyc*`, `/activate`; todo lo demás exige sesión y con sesión
-`/welcome`, `/entry` y `/login` redirigen a `/home`.
+El arranque entra por `/splash` (F-T37): la splash delega en la guarda del
+router, que resuelve por sesión + `userRef` de `SessionIdentityStore`
+(F-T36/F-T37, decisión SCR-005 d5; sin flag local de bienvenida).
+Sin sesión y sin `userRef`, la puerta es `/welcome` (`OnboardingPage`:
+PageView de 3 slides, "Crear mi cuenta" → `/kyc`, "Ya tengo cuenta ·
+Iniciar sesión" → `/recovery`). El legacy `/entry` quedó retirado (F-T36)
+y redirige a `/welcome` sin sesión. Públicas sin sesión con `userRef`:
+`/splash`, `/welcome`, `/login`, `/kyc*`, `/activate`, `/pin-setup`,
+`/recovery`, `/recovery/otp`; todo lo demás exige sesión y con sesión
+`/splash`, `/welcome` y `/login` redirigen a `/home`.

@@ -1,15 +1,16 @@
-"""Esquemas de recuperacion de acceso por email (E1-T31, HU04).
+"""Esquemas de recuperacion de acceso por email (E1-T33, HU04).
 
 `POST /auth/recovery/request {email}` -> 200 identico exista o no el email
 (sin enumeracion) + OTP `RECOVERY` por email si el usuario es elegible.
-`POST /auth/recovery/verify` -> valida el OTP, abre sesion y devuelve
-tokens + `user_ref` (lo persiste `F-T29`). Envoltorio `docs/05#4`
-(`{"data", "meta"}`). Los errores de negocio usan problem+json via
-`AppError` en el router (`INVALID_RECOVERY_CODE` para email no registrado,
-no elegible, sin OTP, codigo incorrecto, OTP vencido o bloqueado por
-intentos —un solo generico sin oraculo— y `RATE_LIMITED` solo para la
-ventana por `email+IP`); los errores de esquema usan el 422 estandar de
-FastAPI (`{"detail": [...]}`).
+`POST /auth/recovery/verify` -> valida el OTP SIN abrir sesion y devuelve
+solo `{user_ref, device_bound}` (SCR-005: la unica sesion la abre
+`POST /auth/login/pin`; `user_ref` lo persiste `F-T29`). Envoltorio
+`docs/05#4` (`{"data", "meta"}`). Los errores de negocio usan problem+json
+via `AppError` en el router (`INVALID_RECOVERY_CODE` para email no
+registrado, no elegible, sin OTP, codigo incorrecto, OTP vencido o
+bloqueado por intentos —un solo generico sin oraculo— y `RATE_LIMITED`
+solo para la ventana por `email+IP`); los errores de esquema usan el 422
+estandar de FastAPI (`{"detail": [...]}`).
 
 Sin auth: son endpoints pre-sesion (el usuario aun no tiene tokens). El
 email viaja como texto y se normaliza (`strip().lower()`) en el servicio.
@@ -64,7 +65,7 @@ class RecoveryVerifyRequest(BaseModel):
         default=None,
         min_length=1,
         max_length=128,
-        description="Dispositivo nuevo (se guarda en la sesion y el binding).",
+        description="Dispositivo nuevo (solo binding del dispositivo, sin abrir sesion).",
     )
     device_public_key: str | None = Field(
         default=None,
@@ -91,13 +92,8 @@ class RecoveryVerifyRequest(BaseModel):
 
 
 class RecoveryVerifyData(BaseModel):
-    access_token: str
-    refresh_token: str = Field(
-        description="Opaco, de un solo despliegue: solo su hash se persiste."
-    )
-    token_type: str = Field(default="Bearer")
-    session_id: str
-    expires_in: int = Field(ge=0, description="Vigencia del refresh en segundos.")
+    """Exito de `verify` (E1-T33): sin sesion ni tokens (SCR-005)."""
+
     user_ref: str = Field(description="UUID del usuario en texto (lo persiste F-T29).")
     device_bound: bool = Field(
         description="True solo si se REGISTRO un binding nuevo en este verify."

@@ -1,7 +1,15 @@
+// Estado del paso OTP del alta (F-T39): verifica el codigo de activacion y
+// crea el PIN con `POST /auth/pin/setup`.
+//
+// Cliente delgado (docs/19): la app captura el codigo y navega; el backend
+// valida el OTP/PIN y activa. El PIN/OTP nunca se registra en logs ni se
+// devuelve en mensajes (docs/16 reglas 7 y 10).
 // ignore_for_file: prefer_initializing_formals
 // Razón: los parámetros del constructor son API pública (`setupService:`,
 // `resendService:`, `userRef:`) y no pueden ser formales inicializadores de
 // campos privados.
+library;
+
 import 'package:flutter/foundation.dart';
 
 import 'package:banca_online/core/errors/api_exception.dart';
@@ -9,16 +17,17 @@ import 'package:banca_online/features/activation/activation_service.dart';
 
 import 'pin_setup_service.dart';
 
-/// Estados visibles de la pantalla de creación de PIN.
-enum PinSetupStatus { idle, submitting, success, pinAlreadySet }
+/// Estados visibles del paso OTP del alta.
+enum PinSetupOtpStatus { idle, submitting, success, pinAlreadySet }
 
-/// Estado de la pantalla de creación de PIN: validación local, envío a
-/// `POST /auth/pin/setup` y reenvío vía [ActivationService] (mismo
-/// endpoint de `activation`, sin duplicarlo).
+/// Controlador del OTP de activacion del registro.
 ///
-/// Seguridad: el PIN nunca se registra en logs ni se expone en mensajes.
-class PinSetupController extends ChangeNotifier {
-  PinSetupController({
+/// - [submit] envia `userRef + code + pin` a [PinSetupService] (el PIN viaja
+///   solo en memoria, nunca se loguea).
+/// - [resend] pide un codigo nuevo por email con el MISMO contrato de
+///   `activation` (`POST /auth/otp/resend`, sin duplicar el endpoint).
+class PinSetupOtpController extends ChangeNotifier {
+  PinSetupOtpController({
     required PinSetupService setupService,
     required ActivationService resendService,
     required String userRef,
@@ -30,36 +39,32 @@ class PinSetupController extends ChangeNotifier {
   final ActivationService _resendService;
   final String _userRef;
 
-  PinSetupStatus _status = PinSetupStatus.idle;
+  PinSetupOtpStatus _status = PinSetupOtpStatus.idle;
   String? _errorMessage;
   String? _infoMessage;
   String _code = '';
-  String _pin = '';
-  String _confirmPin = '';
   bool _isResending = false;
 
-  PinSetupStatus get status => _status;
+  PinSetupOtpStatus get status => _status;
   String? get errorMessage => _errorMessage;
   String? get infoMessage => _infoMessage;
   String get code => _code;
   bool get isResending => _isResending;
   bool get isBusy =>
-      _status == PinSetupStatus.submitting || _isResending;
+      _status == PinSetupOtpStatus.submitting || _isResending;
 
-  /// `true` si el PIN ya existe (409): la página muestra el botón ir-a-login.
-  bool get isPinAlreadySet => _status == PinSetupStatus.pinAlreadySet;
+  /// `true` si el PIN ya existe (409): la pagina ofrece ir al login.
+  bool get isPinAlreadySet => _status == PinSetupOtpStatus.pinAlreadySet;
 
   static const String codeHint =
-      'Ingresa el código de 6 dígitos que enviamos a tu correo y crea tu PIN.';
+      'Ingresa el código de 6 dígitos que enviamos a tu correo.';
+  static const String codeMessage = 'Ingresa los 6 dígitos del código.';
   static const String invalidCodeMessage =
       'El código es inválido o venció. Pide un código nuevo.';
   static const String alreadySetMessage =
       'Ya tienes un PIN creado. Inicia sesión para continuar.';
-  static const String mismatchMessage = 'Los PIN no coinciden.';
-  static const String pinLengthMessage = 'El PIN debe tener de 4 a 6 dígitos.';
-  static const String pinDigitsMessage =
-      'El PIN solo puede contener dígitos.';
-  static const String codeMessage = 'Ingresa los 6 dígitos del código.';
+  static const String rateLimitedMessage =
+      'Demasiados intentos. Espera unos minutos e inténtalo de nuevo.';
   static const String resentMessage =
       'Te enviamos un nuevo código. Revisa tu correo.';
 
@@ -70,59 +75,26 @@ class PinSetupController extends ChangeNotifier {
     }
   }
 
-  void setPin(String value) {
-    if (_pin != value) {
-      _pin = value;
-      notifyListeners();
-    }
-  }
-
-  void setConfirmPin(String value) {
-    if (_confirmPin != value) {
-      _confirmPin = value;
-      notifyListeners();
-    }
-  }
-
-  /// Validación local antes de enviar. Retorna el mensaje de error o `null`
-  /// si todo es válido.
-  String? validate() {
+  /// Verifica el codigo y crea el PIN. Retorna `true` en exito.
+  Future<bool> submit(String pin) async {
     final cleanCode = _code.trim();
     if (cleanCode.length != 6 || int.tryParse(cleanCode) == null) {
-      return codeMessage;
-    }
-    if (_pin.length < 4 || _pin.length > 6) {
-      return pinLengthMessage;
-    }
-    if (int.tryParse(_pin) == null) {
-      return pinDigitsMessage;
-    }
-    if (_pin != _confirmPin) {
-      return mismatchMessage;
-    }
-    return null;
-  }
-
-  /// Envía código + PIN a `POST /auth/pin/setup`. Retorna `true` en éxito.
-  Future<bool> submit() async {
-    final localError = validate();
-    if (localError != null) {
-      _errorMessage = localError;
+      _errorMessage = codeMessage;
       _infoMessage = null;
       notifyListeners();
       return false;
     }
-    _status = PinSetupStatus.submitting;
+    _status = PinSetupOtpStatus.submitting;
     _errorMessage = null;
     _infoMessage = null;
     notifyListeners();
     try {
       await _setupService.setup(
         userRef: _userRef,
-        code: _code.trim(),
-        pin: _pin,
+        code: cleanCode,
+        pin: pin,
       );
-      _status = PinSetupStatus.success;
+      _status = PinSetupOtpStatus.success;
       notifyListeners();
       return true;
     } on ApiException catch (e) {
@@ -132,11 +104,10 @@ class PinSetupController extends ChangeNotifier {
     }
   }
 
-  /// Pide un código nuevo con el MISMO servicio de `activation`
-  /// (`POST /auth/otp/resend`, invalida el anterior). El canal es `email`
-  /// (E1-T26): el OTP del alta viaja por correo.
+  /// Pide un codigo nuevo por email (`POST /auth/otp/resend`, invalida el
+  /// anterior). El OTP del alta viaja solo por correo (E1-T32).
   Future<bool> resend() async {
-    if (_isResending || _status == PinSetupStatus.success) return false;
+    if (_isResending || _status == PinSetupOtpStatus.success) return false;
     _isResending = true;
     _errorMessage = null;
     notifyListeners();
@@ -148,7 +119,7 @@ class PinSetupController extends ChangeNotifier {
       return true;
     } on ApiException catch (e) {
       _isResending = false;
-      _errorMessage = e.message;
+      _errorMessage = _resendError(e);
       notifyListeners();
       return false;
     }
@@ -157,16 +128,34 @@ class PinSetupController extends ChangeNotifier {
   void _applyError(ApiException e) {
     switch (e.code) {
       case 'INVALID_SETUP_CODE':
-        _status = PinSetupStatus.idle;
+      case 'INVALID_OTP':
+      case 'EXPIRED_OTP':
+        _status = PinSetupOtpStatus.idle;
         _errorMessage = invalidCodeMessage;
       case 'PIN_ALREADY_SET':
-        _status = PinSetupStatus.pinAlreadySet;
+        _status = PinSetupOtpStatus.pinAlreadySet;
         _errorMessage = alreadySetMessage;
+      case 'RATE_LIMITED':
+      case 'RESEND_LIMIT':
+        if (_status == PinSetupOtpStatus.submitting) {
+          _status = PinSetupOtpStatus.idle;
+        }
+        _errorMessage = rateLimitedMessage;
       default:
-        if (_status == PinSetupStatus.submitting) {
-          _status = PinSetupStatus.idle;
+        if (_status == PinSetupOtpStatus.submitting) {
+          _status = PinSetupOtpStatus.idle;
         }
         _errorMessage = e.message;
+    }
+  }
+
+  String _resendError(ApiException e) {
+    switch (e.code) {
+      case 'RATE_LIMITED':
+      case 'RESEND_LIMIT':
+        return rateLimitedMessage;
+      default:
+        return e.message;
     }
   }
 }

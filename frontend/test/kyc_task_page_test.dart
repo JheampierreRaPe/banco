@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/core/widgets/loading_view.dart';
 import 'package:banca_online/features/kyc/camera_frame_source.dart';
 import 'package:banca_online/features/kyc/kyc_camera_preview.dart';
@@ -74,9 +75,26 @@ class _GateSource extends CameraFrameSource {
   }
 }
 
-FilledButton _captureButton(WidgetTester tester) => tester.widget<FilledButton>(
+AppPrimaryButton _captureButton(WidgetTester tester) =>
+    tester.widget<AppPrimaryButton>(
       find.byKey(const Key('kycCaptureButton')),
     );
+
+/// Toca el botón de captura con scroll previo (página F-T38 más alta que el
+/// viewport de pruebas).
+Future<void> _tapCapture(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
+/// Igual que [_tapCapture] pero con un solo `pump` (para observar los estados
+/// intermedios `Capturando...`/`Verificando...` sin asentar).
+Future<void> _tapCaptureNoSettle(WidgetTester tester, String label) async {
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pump();
+}
 
 void main() {
   testWidgets(
@@ -99,8 +117,7 @@ void main() {
     expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
     expect(_captureButton(tester).onPressed, isNotNull);
 
-    await tester.tap(find.text('Capturar'));
-    await tester.pumpAndSettle();
+    await _tapCapture(tester, 'Capturar');
 
     // Step 2: el preview nuevo debe volver a habilitar Capturar.
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
@@ -165,8 +182,7 @@ void main() {
 
       // Bloquear la ráfaga para observar la fase "Capturando...".
       src.captureGate = Completer<void>();
-      await tester.tap(find.text('Capturar'));
-      await tester.pump();
+      await _tapCaptureNoSettle(tester, 'Capturar');
 
       expect(find.text('Capturando...'), findsOneWidget);
       expect(find.byType(KycPreviewPlaceholder), findsOneWidget);
@@ -226,7 +242,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Capturar'));
+      await _tapCapture(tester, 'Capturar');
       await tester.pumpAndSettle();
 
       // Sigue en la MISMA tarea, con error visible y sin overlay.
@@ -235,8 +251,7 @@ void main() {
       expect(find.textContaining('Reintentar captura'), findsOneWidget);
       expect(_captureButton(tester).onPressed, isNotNull);
 
-      await tester.tap(find.text('Reintentar captura'));
-      await tester.pumpAndSettle();
+      await _tapCapture(tester, 'Reintentar captura');
       expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
     });
   });

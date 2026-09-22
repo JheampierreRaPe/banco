@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/errors/api_exception.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
@@ -14,12 +16,13 @@ import '../utils/format.dart';
 /// - Lista el consolidado (`GET /accounts`) con pull-to-refresh.
 /// - El numero se muestra enmascarado TAL COMO viene del backend
 ///   (`account_number_masked`); el cliente nunca desenmascara (docs/16 §2.9).
-/// - Disponible (verde) / retenido (ambar) / contable (azul) diferenciados.
+/// - Disponible (success) / retenido (warning) / contable (primary)
+///   diferenciados con los tokens de `docs/20` §3.4 (F-T34); cards `AppCard`
+///   (`docs/20` §6).
 /// - Estados `LoadingView` / `EmptyView` / `ErrorView` de `core/widgets`.
 ///
-/// [service] es inyectable para tests. En `accounts_routes.dart` se construye
-/// sin servicio hasta que exista DI global (orquestador `app_router.dart` es
-/// de `core/` y no se puede tocar en esta tarea); en ese caso se muestra un
+/// [service] es inyectable para tests. Las rutas lo resuelven desde
+/// `accountsServiceFactory` (cableada por el orquestador); `null` muestra un
 /// error accionable en vez de romper.
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key, this.service});
@@ -54,8 +57,20 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<void> _refresh() async {
     final future = _load();
-    setState(() => _future = future);
-    await future;
+    setState(() {
+      _future = future;
+    });
+    try {
+      await future;
+    } catch (_) {
+      // El FutureBuilder muestra el error; el refresh solo reintenta.
+    }
+  }
+
+  void _retry() {
+    setState(() {
+      _future = _load();
+    });
   }
 
   @override
@@ -75,7 +90,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 : 'Ocurrio un error inesperado. Intentalo mas tarde.';
             return ErrorView(
               message: message,
-              onRetry: () => setState(() => _future = _load()),
+              onRetry: _retry,
             );
           }
           final accounts = snapshot.data ?? const <Account>[];
@@ -122,15 +137,11 @@ class _AccountCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Card(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+    return AppCard(
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
               Row(
                 children: [
                   Expanded(
@@ -151,13 +162,13 @@ class _AccountCard extends StatelessWidget {
               _BalanceRow(
                 label: 'Disponible',
                 value: formatMinor(account.availableMinor, account.currency),
-                color: Colors.green.shade700,
+                color: AppColors.success,
               ),
               const SizedBox(height: 4),
               _BalanceRow(
                 label: 'Retenido',
                 value: formatMinor(account.heldMinor, account.currency),
-                color: Colors.amber.shade800,
+                color: AppColors.warning,
               ),
               const Divider(height: 16),
               _BalanceRow(
@@ -168,8 +179,6 @@ class _AccountCard extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }

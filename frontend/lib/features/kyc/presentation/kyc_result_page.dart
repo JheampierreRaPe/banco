@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/session/session_identity_store.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_spacing.dart';
+import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/app_button.dart';
 import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
@@ -9,12 +13,16 @@ import '../kyc_dependencies.dart';
 import '../kyc_error_handler.dart';
 import '../kyc_flow_controller.dart';
 import '../kyc_models.dart';
+import 'kyc_fig_widgets.dart';
 
 /// Paso 3 del KYC: resultado y motivo de fallo si aplica.
 ///
-/// En exito el alta continua con un solo OTP: guarda el `user_ref` (F-T20) y
-/// navega a `/pin-setup?userRef=` (codigo del correo + PIN). El backend valida
-/// el OTP y activa; el cliente solo navega (cliente delgado, docs/19).
+/// Restyle F-T38 con los tokens de F-T34 (sin estilos hardcodeados). La
+/// lógica NO cambia: en exito el alta continua a crear el PIN
+/// (`/pin-setup?userRef=`); el backend valida el OTP y activa; el cliente
+/// solo navega (cliente delgado, docs/19).
+/// El orden PIN -> OTP -> success y `saveUserRef` SOLO en success son F-T39
+/// (SCR-005): esta pagina ya NO persiste el `user_ref`.
 class KycResultPage extends StatelessWidget {
   const KycResultPage({super.key, this.controller, this.identity});
 
@@ -22,8 +30,9 @@ class KycResultPage extends StatelessWidget {
   /// [KycDependencies].
   final KycFlowController? controller;
 
-  /// Store de identidad inyectable (tests). Por defecto, el fijado por el
-  /// orquestador via [sessionIdentityStoreFactory].
+  /// Store de identidad (F-T39/SCR-005: reservado; el `user_ref` se persiste
+  /// SOLO en el paso success, ya no aqui). Se conserva el parametro para no
+  /// romper la API inyectable en tests.
   final SessionIdentityStore? identity;
 
   KycFlowController _resolve(BuildContext context) =>
@@ -33,7 +42,11 @@ class KycResultPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = _resolve(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Resultado de verificacion')),
+      backgroundColor: AppColors.surface,
+      appBar: const PreferredSize(
+        preferredSize: Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
+        child: KycTopBar(title: 'Resultado de verificación'),
+      ),
       body: ListenableBuilder(
         listenable: c,
         builder: (context, _) {
@@ -43,9 +56,21 @@ class KycResultPage extends StatelessWidget {
           final result = c.result;
           if (result == null) {
             if (c.errorMessage != null) {
-              return ErrorView(
-                message: c.errorMessage!,
-                onRetry: () => _retry(context, c),
+              return Padding(
+                padding: const EdgeInsets.all(AppSpacing.stackMd),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const KycFormErrorBanner(
+                      message: 'No pudimos enviar tu verificación',
+                    ),
+                    const SizedBox(height: AppSpacing.stackMd),
+                    ErrorView(
+                      message: c.errorMessage!,
+                      onRetry: () => _retry(context, c),
+                    ),
+                  ],
+                ),
               );
             }
             return EmptyView(
@@ -55,66 +80,116 @@ class KycResultPage extends StatelessWidget {
             );
           }
           if (result.overallResult) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.check_circle_outline,
-                      size: 72,
-                      color: Colors.green,
-                    ),
-                    const SizedBox(height: 16),
-                    const Text('Verificacion exitosa'),
-                    const SizedBox(height: 24),
-                    FilledButton(
-                      key: const Key('kyc-result-continue'),
-                      onPressed: () => _startPinSetup(context, result),
-                      child: const Text('Crear mi PIN'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(AppSpacing.stackMd),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(
-                    Icons.cancel_outlined,
-                    size: 72,
-                    color: Colors.red,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('No se pudo verificar tu identidad.'),
-                  // F-T23: se indica QUE paso fallo y el motivo traducido del
-                  // servidor (E1-T29).
-                  if (result.failedStep != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      'Paso fallido: ${result.failedStep}',
-                      key: const Key('kycResultFailedStep'),
-                      textAlign: TextAlign.center,
+                  Container(
+                    padding: const EdgeInsets.all(AppSpacing.containerPadding),
+                    decoration: BoxDecoration(
+                      color: AppColors.successContainer.withValues(alpha: 0.45),
+                      borderRadius: BorderRadius.circular(AppRadii.lg),
                     ),
-                  ],
-                  const SizedBox(height: 8),
-                  Text(
-                    'Motivo: ${kycReasonMessage(result.failureReason)}',
-                    key: const Key('kycResultReason'),
-                    textAlign: TextAlign.center,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.check_circle_outline,
+                          size: 72,
+                          color: AppColors.success,
+                        ),
+                        const SizedBox(height: AppSpacing.stackMd),
+                        Text(
+                          'Verificacion exitosa',
+                          textAlign: TextAlign.center,
+                          style: AppTypography.headlineSm.copyWith(
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.stackSm),
+                        Text(
+                          'Tu identidad fue verificada. Continúa para crear '
+                          'tu PIN de acceso.',
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodyMd.copyWith(
+                            color: AppColors.secondaryText,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: () => _retry(context, c),
-                    child: const Text('Reintentar verificacion'),
+                  const SizedBox(height: AppSpacing.stackLg),
+                  AppPrimaryButton(
+                    key: const Key('kyc-result-continue'),
+                    label: 'Crear mi PIN',
+                    onPressed: () => _startPinSetup(context, result),
                   ),
                 ],
               ),
+            );
+          }
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(AppSpacing.stackMd),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(AppSpacing.containerPadding),
+                  decoration: BoxDecoration(
+                    color: AppColors.errorContainer.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(AppRadii.lg),
+                    border: Border.all(
+                      color: AppColors.errorCarmine.withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.cancel_outlined,
+                        size: 72,
+                        color: AppColors.errorCarmine,
+                      ),
+                      const SizedBox(height: AppSpacing.stackMd),
+                      Text(
+                        'No se pudo verificar tu identidad.',
+                        textAlign: TextAlign.center,
+                        style: AppTypography.headlineSm.copyWith(
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      // F-T23: se indica QUE paso fallo y el motivo traducido del
+                      // servidor (E1-T29).
+                      if (result.failedStep != null) ...[
+                        const SizedBox(height: AppSpacing.stackSm),
+                        Text(
+                          'Paso fallido: ${result.failedStep}',
+                          key: const Key('kycResultFailedStep'),
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodyMd.copyWith(
+                            color: AppColors.onSurface,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: AppSpacing.stackSm),
+                      Text(
+                        'Motivo: ${kycReasonMessage(result.failureReason)}',
+                        key: const Key('kycResultReason'),
+                        textAlign: TextAlign.center,
+                        style: AppTypography.bodyMd.copyWith(
+                          color: AppColors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.stackLg),
+                AppPrimaryButton(
+                  label: 'Reintentar verificacion',
+                  onPressed: () => _retry(context, c),
+                ),
+              ],
             ),
           );
         },
@@ -127,14 +202,15 @@ class KycResultPage extends StatelessWidget {
     context.go('/kyc');
   }
 
-  /// Guarda el `user_ref` del alta y navega a crear el PIN.
+  /// Navega a crear el PIN con el `userId` del alta.
   ///
-  /// F-T19 garantiza `user_id` en el exito; si faltara (backend legacy) no se
-  /// inventa una referencia: se avisa y no se navega.
-  Future<void> _startPinSetup(
+  /// F-T19 garantiza `user_id` en el exito; si faltara (backend legacy) no
+  /// se inventa una referencia: se avisa y no se navega. El `user_ref` se
+  /// persiste SOLO en el paso success (F-T39/SCR-005), nunca aqui.
+  void _startPinSetup(
     BuildContext context,
     KycSubmitResult result,
-  ) async {
+  ) {
     final userId = result.userId;
     if (userId == null || userId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -146,27 +222,6 @@ class KycResultPage extends StatelessWidget {
       );
       return;
     }
-    final store = identity ?? sessionIdentityStoreFactory?.call();
-    if (store != null) {
-      try {
-        await store.saveUserRef(userId);
-      } catch (_) {
-        // Best-effort (simetria con `LoginController._rememberUser`): un fallo
-        // del secure storage no bloquea el alta. No se inventa el user_ref; el
-        // `userId` ya viaja en la ruta, asi que se avisa y se continua.
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'No pudimos guardar tu identificador en este dispositivo, '
-                'pero puedes continuar.',
-              ),
-            ),
-          );
-        }
-      }
-    }
-    if (!context.mounted) return;
     context.go('/pin-setup?userRef=${Uri.encodeComponent(userId)}');
   }
 }

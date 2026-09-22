@@ -21,7 +21,11 @@ import 'secure_key_value_storage.dart';
 ///
 /// Cache sincronico hidratado con [load] (la guarda/el router no pueden
 /// esperar) + lecturas async puntuales.
-abstract class SessionIdentityStore {
+///
+/// Es un [Listenable] (F-T37, SCR-005 d5): el router lo agrega a su
+/// `refreshListenable` para reevaluar la guarda al guardar/borrar el
+/// `userRef` sin navegacion manual.
+abstract class SessionIdentityStore implements Listenable {
   /// `user_ref` en cache; `null` si no hay cuenta conocida.
   String? get userRef;
 
@@ -47,14 +51,15 @@ abstract class SessionIdentityStore {
 }
 
 /// Fabrica del store (la fija `main`/el orquestador; en tests se inyecta una
-/// instancia en memoria). Mismo patron que `welcomeSeenStoreFactory`.
+/// instancia en memoria).
 typedef SessionIdentityStoreFactory = SessionIdentityStore Function();
 
 /// Fabrica global usada por `buildRouter` cuando no recibe un store explicito.
 SessionIdentityStoreFactory? sessionIdentityStoreFactory;
 
 /// Implementacion productiva sobre almacenamiento seguro (cifrado).
-class SecureSessionIdentityStore implements SessionIdentityStore {
+class SecureSessionIdentityStore extends ChangeNotifier
+    implements SessionIdentityStore {
   SecureSessionIdentityStore({
     required SecureKeyValueStorage storage,
     Uuid? uuid,
@@ -92,12 +97,18 @@ class SecureSessionIdentityStore implements SessionIdentityStore {
       _userRef = null;
       _deviceId = null;
     }
+    // La hidratacion puede llegar despues de montar el router: notifica para
+    // que la guarda reevalue con el `userRef` recuperado.
+    notifyListeners();
   }
 
   @override
   Future<void> saveUserRef(String userRef) async {
     await _storage.write(userRefKey, userRef);
     _userRef = userRef;
+    // El `userRef` habilita el login: la guarda debe reevaluar sin
+    // navegacion manual (el router escucha este store).
+    notifyListeners();
   }
 
   @override
@@ -139,7 +150,8 @@ class SecureSessionIdentityStore implements SessionIdentityStore {
 
 /// Implementacion en memoria (tests de store/router, sin canales de
 /// plataforma). No persiste entre instancias.
-class InMemorySessionIdentityStore implements SessionIdentityStore {
+class InMemorySessionIdentityStore extends ChangeNotifier
+    implements SessionIdentityStore {
   InMemorySessionIdentityStore({
     String? userRef,
     String? deviceId,
@@ -161,11 +173,16 @@ class InMemorySessionIdentityStore implements SessionIdentityStore {
   String? get deviceId => _deviceId;
 
   @override
-  Future<void> load() async {}
+  Future<void> load() async {
+    // No-op en memoria, pero notifica por simetria con la implementacion
+    // segura (la guarda puede haberse montado antes de hidratar).
+    notifyListeners();
+  }
 
   @override
   Future<void> saveUserRef(String userRef) async {
     _userRef = userRef;
+    notifyListeners();
   }
 
   @override

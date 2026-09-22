@@ -20,11 +20,14 @@ Origen de los parametros (de donde salen TTL/reenvios):
   `OTP_TTL_SECONDS = 600` y `OTP_MAX_RESENDS = 3`, documentadas como
   movibles a `parameters` (regla de oro 6: misma clave y mismo valor que
   la semilla para migrar sin sorpresas).
-- La espera minima entre reenvios y el umbral de intentos no tienen clave
-  en `config.parameters` (`03b` no las define): rigen las constantes
-  `OTP_RESEND_WAIT_SECONDS` y el `max_attempts` por fila (`03b#4.5`
-  default 3), ambas documentadas como candidatas a `otp.resend_wait_seconds`
-  y `otp.max_attempts` cuando config las adopte.
+- La espera minima entre reenvios y el umbral de intentos se leen de
+  `config.parameters` (E1-T34/SCR-005, migracion `0019`: claves
+  `otp.resend_wait_seconds` (semilla `30`) y `otp.max_attempts` (semilla
+  `3`), modulo `identity`) con la misma lectura best-effort y fallback a
+  `OTP_RESEND_WAIT_SECONDS` / `OTP_MAX_ATTEMPTS` (misma clave y mismo
+  valor para migrar sin sorpresas). `generate_otp` fija el
+  `max_attempts` de las filas nuevas con el valor resuelto; `resend_otp`
+  respeta la espera resuelta (un `0` sembrado desactiva la espera).
 
 Eventos: al validar OK con `purpose == "ACTIVATION"` se enlista
 `user.activated` via `outbox.record` en la misma sesion (regla de oro 8,
@@ -87,6 +90,14 @@ OTP_CODE_DIGITS = 6
 
 _PARAM_TTL_KEY = "otp.ttl_seconds"
 _PARAM_MAX_RESENDS_KEY = "otp.max_resends"
+
+#: Espera minima entre reenvios (`config.parameters`, E1-T34/SCR-005,
+#: semilla `30`, modulo `identity`).
+_PARAM_RESEND_WAIT_KEY = "otp.resend_wait_seconds"
+
+#: Tope de intentos fallidos por codigo (`config.parameters`, E1-T34/SCR-005,
+#: semilla `3`, modulo `identity`; manda el `max_attempts` de la fila).
+_PARAM_MAX_ATTEMPTS_KEY = "otp.max_attempts"
 
 
 class OtpError(ValueError):
@@ -151,6 +162,43 @@ def _coerce_param_int(raw: object, default: int) -> int:
     return candidate if candidate > 0 else default
 
 
+def _coerce_param_int_min(raw: object, default: int, minimum: int) -> int:
+    """Variante que acepta `minimum` (p. ej. `0` para la espera de reenvio)."""
+    if isinstance(raw, bool):
+        return default
+    if isinstance(raw, (int, float)):
+        candidate = int(raw)
+    elif isinstance(raw, str):
+        try:
+            candidate = int(raw.strip())
+        except (ValueError, AttributeError):
+            return default
+    else:
+        return default
+    return candidate if candidate >= minimum else default
+
+
+_MISSING: object = object()
+
+
+def _fetch_param_raw(session: Session, key: str) -> object:
+    """Valor crudo de `config.parameters.<key>` (`_MISSING` si no se puede leer).
+
+    Lectura acotada a `config.parameters` (tabla transversal, no de otro
+    modulo de negocio) dentro de un `SAVEPOINT`: un fallo (tabla ausente,
+    permiso, conexion) no contamina la transaccion del llamante.
+    """
+    try:
+        with session.begin_nested():
+            return session.execute(
+                sa.text("SELECT value_json FROM config.parameters WHERE key = :key"),
+                {"key": key},
+            ).scalar()
+    except Exception:  # noqa: BLE001 - sin acceso a parameters rige la constante
+        logger.debug("otp parameters sin acceso (%s): default", key)
+        return _MISSING
+
+
 def _read_int_parameter(session: Session, key: str, default: int) -> int:
     """Lee `config.parameters.<key>` best-effort (fallback a `default`).
 
@@ -159,18 +207,20 @@ def _read_int_parameter(session: Session, key: str, default: int) -> int:
     acotado a esa tabla dentro de un `SAVEPOINT`, asi un fallo (tabla
     ausente, valor invalido) no contamina la transaccion del llamante.
     """
-    try:
-        with session.begin_nested():
-            raw = session.execute(
-                sa.text("SELECT value_json FROM config.parameters WHERE key = :key"),
-                {"key": key},
-            ).scalar()
-    except Exception:  # noqa: BLE001 - sin acceso a parameters rige la constante
-        logger.debug("otp parameters sin acceso (%s): default", key)
-        return default
-    if raw is None:
+    raw = _fetch_param_raw(session, key)
+    if raw is None or raw is _MISSING:
         return default
     return _coerce_param_int(raw, default)
+
+
+def read_int_parameter(session: Session, key: str, default: int) -> int:
+    """Lectura publica best-effort de `config.parameters.<key>` (E1-T34).
+
+    Misma semantica que `_read_int_parameter`: la reutilizan `pin_login`
+    (lockout), `recovery` (rate-limits) y `pin_reset` sin duplicar el SQL
+    acotado en `SAVEPOINT`; ante cualquier fallo rige `default`.
+    """
+    return _read_int_parameter(session, key, default)
 
 
 def _resolve_ttl_seconds(session: Session, override: int | None) -> int:
@@ -188,6 +238,38 @@ def _resolve_max_resends(session: Session, override: int | None) -> int:
         return override
     raw_default = _read_int_parameter(session, _PARAM_MAX_RESENDS_KEY, OTP_MAX_RESENDS)
     return raw_default if raw_default >= 0 else OTP_MAX_RESENDS
+
+
+def _resolve_max_attempts(session: Session, override: int | None) -> int:
+    """Tope de intentos por codigo: override > `otp.max_attempts` > constante.
+
+    E1-T34/SCR-005 (regla de oro 6): el valor sembrado (`3`) coincide con
+    `OTP_MAX_ATTEMPTS` para migrar sin sorpresas; sin acceso o valor
+    invalido rige la constante (comportamiento identico).
+    """
+    if override is not None:
+        if not isinstance(override, int) or isinstance(override, bool) or override < 1:
+            raise ValueError("max_attempts debe ser int >= 1")
+        return override
+    return _read_int_parameter(session, _PARAM_MAX_ATTEMPTS_KEY, OTP_MAX_ATTEMPTS)
+
+
+def _resolve_resend_wait_seconds(session: Session, override: int | None) -> int:
+    """Espera minima entre reenvios: override > `otp.resend_wait_seconds` > constante.
+
+    E1-T34/SCR-005 (regla de oro 6): el valor sembrado (`30`) coincide con
+    `OTP_RESEND_WAIT_SECONDS`; un `0` sembrado desactiva la espera. Sin
+    acceso o valor invalido rige la constante. Se lee el global en cada
+    llamada para que los tests puedan fijarlo (`monkeypatch`).
+    """
+    if override is not None:
+        if not isinstance(override, int) or isinstance(override, bool) or override < 0:
+            raise ValueError("wait_seconds debe ser int >= 0")
+        return override
+    raw = _fetch_param_raw(session, _PARAM_RESEND_WAIT_KEY)
+    if raw is None or raw is _MISSING:
+        return OTP_RESEND_WAIT_SECONDS
+    return _coerce_param_int_min(raw, OTP_RESEND_WAIT_SECONDS, 0)
 
 
 def _new_plain_code() -> str:
@@ -313,11 +395,7 @@ def generate_otp(
         raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
     ttl = _resolve_ttl_seconds(session, ttl_seconds)
-    if max_attempts is not None and (
-        not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1
-    ):
-        raise ValueError("max_attempts debe ser int >= 1")
-    limit = max_attempts if max_attempts is not None else OTP_MAX_ATTEMPTS
+    limit = _resolve_max_attempts(session, max_attempts)
 
     previous = otp_repo.get_active(session, uid, purpose)
     if previous is not None:
@@ -375,11 +453,7 @@ def resend_otp(
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
-    if wait_seconds is not None and (
-        not isinstance(wait_seconds, int) or isinstance(wait_seconds, bool) or wait_seconds < 0
-    ):
-        raise ValueError("wait_seconds debe ser int >= 0")
-    wait = OTP_RESEND_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    wait = _resolve_resend_wait_seconds(session, wait_seconds)
 
     active = otp_repo.get_active(session, uid, purpose)
     if active is None:
@@ -493,6 +567,7 @@ __all__ = [
     "OtpNotFoundError",
     "OtpResendTooSoonError",
     "generate_otp",
+    "read_int_parameter",
     "resend_otp",
     "validate_otp",
 ]

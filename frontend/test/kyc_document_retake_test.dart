@@ -197,8 +197,8 @@ void main() {
       // comportamientos distintos (el bug del validador).
       expect(find.byKey(const Key('recaptureDocumentButton')), findsOneWidget);
       expect(find.byKey(const Key('captureDocumentButton')), findsNothing);
-      expect(find.text('Volver a capturar'), findsOneWidget);
-      expect(find.text('Volver a capturar documento'), findsNothing);
+      expect(find.text('Volver a tomar'), findsOneWidget);
+      expect(find.text('Volver a capturar'), findsNothing);
 
       // Retake: limpia captura/validacion y re-monta el preview SIN capturar.
       await tester

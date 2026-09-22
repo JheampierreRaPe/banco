@@ -1,5 +1,10 @@
 // Pantalla `/recovery`: captura el email registrado y pide el OTP.
 //
+// Diseño canónico "Eucalipto y Ocre" (F-T42, página `recovery (email)` +
+// `docs/design/recovery-email.png`): solo tokens de F-T34 (`AppColors`,
+// `AppTypography`, `AppSpacing`) y componentes base (`AppCard`,
+// `AppPrimaryButton`, `AppGhostButton`).
+//
 // - Valida el formato en la UI (no decide existencia: eso lo hace el
 //   servidor; cliente delgado, docs/19).
 // - Con 200 navega a `/recovery/otp?email=<urlencoded>` con el MISMO mensaje
@@ -11,9 +16,14 @@ library;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_spacing.dart';
+import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/app_button.dart';
+import '../../../core/widgets/app_card.dart';
 import '../recovery_controller.dart';
 
-/// Pantalla de solicitud del código de recuperación (F-T29).
+/// Pantalla de solicitud del código de recuperación (F-T40).
 class RecoveryEmailPage extends StatefulWidget {
   const RecoveryEmailPage({super.key, required this.controller});
 
@@ -66,79 +76,177 @@ class _RecoveryEmailPageState extends State<RecoveryEmailPage> {
     final canSubmit = !c.isBusy && !c.succeeded;
 
     return Scaffold(
+      backgroundColor: AppColors.surface,
       appBar: AppBar(title: const Text('Recuperar acceso')),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.marginMobile),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'Escribe el correo con el que registraste tu cuenta. '
-                'Te enviaremos un código para recuperar el acceso.',
+              Text(
+                'Recupera tu acceso',
+                style: AppTypography.headlineMd.copyWith(
+                  color: AppColors.onSurface,
+                ),
               ),
-              const SizedBox(height: 24),
-              TextField(
-                key: const Key('recovery-email-field'),
-                controller: _email,
-                keyboardType: TextInputType.emailAddress,
-                // Correo sensible: sin sugerencias ni autocorrección; nunca
-                // se loguea (docs/16 reglas 7 y 10).
-                enableSuggestions: false,
-                autocorrect: false,
-                decoration: const InputDecoration(
-                  labelText: 'Correo electrónico',
-                  border: OutlineInputBorder(),
+              const SizedBox(height: AppSpacing.stackSm),
+              Text(
+                'Ingresa tu correo. Si está registrado, '
+                'te enviaremos un código.',
+                style: AppTypography.bodyMd.copyWith(
+                  color: AppColors.secondaryText,
                 ),
-                onChanged: (_) {
-                  if (c.status == RecoveryEmailStatus.error) c.retry();
-                },
-                onSubmitted: (_) {
-                  if (canSubmit) _submit();
-                },
               ),
-              const SizedBox(height: 16),
-              if (c.errorMessage != null)
-                Text(
-                  c.errorMessage!,
-                  key: const Key('recovery-email-message'),
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                ),
-              if (c.succeeded)
-                Text(
-                  RecoveryEmailController.neutralMessage,
-                  key: const Key('recovery-email-info'),
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-              const SizedBox(height: 24),
-              FilledButton(
-                key: const Key('recovery-email-submit'),
-                onPressed: canSubmit ? _submit : null,
-                child: submitting
-                    ? const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+              const SizedBox(height: AppSpacing.stackMd),
+              // Contenido: tarjeta del correo (docs/20 §6).
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Correo electrónico',
+                      style: AppTypography.labelMd.copyWith(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.stackSm),
+                    TextField(
+                      key: const Key('recovery-email-field'),
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      style: AppTypography.bodyLg.copyWith(
+                        color: AppColors.onSurface,
+                      ),
+                      // Correo sensible: sin sugerencias ni autocorrección;
+                      // nunca se loguea (docs/16 reglas 7 y 10).
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      decoration: InputDecoration(
+                        hintText: 'ejemplo@correo.com',
+                        hintStyle: AppTypography.bodyMd.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
+                        filled: true,
+                        fillColor: AppColors.surfaceContainerLowest,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.stackMd,
+                          vertical: AppSpacing.stackSm + AppSpacing.unit,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppRadii.md),
+                          borderSide: const BorderSide(
+                            color: AppColors.outlineVariant,
                           ),
-                          SizedBox(width: 10),
-                          Text('Enviando…'),
-                        ],
-                      )
-                    : const Text('Enviar código'),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppRadii.md),
+                          borderSide: const BorderSide(
+                            color: AppColors.primary,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      onChanged: (_) {
+                        if (c.status == RecoveryEmailStatus.error) c.retry();
+                      },
+                      onSubmitted: (_) {
+                        if (canSubmit) _submit();
+                      },
+                    ),
+                    const SizedBox(height: AppSpacing.stackSm),
+                    Text(
+                      'Usa el correo con el que creaste tu cuenta.',
+                      style: AppTypography.bodyMd.copyWith(
+                        color: AppColors.secondaryText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.stackMd),
+              // Franja informativa anti-oráculo.
+              Container(
+                padding: const EdgeInsets.all(AppSpacing.stackMd),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryFixed,
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.info_outline,
+                      size: 20,
+                      color: AppColors.onPrimaryFixed,
+                    ),
+                    const SizedBox(width: AppSpacing.stackSm),
+                    Expanded(
+                      child: Text(
+                        'Por seguridad mostramos siempre el mismo mensaje, '
+                        'exista o no la cuenta.',
+                        style: AppTypography.bodyMd.copyWith(
+                          color: AppColors.onPrimaryFixed,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Estado de error (docs/20 §7) con reintento.
+              if (c.errorMessage != null) ...[
+                const SizedBox(height: AppSpacing.stackMd),
+                Container(
+                  padding: const EdgeInsets.all(AppSpacing.stackMd),
+                  decoration: BoxDecoration(
+                    color: AppColors.errorContainer,
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                  child: Text(
+                    c.errorMessage!,
+                    key: const Key('recovery-email-message'),
+                    style: AppTypography.bodyMd.copyWith(
+                      color: AppColors.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ],
+              // Estado de contenido con mensaje neutro (mismo exista o no).
+              if (c.succeeded)
+                Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.stackMd),
+                  child: Text(
+                    RecoveryEmailController.neutralMessage,
+                    key: const Key('recovery-email-info'),
+                    style: AppTypography.bodyMd.copyWith(
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              const SizedBox(height: AppSpacing.stackLg),
+              // Estado de carga: el botón primario muestra spinner.
+              AppPrimaryButton(
+                key: const Key('recovery-email-submit'),
+                label: 'Enviar código',
+                loading: submitting,
+                onPressed: canSubmit ? _submit : null,
               ),
               if (c.status == RecoveryEmailStatus.error)
-                TextButton(
-                  key: const Key('recovery-email-retry'),
-                  onPressed: canSubmit ? _submit : null,
-                  child: const Text('Reintentar'),
+                Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.stackSm),
+                  child: AppGhostButton(
+                    key: const Key('recovery-email-retry'),
+                    label: 'Reintentar',
+                    onPressed: canSubmit ? _submit : null,
+                  ),
                 ),
+              AppGhostButton(
+                key: const Key('recovery-email-back'),
+                label: 'Volver a iniciar sesión',
+                onPressed: () => context.go('/login'),
+              ),
             ],
           ),
         ),

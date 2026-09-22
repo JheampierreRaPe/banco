@@ -1,13 +1,13 @@
-"""Endpoints de recuperacion de acceso por email (E1-T31, HU04).
+"""Endpoints de recuperacion de acceso por email (E1-T33, HU04).
 
 `POST /auth/recovery/request {email}` -> SIEMPRE 200 con cuerpo identico
 exista o no el email (sin enumeracion) + OTP `RECOVERY` por email si el
 usuario es elegible (cooldown: reutiliza el `PENDING` vigente).
 `POST /auth/recovery/verify {email, code[, device_id/device_public_key/
-platform/biometric_type]}` -> valida el OTP, abre sesion (tokens + fila
-`sessions`), inserta `access_recovery` y registra el binding del
-dispositivo nuevo best-effort; devuelve tokens + `user_ref` (contrato que
-consume `F-T29`).
+platform/biometric_type]}` -> valida el OTP SIN abrir sesion (SCR-005),
+inserta `access_recovery` y registra el binding del dispositivo nuevo
+best-effort; devuelve `{user_ref, device_bound}` (contrato que consume
+`F-T29`; la unica sesion la abre `POST /auth/login/pin`).
 
 Montados bajo `/api/v1` por `app.main` via `iter_routers` (este `router` lo
 recoge `api/__init__.py`; sin registro extra). Sin logica en el router
@@ -21,8 +21,9 @@ via `AppError`:
   (constantes globales, identico exista o no); 429 `RATE_LIMITED`
   (ventana por email+IP, verificada antes de la existencia); 422 estandar
   de FastAPI para email malformado/vacio.
-- `verify`: 200 `{access_token, refresh_token, token_type, session_id,
-  expires_in, user_ref, device_bound}`; 401 `INVALID_RECOVERY_CODE`
+- `verify`: 200 `{user_ref, device_bound}` (SIN `access_token`/
+  `refresh_token`/`session_id`: no abre sesion desde E1-T33/SCR-005);
+  401 `INVALID_RECOVERY_CODE`
   (mismo cuerpo para email no registrado, no elegible, sin OTP pendiente,
   codigo incorrecto, OTP vencido y OTP bloqueado por intentos agotados:
   vencido/bloqueado colapsan al generico para no filtrar existencia);
@@ -90,12 +91,12 @@ def request_recovery(
 @router.post(
     "/auth/recovery/verify",
     response_model=RecoveryVerifyResponse,
-    summary="Valida el OTP de recuperacion y abre sesion",
+    summary="Valida el OTP de recuperacion (sin sesion)",
 )
 def verify_recovery(
     body: RecoveryVerifyRequest, request: Request, db: Session = Depends(get_db)
 ) -> dict:
-    """Valida el OTP, abre sesion y liga el dispositivo nuevo (HU04)."""
+    """Valida el OTP y devuelve `{user_ref, device_bound}`; no abre sesion (HU04, E1-T33)."""
     try:
         result = recovery_service.verify_recovery(
             db,
@@ -120,8 +121,9 @@ def verify_recovery(
         db.commit()
         raise AppError(code="RATE_LIMITED", message=str(exc), status_code=429) from exc
     except Exception:
-        # Fallo inesperado posterior al `flush` (p. ej. al crear la sesion):
-        # revierte todo (sin sesion/OTP `USED`/`access_recovery` a medias).
+        # Fallo inesperado posterior al `flush` (p. ej. al registrar
+        # `access_recovery`): revierte todo (sin OTP `USED`/
+        # `access_recovery`/binding a medias).
         db.rollback()
         raise
     db.commit()

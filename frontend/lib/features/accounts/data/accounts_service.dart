@@ -173,3 +173,14 @@ class AccountsService implements AccountsServiceBase {
 /// dependencia nueva (`pubspec.yaml` intacto, docs/16: reglas configurables y
 /// sin sorpresas). La UI muestra un dialogo con nombre/tamano y mensaje de
 /// exito simulado que indica este pendiente.
+
+/// Fabrica inyectable del servicio de cuentas (F-T41).
+///
+/// El orquestador `core/router/app_router.dart` la asigna una sola vez con el
+/// `ApiClient` compartido (mismo patron que `loginRouteDepsFactory` /
+/// `activationServiceFactory`); las rutas la resuelven sin crear el servicio.
+/// `null` = DI no configurada: las pantallas muestran un error accionable en
+/// vez de romper (los 4 estados siguen cubiertos).
+typedef AccountsServiceFactory = AccountsServiceBase Function();
+
+AccountsServiceFactory? accountsServiceFactory;

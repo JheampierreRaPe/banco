@@ -1,11 +1,13 @@
-// Pruebas de los controladores de recuperación (F-T29, CA-01..CA-04).
+// Pruebas de los controladores de recuperación (F-T40, CA-01..CA-04).
 //
 // - Email: formato inválido bloquea; 200 expone el mensaje neutro + `request`
 //   con `{email}`; error de red con mensaje accionable.
-// - OTP: `canSubmit` exige 6 dígitos; éxito persiste sesión + `user_ref` y
-//   envía `device_id` + `device_public_key` (`hmac:<hex>`) + `platform`;
-//   `INVALID_RECOVERY_CODE` -> mismo mensaje genérico; `429` -> espera;
-//   reenvío respeta el cooldown; `saveUserRef` fallido no bloquea la sesión.
+// - OTP (contrato E1-T33): `canSubmit` exige 6 dígitos; éxito persiste
+//   `user_ref` y expone `verifiedUserRef` para navegar a `/login?userRef=`
+//   SIN abrir sesión; envía `device_id` + `device_public_key` (`hmac:<hex>`)
+//   + `platform`; `INVALID_RECOVERY_CODE` -> mismo mensaje genérico;
+//   `429` -> espera; reenvío respeta el cooldown; `saveUserRef` fallido no
+//   bloquea la continuación al login.
 import 'dart:async';
 
 import 'package:banca_online/core/errors/api_exception.dart';
@@ -24,8 +26,6 @@ class FakeRecoveryService implements RecoveryService {
       resendWaitSeconds: 30,
     ),
     this.verifyResult = const RecoveryVerifyResult(
-      accessToken: 'acc-1',
-      refreshToken: 'ref-1',
       userRef: 'user-123',
       deviceBound: true,
     ),
@@ -158,7 +158,7 @@ void main() {
       expect(controller.canSubmit, isTrue);
     });
 
-    test('OTP correcto persiste sesión + user_ref con binding del dispositivo',
+    test('OTP correcto persiste user_ref SIN abrir sesion (E1-T33)',
         () async {
       final service = FakeRecoveryService();
       final session = InMemorySessionRepository();
@@ -176,8 +176,9 @@ void main() {
 
       expect(ok, isTrue);
       expect(controller.succeeded, isTrue);
-      expect(session.isAuthenticated, isTrue);
-      expect(session.currentAccessToken, 'acc-1');
+      // Verify YA NO abre sesión: la única sesión la abre el login.
+      expect(session.isAuthenticated, isFalse);
+      expect(controller.verifiedUserRef, 'user-123');
       expect(await identity.readUserRef(), 'user-123');
       // Contrato de binding (CA-03): `device_id` + `hmac:<hex>` + `platform`.
       expect(service.lastVerify?['email'], 'a@b.com');
@@ -190,10 +191,11 @@ void main() {
       expect(service.lastVerify?['platform'], 'android');
     });
 
-    test('saveUserRef fallido no bloquea la sesión ya concedida', () async {
+    test('saveUserRef fallido no bloquea la continuacion al login', () async {
+      final session = InMemorySessionRepository();
       final controller = RecoveryOtpController(
         service: FakeRecoveryService(),
-        session: InMemorySessionRepository(),
+        session: session,
         email: 'a@b.com',
         identity: _FailingSaveUserRefStore(),
         platform: 'android',
@@ -202,6 +204,8 @@ void main() {
 
       expect(await controller.submit('123456'), isTrue);
       expect(controller.succeeded, isTrue);
+      expect(controller.verifiedUserRef, 'user-123');
+      expect(session.isAuthenticated, isFalse);
     });
 
     test('INVALID_RECOVERY_CODE muestra el mismo mensaje genérico',
@@ -344,8 +348,7 @@ void main() {
   });
 
   group('sin PII en logs (CA-04)', () {
-    test('operaciones no emiten email/OTP/tokens/user_ref/device_id',
-        () async {
+    test('operaciones no emiten email/OTP/user_ref/device_id', () async {
       final printed = <String>[];
       final service = FakeRecoveryService();
       final session = InMemorySessionRepository();
@@ -376,8 +379,6 @@ void main() {
       const secrets = [
         'secreto@banco.com',
         '654321',
-        'acc-1',
-        'ref-1',
         'user-123',
         'device-1',
       ];

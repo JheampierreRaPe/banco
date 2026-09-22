@@ -1,4 +1,4 @@
-"""Recuperacion de acceso por email: solicitar OTP y abrir sesion (E1-T31, HU04).
+"""Recuperacion de acceso por email: solicitar OTP y validar OTP sin sesion (E1-T33, HU04).
 
 Flujo (pre-sesion, sin `user_ref` ni `device_id` locales: tras reinstalar o
 borrar datos el usuario solo conoce su email registrado):
@@ -10,11 +10,12 @@ borrar datos el usuario solo conoce su email registrado):
    con el MISMO cuerpo exista o no el email (sin enumeracion).
 2. `POST /auth/recovery/verify {email, code[, device_id/device_public_key/
    platform/biometric_type]}` -> valida el OTP via
-   `otp_service.validate_otp` (hash/TTL/max intentos, un solo uso), abre
-   sesion (tokens + fila `sessions`), inserta `access_recovery`
-   (`method='OTP'`, `new_credential_set=false`) y registra/refresca el
-   `device_binding` del dispositivo nuevo best-effort. Devuelve tokens +
-   `user_ref` (lo persiste `F-T29`).
+   `otp_service.validate_otp` (hash/TTL/max intentos, un solo uso), inserta
+   `access_recovery` (`method='OTP'`, `new_credential_set=false`) y
+   registra/refresca el `device_binding` del dispositivo nuevo best-effort.
+   Devuelve `{user_ref, device_bound}` SIN abrir sesion (SCR-005): la unica
+   sesion la abre `POST /auth/login/pin` (lo persiste `F-T29` via
+   `SessionIdentityStore.userRef` + sesion activa).
 
 Reutilizacion (sin reinventar, sin modificar lo existente):
 
@@ -30,10 +31,10 @@ Reutilizacion (sin reinventar, sin modificar lo existente):
   envio se loguea sin PII/codigo y NO revierte la emision, como E1-T26).
 - Usuario: `identity_repo.get_by_email` (email normalizado
   `strip().lower()`, como `kyc_onboarding._normalize_email`).
-- Sesion/tokens: `identity_repo.create_session` +
+- Sesion/tokens: NO se emiten aqui (SCR-005, E1-T33): la unica sesion la
+  abre `pin_login.login_with_pin` (`identity_repo.create_session` +
   `identity_repo.hash_refresh_token` + `create_access_token` +
-  `auth.login_succeeded` via outbox (constantes de `device_login`, mismo
-  evento/mecanismo que `pin_login`/`device_login`; no se inventan tokens).
+  `auth.login_succeeded` via outbox viven solo ahi).
 - Binding: `identity_repo.get_binding` / `touch_binding` /
   `register_binding` en savepoint best-effort (un fallo no revierte la
   sesion); `platform`/`biometric_type` invalidos se ignoran (`None`).
@@ -53,10 +54,16 @@ es de cuerpo/codigo; el tiempo solo se aproxima (misma limitacion
 documentada que `activation`: en prod, padding constante + WAF).
 
 REGLAS CONFIGURABLES (regla de oro 6): `RECOVERY_REQUEST_*` y
-`RECOVERY_VERIFY_*` (ventana/maximo del rate-limit en memoria) son
-candidatos a `config.parameters` (`auth.recovery_request_*`,
-`auth.recovery_verify_*`); `ttl_seconds`/`resend_wait_seconds` reusan las
-constantes de `otp_service` (`otp.ttl_seconds`, semilla `600`).
+`RECOVERY_VERIFY_*` (ventana/maximo del rate-limit en memoria) se leen de
+`config.parameters` (E1-T34/SCR-005, migracion `0019`:
+`auth.recovery_request_window_seconds` / `auth.recovery_request_max_requests`
+/ `auth.recovery_verify_window_seconds` / `auth.recovery_verify_max_requests`,
+semillas `60`/`10`/`60`/`10`, modulo `identity`) con lectura best-effort via
+`otp_service.read_int_parameter` (SQL directo a `config.parameters` en
+SAVEPOINT, fallback al valor de entorno y luego a la constante); sin acceso
+o valor invalido rige el entorno/constante (comportamiento identico).
+`ttl_seconds`/`resend_wait_seconds` reusan las constantes resueltas de
+`otp_service`.
 
 Convencion: `flush` sin `commit`; el endpoint confirma (`commit`) en exito
 y ante error de negocio tipado (el contador de intentos del OTP DEBE
@@ -71,15 +78,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import secrets
 import threading
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token
 from app.modules.identity import repository as identity_repo
 from app.modules.identity.repository import recovery as recovery_repo
 from app.modules.identity.service import activation as activation_service
@@ -158,28 +163,62 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def recovery_request_rate_limit_cfg() -> tuple[int, int]:
+#: Claves del rate-limit en `config.parameters` (E1-T34/SCR-005, semillas
+#: `60`/`10`, modulo `identity`; sin acceso rigen entorno/constante).
+_PARAM_REQUEST_WINDOW_KEY = "auth.recovery_request_window_seconds"
+_PARAM_REQUEST_MAX_KEY = "auth.recovery_request_max_requests"
+_PARAM_VERIFY_WINDOW_KEY = "auth.recovery_verify_window_seconds"
+_PARAM_VERIFY_MAX_KEY = "auth.recovery_verify_max_requests"
+
+
+def recovery_request_rate_limit_cfg(session: Session | None = None) -> tuple[int, int]:
     """`(ventana_s, maximo)` de `POST /auth/recovery/request`.
 
-    Candidatos a `config.parameters` (`auth.recovery_request_window_seconds`,
-    `auth.recovery_request_max_requests`): misma clave y mismo valor cuando
-    config los adopte (regla de oro 6).
+    E1-T34/SCR-005 (regla de oro 6): `config.parameters`
+    (`auth.recovery_request_window_seconds`,
+    `auth.recovery_request_max_requests`) con fallback al entorno
+    (`RECOVERY_REQUEST_RATE_LIMIT_*`) y luego a `(60, 10)`. Sin sesion
+    (p. ej. pruebas) solo rige entorno/constante.
     """
+    window_default = _env_int("RECOVERY_REQUEST_RATE_LIMIT_WINDOW_SECONDS", 60)
+    max_default = _env_int("RECOVERY_REQUEST_RATE_LIMIT_MAX_REQUESTS", 10)
+    if session is None:
+        return (window_default, max_default)
     return (
-        _env_int("RECOVERY_REQUEST_RATE_LIMIT_WINDOW_SECONDS", 60),
-        _env_int("RECOVERY_REQUEST_RATE_LIMIT_MAX_REQUESTS", 10),
+        otp_service.read_int_parameter(session, _PARAM_REQUEST_WINDOW_KEY, window_default),
+        otp_service.read_int_parameter(session, _PARAM_REQUEST_MAX_KEY, max_default),
     )
 
 
-def recovery_verify_rate_limit_cfg() -> tuple[int, int]:
-    """`(ventana_s, maximo)` de `POST /auth/recovery/verify`.
+def recovery_verify_rate_limit_cfg(session: Session | None = None) -> tuple[int, int]:
+    """`(ventana_s, maximo)` de `POST /auth/recovery/verify` (y `/auth/pin-reset`).
 
-    Candidatos a `config.parameters` (`auth.recovery_verify_window_seconds`,
-    `auth.recovery_verify_max_requests`).
+    E1-T34/SCR-005 (regla de oro 6): `config.parameters`
+    (`auth.recovery_verify_window_seconds`,
+    `auth.recovery_verify_max_requests`) con fallback al entorno
+    (`RECOVERY_VERIFY_RATE_LIMIT_*`) y luego a `(60, 10)`.
     """
+    window_default = _env_int("RECOVERY_VERIFY_RATE_LIMIT_WINDOW_SECONDS", 60)
+    max_default = _env_int("RECOVERY_VERIFY_RATE_LIMIT_MAX_REQUESTS", 10)
+    if session is None:
+        return (window_default, max_default)
     return (
-        _env_int("RECOVERY_VERIFY_RATE_LIMIT_WINDOW_SECONDS", 60),
-        _env_int("RECOVERY_VERIFY_RATE_LIMIT_MAX_REQUESTS", 10),
+        otp_service.read_int_parameter(session, _PARAM_VERIFY_WINDOW_KEY, window_default),
+        otp_service.read_int_parameter(session, _PARAM_VERIFY_MAX_KEY, max_default),
+    )
+
+
+def check_pin_reset_rate_limit(email: str, ip: str | None, session: Session | None = None) -> None:
+    """Rate-limit de `POST /auth/pin-reset` por `email+IP` (E1-T34).
+
+    Reutiliza la ventana de verify (`auth.recovery_verify_*`): E1-T34 no
+    crea claves propias para `/pin-reset` (solo las 8 de su tabla). Se
+    verifica ANTES de la existencia (anti-enumeracion, mismo patron que
+    `recovery`). Excederla lanza `RecoveryRateLimitedError` (-> 429).
+    """
+    _check_rate_limit(
+        _build_recovery_rate_key("pin_reset", email, ip),
+        recovery_verify_rate_limit_cfg(session),
     )
 
 
@@ -252,37 +291,6 @@ def _audit_recovery_event(
         logger.warning("recovery audit no registrado error=%s", type(exc).__name__)
 
 
-def _emit_login_succeeded(
-    session: Session, *, user_id: uuid.UUID, session_id: uuid.UUID, device_id: str | None
-) -> None:
-    """Enlista `auth.login_succeeded` via outbox (best-effort, no bloquea).
-
-    Mismo evento y mecanismo que `pin_login`/`device_login` (regla de oro 8,
-    import perezoso): si el outbox fallara se loguea y la recuperacion igual
-    se retorna, la sesion ya quedo persistida con `flush`.
-    """
-    try:
-        from app.core.outbox import record as outbox_record
-    except ImportError:  # pragma: no cover - el modulo existe en el repo
-        logger.warning("recovery outbox no disponible: evento no enlistado")
-        return
-    try:
-        outbox_record(
-            session,
-            aggregate_type=device_login_service.USER_AGGREGATE_TYPE,
-            aggregate_id=user_id,
-            event_type=device_login_service.LOGIN_SUCCEEDED_EVENT,
-            payload={
-                "user_id": str(user_id),
-                "session_id": str(session_id),
-                "device_id": device_id,
-            },
-        )
-        session.flush()
-    except Exception as exc:  # noqa: BLE001 - best-effort documentado
-        logger.warning("recovery evento no enlistado error=%s", type(exc).__name__)
-
-
 def _notify_recovery_code(
     session: Session,
     *,
@@ -334,8 +342,8 @@ def _bind_device_best_effort(
     `identity_repo.get_binding` / `touch_binding` / `register_binding`;
     `platform`/`biometric_type` invalidos se ignoran): solo actua si llegan
     `device_id` y `device_public_key`. Todo va en un savepoint
-    (`begin_nested`): un fallo de persistencia se revierte SOLO aqui y la
-    sesion/los tokens sobreviven (best-effort).
+    (`begin_nested`): un fallo de persistencia se revierte SOLO aqui y el
+    verify igual se retorna (best-effort).
 
     Retorna `"registered"`, `"touched"`, `"failed"` o `None` si no habia
     intento (sin `device_id`/`device_public_key`).
@@ -399,7 +407,7 @@ def request_recovery(
     normalized = normalize_email(email)
     _check_rate_limit(
         _build_recovery_rate_key("request", normalized, ip),
-        recovery_request_rate_limit_cfg(),
+        recovery_request_rate_limit_cfg(session),
     )
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
 
@@ -483,25 +491,27 @@ def verify_recovery(
     device_public_key: str | None = None,
     platform: str | None = None,
     biometric_type: str | None = None,
-    device_info: dict | None = None,
     ip: str | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """Valida el OTP y abre sesion (`flush`, sin `commit`).
+    """Valida el OTP sin abrir sesion (`flush`, sin `commit`).
 
     El rate-limit se verifica ANTES de la existencia (misma respuesta para
     todos). La elegibilidad (`ACTIVE`) se verifica ANTES de consumir el OTP:
     un usuario no elegible responde 401 generico sin quemar el codigo (orden
-    anti-oraculo documentado). En el exito, en la MISMA transaccion: sesion
-    (`sessions`) + tokens, `auth.login_succeeded` via outbox,
-    `access_recovery` (`method='OTP'`, `new_credential_set=false`) y binding
-    del dispositivo nuevo best-effort (`device_bound` solo `True` si se
-    REGISTRO un binding nuevo; `touched`/fallo/ausencia -> `False`).
+    anti-oraculo documentado). En el exito, en la MISMA transaccion: consumo
+    del OTP (un solo uso), `access_recovery` (`method='OTP'`,
+    `new_credential_set=false`) y binding del dispositivo nuevo best-effort
+    (`device_bound` solo `True` si se REGISTRO un binding nuevo;
+    `touched`/fallo/ausencia -> `False`). NO crea `sessions`, NO emite
+    tokens y NO enlista `auth.login_succeeded` (SCR-005, E1-T33): la unica
+    sesion la abre `POST /auth/login/pin`. Retorna `{user_ref, device_bound}`
+    (`user_ref = str(user.id)`).
     """
     normalized = normalize_email(email)
     _check_rate_limit(
         _build_recovery_rate_key("verify", normalized, ip),
-        recovery_verify_rate_limit_cfg(),
+        recovery_verify_rate_limit_cfg(session),
     )
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
 
@@ -534,18 +544,6 @@ def verify_recovery(
         logger.info("recovery verify result=%s", "invalid")
         raise RecoveryInvalidError(INVALID_MESSAGE) from exc
 
-    refresh = secrets.token_urlsafe(32)
-    row = identity_repo.create_session(
-        session,
-        user.id,
-        identity_repo.hash_refresh_token(refresh),
-        moment + timedelta(seconds=device_login_service.REFRESH_TTL_SECONDS),
-        device_id=device_id,
-        device_info=device_info,
-        ip=ip,
-    )
-    access_token = create_access_token(subject=str(user.id))
-    _emit_login_succeeded(session, user_id=user.id, session_id=row.id, device_id=device_id)
     recovery_repo.record_access_recovery(
         session,
         user.id,
@@ -574,17 +572,7 @@ def verify_recovery(
         result="ok",
     )
     logger.info("recovery verify result=%s", "ok")
-    try:
-        aware_exp = _as_aware(row.expires_at)
-        refresh_in = max(0, int((aware_exp - moment).total_seconds()))
-    except (AttributeError, TypeError):
-        refresh_in = device_login_service.REFRESH_TTL_SECONDS
     return {
-        "access_token": access_token,
-        "refresh_token": refresh,
-        "token_type": "Bearer",
-        "session_id": str(row.id),
-        "expires_in": refresh_in,
         "user_ref": str(user.id),
         "device_bound": binding_result == "registered",
     }
@@ -601,6 +589,7 @@ __all__ = [
     "RECOVERY_PURPOSE",
     "RecoveryInvalidError",
     "RecoveryRateLimitedError",
+    "check_pin_reset_rate_limit",
     "normalize_email",
     "recovery_request_rate_limit_cfg",
     "recovery_verify_rate_limit_cfg",

@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:banca_online/core/errors/api_exception.dart';
 import 'package:banca_online/features/accounts/data/accounts_service.dart';
 import 'package:banca_online/features/accounts/models/account.dart';
 import 'package:banca_online/features/accounts/presentation/account_detail_page.dart';
@@ -198,4 +201,259 @@ void main() {
       findsOneWidget,
     );
   });
+
+  group('estados obligatorios docs/20 §7 (F-T41)', () {
+    testWidgets('dashboard cubre cargando', (tester) async {
+      final hanging = _HangingFake();
+      await tester.pumpWidget(
+        _harness(DashboardPage(service: hanging)),
+      );
+      await tester.pump();
+
+      expect(find.text('Cargando cuentas...'), findsOneWidget);
+      addTearDown(hanging.dispose);
+    });
+
+    testWidgets('dashboard cubre vacio', (tester) async {
+      await tester.pumpWidget(
+        _harness(DashboardPage(service: _EmptyFake())),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Aun no tienes cuentas.'), findsOneWidget);
+      expect(find.text('AHORRO ****1234'), findsNothing);
+    });
+
+    testWidgets('dashboard cubre error con reintento', (tester) async {
+      final flaky = _FlakyAccountsFake();
+      await tester.pumpWidget(_harness(DashboardPage(service: flaky)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Sin conexion. Reintenta.'), findsOneWidget);
+      await tester.tap(find.text('Reintentar'));
+      await tester.pumpAndSettle();
+
+      expect(flaky.calls, 2);
+      expect(find.text('AHORRO ****1234'), findsOneWidget);
+    });
+
+    testWidgets('dashboard sin servicio muestra error accionable',
+        (tester) async {
+      await tester.pumpWidget(_harness(const DashboardPage()));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Servicio de cuentas no configurado.'),
+        findsOneWidget,
+      );
+      expect(find.text('Reintentar'), findsOneWidget);
+    });
+
+    testWidgets('detalle cubre error con reintento', (tester) async {
+      final flaky = _FlakyDetailFake(FakeAccountsService());
+      await tester.pumpWidget(
+        _harness(AccountDetailPage(accountId: 'a1', service: flaky)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Detalle no disponible. Reintenta.'), findsOneWidget);
+      await tester.tap(find.text('Reintentar'));
+      await tester.pumpAndSettle();
+
+      expect(flaky.calls, 2);
+      expect(find.text('AHORRO ****1234'), findsOneWidget);
+    });
+
+    testWidgets('detalle cubre movimientos vacios', (tester) async {
+      await tester.pumpWidget(
+        _harness(AccountDetailPage(accountId: 'a1', service: _NoMovesFake())),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('AHORRO ****1234'), findsOneWidget);
+      expect(
+        find.text('No hay movimientos para los filtros elegidos.'),
+        findsOneWidget,
+      );
+    });
+  });
+}
+
+/// Fake colgado (el futuro nunca completa salvo dispose del test).
+class _HangingFake implements AccountsServiceBase {
+  final _completer = Completer<List<Account>>();
+  var disposed = false;
+
+  void dispose() {
+    if (!disposed) {
+      disposed = true;
+      _completer.complete(const <Account>[]);
+    }
+  }
+
+  @override
+  Future<List<Account>> getAccounts() => _completer.future;
+
+  @override
+  Future<Account> getAccountDetail(String accountId) =>
+      _completer.future.then((_) => FakeAccountsService.detail);
+
+  @override
+  Future<MovementsPage> getMovements(
+    String accountId, {
+    int page = 1,
+    int pageSize = 20,
+    MovementFilters filters = const MovementFilters(),
+  }) =>
+      _completer.future.then(
+        (_) => const MovementsPage(items: [], page: 1, pageSize: 20, total: 0),
+      );
+
+  @override
+  Future<ExportResult> exportMovements(
+    String accountId, {
+    required String format,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+  }) =>
+      throw UnimplementedError();
+}
+
+class _EmptyFake implements AccountsServiceBase {
+  final _delegate = FakeAccountsService();
+
+  @override
+  Future<List<Account>> getAccounts() async => const [];
+
+  @override
+  Future<Account> getAccountDetail(String accountId) =>
+      _delegate.getAccountDetail(accountId);
+
+  @override
+  Future<MovementsPage> getMovements(
+    String accountId, {
+    int page = 1,
+    int pageSize = 20,
+    MovementFilters filters = const MovementFilters(),
+  }) =>
+      _delegate.getMovements(
+        accountId,
+        page: page,
+        pageSize: pageSize,
+        filters: filters,
+      );
+
+  @override
+  Future<ExportResult> exportMovements(
+    String accountId, {
+    required String format,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+  }) =>
+      _delegate.exportMovements(
+        accountId,
+        format: format,
+        dateFrom: dateFrom,
+        dateTo: dateTo,
+      );
+}
+
+/// Falla la primera carga del dashboard y responde al reintentar.
+class _FlakyAccountsFake extends FakeAccountsService {
+  var calls = 0;
+
+  @override
+  Future<List<Account>> getAccounts() async {
+    calls++;
+    if (calls == 1) {
+      throw ApiException(code: 'NETWORK_ERROR', message: 'Sin conexion. Reintenta.');
+    }
+    return FakeAccountsService.accounts;
+  }
+}
+
+/// Falla el primer detalle y responde al reintentar.
+class _FlakyDetailFake implements AccountsServiceBase {
+  _FlakyDetailFake(this._delegate);
+
+  final FakeAccountsService _delegate;
+  var calls = 0;
+
+  @override
+  Future<List<Account>> getAccounts() => _delegate.getAccounts();
+
+  @override
+  Future<Account> getAccountDetail(String accountId) async {
+    calls++;
+    if (calls == 1) {
+      throw ApiException(
+        code: 'NETWORK_ERROR',
+        message: 'Detalle no disponible. Reintenta.',
+      );
+    }
+    return _delegate.getAccountDetail(accountId);
+  }
+
+  @override
+  Future<MovementsPage> getMovements(
+    String accountId, {
+    int page = 1,
+    int pageSize = 20,
+    MovementFilters filters = const MovementFilters(),
+  }) =>
+      _delegate.getMovements(
+        accountId,
+        page: page,
+        pageSize: pageSize,
+        filters: filters,
+      );
+
+  @override
+  Future<ExportResult> exportMovements(
+    String accountId, {
+    required String format,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+  }) =>
+      _delegate.exportMovements(
+        accountId,
+        format: format,
+        dateFrom: dateFrom,
+        dateTo: dateTo,
+      );
+}
+
+/// Detalle OK pero sin movimientos (estado vacio de la lista).
+class _NoMovesFake implements AccountsServiceBase {
+  final _delegate = FakeAccountsService();
+
+  @override
+  Future<List<Account>> getAccounts() => _delegate.getAccounts();
+
+  @override
+  Future<Account> getAccountDetail(String accountId) =>
+      _delegate.getAccountDetail(accountId);
+
+  @override
+  Future<MovementsPage> getMovements(
+    String accountId, {
+    int page = 1,
+    int pageSize = 20,
+    MovementFilters filters = const MovementFilters(),
+  }) async =>
+      MovementsPage(items: const [], page: 1, pageSize: pageSize, total: 0);
+
+  @override
+  Future<ExportResult> exportMovements(
+    String accountId, {
+    required String format,
+    required DateTime dateFrom,
+    required DateTime dateTo,
+  }) =>
+      _delegate.exportMovements(
+        accountId,
+        format: format,
+        dateFrom: dateFrom,
+        dateTo: dateTo,
+      );
 }

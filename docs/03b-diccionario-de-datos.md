@@ -137,7 +137,7 @@
 | first_name | VARCHAR(100) | No | - | | - |
 | last_name | VARCHAR(100) | No | - | | - |
 | birth_date | DATE | Si | - | | - |
-| email | CITEXT | Si | - | UQ | - |
+| email | CITEXT | No | - | UQ | - |
 | phone | VARCHAR(20) | Si | - | IDX | - |
 | status | VARCHAR(20) | No | 'PENDING_ACTIVATION' | IDX, CK | `user_status`. |
 | kyc_status | VARCHAR(20) | No | 'PENDING' | IDX | `kyc_status`. |

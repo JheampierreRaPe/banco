@@ -14,10 +14,10 @@ de reenvios del ciclo) y notifica best-effort via la fachada
 `notifications.send` (import perezoso, mismo patron que E1-T03/E1-T08: un
 fallo de envio se loguea sin PII ni codigo y NO revierte el reenvio).
 
-Routing de entrega (E1-T26): el OTP de activacion viaja por **correo**
-(`users.email`, canal `email`/plantilla `otp_code_email`); si no hay email,
-cae a **SMS** (`users.phone`, canal `sms`/plantilla `otp_code`); el
-`otp_codes.destination` persistido guarda el destino efectivo resuelto.
+Routing de entrega (E1-T26, endurecido a email-only en E1-T32/SCR-005):
+el OTP de activacion viaja **solo por correo** (`users.email`, canal `email`/
+plantilla `otp_code_email`); sin email no hay entrega (nunca SMS). El
+`otp_codes.destination` persistido guarda el email efectivo resuelto.
 
 Reglas transversales:
 
@@ -56,7 +56,8 @@ logger = logging.getLogger(__name__)
 #: Proposito OTP de este flujo (el unico que activa cuentas).
 ACTIVATION_PURPOSE = "ACTIVATION"
 
-#: Canales del routing de entrega (E1-T26).
+#: Canales del routing de entrega (E1-T26; desde E1-T32 solo `email` resuelve:
+#: `SMS_CHANNEL` se conserva por compatibilidad pero nunca se usa).
 EMAIL_CHANNEL = "email"
 SMS_CHANNEL = "sms"
 
@@ -64,11 +65,12 @@ SMS_CHANNEL = "sms"
 #: `{code, ttl_minutes}` segun `notifications.domain.templates`).
 OTP_EMAIL_TEMPLATE_CODE = "otp_code_email"
 
-#: Plantilla SMS del codigo (fallback, `{code, ttl_minutes}`).
+#: Plantilla SMS del codigo (legacy E1-T10/E1-T26, sin uso desde E1-T32:
+#: el routing es email-only; se conserva por compatibilidad de imports).
 OTP_TEMPLATE_CODE = "otp_code"
 
-#: Canal preferido del reenvio (E1-T26: el OTP viaja por correo; SMS es
-#: el fallback cuando no hay `users.email`).
+#: Canal preferido del reenvio (desde E1-T32: siempre email; el SMS dejo de
+#: ser fallback).
 DEFAULT_RESEND_CHANNEL = EMAIL_CHANNEL
 
 #: Mensajes genericos estables (identicos exista o no el usuario).
@@ -184,32 +186,25 @@ def resolve_activation_delivery(
     destination: str | None = None,
     channel: str | None = None,
 ) -> tuple[str, str, str] | None:
-    """Resuelve `(canal, plantilla, destinatario)` del OTP (E1-T26).
+    """Resuelve `(canal, plantilla, destinatario)` del OTP (E1-T26, email-only E1-T32).
 
-    Destino efectivo email -> sms: `users.email` viaja por `email` con la
-    plantilla `otp_code_email`; si no hay email, `users.phone` por `sms` con
-    `otp_code`. `channel` explicito fuerza el canal (toma `destination` si
-    llega, si no el dato del usuario). Sin destino resoluble retorna `None`
-    (best-effort: se omite la entrega sin abortar el alta/reenvio).
+    Semantica SCR-005: solo email. Con `email` -> `(email, otp_code_email,
+    email)`; sin email -> `None` (no se emite entrega, nunca SMS). Los
+    parametros `phone` y `channel='sms'` se aceptan por compatibilidad pero
+    se **ignoran de forma explicita** (no lanzan error y jamas producen SMS).
+    Un `destination` explicito con formato email se admite como destinatario
+    de correo; cualquier otro destino no email se ignora (-> `None`).
+    Sin destino resoluble retorna `None` (best-effort: se omite la entrega
+    sin abortar el alta/reenvio).
     """
     explicit = (destination or "").strip()
-    preferred = (channel or "").strip().lower()
+    # `channel`/`phone` se aceptan por compatibilidad pero se ignoran
+    # (E1-T32: nunca SMS; no se lanza error por recibirlos).
     mail = (email or "").strip()
-    tel = (phone or "").strip()
-    if preferred == EMAIL_CHANNEL:
-        recipient = explicit or mail
-        return (EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, recipient) if recipient else None
-    if preferred == SMS_CHANNEL:
-        recipient = explicit or tel
-        return (SMS_CHANNEL, OTP_TEMPLATE_CODE, recipient) if recipient else None
     if mail:
         return EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, mail
-    if tel:
-        return SMS_CHANNEL, OTP_TEMPLATE_CODE, tel
-    if explicit:
-        if "@" in explicit:
-            return EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, explicit
-        return SMS_CHANNEL, OTP_TEMPLATE_CODE, explicit
+    if "@" in explicit:
+        return EMAIL_CHANNEL, OTP_EMAIL_TEMPLATE_CODE, explicit
     return None
 
 

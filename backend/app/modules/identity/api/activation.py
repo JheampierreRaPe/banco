@@ -2,9 +2,12 @@
 
 `POST /auth/activate {user_ref, code}` -> valida el OTP `ACTIVATION` y deja
 `users.status = ACTIVE` en la misma sesion; `user.activated` ya lo encolo
-`otp_service.validate_otp` via outbox (no se duplica).
+`otp_service.validate_otp` via outbox (no se duplica). **DEPRECADO pero vivo**
+(E1-T32/SCR-005): responde cabecera `Deprecation: true` y OpenAPI
+`deprecated=true`; la via canonica es `POST /auth/pin/setup`.
 `POST /auth/otp/resend {user_ref[, channel]}` -> codigo nuevo que invalida
-el anterior + notificacion best-effort via la fachada `notifications.send`.
+el anterior + notificacion best-effort via la fachada `notifications.send`
+(solo email desde E1-T32).
 
 Montados bajo `/api/v1` por `app.main` via `iter_routers` (este `router` lo
 recoge `api/__init__.py`; sin registro extra). Sin logica en el router
@@ -36,11 +39,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.errors import AppError
+from app.core.errors import AppError, error_payload
 from app.modules.identity.schemas.activation import (
     ActivateRequest,
     ActivateResponse,
@@ -51,6 +55,9 @@ from app.modules.identity.service import activation as activation_service
 
 router = APIRouter(tags=["identity"])
 
+#: Cabecera de deprecacion (docs/05#10) para `POST /auth/activate` (E1-T32).
+DEPRECATION_HEADER = {"Deprecation": "true"}
+
 
 def _request_id(request: Request) -> str:
     return request.headers.get("x-request-id") or uuid.uuid4().hex
@@ -59,25 +66,43 @@ def _request_id(request: Request) -> str:
 @router.post(
     "/auth/activate",
     response_model=ActivateResponse,
-    summary="Valida OTP y activa la cuenta",
+    summary="Valida OTP y activa la cuenta (deprecado: usar POST /auth/pin/setup)",
+    deprecated=True,
 )
 def activate_account(
-    body: ActivateRequest, request: Request, db: Session = Depends(get_db)
-) -> dict:
-    """Activa la cuenta con el OTP de un solo uso (HU02 CA-02/CA-03)."""
+    body: ActivateRequest, request: Request, response: Response, db: Session = Depends(get_db)
+) -> dict | JSONResponse:
+    """Activa la cuenta con el OTP de un solo uso (HU02 CA-02/CA-03).
+
+    Endpoint deprecado pero vivo (E1-T32/SCR-005): mismo request/response y
+    mismos errores; solo anade la cabecera `Deprecation` (tambien en errores
+    de negocio, que se responden directo para conservar la cabecera) y el
+    flag OpenAPI `deprecated`.
+    """
+    response.headers["Deprecation"] = "true"
+
+    def _deprecated_error(exc: AppError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_payload(
+                exc.code, exc.message, exc.details, request.headers.get("x-request-id")
+            ),
+            headers=DEPRECATION_HEADER,
+        )
+
     try:
         result = activation_service.activate_account(db, user_ref=body.user_ref, code=body.code)
     except activation_service.ActivationExpiredError as exc:
         db.rollback()
-        raise AppError(code="EXPIRED_OTP", message=str(exc), status_code=400) from exc
+        return _deprecated_error(AppError(code="EXPIRED_OTP", message=str(exc), status_code=400))
     except activation_service.ActivationInvalidError as exc:
         db.rollback()
-        raise AppError(code="INVALID_OTP", message=str(exc), status_code=400) from exc
+        return _deprecated_error(AppError(code="INVALID_OTP", message=str(exc), status_code=400))
     except activation_service.ActivationPinRequiredError as exc:
         # OTP valido pero sin PIN: se revierte (no se consume el OTP) y se
         # indica el flujo canonico sin filtrar existencia (solo con codigo).
         db.rollback()
-        raise AppError(code="PIN_REQUIRED", message=str(exc), status_code=409) from exc
+        return _deprecated_error(AppError(code="PIN_REQUIRED", message=str(exc), status_code=409))
     db.commit()
     return {"data": result, "meta": {"request_id": _request_id(request)}}
 

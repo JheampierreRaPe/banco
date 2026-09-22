@@ -114,4 +114,47 @@ void main() {
     expect(store.userRef, isNull);
     expect(store.deviceId, isNull);
   });
+
+  test('SecureSessionIdentityStore notifica en saveUserRef (Listenable)',
+      () async {
+    final store =
+        SecureSessionIdentityStore(storage: InMemorySecureStorage());
+    addTearDown(store.dispose);
+    var notified = 0;
+    store.addListener(() => notified++);
+
+    await store.saveUserRef('user-1');
+
+    expect(store.userRef, 'user-1');
+    expect(notified, greaterThan(0));
+  });
+
+  test('SecureSessionIdentityStore notifica en load (hidratacion)', () async {
+    final storage = InMemorySecureStorage();
+    final writer = SecureSessionIdentityStore(storage: storage);
+    await writer.saveUserRef('user-1');
+
+    final store = SecureSessionIdentityStore(storage: storage);
+    addTearDown(store.dispose);
+    var notified = 0;
+    store.addListener(() => notified++);
+
+    await store.load();
+
+    expect(store.userRef, 'user-1');
+    expect(notified, greaterThan(0));
+  });
+
+  test('InMemorySessionIdentityStore notifica en saveUserRef (Listenable)',
+      () async {
+    final store = InMemorySessionIdentityStore();
+    addTearDown(store.dispose);
+    var notified = 0;
+    store.addListener(() => notified++);
+
+    await store.saveUserRef('u-1');
+
+    expect(store.userRef, 'u-1');
+    expect(notified, greaterThan(0));
+  });
 }

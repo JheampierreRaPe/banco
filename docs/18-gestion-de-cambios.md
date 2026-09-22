@@ -43,6 +43,24 @@ Resumen: **lo que no bloquea -> backlog; lo que invalida lo que se esta construy
 | SCR-002 | 2026-09-12 | Guia de diseno UI y tokens para los dos frontends | Definir como especificar el diseno (tokens + mockups; sin CSS para Flutter) | Tecnico / Documentacion | `docs/20`, `docs/design/`, briefs UI | entra ahora | Sprint 1 | hecho |
 | SCR-003 | 2026-09-16 | Integrar el design system "Eucalipto y Ocre" (YAML) en la documentacion y definir `success`/`warning` | Fijar la paleta para que el frontend de prueba se construya con esos estilos | Diseno / Documentacion | `docs/20`, `docs/design/mockups.md`, briefs UI | entra ahora | Sprint 1 | hecho |
 | SCR-004 | 2026-09-20 | Version visible de la app en entry, login y crear cuenta, con fuente unica y esquema de versionado documentado | Confirmar que build esta instalado en el movil y fijar el esquema acordado | Ajuste / Documentacion | `13`, `18`, `README`, brief `F-T30`, `frontend` | entra ahora | Sprint 1 | en curso |
+| SCR-005 | 2026-09-21 | Regeneracion total de la UI Flutter con el diseno canonico "Eucalipto y Ocre" (`pantallas.fig`) + ajustes de identidad en backend | Unificar la app al diseno oficial, fusionar onboarding y simplificar el flujo de sesion por `user_ref` | Nueva funcionalidad / Ajuste | Fases 1-6 (rama `refactorizacion-ui`); briefs `F-T34`..`F-T42`, `E1-T32`..`E1-T34`, `Q-T11` | entra ahora | Sprint 1 | en curso |
+
+> **SCR-005 - decisiones del dueno (2026-09-21, rama `refactorizacion-ui`):**
+> 1. Diseno canonico = `pantallas.fig` (Eucalipto y Ocre) + tokens de `docs/20`. Las
+>    pantallas SIN pagina en el `.fig` (recovery, pin-reset, activation, home/dashboard)
+>    se **disenan primero** en el `.fig` antes de implementarlas.
+> 2. Backend: `recovery.verify` deja de abrir sesion y devuelve `{user_ref, device_bound}`;
+>    la unica sesion la abre `POST /auth/login/pin`. OTP queda **solo email** (se quita
+>    el fallback SMS) y `POST /auth/activate` se **deprecia pero se mantiene vivo**
+>    (header `Deprecation` + OpenAPI `deprecated`).
+> 3. Extras backend incluidos: endpoints `/pin-reset` (email+DNI+OTP), migracion para
+>    `users.email` NOT NULL, y mover constantes (lockout, espera de reenvio, intentos de
+>    OTP, rate-limit de recovery) a `config.parameters`.
+> 4. Alcance de la rama: **bloque identidad/onboarding primero** (splash -> onboarding ->
+>    registro -> sesion -> home). Cuentas/creditos/divisas quedan para una fase posterior.
+> 5. El flag local `welcome.hasSeenWelcome` se elimina; el guard del router depende solo de
+>    `SessionIdentityStore.userRef` (+ sesion activa). `SessionIdentityStore` pasa a
+>    `Listenable`.
 
 Plantilla para agregar una fila:
 

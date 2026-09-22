@@ -8,6 +8,12 @@ construye una pantalla sabe que imagen seguir, sin que se lo expliquen.
 | Archivo | Pantalla | HU | Brief | Estado |
 |---|---|---|---|---|
 | `figma-sprint1-creacionCuenta.txt` (link Figma) | Onboarding / creacion de cuenta | HU01, HU02 | `E1-T05`, `E1-T11` | pendiente |
+| `recovery-email.png` | Recovery: pantalla de email (pagina `recovery (email)`, nodo `0:996`) | HU03 | `F-T42` | hecho |
+| `recovery-otp.png` | Recovery: pantalla de OTP (pagina `recovery (otp)`, nodo `0:1027`) | HU03 | `F-T42` | hecho |
+| `pin-reset.png` | Restablecer PIN email+DNI+OTP (pagina `pin-reset`, nodo `0:1062`) | HU03 | `F-T42` | hecho |
+| `activation.png` | Activacion de cuenta (pagina `activation`, nodo `0:1106`) | HU03 | `F-T42` | hecho |
+| `home-dashboard.png` | Home / dashboard de cuentas (pagina `home (dashboard)`, nodo `0:1147`) | HU04 | `F-T42` | hecho |
+| (design system, sin imagen) | Tokens "Eucalipto y Ocre" (`docs/20` §3-§6) | transversal | `F-T34` | hecho |
 | | | | | |
 
 ## Como agregar un mockup

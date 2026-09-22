@@ -18,6 +18,11 @@ Desviacion documentada de `03b#4.1`: `email` se define como `VARCHAR(320)`
 en vez de `CITEXT` porque el repo aun no habilita la extension `citext`
 de Postgres (sin precedente en `migrations/`). Unicidad (UQ) y nulabilidad
 se mantienen; la comparacion case-insensitive queda para E1-T14 (auth).
+
+E1-T34/SCR-005: `email` pasa a **NOT NULL** (migracion
+`0018_users_email_not_null`; coherente con "OTP solo email": sin
+email no hay activacion ni recuperacion). Todo usuario nace con email
+(el KYC lo exige); `phone` sigue nulable.
 """
 
 from __future__ import annotations
@@ -77,7 +82,7 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     birth_date: Mapped[date | None] = mapped_column(sa.Date(), nullable=True)
-    email: Mapped[str | None] = mapped_column(sa.String(320), nullable=True)
+    email: Mapped[str] = mapped_column(sa.String(320), nullable=False)
     phone: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     status: Mapped[str] = mapped_column(
         sa.String(20),

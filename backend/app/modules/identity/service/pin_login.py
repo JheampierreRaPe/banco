@@ -52,11 +52,15 @@ DECISION CRIPTOGRAFICA (documentada, verificada en el `.venv`):
   autodetecta por prefijo; formatos desconocidos -> `False` generico).
 
 REGLAS CONFIGURABLES (regla de oro 6): `MAX_FAILED_ATTEMPTS = 5` y
-`LOCKOUT_SECONDS = 900` (15 min) son candidatas a `config.parameters`
-(`auth.max_failed_attempts`, `auth.lockout_seconds`, claves ya previstas en
-`docs/03b#config.parameters`); aun no existe infraestructura de parametros
-en el repo (mismo patron que `device_login.REFRESH_TTL_SECONDS` y
-`domain/nonce.py`: constante documentada + misma clave).
+`LOCKOUT_SECONDS = 900` (15 min) se leen de `config.parameters`
+(`auth.max_failed_attempts`, `auth.lockout_seconds`, claves previstas en
+`docs/03b#config.parameters` y sembradas por las migraciones `0001`/`0019`)
+con lectura best-effort (`_resolve_max_attempts`/`_resolve_lockout_seconds`:
+SQL directo a `config.parameters` en SAVEPOINT via
+`otp_service.read_int_parameter`, fallback a la constante; se lee el global
+en cada llamada para que los tests puedan fijarlo). Sin acceso o valor
+invalido rigen las constantes (comportamiento identico); nunca se rompe la
+transaccion del llamante.
 
 NO FILTRACION (decisiones):
 
@@ -94,13 +98,19 @@ from app.modules.identity.service import device_login as device_login_service
 
 logger = logging.getLogger(__name__)
 
-#: Fallos consecutivos que disparan el bloqueo (candidato a
-#: `config.parameters: auth.max_failed_attempts`, ya previsto en `03b`).
+#: Fallos consecutivos que disparan el bloqueo (`config.parameters`:
+#: `auth.max_failed_attempts`, semilla `5`; sin acceso rige esta constante).
 MAX_FAILED_ATTEMPTS = 5
 
-#: Duracion del bloqueo temporal en segundos (candidato a
-#: `config.parameters: auth.lockout_seconds`).
+#: Duracion del bloqueo temporal en segundos (`config.parameters`:
+#: `auth.lockout_seconds`, semilla `900`; sin acceso rige esta constante).
 LOCKOUT_SECONDS = 900
+
+#: Clave del umbral de intentos en `config.parameters` (E1-T34/SCR-005).
+_PARAM_MAX_ATTEMPTS_KEY = "auth.max_failed_attempts"
+
+#: Clave de la duracion del bloqueo en `config.parameters` (E1-T34/SCR-005).
+_PARAM_LOCKOUT_SECONDS_KEY = "auth.lockout_seconds"
 
 #: Iteraciones PBKDF2-HMAC-SHA256 para el hash del PIN.
 PBKDF2_ITERATIONS = 210_000
@@ -154,6 +164,31 @@ def _coerce_user_id(user_ref: object) -> uuid.UUID | None:
         return uuid.UUID(str(user_ref).strip())
     except (ValueError, AttributeError, TypeError):
         return None
+
+
+def _resolve_max_attempts(session: Session) -> int:
+    """Umbral de intentos: `auth.max_failed_attempts` > `MAX_FAILED_ATTEMPTS`.
+
+    E1-T34/SCR-005 (regla de oro 6): lectura best-effort via
+    `otp_service.read_int_parameter` (import perezoso: este modulo no puede
+    importar `otp_service` a nivel top por el contrato de `test_pin_login`).
+    Sin acceso o valor invalido rige la constante; se lee el global en cada
+    llamada para que los tests puedan fijarlo (`monkeypatch`).
+    """
+    from app.modules.identity.service import otp_service as _otp_service
+
+    return _otp_service.read_int_parameter(session, _PARAM_MAX_ATTEMPTS_KEY, MAX_FAILED_ATTEMPTS)
+
+
+def _resolve_lockout_seconds(session: Session) -> int:
+    """Duracion del bloqueo: `auth.lockout_seconds` > `LOCKOUT_SECONDS`.
+
+    E1-T34/SCR-005 (regla de oro 6): misma lectura best-effort que
+    `_resolve_max_attempts`; sin acceso o valor invalido rige la constante.
+    """
+    from app.modules.identity.service import otp_service as _otp_service
+
+    return _otp_service.read_int_parameter(session, _PARAM_LOCKOUT_SECONDS_KEY, LOCKOUT_SECONDS)
 
 
 def hash_pin(pin: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -543,8 +578,8 @@ def login_with_pin(
 
     attempts = int(credential.failed_attempts or 0) + 1
     credential.failed_attempts = attempts
-    if attempts >= MAX_FAILED_ATTEMPTS:
-        credential.locked_until = moment + timedelta(seconds=LOCKOUT_SECONDS)
+    if attempts >= _resolve_max_attempts(session):
+        credential.locked_until = moment + timedelta(seconds=_resolve_lockout_seconds(session))
         session.flush()
         recipient = None
         if user is not None:

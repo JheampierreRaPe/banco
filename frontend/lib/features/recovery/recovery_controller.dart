@@ -4,8 +4,10 @@
 //   lógica de negocio), llama a `request` y expone el mensaje NEUTRO único.
 // - [RecoveryOtpController]: código de 6 dígitos, cuenta atrás de vigencia,
 //   reenvío con cooldown y `verify` con binding del dispositivo nuevo. Al
-//   éxito guarda tokens (`SessionRepository`, F-T02) y `user_ref`
-//   (`SessionIdentityStore`, F-T20, best-effort).
+//   éxito guarda el `user_ref` devuelto (`SessionIdentityStore`, F-T20,
+//   best-effort) y expone [RecoveryOtpController.verifiedUserRef] para que la
+//   página navegue a `/login?userRef=` (E1-T33/SCR-005: verify YA NO abre
+//   sesión; la única sesión la abre `POST /auth/login/pin`).
 //
 // Anti-oráculo: el MISMO mensaje y la MISMA navegación exista o no el email;
 // `401 INVALID_RECOVERY_CODE` es el ÚNICO error de código (cubre incorrecto,
@@ -126,10 +128,13 @@ class RecoveryEmailController extends ChangeNotifier {
 /// Estados visibles de la pantalla de OTP.
 enum RecoveryOtpStatus { idle, submitting, success, error }
 
-/// Pantalla `/recovery/otp`: ingresa el código y abre sesión.
+/// Pantalla `/recovery/otp`: ingresa el código y continúa al login.
 ///
 /// Los contadores avanzan con [tick] (1 s). La página usa [startAutoTick]
 /// (Timer real); los tests llaman a [tick] manualmente (determinista).
+///
+/// E1-T33/SCR-005: el éxito de `verify` NO abre sesión; persiste el
+/// `user_ref` devuelto y la página navega a `/login?userRef=<user_ref>`.
 class RecoveryOtpController extends ChangeNotifier {
   RecoveryOtpController({
     required RecoveryService service,
@@ -192,8 +197,15 @@ class RecoveryOtpController extends ChangeNotifier {
   Timer? _timer;
   bool _disposed = false;
 
+  /// `user_ref` devuelto por el último `verify` exitoso (`null` si aún no
+  /// hay éxito). La página lo usa para navegar a `/login?userRef=`.
+  String? _verifiedUserRef;
+
   RecoveryOtpStatus get status => _status;
   String? get errorMessage => _errorMessage;
+
+  /// `user_ref` del último `verify` exitoso; `null` antes del éxito.
+  String? get verifiedUserRef => _verifiedUserRef;
 
   /// Aviso informativo neutro (siempre el mismo, sin filtrar existencia).
   String get infoMessage => neutralMessage;
@@ -251,8 +263,11 @@ class RecoveryOtpController extends ChangeNotifier {
     }
   }
 
-  /// Verifica el código, guarda la sesión y retorna `true` (la página navega
-  /// a `/home`; la guarda del router también lo exige).
+  /// Verifica el código y persiste el `user_ref` devuelto (E1-T33/SCR-005).
+  ///
+  /// Al éxito retorna `true` para que la página navegue a
+  /// `/login?userRef=<user_ref>`; aquí NO se abre sesión ni se guardan
+  /// tokens (la única sesión la abre `POST /auth/login/pin`).
   Future<bool> submit(String code) async {
     if (isBusy || succeeded) return false;
     final clean = code.trim();
@@ -267,7 +282,8 @@ class RecoveryOtpController extends ChangeNotifier {
     notifyListeners();
     try {
       // Binding del dispositivo nuevo (F-T20/F-T22, best-effort): el secreto
-      // nunca sale del almacenamiento seguro ni se loguea.
+      // nunca sale del almacenamiento seguro ni se loguea. La sesión NO se
+      // toca aquí (E1-T33): solo se necesita la clave pública de binding.
       final identity =
           _identity ?? sessionIdentityStoreFactory?.call();
       final deviceId = await identity?.getOrCreateDeviceId();
@@ -280,13 +296,11 @@ class RecoveryOtpController extends ChangeNotifier {
         devicePublicKey: devicePublicKey,
         platform: _effectivePlatform(),
       );
-      await _session.saveSession(
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-      );
-      // Best-effort como en F-T21/F-T22: si falla, no bloquea la sesión ya
-      // concedida (silencio deliberado: nunca se loguea el `user_ref`).
+      // Best-effort como en F-T21/F-T22: si falla, no bloquea la
+      // continuación al login ya concedida (silencio deliberado: nunca se
+      // loguea el `user_ref`).
       await _rememberUserRef(identity, result.userRef);
+      _verifiedUserRef = result.userRef;
       _status = RecoveryOtpStatus.success;
       stopTick();
       notifyListeners();
@@ -296,7 +310,7 @@ class RecoveryOtpController extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (_) {
-      // Fallo del secure storage al guardar la sesión: mensaje accionable
+      // Fallo del secure storage (binding o `user_ref`): mensaje accionable
       // con reintento, sin filtrar detalles.
       _status = RecoveryOtpStatus.error;
       _errorMessage =

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_spacing.dart';
+import '../../../core/theme/app_typography.dart';
 import '../kyc_flow_controller.dart';
 
 /// Overlay de estado sobre el viewfinder durante la captura/evaluacion (F-T25).
@@ -8,6 +11,9 @@ import '../kyc_flow_controller.dart';
 /// se dibuja ENCIMA para que el usuario siga viendose y siga moviendose, y el
 /// challenge no quede a medias. Solo presenta la fase que reporta el
 /// controlador ([KycTaskPhase]); no decide nada (cliente delgado, docs/19).
+///
+/// Restyle F-T38: scrim y texto con tokens de F-T34 (sin colores
+/// hardcodeados).
 class KycCaptureOverlay extends StatelessWidget {
   const KycCaptureOverlay({super.key, required this.phase});
 
@@ -29,7 +35,7 @@ class KycCaptureOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: Colors.black54,
+      color: AppColors.inverseSurface.withValues(alpha: 0.66),
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -38,18 +44,15 @@ class KycCaptureOverlay extends StatelessWidget {
               width: 36,
               height: 36,
               child: CircularProgressIndicator(
-                color: Colors.white,
+                color: AppColors.onPrimary,
                 strokeWidth: 3,
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.stackSm + AppSpacing.unit),
             Text(
               messageFor(phase),
               key: const Key('kycCaptureOverlay'),
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(color: Colors.white),
+              style: AppTypography.titleMd.copyWith(color: AppColors.onPrimary),
             ),
           ],
         ),

@@ -10,6 +10,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../../core/theme/app_spacing.dart';
 import '../../../core/widgets/error_view.dart';
 import 'kyc_error_handler.dart';
 
@@ -42,7 +43,7 @@ class KycActionableErrorView extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(AppSpacing.stackLg),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -53,7 +54,7 @@ class KycActionableErrorView extends StatelessWidget {
             ),
             if (error.serverReason != null &&
                 error.serverReason!.isNotEmpty) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.stackSm),
               Text(
                 'Motivo: ${error.serverReason}',
                 key: const Key('kycServerReason'),
@@ -63,7 +64,7 @@ class KycActionableErrorView extends StatelessWidget {
             ],
             if (error.action == KycErrorAction.manualReview &&
                 onManualReview != null) ...[
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.stackSm + AppSpacing.unit),
               OutlinedButton(
                 key: const Key('goManualReviewButton'),
                 onPressed: onManualReview,
@@ -102,7 +103,7 @@ class KycManualReviewPage extends StatelessWidget {
       appBar: AppBar(title: const Text('Revisión manual')),
       body: Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(AppSpacing.stackLg),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -110,25 +111,25 @@ class KycManualReviewPage extends StatelessWidget {
                 Icons.mark_email_read_outlined,
                 size: 72,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.stackMd),
               const Text(
                 'Tu verificación pasó a revisión manual.',
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.stackSm),
               const Text(
                 'Un especialista la revisará. Guarda tu folio para '
                 'seguimiento:',
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.stackSm + AppSpacing.unit),
               SelectableText(
                 folio,
                 key: const Key('manualReviewFolio'),
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               if (reason != null && reason!.isNotEmpty) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.stackSm),
                 Text(
                   'Motivo: $reason',
                   key: const Key('manualReviewReason'),
@@ -137,7 +138,7 @@ class KycManualReviewPage extends StatelessWidget {
                 ),
               ],
               if (onRestart != null) ...[
-                const SizedBox(height: 24),
+                const SizedBox(height: AppSpacing.stackLg),
                 FilledButton(
                   key: const Key('restartKycButton'),
                   onPressed: onRestart,

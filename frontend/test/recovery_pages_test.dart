@@ -1,23 +1,24 @@
-// Pruebas de widget del feature `recovery` (F-T29, CA-01/CA-02/CA-04/CA-05).
+// Pruebas de widget del feature `recovery` (F-T40, CA-02/CA-03/CA-04).
 //
 // - Email: inválido bloquea; 200 navega a `/recovery/otp` con el mismo texto
 //   neutro para email existente y no existente; error de red con "Reintentar".
-// - OTP: incompleto deshabilita el submit; correcto guarda sesión y navega a
-//   `/home`; `INVALID_RECOVERY_CODE` -> mismo mensaje genérico;
-//   `429` -> espera; reenvío con cooldown.
+// - OTP (contrato E1-T33): incompleto deshabilita el submit; correcto persiste
+//   `user_ref` y navega a `/login?userRef=` SIN abrir sesión ni ir a `/home`;
+//   `INVALID_RECOVERY_CODE` -> mismo mensaje genérico; `429` -> espera;
+//   reenvío con cooldown.
 // - Router: `/recovery` y `/recovery/otp` son públicas sin sesión; el enlace
 //   "Recuperar acceso" del login navega a `/recovery`.
 import 'package:banca_online/core/errors/api_exception.dart';
 import 'package:banca_online/core/router/app_router.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
 import 'package:banca_online/core/session/session_identity_store.dart';
+import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/features/login/login_routes.dart';
 import 'package:banca_online/features/recovery/presentation/recovery_email_page.dart';
 import 'package:banca_online/features/recovery/presentation/recovery_otp_page.dart';
 import 'package:banca_online/features/recovery/recovery_controller.dart';
 import 'package:banca_online/features/recovery/recovery_routes.dart';
 import 'package:banca_online/features/recovery/recovery_service.dart';
-import 'package:banca_online/features/welcome/welcome_seen_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -30,8 +31,6 @@ class FakeRecoveryService implements RecoveryService {
       resendWaitSeconds: 0,
     ),
     this.verifyResult = const RecoveryVerifyResult(
-      accessToken: 'acc-1',
-      refreshToken: 'ref-1',
       userRef: 'user-123',
       deviceBound: true,
     ),
@@ -108,9 +107,14 @@ GoRouter _otpRouter(
           autoTick: false,
         ),
       ),
+      // Destino E1-T33: el login recibe el `user_ref` por query.
       GoRoute(
-        path: '/home',
-        builder: (context, state) => const Scaffold(body: Text('home-ok')),
+        path: '/login',
+        builder: (context, state) => Scaffold(
+          body: Text(
+            'login-ok:${state.uri.queryParameters['userRef'] ?? ''}',
+          ),
+        ),
       ),
     ],
   );
@@ -235,7 +239,7 @@ void main() {
       await tester.pumpWidget(MaterialApp.router(routerConfig: router));
       await tester.pumpAndSettle();
 
-      final submit = tester.widget<FilledButton>(
+      final submit = tester.widget<AppPrimaryButton>(
         find.byKey(const Key('recovery-otp-submit')),
       );
       expect(submit.onPressed, isNull);
@@ -247,11 +251,38 @@ void main() {
       );
     });
 
-    testWidgets('OTP correcto abre sesión y navega a /home', (tester) async {
+    testWidgets('OTP correcto navega a /login?userRef= sin abrir sesion',
+        (tester) async {
       final session = InMemorySessionRepository();
-      final router = _otpRouter(
-        FakeRecoveryService(),
+      final identity = InMemorySessionIdentityStore(deviceId: 'device-1');
+      final service = FakeRecoveryService();
+      final controller = RecoveryOtpController(
+        service: service,
         session: session,
+        email: 'a@b.com',
+        identity: identity,
+        platform: 'android',
+      );
+      final router = GoRouter(
+        initialLocation: '/recovery/otp',
+        routes: [
+          GoRoute(
+            path: '/recovery/otp',
+            builder: (context, state) => RecoveryOtpPage(
+              email: 'a@b.com',
+              controller: controller,
+              autoTick: false,
+            ),
+          ),
+          GoRoute(
+            path: '/login',
+            builder: (context, state) => Scaffold(
+              body: Text(
+                'login-ok:${state.uri.queryParameters['userRef'] ?? ''}',
+              ),
+            ),
+          ),
+        ],
       );
       addTearDown(router.dispose);
       await tester.pumpWidget(MaterialApp.router(routerConfig: router));
@@ -261,8 +292,10 @@ void main() {
       await tester.tap(find.byKey(const Key('recovery-otp-submit')));
       await tester.pumpAndSettle();
 
-      expect(find.text('home-ok'), findsOneWidget);
-      expect(session.isAuthenticated, isTrue);
+      // E1-T33: continúa al login con el `user_ref`; NO abre sesión.
+      expect(find.text('login-ok:user-123'), findsOneWidget);
+      expect(session.isAuthenticated, isFalse);
+      expect(await identity.readUserRef(), 'user-123');
     });
 
     testWidgets('INVALID_RECOVERY_CODE muestra el mensaje genérico',
@@ -282,13 +315,13 @@ void main() {
       await tester.tap(find.byKey(const Key('recovery-otp-submit')));
       await tester.pumpAndSettle();
 
-      expect(find.text('home-ok'), findsNothing);
+      expect(find.textContaining('login-ok'), findsNothing);
       expect(
         find.text(RecoveryOtpController.invalidCodeMessage),
         findsOneWidget,
       );
       // Permite reintentar: el submit sigue habilitado con código completo.
-      final submit = tester.widget<FilledButton>(
+      final submit = tester.widget<AppPrimaryButton>(
         find.byKey(const Key('recovery-otp-submit')),
       );
       expect(submit.onPressed, isNotNull);
@@ -310,7 +343,7 @@ void main() {
       await tester.tap(find.byKey(const Key('recovery-otp-submit')));
       await tester.pumpAndSettle();
 
-      expect(find.text('home-ok'), findsNothing);
+      expect(find.textContaining('login-ok'), findsNothing);
       expect(
         find.text(RecoveryOtpController.rateMessage),
         findsOneWidget,
@@ -341,7 +374,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(service.requestCalls, 1);
       // Tras reenviar aplica el cooldown: el botón se deshabilita.
-      final resend = tester.widget<TextButton>(
+      final resend = tester.widget<AppGhostButton>(
         find.byKey(const Key('recovery-otp-resend')),
       );
       expect(resend.onPressed, isNull);
@@ -373,11 +406,8 @@ void main() {
       debugDisableRecoveryAutoTick = true;
       addTearDown(() => debugDisableRecoveryAutoTick = false);
       final session = InMemorySessionRepository();
-      final seen = InMemoryWelcomeSeenStore(initialSeen: true);
-      addTearDown(seen.dispose);
       final router = buildRouter(
         session,
-        welcomeSeen: seen,
         identity: InMemorySessionIdentityStore(),
         initialLocation: '/recovery',
       );
@@ -395,11 +425,8 @@ void main() {
       debugDisableRecoveryAutoTick = true;
       addTearDown(() => debugDisableRecoveryAutoTick = false);
       final session = InMemorySessionRepository();
-      final seen = InMemoryWelcomeSeenStore(initialSeen: true);
-      addTearDown(seen.dispose);
       final router = buildRouter(
         session,
-        welcomeSeen: seen,
         identity: InMemorySessionIdentityStore(),
         initialLocation: '/recovery/otp?email=a%40b.com',
       );
@@ -422,11 +449,8 @@ void main() {
       debugDisableRecoveryAutoTick = true;
       addTearDown(() => debugDisableRecoveryAutoTick = false);
       final session = InMemorySessionRepository();
-      final seen = InMemoryWelcomeSeenStore(initialSeen: true);
-      addTearDown(seen.dispose);
       final router = buildRouter(
         session,
-        welcomeSeen: seen,
         identity: InMemorySessionIdentityStore(
           userRef: 'u-1',
           deviceId: 'd-1',
@@ -456,11 +480,8 @@ void main() {
       debugDisableRecoveryAutoTick = true;
       addTearDown(() => debugDisableRecoveryAutoTick = false);
       final session = InMemorySessionRepository();
-      final seen = InMemoryWelcomeSeenStore(initialSeen: true);
-      addTearDown(seen.dispose);
       final router = buildRouter(
         session,
-        welcomeSeen: seen,
         identity: InMemorySessionIdentityStore(
           userRef: 'u-1',
           deviceId: 'd-1',
@@ -475,7 +496,9 @@ void main() {
 
       // Regresión: el enlace es aditivo, el login sigue intacto.
       expect(find.byKey(const Key('login-biometric-button')), findsOneWidget);
-      expect(find.byKey(const Key('login-pin-field')), findsOneWidget);
+      for (var i = 0; i < 6; i++) {
+        expect(find.byKey(Key('login-pin-$i')), findsOneWidget);
+      }
       expect(find.byKey(const Key('login-pin-submit')), findsOneWidget);
       expect(find.byKey(const Key('login-recovery-link')), findsOneWidget);
     });

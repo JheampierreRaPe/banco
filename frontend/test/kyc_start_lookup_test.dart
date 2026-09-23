@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:banca_online/core/errors/api_exception.dart';
 import 'package:banca_online/core/errors/error_messages.dart';
+import 'package:banca_online/core/theme/app_colors.dart';
 import 'package:banca_online/core/widgets/app_button.dart';
 import 'package:banca_online/features/kyc/kyc_flow_controller.dart';
 import 'package:banca_online/features/kyc/kyc_models.dart';
@@ -476,5 +477,74 @@ void main() {
       find.widgetWithText(AppPrimaryButton, 'Validar documento'),
     );
     expect(validar.onPressed, isNull);
+  });
+
+  testWidgets('F-T44: Validar se habilita solo con la longitud exacta',
+      (tester) async {
+    final controller =
+        KycFlowController(service: const _ChallengeOnlyService());
+    addTearDown(controller.dispose);
+    await _pumpStart(tester, controller, FakeDocumentLookup());
+
+    AppPrimaryButton validar() => tester.widget<AppPrimaryButton>(
+          find.widgetWithText(AppPrimaryButton, 'Validar documento'),
+        );
+
+    // DNI: 7 digitos bloqueado, 8 habilitado.
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '1234567',
+    );
+    await tester.pump();
+    expect(validar().onPressed, isNull);
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '12345678',
+    );
+    await tester.pump();
+    expect(validar().onPressed, isNotNull);
+
+    // RUC: 10 digitos bloqueado, 11 habilitado.
+    await _selectRuc(tester);
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '2012345678',
+    );
+    await tester.pump();
+    expect(validar().onPressed, isNull);
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '20123456789',
+    );
+    await tester.pump();
+    expect(validar().onPressed, isNotNull);
+  });
+
+  testWidgets('F-T44: Validar deshabilitado aplica colores tokenizados',
+      (tester) async {
+    final controller =
+        KycFlowController(service: const _ChallengeOnlyService());
+    addTearDown(controller.dispose);
+    await _pumpStart(tester, controller, FakeDocumentLookup());
+
+    // Sin numero: Validar deshabilitado (onPressed null).
+    final validar = tester.widget<AppPrimaryButton>(
+      find.widgetWithText(AppPrimaryButton, 'Validar documento'),
+    );
+    expect(validar.onPressed, isNull);
+    final inner = tester.widget<ElevatedButton>(
+      find.descendant(
+        of: find.widgetWithText(AppPrimaryButton, 'Validar documento'),
+        matching: find.byType(ElevatedButton),
+      ),
+    );
+    expect(
+      inner.style!.backgroundColor!.resolve({WidgetState.disabled}),
+      AppColors.surfaceContainerHighest,
+    );
+    expect(
+      inner.style!.foregroundColor!.resolve({WidgetState.disabled}),
+      AppColors.secondaryText,
+    );
   });
 }

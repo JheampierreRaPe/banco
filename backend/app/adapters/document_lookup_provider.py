@@ -14,12 +14,13 @@ La key vive solo en el entorno del backend (`.env` de la raiz, cableada por
 `docker-compose.yml` al servicio `backend`); jamas se expone al cliente ni
 se registra en logs.
 
-La forma exacta del JSON del proveedor NO esta confirmada: el parseo vive en
-un UNICO punto (`_normalize_holder`), que tolera la forma comun
-`{"data": {...}}` o plana y claves alternativas (`nombres`/`apellidos`/
-`first_name`/`last_name`/`razon_social`/`business_name`, mas `apellido_paterno`/
-`apellido_materno` como composicion del apellido). La forma exacta se fija al
-probar contra el proveedor real.
+La forma real documentada de apiinti (`https://apiinti.dev/docs`, envelope
+`{"success": true, "data": {...}}`: DNI con `nombres` + `apellidoPaterno`/
+`apellidoMaterno`, RUC con `razonSocial`) se soporta en el UNICO punto
+(`_normalize_holder`), que ademas tolera la forma plana y las claves
+historicas (`apellidos`/`first_name`/`last_name`/`razon_social`/
+`business_name`, mas `apellido_paterno`/`apellido_materno` como composicion
+del apellido).
 
 Reglas (docs/02#9, docs/16 reglas de oro 7 y 10):
 - Sin PII en logs: el numero de documento solo se correlaciona hasheado
@@ -140,14 +141,16 @@ def clean_text(value: object) -> str:
 _clean = clean_text
 
 
-#: Claves alternativas aceptadas por el punto unico de parseo (forma exacta
-#: del JSON de apiinti aun sin confirmar; se fija contra el proveedor real).
+#: Claves alternativas aceptadas por el punto unico de parseo (incluye las
+#: claves reales camelCase de apiinti: `apellidoPaterno`/`apellidoMaterno` y
+#: `razonSocial`, ademas de las formas historicas snake_case).
 _FIRST_NAME_KEYS: tuple[str, ...] = ("first_name", "firstname", "nombres", "nombre", "given_name")
 _LAST_NAME_KEYS: tuple[str, ...] = ("last_name", "lastname", "apellidos", "apellido", "family_name")
 _BUSINESS_NAME_KEYS: tuple[str, ...] = (
     "business_name",
     "razon_social",
     "razonsocial",
+    "razonSocial",
     "company_name",
     "denominacion",
 )
@@ -166,8 +169,10 @@ def _normalize_holder(data: object, session_id: str, doc_type: str) -> DocumentH
 
     Acepta la forma envuelta `{"data": {...}}` o plana; mapea las claves
     alternativas a `first_name`/`last_name`/`business_name` (persona juridica
-    = razon social). El apellido tambien se compone desde `apellido_paterno`
-    + `apellido_materno` cuando no hay clave directa. Sin datos utilizables
+    = razon social, clave real apiinti `razonSocial`). El apellido tambien
+    se compone desde `apellido_paterno` + `apellido_materno` (snake_case
+    historico) o `apellidoPaterno` + `apellidoMaterno` (camelCase real de
+    apiinti) cuando no hay clave directa. Sin datos utilizables
     lanza `DocumentNotFoundError` (neutro, sin eco del numero).
     """
     payload: dict = data if isinstance(data, dict) else {}
@@ -177,14 +182,13 @@ def _normalize_holder(data: object, session_id: str, doc_type: str) -> DocumentH
     first_name = _first_present(payload, _FIRST_NAME_KEYS)
     last_name = _first_present(payload, _LAST_NAME_KEYS)
     if not last_name:
-        composed = " ".join(
-            part
-            for part in (
-                clean_text(payload.get("apellido_paterno")),
-                clean_text(payload.get("apellido_materno")),
-            )
-            if part
+        paterno = clean_text(payload.get("apellido_paterno")) or clean_text(
+            payload.get("apellidoPaterno")
         )
+        materno = clean_text(payload.get("apellido_materno")) or clean_text(
+            payload.get("apellidoMaterno")
+        )
+        composed = " ".join(part for part in (paterno, materno) if part)
         last_name = composed
     business_name = _first_present(payload, _BUSINESS_NAME_KEYS)
     if not first_name and not last_name and not business_name:

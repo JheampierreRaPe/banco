@@ -5,7 +5,9 @@ import '../theme/app_spacing.dart';
 import '../theme/app_typography.dart';
 
 /// Boton primario: fondo `primary`, texto `on-primary`, alto minimo 52,
-/// radio 12 (`docs/20` §6).
+/// radio 12 (`docs/20` §6). Deshabilitado: fondo
+/// `surfaceContainerHighest`, texto `secondaryText` (contraste legible,
+/// claramente distinto del activo).
 ///
 /// Presentacion pura: no valida ni decide nada.
 class AppPrimaryButton extends StatelessWidget {
@@ -49,7 +51,8 @@ class AppPrimaryButton extends StatelessWidget {
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.onPrimary,
-        disabledBackgroundColor: AppColors.primary,
+        disabledBackgroundColor: AppColors.surfaceContainerHighest,
+        disabledForegroundColor: AppColors.secondaryText,
         minimumSize: const Size(88, 52),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadii.md),

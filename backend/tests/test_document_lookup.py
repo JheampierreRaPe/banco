@@ -181,6 +181,115 @@ def test_http_provider_tolerant_parsing(payload: dict, expected: tuple):
     assert (holder.first_name, holder.last_name, holder.business_name) == expected
 
 
+# ------------------------------------------------------- Regresion apiinti real (camelCase)
+def _camel_provider(handler) -> HttpDocumentLookupProvider:
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://app.apiinti.dev/api/v1")
+    return HttpDocumentLookupProvider(
+        settings=DocLookupSettings(api_key="k", backoff_base_seconds=0.0), client=client
+    )
+
+
+def test_http_provider_apiinti_dni_camelcase_real_shape():
+    """Forma REAL apiinti DNI: `apellidoPaterno`/`apellidoMaterno` -> `last_name`.
+
+    Sin el fix solo se componia desde snake_case y `last_name` quedaba vacio.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "dni": "12345678",
+                    "nombres": "JUAN CARLOS",
+                    "apellidoPaterno": "GARCIA",
+                    "apellidoMaterno": "LOPEZ",
+                },
+            },
+        )
+
+    holder = _camel_provider(_handler).lookup_document(
+        session_id="s", doc_type="DNI", number=DNI_OK
+    )
+    assert holder.first_name == "JUAN CARLOS"
+    assert holder.last_name == "GARCIA LOPEZ"
+    assert holder.business_name == ""
+
+
+def test_http_provider_apiinti_ruc_camelcase_real_shape():
+    """Forma REAL apiinti RUC: `razonSocial` -> `business_name`.
+
+    Sin el fix `business_name` quedaba vacio y un RUC valido terminaba en
+    `DocumentNotFoundError`.
+    """
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {"ruc": "20100017491", "razonSocial": "SUNAT", "estado": "ACTIVO"},
+            },
+        )
+
+    holder = _camel_provider(_handler).lookup_document(
+        session_id="s", doc_type="RUC", number="20100017491"
+    )
+    assert holder.business_name == "SUNAT"
+    assert holder.first_name == "" and holder.last_name == ""
+
+
+def test_lookup_endpoint_with_apiinti_camelcase_shapes(doc_client: TestClient):
+    """`POST /auth/kyc/document/lookup` con las formas reales camelCase."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/dni/12345678"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "dni": "12345678",
+                        "nombres": "JUAN CARLOS",
+                        "apellidoPaterno": "GARCIA",
+                        "apellidoMaterno": "LOPEZ",
+                    },
+                },
+            )
+        if request.url.path.endswith("/ruc/20100017491"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "ruc": "20100017491",
+                        "razonSocial": "SUNAT",
+                        "estado": "ACTIVO",
+                    },
+                },
+            )
+        return httpx.Response(404, json={"message": "no encontrado"})
+
+    _override_lookup(_camel_provider(_handler))
+    try:
+        dni = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": DNI_OK}
+        )
+        assert dni.status_code == 200, dni.text
+        assert dni.json()["data"]["first_name"] == "JUAN CARLOS"
+        assert dni.json()["data"]["last_name"] == "GARCIA LOPEZ"
+        ruc = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup",
+            json={"type": "RUC", "number": "20100017491"},
+        )
+        assert ruc.status_code == 200, ruc.text
+        assert ruc.json()["data"]["business_name"] == "SUNAT"
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))
+
+
 @pytest.mark.parametrize("payload", [{}, {"data": {}}, {"foo": "bar"}, {"nombres": ""}, []])
 def test_http_provider_empty_payload_is_not_found(payload: object):
     def _handler(request: httpx.Request) -> httpx.Response:

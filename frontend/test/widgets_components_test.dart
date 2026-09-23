@@ -52,6 +52,33 @@ void main() {
       expect(pressed, isTrue);
     });
 
+    testWidgets('primario deshabilitado usa tokens bloqueados legibles', (
+      tester,
+    ) async {
+      await pumpThemed(
+        tester,
+        const AppPrimaryButton(
+          key: Key('btnDisabledTokens'),
+          label: 'Off',
+          onPressed: null,
+        ),
+      );
+      final button =
+          tester.widget<ElevatedButton>(find.byType(ElevatedButton));
+      expect(button.enabled, isFalse);
+      final disabledBg = button.style!.backgroundColor!.resolve({
+        WidgetState.disabled,
+      });
+      final disabledFg = button.style!.foregroundColor!.resolve({
+        WidgetState.disabled,
+      });
+      // Regresion: antes el fondo deshabilitado era `primary` (igual que el
+      // activo) y sin `disabledForegroundColor` el label quedaba ilegible.
+      expect(disabledBg, AppColors.surfaceContainerHighest);
+      expect(disabledBg, isNot(AppColors.primary));
+      expect(disabledFg, AppColors.secondaryText);
+    });
+
     testWidgets('primario deshabilitado y cargando no disparan', (
       tester,
     ) async {

@@ -18,6 +18,7 @@ class KycDependencies {
   static KycService? _service;
   static KycEvaluationService? _evaluationService;
   static KycDocumentLookupService? _lookupService;
+  static KycEmailCheckService? _emailCheckService;
   static KycFrameSource? _frameSource;
   static KycFlowController? _controller;
 
@@ -34,6 +35,7 @@ class KycDependencies {
     KycFrameSource? frameSource,
     KycEvaluationService? evaluationService,
     KycDocumentLookupService? lookupService,
+    KycEmailCheckService? emailCheckService,
   }) {
     _service = service;
     // F-T33 (H-02): si se reemplaza la fuente, la anterior se cierra para no
@@ -53,6 +55,10 @@ class KycDependencies {
         ? service as KycDocumentLookupService
         : null;
     _lookupService = lookupService ?? inferredLookup;
+    final inferredEmailCheck = service is KycEmailCheckService
+        ? service as KycEmailCheckService
+        : null;
+    _emailCheckService = emailCheckService ?? inferredEmailCheck;
     _controller?.dispose();
     _controller = null;
     if (previousSource is CameraFrameSource &&
@@ -94,6 +100,18 @@ class KycDependencies {
     );
   }
 
+  /// Servicio de prechequeo de email (F-T50, E1-T40). Por defecto el
+  /// propio `service` cuando implementa [KycEmailCheckService] (es el
+  /// caso de `HttpKycService`).
+  static KycEmailCheckService get emailCheckService {
+    final existing = _emailCheckService;
+    if (existing != null) return existing;
+    throw StateError(
+      'KycDependencies.configure(service:) debe llamarlo el orquestador '
+      'antes de prechequear un email.',
+    );
+  }
+
   /// Controlador vigente SIN crearlo (las páginas lo usan en `dispose()` para
   /// liberar la cámara al salir sin instanciar un flujo nuevo).
   static KycFlowController? get controllerIfExists => _controller;
@@ -112,5 +130,6 @@ class KycDependencies {
     _service = null;
     _evaluationService = null;
     _lookupService = null;
+    _emailCheckService = null;
   }
 }

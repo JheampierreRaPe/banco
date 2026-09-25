@@ -32,6 +32,11 @@ abstract class SessionIdentityStore implements Listenable {
   /// `device_id` en cache; `null` si aun no se ha generado.
   String? get deviceId;
 
+  /// Cache del consentimiento biometrico informado por el servidor tras el
+  /// login con PIN (F-T49, E1-T39). `null`/`false` = sin consentimiento
+  /// conocido: el boton biometrico del login se oculta.
+  bool? get biometricEnabled;
+
   /// Hidrata el cache desde almacenamiento seguro (antes del primer frame).
   Future<void> load();
 
@@ -48,6 +53,14 @@ abstract class SessionIdentityStore implements Listenable {
 
   /// Lee el `device_id` persistido; `null` si aun no existe.
   Future<String?> readDeviceId();
+
+  /// Persiste la cache del consentimiento biometrico (`biometric_enabled`
+  /// del login con PIN, E1-T39). Solo refleja lo que el servidor informa
+  /// (docs/19, cliente delgado); best-effort desde el controlador.
+  Future<void> saveBiometricEnabled(bool enabled);
+
+  /// Lee el flag persistido; `null` si nunca se sincronizo.
+  Future<bool?> readBiometricEnabled();
 }
 
 /// Fabrica del store (la fija `main`/el orquestador; en tests se inyecta una
@@ -77,8 +90,14 @@ class SecureSessionIdentityStore extends ChangeNotifier
   @visibleForTesting
   static const deviceIdKey = 'device.id';
 
+  /// Cache del consentimiento biometrico (F-T49): reflejo local de
+  /// `identity.credentials.biometric_enabled` (autoridad: servidor, E1-T39).
+  @visibleForTesting
+  static const biometricEnabledKey = 'biometric.enabled';
+
   String? _userRef;
   String? _deviceId;
+  bool? _biometricEnabled;
 
   @override
   String? get userRef => _userRef;
@@ -87,15 +106,20 @@ class SecureSessionIdentityStore extends ChangeNotifier
   String? get deviceId => _deviceId;
 
   @override
+  bool? get biometricEnabled => _biometricEnabled;
+
+  @override
   Future<void> load() async {
     // Una lectura fallida (p. ej. sin plataforma) no debe impedir el arranque:
     // el cache queda vacio y se rehidrata bajo demanda.
     try {
       _userRef = await readUserRef();
       _deviceId = await readDeviceId();
+      _biometricEnabled = await readBiometricEnabled();
     } catch (_) {
       _userRef = null;
       _deviceId = null;
+      _biometricEnabled = null;
     }
     // La hidratacion puede llegar despues de montar el router: notifica para
     // que la guarda reevalue con el `userRef` recuperado.
@@ -146,6 +170,25 @@ class SecureSessionIdentityStore extends ChangeNotifier
     if (value == null || value.isEmpty) return null;
     return value;
   }
+
+  @override
+  Future<void> saveBiometricEnabled(bool enabled) async {
+    await _storage.write(biometricEnabledKey, enabled ? 'true' : 'false');
+    _biometricEnabled = enabled;
+    // El flag decide si el login muestra el boton biometrico: la guarda debe
+    // reevaluar sin navegacion manual (el router escucha este store).
+    notifyListeners();
+  }
+
+  @override
+  Future<bool?> readBiometricEnabled() async {
+    final value = await _storage.read(biometricEnabledKey);
+    if (value == null || value.isEmpty) return null;
+    final normalized = value.trim().toLowerCase();
+    if (normalized == 'true' || normalized == '1') return true;
+    if (normalized == 'false' || normalized == '0') return false;
+    return null;
+  }
 }
 
 /// Implementacion en memoria (tests de store/router, sin canales de
@@ -155,22 +198,28 @@ class InMemorySessionIdentityStore extends ChangeNotifier
   InMemorySessionIdentityStore({
     String? userRef,
     String? deviceId,
+    bool? biometricEnabled,
     Uuid? uuid,
   }) {
     _userRef = userRef;
     _deviceId = deviceId;
+    _biometricEnabled = biometricEnabled;
     _uuid = uuid ?? const Uuid();
   }
 
   late final Uuid _uuid;
   String? _userRef;
   String? _deviceId;
+  bool? _biometricEnabled;
 
   @override
   String? get userRef => _userRef;
 
   @override
   String? get deviceId => _deviceId;
+
+  @override
+  bool? get biometricEnabled => _biometricEnabled;
 
   @override
   Future<void> load() async {
@@ -196,4 +245,13 @@ class InMemorySessionIdentityStore extends ChangeNotifier
 
   @override
   Future<String?> readDeviceId() async => _deviceId;
+
+  @override
+  Future<void> saveBiometricEnabled(bool enabled) async {
+    _biometricEnabled = enabled;
+    notifyListeners();
+  }
+
+  @override
+  Future<bool?> readBiometricEnabled() async => _biometricEnabled;
 }

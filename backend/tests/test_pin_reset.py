@@ -61,6 +61,7 @@ SCHEMAS_PATH = (
 )
 
 DOC_NUMBER = "12345678"
+RUC_NUMBER = "20123456789"
 WRONG_DOC = "87654321"
 WRONG_CODE = "000000"
 OLD_PIN = "111111"
@@ -144,10 +145,11 @@ def _make_reset_user(
     *,
     status: str = "ACTIVE",
     doc_number: str = DOC_NUMBER,
+    doc_type: str = "DNI",
     pin: str | None = OLD_PIN,
     email: str | None = None,
 ):
-    """Usuario elegible (`ACTIVE` + email + hash de DNI real) para `/pin-reset`."""
+    """Usuario elegible (`ACTIVE` + email + hash de documento real) para `/pin-reset`."""
     from app.modules.identity import repository as identity_repo
     from app.modules.identity.service import pin_login as pin_login_service
     from app.modules.identity.service.kyc_onboarding import hash_document_number
@@ -155,7 +157,7 @@ def _make_reset_user(
     suffix = uuid.uuid4().hex[:8]
     user = identity_repo.create_user(
         session,
-        doc_type="DNI",
+        doc_type=doc_type,
         doc_number_hash=hash_document_number(doc_number),
         first_name="Ada",
         last_name="Lovelace",
@@ -308,14 +310,16 @@ def test_pin_reset_happy_path_then_login_with_new_pin(
     _request_otp(reset_client, user.email)
     code = _otp_code(reset_session, user.id)
 
-    # Normalizacion: el esquema exige email sin espacios (422 si los trae,
-    # igual que `recovery`); el servicio tolera mayusculas y el DNI con
-    # separadores se normaliza al hashear.
+    # Normalizacion (E1-T40): el esquema exige email sin espacios (422 si los
+    # trae, igual que `recovery`) y `doc_number` solo digitos con longitud
+    # exacta segun `doc_type` (DNI 8 / RUC 11); el servicio tolera
+    # mayusculas en el email y el hash HMAC normaliza el documento.
     resp = reset_client.post(
         "/api/v1/auth/pin-reset",
         json={
             "email": user.email.upper(),
-            "doc_number": "12.345.678",
+            "doc_type": "DNI",
+            "doc_number": DOC_NUMBER,
             "code": code,
             "pin": NEW_PIN,
         },
@@ -487,6 +491,179 @@ def test_pin_reset_weak_pin_422_without_burning_otp(
     assert ok.status_code == 200, ok.text
 
 
+# ---------------------------------------------------------------- E1-T40: doc_type DNI/RUC
+def test_pin_reset_ruc_11_digits_success(reset_client: TestClient, reset_session: Session):
+    """`doc_type=RUC` con 11 digitos resuelve por el hash del RUC (E1-T40)."""
+    user = _make_reset_user(reset_session, doc_number=RUC_NUMBER, doc_type="RUC")
+    _request_otp(reset_client, user.email)
+    code = _otp_code(reset_session, user.id)
+
+    resp = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": user.email,
+            "doc_type": "RUC",
+            "doc_number": RUC_NUMBER,
+            "code": code,
+            "pin": NEW_PIN,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"user_ref": str(user.id), "pin_set": True}
+    assert code not in resp.text and NEW_PIN not in resp.text and RUC_NUMBER not in resp.text
+
+    recs = _recoveries(reset_session, user.id)
+    assert len(recs) == 1 and recs[0].new_credential_set is True
+
+
+def test_pin_reset_default_doc_type_is_dni_compat(reset_client: TestClient, reset_session: Session):
+    """Sin `doc_type` rige `DNI` (compatibilidad F-T43; E1-T40)."""
+    user = _make_reset_user(reset_session)
+    _request_otp(reset_client, user.email)
+    code = _otp_code(reset_session, user.id)
+
+    resp = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={"email": user.email, "doc_number": DOC_NUMBER, "code": code, "pin": NEW_PIN},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"user_ref": str(user.id), "pin_set": True}
+
+
+def test_pin_reset_unknown_doc_type_422_without_burning_otp(
+    reset_client: TestClient, reset_session: Session
+):
+    """`doc_type` desconocido -> 422 estandar sin consumir el OTP (E1-T40)."""
+    user = _make_reset_user(reset_session)
+    _request_otp(reset_client, user.email)
+    code = _otp_code(reset_session, user.id)
+
+    resp = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": user.email,
+            "doc_type": "CE",
+            "doc_number": DOC_NUMBER,
+            "code": code,
+            "pin": NEW_PIN,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    rows = _otp_rows(reset_session, user.id)
+    assert rows[0].status == "PENDING" and int(rows[0].attempts) == 0, "el OTP no se consume"
+
+    # El OTP sigue valido: con `doc_type` correcto el reseteo procede.
+    ok = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": user.email,
+            "doc_type": "DNI",
+            "doc_number": DOC_NUMBER,
+            "code": code,
+            "pin": NEW_PIN,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_pin_reset_doc_length_mismatch_422_without_burning_otp(
+    reset_client: TestClient, reset_session: Session
+):
+    """Longitud no numerica/incorrecta por tipo -> 422 sin tocar el OTP (E1-T40)."""
+    user = _make_reset_user(reset_session)
+    _request_otp(reset_client, user.email)
+    code = _otp_code(reset_session, user.id)
+
+    for payload in (
+        {"doc_type": "DNI", "doc_number": RUC_NUMBER},  # 11 digitos con DNI
+        {"doc_type": "RUC", "doc_number": DOC_NUMBER},  # 8 digitos con RUC
+        {"doc_type": "DNI", "doc_number": "1234567"},  # corto
+        {"doc_type": "DNI", "doc_number": "12AB5678"},  # no numerico
+        {"doc_type": "DNI", "doc_number": "12.345.678"},  # separadores: solo digitos
+    ):
+        resp = reset_client.post(
+            "/api/v1/auth/pin-reset",
+            json={"email": user.email, "code": code, "pin": NEW_PIN, **payload},
+        )
+        assert resp.status_code == 422, payload
+    rows = _otp_rows(reset_session, user.id)
+    assert rows[0].status == "PENDING" and int(rows[0].attempts) == 0, "el OTP no se consume"
+
+    ok = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": user.email,
+            "doc_type": "DNI",
+            "doc_number": DOC_NUMBER,
+            "code": code,
+            "pin": NEW_PIN,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_pin_reset_doc_mismatch_still_generic_401(reset_client: TestClient, reset_session: Session):
+    """Formato valido pero hash que no coincide -> mismo 401 generico (E1-T40).
+
+    `doc_type` no se cruza con `users.doc_type`: un RUC bien formado que no
+    corresponde al usuario responde el `INVALID_PIN_RESET` generico, identico
+    al de email inexistente (sin oraculo de campo).
+    """
+    user = _make_reset_user(reset_session)
+    _request_otp(reset_client, user.email)
+
+    ghost = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": "nadie-e140@example.com",
+            "doc_type": "DNI",
+            "doc_number": DOC_NUMBER,
+            "code": WRONG_CODE,
+            "pin": NEW_PIN,
+        },
+    )
+    assert ghost.status_code == 401
+    expected = ghost.json()["error"]
+
+    mismatch = reset_client.post(
+        "/api/v1/auth/pin-reset",
+        json={
+            "email": user.email,
+            "doc_type": "RUC",
+            "doc_number": RUC_NUMBER,
+            "code": WRONG_CODE,
+            "pin": NEW_PIN,
+        },
+    )
+    assert mismatch.status_code == 401
+    assert mismatch.json()["error"] == expected, "sin oraculo: mismo cuerpo generico"
+    assert RUC_NUMBER not in mismatch.text, "el documento no se refleja"
+
+
+def test_service_doc_validation_defensive_before_state(reset_session: Session):
+    """Validacion defensiva del servicio: `ValueError` antes de tocar estado."""
+    from app.modules.identity.service import pin_reset as pin_reset_service
+
+    with pytest.raises(ValueError, match="doc_type"):
+        pin_reset_service.reset_pin(
+            reset_session,
+            email="alguien@example.com",
+            doc_type="PASSPORT",
+            doc_number=DOC_NUMBER,
+            code="123456",
+            pin=NEW_PIN,
+        )
+    with pytest.raises(ValueError, match="debe tener 8 digitos"):
+        pin_reset_service.reset_pin(
+            reset_session,
+            email="alguien@example.com",
+            doc_type="DNI",
+            doc_number="1234567",
+            code="123456",
+            pin=NEW_PIN,
+        )
+
+
 # ---------------------------------------------------------------- Rate-limit (CA-02/429)
 def test_pin_reset_rate_limit_429_before_existence(
     reset_client: TestClient, reset_session: Session, monkeypatch
@@ -622,13 +799,18 @@ def test_parameters_resend_wait_seeded_is_used(reset_session: Session):
 def test_parameters_recovery_verify_window_seeded_is_used(
     reset_client: TestClient, reset_session: Session
 ):
+    # E1-T41 retiro `/auth/recovery/verify`, pero su ventana
+    # (`auth.recovery_verify_max_requests`) se conserva: la usa
+    # `/auth/pin-reset` via `check_pin_reset_rate_limit`.
     _seed_parameters(reset_session, {"auth.recovery_verify_max_requests": 1})
     user = _make_reset_user(reset_session)
     _request_otp(reset_client, user.email)
-    payload = {"email": user.email, "code": "111111"}
-    assert reset_client.post("/api/v1/auth/recovery/verify", json=payload).status_code == 401
-    limited = reset_client.post("/api/v1/auth/recovery/verify", json=payload)
-    assert limited.status_code == 429, "con max_requests=1 el 2do verify va a 429"
+    payload = {"email": user.email, "doc_number": DOC_NUMBER, "code": "111111", "pin": NEW_PIN}
+    first = reset_client.post("/api/v1/auth/pin-reset", json=payload)
+    assert first.status_code == 401
+    assert first.json()["error"]["code"] == "INVALID_PIN_RESET"
+    limited = reset_client.post("/api/v1/auth/pin-reset", json=payload)
+    assert limited.status_code == 429, "con max_requests=1 el 2do pin-reset va a 429"
     assert limited.json()["error"]["code"] == "RATE_LIMITED"
 
 

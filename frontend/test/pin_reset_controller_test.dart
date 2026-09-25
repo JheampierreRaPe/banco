@@ -54,11 +54,13 @@ class FakePinResetService implements PinResetService {
     required String docNumber,
     required String code,
     required String pin,
+    String docType = 'DNI',
   }) async {
     resetCalls++;
     lastResetBody = {
       'email': email,
       'docNumber': docNumber,
+      'docType': docType,
       'code': code,
       'pin': pin,
     };
@@ -460,6 +462,98 @@ void main() {
       expect(message, isNot(contains('12345678')));
       expect(message, isNot(contains('654321')));
       expect(message, isNot(contains('482916')));
+    });
+  });
+
+  group('F-T50 selector DNI/RUC (CA-05)', () {
+    test('valida 8 DNI / 11 RUC solo digitos', () {
+      expect(isDocNumberValid('12345678'), isTrue);
+      expect(
+        isDocNumberValid('12345678', docType: 'DNI'),
+        isTrue,
+      );
+      expect(
+        isDocNumberValid('20123456789', docType: 'RUC'),
+        isTrue,
+      );
+      expect(
+        isDocNumberValid('12345678', docType: 'RUC'),
+        isFalse,
+      );
+      expect(
+        isDocNumberValid('20123456789', docType: 'DNI'),
+        isFalse,
+      );
+      expect(
+        isDocNumberValid('abcdefgh', docType: 'DNI'),
+        isFalse,
+      );
+    });
+
+    test('mensajes por tipo sin PII', () {
+      expect(
+        pinResetInvalidDocMessageFor('DNI'),
+        pinResetInvalidDocMessage,
+      );
+      expect(
+        pinResetInvalidDocMessageFor('RUC'),
+        contains('11'),
+      );
+      expect(pinResetDocHelpFor('DNI'), contains('8'));
+      expect(pinResetDocHelpFor('RUC'), contains('11'));
+    });
+
+    test('identidad RUC valida 11 y bloquea 8 sin red', () async {
+      final service = FakePinResetService();
+      final controller = PinResetIdentityController(service: service);
+      addTearDown(controller.dispose);
+
+      final okShort = await controller.submit(
+        email: 'a@b.com',
+        docNumber: '12345678',
+        docType: 'RUC',
+      );
+      expect(okShort, isFalse);
+      expect(service.requestCalls, 0);
+
+      controller.retry();
+      final ok = await controller.submit(
+        email: 'a@b.com',
+        docNumber: '20123456789',
+        docType: 'RUC',
+      );
+      expect(ok, isTrue);
+      expect(service.requestCalls, 1);
+    });
+
+    test('confirm envia doc_type del draft', () async {
+      final service = FakePinResetService();
+      const draftRuc = PinResetDraft(
+        email: 'a@b.com',
+        docNumber: '20123456789',
+        docType: 'RUC',
+        code: '654321',
+        pin: '482916',
+      );
+      final controller = PinResetConfirmController(
+        service: service,
+        draft: draftRuc,
+      );
+      addTearDown(controller.dispose);
+
+      expect(await controller.submit(), isTrue);
+      expect(service.lastResetBody['docType'], 'RUC');
+      expect(service.lastResetBody['docNumber'], '20123456789');
+    });
+
+    test('draft default DNI preserva F-T43', () {
+      const draft = PinResetDraft(
+        email: 'a@b.com',
+        docNumber: '12345678',
+        code: '654321',
+        pin: '482916',
+      );
+      expect(draft.docType, 'DNI');
     });
   });
 }

@@ -1,5 +1,5 @@
 // Pruebas de la ruta `/login` (F-T40): el `userRef` llega por query
-// (`/login?userRef=`, destino tras `recovery.verify`) o por
+// (`/login?userRef=`, destino tras el restablecimiento de PIN) o por
 // `LoginRouteDeps.userRef` (store F-T20).
 //
 // - Con query y store vacío: la página usa el `userRef` de la query.

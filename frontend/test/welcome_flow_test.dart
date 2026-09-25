@@ -54,7 +54,7 @@ void main() {
     );
     expect(find.text('Crear mi cuenta'), findsOneWidget);
     expect(
-      find.text('Ya tengo cuenta · Iniciar sesión'),
+      find.text('Ya tengo cuenta · Restablecer PIN'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('app-version')), findsOneWidget);
@@ -119,7 +119,7 @@ void main() {
     expect(find.text('Crear cuenta'), findsOneWidget);
   });
 
-  testWidgets('Ya tengo cuenta va a /recovery', (tester) async {
+  testWidgets('Ya tengo cuenta va a /pin-reset (F-T51)', (tester) async {
     final session = InMemorySessionRepository();
     final identity = InMemorySessionIdentityStore();
     addTearDown(identity.dispose);
@@ -128,10 +128,10 @@ void main() {
     await tester.pumpWidget(_harnessWith(router));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Ya tengo cuenta · Iniciar sesión'));
+    await tester.tap(find.text('Ya tengo cuenta · Restablecer PIN'));
     await tester.pumpAndSettle();
 
-    expect(router.state.matchedLocation, '/recovery');
+    expect(router.state.matchedLocation, '/pin-reset');
   });
 
   testWidgets('sin sesion y sin userRef en /home resuelve el onboarding',
@@ -146,7 +146,7 @@ void main() {
 
     expect(find.text('Crear mi cuenta'), findsOneWidget);
     expect(
-      find.text('Ya tengo cuenta · Iniciar sesión'),
+      find.text('Ya tengo cuenta · Restablecer PIN'),
       findsOneWidget,
     );
   });
@@ -206,7 +206,7 @@ void main() {
 
     expect(router.state.matchedLocation, '/kyc');
     expect(find.text('Crear cuenta'), findsOneWidget);
-    expect(find.text('Ya tengo cuenta · Iniciar sesión'), findsNothing);
+    expect(find.text('Ya tengo cuenta · Restablecer PIN'), findsNothing);
   });
 
   testWidgets('/activate sigue publica sin sesion ni userRef', (tester) async {

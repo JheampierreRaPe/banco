@@ -42,6 +42,7 @@ class PinResetDraft {
   const PinResetDraft({
     required this.email,
     required this.docNumber,
+    this.docType = 'DNI',
     this.code = '',
     this.pin = '',
   });
@@ -52,15 +53,21 @@ class PinResetDraft {
   /// DNI capturado en el paso inicial (solo memoria, enmascarado en UI).
   final String docNumber;
 
+  /// Tipo de documento (F-T50, `DNI|RUC`; default `DNI` preserva F-T43).
+  /// Viaja solo en memoria (`extra`), nunca en la ruta ni en logs.
+  final String docType;
+
   /// OTP `RECOVERY` capturado en el paso OTP.
   final String code;
 
   /// PIN nuevo capturado en el paso de creación.
   final String pin;
 
-  PinResetDraft copyWith({String? code, String? pin}) => PinResetDraft(
+  PinResetDraft copyWith({String? code, String? pin, String? docType}) =>
+      PinResetDraft(
         email: email,
         docNumber: docNumber,
+        docType: docType ?? this.docType,
         code: code ?? this.code,
         pin: pin ?? this.pin,
       );
@@ -94,7 +101,11 @@ class PinResetIdentityController extends ChangeNotifier {
   /// Envía el email a `POST /auth/recovery/request`. El DNI NO viaja aquí:
   /// se captura y se envía solo en el request final de `pin-reset`.
   /// Con 200 retorna `true` (la página navega a `/pin-reset/otp`).
-  Future<bool> submit({required String email, required String docNumber}) async {
+  Future<bool> submit({
+    required String email,
+    required String docNumber,
+    String docType = 'DNI',
+  }) async {
     if (isBusy) return false;
     final cleanEmail = email.trim();
     if (!isPinResetEmailValid(cleanEmail)) {
@@ -103,10 +114,12 @@ class PinResetIdentityController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+    final cleanType =
+        docType.trim().toUpperCase() == 'RUC' ? 'RUC' : 'DNI';
     final cleanDoc = docNumber.trim();
-    if (!isDocNumberValid(cleanDoc)) {
+    if (!isDocNumberValid(cleanDoc, docType: cleanType)) {
       _status = PinResetIdentityStatus.error;
-      _errorMessage = pinResetInvalidDocMessage;
+      _errorMessage = pinResetInvalidDocMessageFor(cleanType);
       notifyListeners();
       return false;
     }
@@ -412,6 +425,7 @@ class PinResetConfirmController extends ChangeNotifier {
       final result = await _service.resetPin(
         email: _draft.email.trim(),
         docNumber: _draft.docNumber.trim(),
+        docType: _draft.docType,
         code: _draft.code.trim(),
         pin: _draft.pin,
       );

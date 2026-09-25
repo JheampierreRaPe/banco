@@ -35,28 +35,43 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
   E1-T32/SCR-005): OTP de activacion solo por email (plantilla `otp_code_email`;
   nunca SMS); `/auth/activate` deprecado pero vivo (`Deprecation: true` + OpenAPI
   `deprecated`; la via canonica es `POST /auth/pin/setup`).
-- `POST /auth/recovery/request` y `POST /auth/recovery/verify` (`api/recovery.py`,
-  E1-T33): recuperacion pre-sesion por email (OTP `RECOVERY` solo por email;
-  `verify` valida el OTP SIN abrir sesion y devuelve `{user_ref, device_bound}`,
-  con binding del dispositivo nuevo y fila `access_recovery` `method='OTP'`;
-  la unica sesion la abre `POST /auth/login/pin`; consume `F-T29`).
+- `POST /auth/recovery/request` (`api/recovery.py`, E1-T33; E1-T41 retira
+  `verify`): recuperacion pre-sesion por email (OTP `RECOVERY` solo por
+  email). `POST /auth/recovery/verify` fue ELIMINADO por decision del
+  dueno; se conservan `request`, `service/recovery.py`,
+  `repository/recovery.py` y `access_recovery` porque `POST /auth/pin-reset`
+  depende de ellos (consume el OTP y registra `access_recovery` con
+  `new_credential_set=true`).
 - `POST /auth/pin-reset` (`api/pin_reset.py`, E1-T34/SCR-005): reseteo de PIN
-  con `email + DNI + OTP` (`{email, doc_number, code, pin}` -> `{user_ref,
-  pin_set: true}`); consume el OTP `RECOVERY`, valida el DNI contra el hash
-  HMAC server-side (nunca en claro), fija `pin_hash` + resetea
+  con `email + documento + OTP` (`{email, doc_number, [doc_type,] code, pin}` ->
+  `{user_ref, pin_set: true}`); consume el OTP `RECOVERY`, valida el documento
+  contra el hash HMAC server-side (nunca en claro), fija `pin_hash` + resetea
   `failed_attempts`/`locked_until`, registra `access_recovery` con
   `new_credential_set=true`; anti-enumeracion con un unico `401
   INVALID_PIN_RESET` generico; rate-limit por `email+IP` (ventana de verify);
   NO abre sesion (la unica la abre `POST /auth/login/pin`); consumen
-  `F-T34`..`F-T42`.
+  `F-T34`..`F-T42`. E1-T40: `doc_type` (`DNI`/`RUC`, default `DNI`) valida
+  solo formato/longitud (DNI 8 / RUC 11, 422 estandar); la resolucion sigue
+  por `email` + `doc_number_hash` (sin cruzar con `users.doc_type`).
+- `POST /auth/kyc/email/check` (`api/kyc.py` + `service/email_check.py`,
+  E1-T40): precheck del boton **Continuar** de `kyc-start`: `200
+  {available: true}` si el email (normalizado `strip().lower()`) no esta
+  registrado, `409 DUPLICATE_EMAIL` neutro si existe; rate-limit previo
+  (ventana compartida con el proxy KYC); solo lectura via `get_by_email`,
+  sin proveedor ni persistencia; el 409 de `submit` queda intacto.
 - Login biometrico/PIN, sesiones y recuperacion (`api/device_login.py`,
   `api/pin_login.py`, `api/pin_setup.py`, `api/sessions.py`). E1-T38:
   `POST /auth/pin/setup` acepta `biometric_enabled?: bool = false` y lo
   persiste en `credentials.biometric_enabled` junto a `pin_hash` + `ACTIVE`;
-  `POST /auth/login/facial` (`login_with_device`) lo exige (`is True`) antes
-  del binding/firma y, sin consentimiento, responde `400 INVALID_LOGIN`
-  generico (sin sesion ni tocar el binding; auditoria `auth.failed_attempt`
-  con `reason="no_consent"`).
+   `POST /auth/login/facial` (`login_with_device`) lo exige (`is True`) antes
+   del binding/firma y, sin consentimiento, responde `400 INVALID_LOGIN`
+   generico (sin sesion ni tocar el binding; auditoria `auth.failed_attempt`
+   con `reason="no_consent"`). E1-T39: `POST /auth/biometric/consent`
+   (Bearer, `{enabled: bool}`) fija el flag post-alta (idempotente; `401
+   NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; auditoria
+   `auth.biometric_consent` sin PII) y `POST /auth/login/pin` devuelve
+   `biometric_enabled` vigente en su `data` (solo tras exito) para que el
+   cliente sincronice el boton biometrico.
 
 ## Casos de uso (`service/`)
 
@@ -81,9 +96,15 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
    `lookup_holder` (precheck 409 antes de la red, DNI y RUC).
 - OTP, activacion, login y sesiones en sus propios modulos de servicio.
 - `reset_pin` (`service/pin_reset.py`, E1-T34/SCR-005): fija el PIN con
-  `email + DNI + OTP RECOVERY` (un solo 401 generico `INVALID_PIN_RESET`,
+  `email + documento + OTP RECOVERY` (un solo 401 generico `INVALID_PIN_RESET`,
   rate-limit por `email+IP` con la ventana de verify, `access_recovery` con
   `new_credential_set=true`, auditoria `auth.pin_reset`; sin sesion).
+  E1-T40: parametro `doc_type="DNI"` con validacion defensiva de
+  tipo/longitud (mismo `ValueError` -> 422 `INVALID_PIN_FORMAT`, antes de
+  tocar estado); la resolucion sigue por hash+email.
+- `email_is_registered` (`service/email_check.py`, E1-T40): precheck de
+  email (normaliza + `get_by_email`, solo lectura; logs con `has_match` y
+  hash corto, sin PII).
 - Parametros en `config.parameters` (E1-T34, regla de oro 6): `pin_login`
   lee `auth.lockout_seconds`/`auth.max_failed_attempts`, `otp_service`
   `otp.resend_wait_seconds`/`otp.max_attempts` (+ `otp.ttl_seconds`/

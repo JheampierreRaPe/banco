@@ -30,6 +30,7 @@ import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../pin_reset_controllers.dart';
+import '../pin_reset_validators.dart';
 
 /// Paso inicial del restablecimiento de PIN (F-T43).
 class PinResetIdentityPage extends StatefulWidget {
@@ -46,6 +47,9 @@ class PinResetIdentityPage extends StatefulWidget {
 class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
   late final TextEditingController _email;
   late final TextEditingController _doc;
+  String _docType = 'DNI';
+
+  int get _expectedLength => _docType == 'RUC' ? 11 : 8;
 
   @override
   void initState() {
@@ -53,6 +57,16 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
     _email = TextEditingController();
     _doc = TextEditingController();
     widget.controller?.addListener(_onControllerChanged);
+  }
+
+  void _onDocTypeChanged(String? value) {
+    if (value == null || value == _docType) return;
+    setState(() {
+      _docType = value;
+      // Al cambiar tipo se limpia el numero/error (F-T50, item 5).
+      _doc.clear();
+    });
+    widget.controller?.retry();
   }
 
   void _onControllerChanged() {
@@ -67,8 +81,15 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
         location += '&ttl=${result.ttlSeconds}'
             '&resendWait=${result.resendWaitSeconds}';
       }
-      // El DNI viaja SOLO en memoria (`extra`): nunca en la ruta ni en logs.
-      context.go(location, extra: doc);
+      // El DNI/doc_type viajan SOLO en memoria (`extra`): nunca en la ruta.
+      context.go(
+        location,
+        extra: PinResetDraft(
+          email: _email.text.trim(),
+          docNumber: doc,
+          docType: _docType,
+        ),
+      );
       return;
     }
     setState(() {});
@@ -83,8 +104,11 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
   }
 
   Future<void> _submit() async {
-    await widget.controller
-            ?.submit(email: _email.text, docNumber: _doc.text);
+    await widget.controller?.submit(
+      email: _email.text,
+      docNumber: _doc.text,
+      docType: _docType,
+    );
   }
 
   @override
@@ -205,28 +229,16 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
                     ),
                     const SizedBox(height: AppSpacing.stackMd),
                     Text(
-                      'Número de DNI',
+                      'Tipo de documento',
                       style: AppTypography.labelMd.copyWith(
                         color: AppColors.primary,
                       ),
                     ),
                     const SizedBox(height: AppSpacing.stackSm),
-                    TextField(
-                      key: const Key('pin-reset-doc-field'),
-                      controller: _doc,
-                      keyboardType: TextInputType.number,
-                      style: AppTypography.bodyLg.copyWith(
-                        color: AppColors.onSurface,
-                      ),
-                      // DNI sensible: sin sugerencias ni autofill; nunca se
-                      // loguea ni viaja en la ruta.
-                      enableSuggestions: false,
-                      autocorrect: false,
+                    DropdownButtonFormField<String>(
+                      key: const Key('pin-reset-doc-type'),
+                      initialValue: _docType,
                       decoration: InputDecoration(
-                        hintText: '12345678',
-                        hintStyle: AppTypography.bodyMd.copyWith(
-                          color: AppColors.secondaryText,
-                        ),
                         filled: true,
                         fillColor: AppColors.surfaceContainerLowest,
                         contentPadding: const EdgeInsets.symmetric(
@@ -249,10 +261,73 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
                           ),
                         ),
                       ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'DNI',
+                          child: Text('DNI'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'RUC',
+                          child: Text('RUC'),
+                        ),
+                      ],
+                      onChanged: _onDocTypeChanged,
+                    ),
+                    const SizedBox(height: AppSpacing.stackMd),
+                    Text(
+                      _docType == 'RUC'
+                          ? 'Número de RUC'
+                          : 'Número de DNI',
+                      style: AppTypography.labelMd.copyWith(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.stackSm),
+                    TextField(
+                      key: const Key('pin-reset-doc-field'),
+                      controller: _doc,
+                      keyboardType: TextInputType.number,
+                      maxLength: _expectedLength,
+                      style: AppTypography.bodyLg.copyWith(
+                        color: AppColors.onSurface,
+                      ),
+                      // DNI/RUC sensible: sin sugerencias ni autofill; nunca
+                      // se loguea ni viaja en la ruta.
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      decoration: InputDecoration(
+                        hintText:
+                            _docType == 'RUC' ? '20123456789' : '12345678',
+                        hintStyle: AppTypography.bodyMd.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
+                        filled: true,
+                        fillColor: AppColors.surfaceContainerLowest,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.stackMd,
+                          vertical: AppSpacing.stackSm + AppSpacing.unit,
+                        ),
+                        counterText: '',
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppRadii.md),
+                          borderSide: const BorderSide(
+                            color: AppColors.outlineVariant,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppRadii.md),
+                          borderSide: const BorderSide(
+                            color: AppColors.primary,
+                            width: 2,
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: AppSpacing.stackSm),
                     Text(
-                      '8 dígitos, como figura en tu DNI.',
+                      pinResetDocHelpFor(_docType),
                       style: AppTypography.bodyMd.copyWith(
                         color: AppColors.secondaryText,
                       ),

@@ -64,10 +64,28 @@ class _ChallengeOnlyService implements KycService {
       throw UnimplementedError('fuera de la frontera F-T44');
 }
 
+/// Doble del precheck de email (E1-T40/F-T50): sin red, sin PII real.
+class FakeEmailCheck implements KycEmailCheckService {
+  FakeEmailCheck({this.error});
+
+  Object? error;
+  String? lastEmail;
+  int calls = 0;
+
+  @override
+  Future<void> checkEmail({required String email}) async {
+    calls++;
+    lastEmail = email;
+    final failure = error;
+    if (failure != null) throw failure;
+  }
+}
+
 GoRouter _testRouter(
   KycFlowController controller,
-  KycDocumentLookupService lookup,
-) =>
+  KycDocumentLookupService lookup, [
+  KycEmailCheckService? emailCheck,
+]) =>
     GoRouter(
       initialLocation: '/kyc',
       routes: [
@@ -76,6 +94,7 @@ GoRouter _testRouter(
           builder: (context, state) => KycStartPage(
             controller: controller,
             lookupService: lookup,
+            emailCheckService: emailCheck,
           ),
         ),
         GoRoute(
@@ -88,11 +107,12 @@ GoRouter _testRouter(
 Future<void> _pumpStart(
   WidgetTester tester,
   KycFlowController controller,
-  KycDocumentLookupService lookup,
-) async {
+  KycDocumentLookupService lookup, [
+  KycEmailCheckService? emailCheck,
+]) async {
   await tester.pumpWidget(
     MaterialApp.router(
-      routerConfig: _testRouter(controller, lookup),
+      routerConfig: _testRouter(controller, lookup, emailCheck),
     ),
   );
   await tester.pumpAndSettle();
@@ -636,5 +656,283 @@ void main() {
     );
     expect(_continuarEnabled(tester), isFalse);
     expect(controller.challenge, isNull);
+  });
+
+  group('F-T50 borde rojo + precheck de email (CA-01/CA-02/CA-03/CA-04)', () {
+    InputDecoration docDecoration(WidgetTester tester, String key) {
+      final inner = find.descendant(
+        of: find.byKey(Key(key)),
+        matching: find.byType(TextField),
+      );
+      return tester.widget<TextField>(inner).decoration!;
+    }
+
+    Color? borderColor(InputBorder? border) =>
+        (border as OutlineInputBorder?)?.borderSide.color;
+
+    Future<void> validateOk(WidgetTester tester, {String email = 'juan@example.com'}) async {
+      await tester.enterText(
+        find.byKey(const Key('emailField')),
+        email,
+      );
+      await tester.enterText(
+        find.byKey(const Key('docNumberField')),
+        '12345678',
+      );
+      await tester.pump();
+      await _tapValidar(tester);
+    }
+
+    testWidgets('error de lookup pinta docNumberField en rojo (CA-01)',
+        (tester) async {
+      final lookup = FakeDocumentLookup(
+        error: ApiException(
+          code: 'DOCUMENT_NOT_FOUND',
+          message: messageForCode('DOCUMENT_NOT_FOUND'),
+        ),
+      );
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(tester, controller, lookup);
+
+      await tester.enterText(
+        find.byKey(const Key('docNumberField')),
+        '12345678',
+      );
+      await tester.pump();
+      await _tapValidar(tester);
+
+      final decoration = docDecoration(tester, 'docNumberField');
+      expect(borderColor(decoration.enabledBorder), AppColors.errorCarmine);
+      expect(borderColor(decoration.focusedBorder), AppColors.errorCarmine);
+      expect(find.byKey(const Key('kycLookupError')), findsOneWidget);
+    });
+
+    testWidgets('exito vuelve a borde normal, nunca verde (CA-01)',
+        (tester) async {
+      final lookup = FakeDocumentLookup(
+        error: ApiException(
+          code: 'DOCUMENT_NOT_FOUND',
+          message: messageForCode('DOCUMENT_NOT_FOUND'),
+        ),
+      );
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(tester, controller, lookup);
+
+      await tester.enterText(
+        find.byKey(const Key('docNumberField')),
+        '12345678',
+      );
+      await tester.pump();
+      await _tapValidar(tester);
+      expect(
+        borderColor(docDecoration(tester, 'docNumberField').enabledBorder),
+        AppColors.errorCarmine,
+      );
+
+      // Reintento exitoso: borde normal (outlineVariant/primary), sin verde.
+      lookup.error = null;
+      await tester.ensureVisible(find.text('Reintentar'));
+      await tester.tap(find.text('Reintentar'));
+      await tester.pumpAndSettle();
+
+      final ok = docDecoration(tester, 'docNumberField');
+      expect(
+        borderColor(ok.enabledBorder),
+        AppColors.outlineVariant,
+      );
+      expect(borderColor(ok.focusedBorder), AppColors.primary);
+      expect(borderColor(ok.enabledBorder), isNot(AppColors.success));
+      expect(find.byKey(const Key('kycLookupError')), findsNothing);
+    });
+
+    testWidgets('cambiar numero limpia el borde rojo (CA-01)',
+        (tester) async {
+      final lookup = FakeDocumentLookup(
+        error: ApiException(
+          code: 'DOCUMENT_NOT_FOUND',
+          message: messageForCode('DOCUMENT_NOT_FOUND'),
+        ),
+      );
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(tester, controller, lookup);
+
+      await tester.enterText(
+        find.byKey(const Key('docNumberField')),
+        '12345678',
+      );
+      await tester.pump();
+      await _tapValidar(tester);
+      expect(find.byKey(const Key('kycLookupError')), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('docNumberField')),
+        '12345679',
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('kycLookupError')), findsNothing);
+      expect(
+        borderColor(docDecoration(tester, 'docNumberField').enabledBorder),
+        AppColors.outlineVariant,
+      );
+    });
+
+    testWidgets('DUPLICATE_EMAIL subraya email y no avanza (CA-02/CA-04)',
+        (tester) async {
+      final emailCheck = FakeEmailCheck(
+        error: ApiException(
+          code: 'DUPLICATE_EMAIL',
+          message: messageForCode('DUPLICATE_EMAIL'),
+          statusCode: 409,
+        ),
+      );
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(
+        tester,
+        controller,
+        FakeDocumentLookup(),
+        emailCheck,
+      );
+
+      await validateOk(tester, email: 'existe@banco.com');
+      expect(_continuarEnabled(tester), isTrue);
+
+      await tester.ensureVisible(find.text('Continuar'));
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+
+      expect(emailCheck.calls, 1);
+      expect(emailCheck.lastEmail, 'existe@banco.com');
+      // Campo subrayado en rojo + mensaje exacto del catalogo, sin navegar.
+      final emailDec = docDecoration(tester, 'emailField');
+      expect(borderColor(emailDec.enabledBorder), AppColors.errorCarmine);
+      expect(find.text('El correo ya existe.'), findsOneWidget);
+      expect(find.byKey(const Key('kycEmailError')), findsOneWidget);
+      expect(controller.challenge, isNull);
+      expect(find.text('Escanea tu DNI'), findsNothing);
+    });
+
+    testWidgets('email disponible continua al challenge (CA-03)',
+        (tester) async {
+      final emailCheck = FakeEmailCheck();
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(
+        tester,
+        controller,
+        FakeDocumentLookup(),
+        emailCheck,
+      );
+
+      await validateOk(tester, email: 'nuevo@banco.com');
+      await tester.ensureVisible(find.text('Continuar'));
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+
+      expect(emailCheck.calls, 1);
+      expect(emailCheck.lastEmail, 'nuevo@banco.com');
+      expect(controller.challenge?.token, 'tok-abc');
+      expect(find.text('Escanea tu DNI'), findsOneWidget);
+    });
+
+    testWidgets('fallo de red del precheck no avanza (CA-03)',
+        (tester) async {
+      final emailCheck = FakeEmailCheck(error: ApiException.network());
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(
+        tester,
+        controller,
+        FakeDocumentLookup(),
+        emailCheck,
+      );
+
+      await validateOk(tester);
+      await tester.ensureVisible(find.text('Continuar'));
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+
+      expect(emailCheck.calls, 1);
+      expect(controller.challenge, isNull);
+      expect(find.text('Escanea tu DNI'), findsNothing);
+      // Mensaje neutro con el campo marcado (reintento al reescribir).
+      expect(find.byKey(const Key('kycEmailError')), findsOneWidget);
+    });
+
+    testWidgets('reescribir el email limpia el error (CA-02)',
+        (tester) async {
+      final emailCheck = FakeEmailCheck(
+        error: ApiException(
+          code: 'DUPLICATE_EMAIL',
+          message: messageForCode('DUPLICATE_EMAIL'),
+          statusCode: 409,
+        ),
+      );
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(
+        tester,
+        controller,
+        FakeDocumentLookup(),
+        emailCheck,
+      );
+
+      await validateOk(tester, email: 'existe@banco.com');
+      await tester.ensureVisible(find.text('Continuar'));
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+      expect(find.text('El correo ya existe.'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('emailField')),
+        'nuevo@banco.com',
+      );
+      await tester.pump();
+      expect(find.text('El correo ya existe.'), findsNothing);
+    });
+
+    testWidgets('reintento del precheck sin cambiar el email (MENOR)',
+        (tester) async {
+      final emailCheck = FakeEmailCheck(error: ApiException.network());
+      final controller =
+          KycFlowController(service: const _ChallengeOnlyService());
+      addTearDown(controller.dispose);
+      await _pumpStart(
+        tester,
+        controller,
+        FakeDocumentLookup(),
+        emailCheck,
+      );
+
+      await validateOk(tester, email: 'mismo@banco.com');
+      await tester.ensureVisible(find.text('Continuar'));
+      await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+      expect(emailCheck.calls, 1);
+      expect(find.byKey(const Key('kycEmailError')), findsOneWidget);
+      // Sin el fix no hay accion de reintento (obligaba a editar el email).
+      expect(find.byKey(const Key('kycEmailRetry')), findsOneWidget);
+
+      // El segundo intento usa el MISMO email, sin editar el campo.
+      emailCheck.error = null;
+      await tester.ensureVisible(find.byKey(const Key('kycEmailRetry')));
+      await tester.tap(find.byKey(const Key('kycEmailRetry')));
+      await tester.pumpAndSettle();
+
+      expect(emailCheck.calls, 2);
+      expect(emailCheck.lastEmail, 'mismo@banco.com');
+      expect(controller.challenge?.token, 'tok-abc');
+      expect(find.text('Escanea tu DNI'), findsOneWidget);
+    });
   });
 }

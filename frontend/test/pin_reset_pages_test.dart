@@ -218,6 +218,10 @@ Future<void> _submitIdentity(WidgetTester tester) async {
     _doc,
   );
   await tester.pump();
+  await tester.ensureVisible(
+    find.byKey(const Key('pin-reset-identity-submit')),
+  );
+  await tester.pumpAndSettle();
   await tester.tap(find.byKey(const Key('pin-reset-identity-submit')));
   await tester.pumpAndSettle();
 }
@@ -297,6 +301,7 @@ void main() {
         {
           'email': _email,
           'doc_number': _doc,
+          'doc_type': 'DNI',
           'code': _code,
           'pin': _pin,
         }
@@ -563,6 +568,10 @@ void main() {
         _doc,
       );
       await tester.pump();
+      await tester.ensureVisible(
+        find.byKey(const Key('pin-reset-identity-submit')),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('pin-reset-identity-submit')));
       await tester.pump();
       expect(find.byType(LoadingView), findsOneWidget);
@@ -862,6 +871,96 @@ void main() {
       expect(find.textContaining(_doc), findsNothing);
       expect(find.textContaining(_code), findsNothing);
       expect(find.textContaining(_pin), findsNothing);
+    });
+  });
+
+  group('F-T50 selector DNI/RUC (CA-05)', () {
+    testWidgets('muestra selector con ayuda dinamica y limite', (
+      tester,
+    ) async {
+      final backend = FakePinResetBackend();
+      final session = InMemorySessionRepository();
+      final identity = InMemorySessionIdentityStore();
+      addTearDown(identity.dispose);
+      final router = _flowRouter(backend, session, identity);
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('pin-reset-doc-type')),
+        findsOneWidget,
+      );
+      expect(find.text('DNI'), findsWidgets);
+      expect(
+        find.text('8 dígitos, como figura en tu DNI.'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('pin-reset-doc-type')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('RUC').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('11 dígitos, como figura en tu RUC.'),
+        findsOneWidget,
+      );
+      expect(find.text('Número de RUC'), findsOneWidget);
+    });
+
+    testWidgets('RUC 11 envia doc_type RUC sin numero en URL', (
+      tester,
+    ) async {
+      final backend = FakePinResetBackend();
+      final session = InMemorySessionRepository();
+      final identity = InMemorySessionIdentityStore();
+      addTearDown(identity.dispose);
+      final router = _flowRouter(backend, session, identity);
+      addTearDown(router.dispose);
+      final uris = <String>[];
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('pin-reset-doc-type')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('RUC').last);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('pin-reset-email-field')),
+        _email,
+      );
+      await tester.enterText(
+        find.byKey(const Key('pin-reset-doc-field')),
+        '20123456789',
+      );
+      await tester.pump();
+      await tester.ensureVisible(
+        find.byKey(const Key('pin-reset-identity-submit')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pin-reset-identity-submit')));
+      await tester.pumpAndSettle();
+      uris.add(_currentUri(router));
+
+      await _enterOtp(tester, _code);
+      await tester.tap(find.byKey(const Key('pin-reset-otp-submit')));
+      await tester.pumpAndSettle();
+      await _enterPin(tester, _pin);
+      await _enterPin(tester, _pin);
+      await tester.pumpAndSettle();
+      uris.add(_currentUri(router));
+
+      expect(backend.resetBodies.single['doc_type'], 'RUC');
+      expect(
+        backend.resetBodies.single['doc_number'],
+        '20123456789',
+      );
+      for (final uri in uris) {
+        expect(uri, isNot(contains('20123456789')));
+        expect(uri.toLowerCase(), isNot(contains('doc_type')));
+      }
     });
   });
 }

@@ -27,6 +27,7 @@ const Map<String, String> apiErrorMessagesEs = {
   'DOCUMENT_NOT_FOUND':
       'No encontramos ese documento. Revisa los datos e intentalo de nuevo.',
   'DUPLICATE_DOCUMENT': 'El documento ya se encuentra registrado.',
+  'DUPLICATE_EMAIL': 'El correo ya existe.',
   'DOC_LOOKUP_UNAVAILABLE':
       'El servicio de consulta no esta disponible. Intentalo mas tarde.',
   'RATE_LIMITED':

@@ -57,7 +57,7 @@ class LoginPage extends StatefulWidget {
   final LoginController controller;
 
   /// Referencia del usuario (viaja como `user_ref` al backend; también llega
-  /// por `/login?userRef=` tras recovery).
+  /// por `/login?userRef=` tras el restablecimiento de PIN).
   final String userRef;
 
   /// Identificador del dispositivo (viaja como `device_id`).
@@ -247,14 +247,20 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: AppSpacing.stackMd),
-                      AppPrimaryButton(
-                        key: const Key('login-biometric-button'),
-                        label: 'Ingresar con biometría',
-                        icon: Icons.face,
-                        loading: c.busy,
-                        onPressed: c.busy ? null : _submitBiometrics,
-                      ),
+                      // Boton biometrico (pagina `0:860`, F-T49): solo si el
+                      // servidor informo consentimiento (`biometric_enabled`
+                      // sincronizado tras el login con PIN, E1-T39). Sin
+                      // consentimiento conocido se oculta y queda el PIN.
+                      if (c.biometricEnabled == true) ...[
+                        const SizedBox(height: AppSpacing.stackMd),
+                        AppPrimaryButton(
+                          key: const Key('login-biometric-button'),
+                          label: 'Ingresar con biometría',
+                          icon: Icons.face,
+                          loading: c.busy,
+                          onPressed: c.busy ? null : _submitBiometrics,
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -352,13 +358,6 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ],
                 const SizedBox(height: AppSpacing.stackSm),
-                // Enlace aditivo de recuperación: navega a `/recovery`
-                // sin tocar la lógica de biometría/PIN ni el estado del login.
-                AppGhostButton(
-                  key: const Key('login-recovery-link'),
-                  label: 'Recuperar acceso',
-                  onPressed: () => context.go('/recovery'),
-                ),
                 // Enlace aditivo de restablecimiento de PIN (F-T43): navega
                 // a `/pin-reset` sin tocar la lógica de biometría/PIN.
                 AppGhostButton(

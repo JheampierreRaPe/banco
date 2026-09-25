@@ -574,6 +574,9 @@ def login_with_pin(
             "token_type": "Bearer",
             "session_id": str(row.id),
             "expires_in": refresh_in,
+            # E1-T39: consentimiento vigente (la credencial ya se obtuvo
+            # arriba; solo en la rama de exito, donde no es `None`).
+            "biometric_enabled": credential.biometric_enabled is True,
         }
 
     attempts = int(credential.failed_attempts or 0) + 1

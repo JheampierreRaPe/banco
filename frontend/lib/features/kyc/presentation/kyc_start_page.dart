@@ -33,7 +33,7 @@ import 'kyc_fig_widgets.dart';
 /// juridica: `business_name` donde iria el nombre). El frontend jamas llama a
 /// la API externa ni conoce su key, y no registra PII en logs.
 class KycStartPage extends StatefulWidget {
-  const KycStartPage({super.key, this.controller, this.lookupService});
+  const KycStartPage({super.key, this.controller, this.lookupService, this.emailCheckService});
 
   /// Controlador inyectable (tests). Por defecto, el compartido de
   /// [KycDependencies] (cableado por el orquestador).
@@ -42,6 +42,10 @@ class KycStartPage extends StatefulWidget {
   /// Servicio de consulta del titular (tests). Por defecto, el resuelto por
   /// [KycDependencies.lookupService] (el propio `HttpKycService`).
   final KycDocumentLookupService? lookupService;
+
+  /// Servicio de prechequeo de email (tests, F-T50/E1-T40). Por defecto, el
+  /// resuelto por [KycDependencies.emailCheckService].
+  final KycEmailCheckService? emailCheckService;
 
   static const List<String> documentTypes = kKycDocumentTypes;
 
@@ -81,6 +85,13 @@ class _KycStartPageState extends State<KycStartPage> {
   /// Error neutro de la ultima validacion (con reintento); `null` si no hay.
   String? _lookupError;
 
+  /// Error del precheck de email (F-T50): `DUPLICATE_EMAIL` u otro fallo
+  /// neutro con reintento; `null` si no hay. Subraya `emailField`.
+  String? _emailError;
+
+  /// `true` mientras `Continuar` prechequea el email en el servidor.
+  bool _checkingEmail = false;
+
   /// Suscripción a la señal de reinicio del controller (F-T47).
   KycFlowController? _listenedController;
   int _lastResetGeneration = 0;
@@ -102,7 +113,9 @@ class _KycStartPageState extends State<KycStartPage> {
   /// `Continuar` exige documento validado por el servidor con los datos
   /// vigentes, nombres llenos por la API y email valido (telefono opcional).
   bool get _canContinue {
-    if (_validating || !_lookupValid) return false;
+    if (_validating || _checkingEmail) return false;
+    if (!_lookupValid) return false;
+    if (_emailError != null) return false;
     if (_numberController.text.trim() != _validatedNumber) return false;
     if (_firstNameController.text.trim().isEmpty) return false;
     if (_validateEmail(_emailController.text) != null) return false;
@@ -149,6 +162,8 @@ class _KycStartPageState extends State<KycStartPage> {
       _lookupIsBusiness = false;
       _validatedNumber = null;
       _lookupError = null;
+      _emailError = null;
+      _checkingEmail = false;
       _showFormErrors = false;
       _validating = false;
     });
@@ -193,6 +208,16 @@ class _KycStartPageState extends State<KycStartPage> {
     }
   }
 
+  KycEmailCheckService? _resolveEmailCheck() {
+    final injected = widget.emailCheckService;
+    if (injected != null) return injected;
+    try {
+      return KycDependencies.emailCheckService;
+    } on StateError {
+      return null;
+    }
+  }
+
   /// Limpia los nombres recuperados y bloquea `Continuar` (datos obsoletos).
   void _invalidateLookup() {
     _lookupValid = false;
@@ -213,10 +238,34 @@ class _KycStartPageState extends State<KycStartPage> {
 
   void _onNumberChanged(String value) {
     setState(() {
-      if (_lookupValid && value.trim() != _validatedNumber) {
+      // F-T50: cambiar el numero limpia el error del lookup (borde rojo) y
+      // los datos obsoletos, haya o no una validacion vigente.
+      if (_lookupError != null) {
+        _invalidateLookup();
+      } else if (_lookupValid && value.trim() != _validatedNumber) {
         _invalidateLookup();
       }
     });
+  }
+
+  void _onEmailChanged(String value) {
+    if (_emailError == null) {
+      if (mounted) setState(() {});
+      return;
+    }
+    setState(() {
+      _emailError = null;
+    });
+  }
+
+  /// Reintento del precheck de email (MENOR): limpia [_emailError] y
+  /// reintenta [_continue] con el MISMO email, sin obligar a editarlo.
+  /// Solo por accion del usuario (sin auto-reintento en bucle); el mensaje
+  /// sigue siendo el neutro del catalogo (sin eco del email).
+  Future<void> _retryEmailCheck() async {
+    if (_checkingEmail) return;
+    setState(() => _emailError = null);
+    await _continue();
   }
 
   /// `Validar documento`: consulta el titular al backend (E1-T35) y rellena
@@ -302,11 +351,44 @@ class _KycStartPageState extends State<KycStartPage> {
     }
     if (mounted) setState(() => _showFormErrors = false);
     FocusScope.of(context).unfocus();
+    // F-T50 (item 2, E1-T40): prechequear el email ya validado en formato
+    // ANTES de construir el `KycApplicant`/pedir el challenge. `409
+    // DUPLICATE_EMAIL` subraya el campo y no avanza; red/429 muestra un
+    // mensaje neutro con reintento y tampoco avanza. Sin PII en logs.
+    final email = _emailController.text.trim();
+    final emailCheck = _resolveEmailCheck();
+    if (emailCheck != null) {
+      if (mounted) {
+        setState(() {
+          _checkingEmail = true;
+          _emailError = null;
+        });
+      }
+      try {
+        await emailCheck.checkEmail(email: email);
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _checkingEmail = false;
+          _emailError = e.message;
+        });
+        return;
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          _checkingEmail = false;
+          _emailError = 'Ocurrio un error inesperado. Intentalo mas tarde.';
+        });
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _checkingEmail = false);
+    }
     _controller.setApplicant(
       KycApplicant(
         firstName: _firstNameController.text.trim(),
         lastName: _lastNameController.text.trim(),
-        email: _emailController.text.trim(),
+        email: email,
         phone: _phoneController.text.trim(),
         // F-T48 (E1-T36): la razon social viaja como `business_name` en el
         // submit; en persona natural va vacio y el servidor la ignora.
@@ -408,6 +490,7 @@ class _KycStartPageState extends State<KycStartPage> {
                             onChanged: _onNumberChanged,
                             decoration: kycFieldDecoration(
                               hintText: '12345678',
+                              hasError: _lookupError != null,
                             ),
                             keyboardType: TextInputType.number,
                             inputFormatters: [
@@ -495,16 +578,43 @@ class _KycStartPageState extends State<KycStartPage> {
                           TextFormField(
                             key: const Key('emailField'),
                             controller: _emailController,
-                            onChanged: (_) {
-                              if (mounted) setState(() {});
-                            },
+                            onChanged: _onEmailChanged,
                             decoration: kycFieldDecoration(
                               hintText: 'ejemplo@correo.com',
+                              hasError: _emailError != null,
                             ),
                             keyboardType: TextInputType.emailAddress,
                             textInputAction: TextInputAction.next,
                             validator: _validateEmail,
                           ),
+                          if (_emailError != null)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: AppSpacing.unit,
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      _emailError!,
+                                      key: const Key('kycEmailError'),
+                                      style:
+                                          AppTypography.labelSm.copyWith(
+                                        color: AppColors.errorCarmine,
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    key: const Key('kycEmailRetry'),
+                                    onPressed: _checkingEmail
+                                        ? null
+                                        : _retryEmailCheck,
+                                    child: const Text('Reintentar'),
+                                  ),
+                                ],
+                              ),
+                            ),
                           const KycFieldHelper(
                             text:
                                 'Aquí te enviaremos tus constancias y el código '

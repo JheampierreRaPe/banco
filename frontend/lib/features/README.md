@@ -31,8 +31,9 @@ router, que resuelve por sesión + `userRef` de `SessionIdentityStore`
 (F-T36/F-T37, decisión SCR-005 d5; sin flag local de bienvenida).
 Sin sesión y sin `userRef`, la puerta es `/welcome` (`OnboardingPage`:
 PageView de 3 slides, "Crear mi cuenta" → `/kyc`, "Ya tengo cuenta ·
-Iniciar sesión" → `/recovery`). El legacy `/entry` quedó retirado (F-T36)
+Restablecer PIN" → `/pin-reset`; el flujo `/recovery` fue retirado en
+F-T51 y ya no existe). El legacy `/entry` quedó retirado (F-T36)
 y redirige a `/welcome` sin sesión. Públicas sin sesión con `userRef`:
 `/splash`, `/welcome`, `/login`, `/kyc*`, `/activate`, `/pin-setup`,
-`/recovery`, `/recovery/otp`; todo lo demás exige sesión y con sesión
+`/pin-reset`, `/pin-reset/*`; todo lo demás exige sesión y con sesión
 `/splash`, `/welcome` y `/login` redirigen a `/home`.

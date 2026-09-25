@@ -5,7 +5,8 @@ E1-T31: recuperacion de acceso por email con OTP; E1-T34: reseteo de PIN con ema
 Combina de forma aditiva los routers de `api/kyc.py` (intacto),
 `api/activation.py` (intacto), `api/device_login.py` (intacto),
 `api/pin_login.py` (intacto), `api/pin_setup.py` (fijado inicial del PIN,
-addendum E1-T14), `api/recovery.py` (recuperacion por email, E1-T33),
+addendum E1-T14), `api/biometric.py` (consentimiento biometrico post-login,
+E1-T39), `api/recovery.py` (recuperacion por email, E1-T33),
 `api/pin_reset.py` (reseteo de PIN con email+DNI+OTP, E1-T34) y
 `api/sessions.py` para el ensamblado del
 monolito (`app.main` via `iter_routers`, prefijo `/api/v1`).
@@ -14,6 +15,7 @@ monolito (`app.main` via `iter_routers`, prefijo `/api/v1`).
 from fastapi import APIRouter
 
 from app.modules.identity.api.activation import router as activation_router
+from app.modules.identity.api.biometric import router as biometric_router
 from app.modules.identity.api.device_login import router as device_login_router
 from app.modules.identity.api.kyc import router as kyc_router
 from app.modules.identity.api.pin_login import router as pin_login_router
@@ -24,6 +26,7 @@ from app.modules.identity.api.sessions import router as sessions_router
 
 router = APIRouter()
 router.include_router(kyc_router)
+router.include_router(biometric_router)
 router.include_router(activation_router)
 router.include_router(device_login_router)
 router.include_router(pin_login_router)

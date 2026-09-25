@@ -15,7 +15,6 @@ import '../../features/login/login_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
-import '../../features/recovery/recovery_routes.dart';
 import '../../features/splash/splash_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../http/api_client.dart';
@@ -31,7 +30,7 @@ import '../session/session_repository.dart';
 ///   escribe ninguna clave de primera vez.
 /// - Sin sesión con `userRef`: rutas públicas pre-login permitidas
 ///   (`/splash`, `/welcome`, `/login`, `/kyc*`, `/activate`, `/pin-setup*`,
-///   `/registration-success`, `/recovery`, `/recovery/otp`, `/pin-reset*`);
+///   `/registration-success`, `/pin-reset*`);
 ///   cualquier ruta privada -> `/login`.
 /// - Con sesión: `/home`; visitar `/splash`, `/welcome`, `/login` o el legacy
 ///   `/entry` redirige a `/home`.
@@ -56,8 +55,6 @@ bool _isPublicLocation(String location) {
       location == '/pin-setup' ||
       location.startsWith('/pin-setup/') ||
       location == '/registration-success' ||
-      location == '/recovery' ||
-      location == '/recovery/otp' ||
       // Restablecimiento de PIN F-T43 (email + DNI + OTP -> PIN nuevo):
       // todas las sub-rutas de `/pin-reset` + el paso success son
       // públicas pre-login (no abren sesión).
@@ -106,11 +103,6 @@ GoRouter buildRouter(
         userRef: identityStore.userRef ?? '',
         deviceId: identityStore.deviceId ?? '',
       );
-  recoveryRouteDepsFactory = () => RecoveryRouteDeps(
-        api: client,
-        session: session,
-        identity: identityStore,
-      );
   pinResetRouteDepsFactory = () => PinResetRouteDeps(
         api: client,
         session: session,
@@ -148,7 +140,6 @@ GoRouter buildRouter(
       ...activationRoutes,
       ...pinSetupRoutes,
       ...loginRoutes,
-      ...recoveryRoutes,
       ...pinResetRoutes,
       ...accountsRoutes,
       ...homeRoutes,

@@ -231,6 +231,7 @@ def test_setup_ok_then_pin_login_works(setup_client: TestClient, setup_session: 
         "token_type",
         "session_id",
         "expires_in",
+        "biometric_enabled",
     }
 
 

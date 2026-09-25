@@ -89,9 +89,31 @@ abstract class KycDocumentLookupService {
   });
 }
 
+/// Prechequeo de email (E1-T40 / F-T50).
+///
+/// Se declara como interfaz SEPARADA (no como miembros nuevos de [KycService])
+/// para no romper los dobles de test existentes: la pantalla de inicio la
+/// recibe opcional y, en produccion, [HttpKycService] la implementa.
+///
+/// Cliente delgado (docs/19 §4): solo llama al backend
+/// (`POST /auth/kyc/email/check`); la existencia la decide el servidor.
+/// Sin PII en logs: no se registra el email.
+abstract class KycEmailCheckService {
+  /// `POST /auth/kyc/email/check` (E1-T40): `{email}`.
+  ///
+  /// `200 {available: true}` si no existe (retorna sin error);
+  /// `409 DUPLICATE_EMAIL` si existe (lanza [ApiException] con ese codigo
+  /// via la capa HTTP; 422/429/red se propagan igual).
+  Future<void> checkEmail({required String email});
+}
+
 /// Implementacion HTTP sobre [ApiClient] (capa de F-T01).
 class HttpKycService
-    implements KycService, KycEvaluationService, KycDocumentLookupService {
+    implements
+        KycService,
+        KycEvaluationService,
+        KycDocumentLookupService,
+        KycEmailCheckService {
   HttpKycService(this._api);
 
   final ApiClient _api;
@@ -104,6 +126,9 @@ class HttpKycService
 
   /// Ruta de consulta del titular por documento (E1-T35 / F-T44).
   static const String documentLookupPath = '/auth/kyc/document/lookup';
+
+  /// Ruta de prechequeo de email (E1-T40 / F-T50).
+  static const String emailCheckPath = '/auth/kyc/email/check';
 
   @override
   Future<KycChallenge> challenge() async {
@@ -219,6 +244,14 @@ class HttpKycService
     };
     final response = await _api.post(documentLookupPath, data: payload);
     return KycDocumentOwner.fromData(_dataOf(response.data));
+  }
+
+  @override
+  Future<void> checkEmail({required String email}) async {
+    // Solo el email al backend (E1-T40); el servidor decide la existencia
+    // (cliente delgado). El 409 `DUPLICATE_EMAIL` lo convierte la capa HTTP
+    // en `ApiException` con ese codigo; aqui no se registra el email.
+    await _api.post(emailCheckPath, data: {'email': email});
   }
 
   /// Extrae el `data` del envelope docs/05 `{data, meta}`.

@@ -5,6 +5,8 @@
 `POST /auth/kyc/document/validate` -> `{is_valid, issues, checks}` (E1-T30);
 `POST /auth/kyc/document/lookup` -> `{document_type, first_name, last_name,
 business_name}` (E1-T35, proxy a apiinti con `APIINTI_API_KEY` server-side);
+`POST /auth/kyc/email/check` -> `{available}` (E1-T40, precheck de email del
+paso "Continuar", sin proveedor ni persistencia);
 `POST /auth/kyc/submit` -> `{overall_result, ...}`. Montados bajo `/api/v1`
 por `app.main` via `iter_routers` (este `router` lo recoge el ensamblado;
 sin registro extra).
@@ -71,6 +73,10 @@ from app.adapters.kyc_provider import (
 )
 from app.core.db import get_db
 from app.core.errors import AppError
+from app.modules.identity.schemas.email_check import (
+    EmailCheckRequest,
+    EmailCheckResponse,
+)
 from app.modules.identity.schemas.kyc import (
     DocumentLookupRequest,
     DocumentLookupResponse,
@@ -84,6 +90,7 @@ from app.modules.identity.schemas.kyc import (
     KycSubmitResponse,
 )
 from app.modules.identity.service import document_lookup, kyc_onboarding, kyc_proxy
+from app.modules.identity.service import email_check as email_check_service
 
 router = APIRouter(tags=["identity"])
 
@@ -332,6 +339,37 @@ def kyc_document_validate(
     ) as exc:
         raise _service_error(exc) from exc
     return {"data": data, "meta": {"request_id": _request_id(request)}}
+
+
+@router.post(
+    "/auth/kyc/email/check",
+    response_model=EmailCheckResponse,
+    summary="Prechequea si el email ya esta registrado (paso Continuar)",
+)
+def kyc_email_check(
+    body: EmailCheckRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Responde si el correo ya esta registrado, sin proveedor ni persistencia.
+
+    Precheck del boton **Continuar** de `kyc-start` (E1-T40, HU01, decision
+    del dueno item 2): existente -> `409 DUPLICATE_EMAIL` neutro
+    (`"El correo ya esta registrado"`, sin eco del email); inexistente ->
+    `200 {"data": {"available": true}}`. El rate-limit corre ANTES de
+    resolver existencia (misma ventana en memoria compartida con el proxy
+    KYC; prod: Redis/middleware). Como el resto del proxy KYC, este
+    precheck SI revela existencia por decision explicita del dueno.
+    """
+    # Rate limit en memoria compartido con el proxy KYC (prod: Redis/middleware).
+    _enforce_rate_limit(request, None)
+    if email_check_service.email_is_registered(db, body.email):
+        raise AppError(
+            code="DUPLICATE_EMAIL",
+            message="El correo ya esta registrado",
+            status_code=409,
+        )
+    return {"data": {"available": True}, "meta": {"request_id": _request_id(request)}}
 
 
 @router.post(

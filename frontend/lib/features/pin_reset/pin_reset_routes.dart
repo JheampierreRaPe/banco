@@ -95,8 +95,22 @@ final List<GoRoute> pinResetRoutes = [
         builder: (context, state) {
           final factory = pinResetRouteDepsFactory;
           final email = state.uri.queryParameters['email'] ?? '';
-          final docNumber = state.extra is String ? state.extra as String : '';
-          if (factory == null || email.isEmpty || docNumber.isEmpty) {
+          // F-T50: `extra` vigente es `PinResetDraft` (email+doc+docType en
+          // memoria); se acepta el `String` legado (solo DNI, default `DNI`).
+          final extra = state.extra;
+          var docNumber = '';
+          var docType = 'DNI';
+          var draftEmail = email;
+          if (extra is PinResetDraft) {
+            docNumber = extra.docNumber;
+            docType = extra.docType;
+            if (draftEmail.isEmpty) draftEmail = extra.email;
+          } else if (extra is String) {
+            docNumber = extra;
+          }
+          if (factory == null ||
+              draftEmail.isEmpty ||
+              docNumber.isEmpty) {
             return Scaffold(
               appBar: AppBar(title: const Text('Verifica tu correo')),
               body: EmptyView(
@@ -119,13 +133,14 @@ final List<GoRoute> pinResetRoutes = [
           final service = HttpPinResetService(api: deps.api);
           final controller = PinResetOtpController(
             service: service,
-            email: email,
+            email: draftEmail,
             otpValiditySeconds: ttl,
             resendWaitSeconds: resendWait,
           );
           return PinResetOtpPage(
-            email: email,
+            email: draftEmail,
             docNumber: docNumber,
+            docType: docType,
             controller: controller,
             autoTick: !debugDisablePinResetAutoTick,
           );

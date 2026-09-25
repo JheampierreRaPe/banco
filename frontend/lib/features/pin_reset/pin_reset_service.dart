@@ -7,7 +7,8 @@
 //   email (anti-oráculo; reutiliza el `PENDING` vigente con cooldown). El OTP
 //   es solo email (sin SMS). NO se usa `/auth/otp/resend` (ese es de
 //   activación).
-// - `POST /auth/pin-reset` con `{email, doc_number, code, pin}` -> éxito con
+// - `POST /auth/pin-reset` con `{email, doc_number, doc_type, code, pin}` ->
+//   éxito con
 //   `data: {user_ref, pin_set: true}` (consume el OTP `RECOVERY`, fija el PIN
 //   y NO abre sesión ni emite tokens; la única sesión la abre
 //   `POST /auth/login/pin`). Error único de negocio: `401 INVALID_PIN_RESET`
@@ -80,6 +81,7 @@ abstract class PinResetService {
     required String docNumber,
     required String code,
     required String pin,
+    String docType = 'DNI',
   });
 }
 
@@ -116,12 +118,14 @@ class HttpPinResetService implements PinResetService {
     required String docNumber,
     required String code,
     required String pin,
+    String docType = 'DNI',
   }) async {
     final response = await _api.post<dynamic>(
       resetPath,
       data: <String, dynamic>{
         'email': email,
         'doc_number': docNumber,
+        'doc_type': docType,
         'code': code,
         'pin': pin,
       },

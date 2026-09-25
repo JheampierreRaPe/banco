@@ -5,10 +5,12 @@ device_bound}` SIN abrir sesion, pero el usuario que no recuerda su PIN no
 puede abrir la unica sesion (`POST /auth/login/pin`). Este caso de uso fija
 el PIN con el OTP `RECOVERY` emitido por `recovery.request`.
 
-Flujo (`POST /auth/pin-reset {email, doc_number, code, pin}`):
+Flujo (`POST /auth/pin-reset {email, doc_number, [doc_type,] code, pin}`):
 
-1. Valida el formato del PIN (`4-6` digitos numericos; `ValueError` -> 422)
-   ANTES de consumir nada: un PIN inutilizable no debe quemar un codigo de
+1. Valida el formato del PIN (`4-6` digitos numericos) y del documento
+   (`doc_type in {DNI,RUC}`, `doc_number` solo digitos con longitud exacta
+   DNI 8 / RUC 11; `ValueError` -> 422) ANTES de consumir nada: un input
+   inutilizable no debe quemar un codigo de
    un solo uso. No crea oraculo: el 422 solo habla del formato del propio
    input, nunca del estado de la cuenta.
 2. Rate-limit por `email+IP` ANTES de resolver existencia (misma
@@ -18,11 +20,12 @@ Flujo (`POST /auth/pin-reset {email, doc_number, code, pin}`):
    existe o `status != 'ACTIVE'` -> `PinResetInvalidError` (401 generico,
    sin revelar existencia/estado). La rama ciega consulta el OTP pendiente
    (descartado) para igualar el patron de acceso a BD.
-4. Valida el DNI contra `users.doc_number_hash` con el hash HMAC-SHA256
+4. Valida el DNI/RUC contra `users.doc_number_hash` con el hash HMAC-SHA256
    server-side existente (`kyc_onboarding.hash_document_number` sobre la
    forma normalizada, comparacion con `hmac.compare_digest`); no coincide
-   (o el documento es vacio/invalido) -> mismo 401 generico. El DNI jamas
-   se loguea ni se persiste.
+   (o el documento es vacio/invalido) -> mismo 401 generico. El documento
+   jamas se loguea ni se persiste. `doc_type` NO se cruza con
+   `users.doc_type` (E1-T40: solo valida formato, sin oraculo).
 5. Exige credencial existente y consume el OTP `RECOVERY` via
    `otp_service.validate_otp` (hash/TTL/max intentos, un solo uso):
    codigo incorrecto/vencido/bloqueado/sin OTP -> mismo 401 generico
@@ -89,6 +92,13 @@ USER_AGGREGATE_TYPE = "user"
 #: tocar estado y el 422 es generico; misma regla que `pin_setup`).
 _PIN_RE = re.compile(r"^\d{4,6}$")
 
+#: Tipos de documento aceptados en `/pin-reset` (E1-T40, paridad con el
+#: lookup E1-T35; gobiernan SOLO la validacion de formato/longitud).
+_PIN_DOC_TYPES: tuple[str, ...] = ("DNI", "RUC")
+
+#: Longitudes exactas por tipo (solo digitos; E1-T40).
+_PIN_DOC_LENGTHS: dict[str, int] = {"DNI": 8, "RUC": 11}
+
 
 class PinResetInvalidError(ValueError):
     """Email no registrado, usuario no elegible, DNI que no coincide, sin
@@ -104,6 +114,27 @@ def _validate_pin_format(pin: object) -> str:
     if not isinstance(pin, str) or not _PIN_RE.match(pin):
         raise ValueError("pin debe ser de 4 a 6 digitos numericos")
     return pin
+
+
+def _validate_doc_format(doc_type: object, doc_number: object) -> tuple[str, str]:
+    """Exige `doc_type in {DNI,RUC}` y `doc_number` solo digitos exactos.
+
+    Validacion defensiva (E1-T40, paridad con el lookup E1-T35): el esquema
+    ya la aplica en HTTP, pero los llamados directos al servicio tambien
+    quedan cubiertos. `ValueError` -> 422 `INVALID_PIN_FORMAT` en el router,
+    ANTES de tocar estado (sin quemar el OTP). Retorna la forma canonica
+    (`doc_type` en mayusculas, `doc_number` con trim).
+    """
+    kind = doc_type.strip().upper() if isinstance(doc_type, str) else ""
+    if kind not in _PIN_DOC_TYPES:
+        raise ValueError(f"doc_type debe ser uno de {_PIN_DOC_TYPES}")
+    digits = doc_number.strip() if isinstance(doc_number, str) else ""
+    if not digits or re.fullmatch(r"[0-9]+", digits) is None:
+        raise ValueError("doc_number debe contener solo digitos")
+    expected = _PIN_DOC_LENGTHS[kind]
+    if len(digits) != expected:
+        raise ValueError(f"doc_number: {kind} debe tener {expected} digitos")
+    return kind, digits
 
 
 def _audit_pin_reset(session: Session, *, user_id: uuid.UUID, ip: str | None) -> None:
@@ -150,20 +181,29 @@ def reset_pin(
     doc_number: str,
     code: str,
     pin: str,
+    doc_type: str = "DNI",
     ip: str | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """Fija el PIN con email+DNI+OTP `RECOVERY` (`flush`, sin `commit`).
+    """Fija el PIN con email+DNI/RUC+OTP `RECOVERY` (`flush`, sin `commit`).
 
     Exito: consume el OTP (un solo uso), fija `pin_hash`, resetea
     `failed_attempts`/`locked_until`, registra `access_recovery` con
     `new_credential_set=true` y audita; retorna `{"user_ref", "pin_set":
-    True}`. Fallos: formato de PIN debil -> `ValueError` (422, antes de
-    tocar estado); ventana por `email+IP` excedida ->
-    `RecoveryRateLimitedError` (429, antes de la existencia); cualquier
-    otra combinacion invalida -> `PinResetInvalidError` (401 generico).
+    True}`. Fallos: formato de PIN o de documento (`doc_type`/longitud)
+    debil -> `ValueError` (422, antes de tocar estado); ventana por
+    `email+IP` excedida -> `RecoveryRateLimitedError` (429, antes de la
+    existencia); cualquier otra combinacion invalida ->
+    `PinResetInvalidError` (401 generico).
+
+    E1-T40: `doc_type` gobierna SOLO la validacion de formato/longitud
+    (DNI 8 / RUC 11 digitos); la resolucion sigue siendo `email`
+    normalizado + `doc_number_hash` HMAC comparado en tiempo constante
+    (NO se cruza con `users.doc_type`, para no crear un oraculo ni cambiar
+    el contrato anti-enumeracion).
     """
     _validate_pin_format(pin)
+    _, doc_number = _validate_doc_format(doc_type, doc_number)
     normalized = recovery_service.normalize_email(email)
     recovery_service.check_pin_reset_rate_limit(normalized, ip, session)
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()

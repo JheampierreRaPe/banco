@@ -9,6 +9,7 @@
 import 'package:banca_online/core/app_version.dart';
 import 'package:banca_online/core/http/api_client.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
+import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/core/widgets/app_version_label.dart';
 import 'package:banca_online/features/biometrics/biometric_reader.dart';
 import 'package:banca_online/features/biometrics/biometric_service.dart';
@@ -37,7 +38,12 @@ class _Harness {
     required this.reader,
     this.inactivityTimeoutSeconds = 180,
     this.userRef = 'u-1',
-  }) {
+    SessionIdentityStore? identity,
+    this.noIdentity = false,
+  }) : identity = noIdentity
+            ? null
+            : (identity ??
+                InMemorySessionIdentityStore(biometricEnabled: true)) {
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
@@ -112,6 +118,10 @@ class _Harness {
         api: api,
         biometrics: BiometricService(session: session, reader: reader),
       ),
+      // `this.` explicito: el parametro `identity` (nullable) oculta al
+      // campo ya resuelto con el default consentido en la lista
+      // inicializadora; sin el, el controlador recibiria `null`.
+      identity: this.identity,
       inactivityTimeoutSeconds: inactivityTimeoutSeconds,
     );
     router = GoRouter(
@@ -140,6 +150,11 @@ class _Harness {
   final FakeBiometricReader reader;
   final int inactivityTimeoutSeconds;
   final String userRef;
+
+  /// Store F-T20/F-T49 (fuente del flag `biometric_enabled`); `null` cuando
+  /// `noIdentity` es `true` (la pagina se comporta como sin consentimiento).
+  final SessionIdentityStore? identity;
+  final bool noIdentity;
   late final LoginController controller;
   late final GoRouter router;
 }
@@ -270,5 +285,70 @@ void main() {
       findsOneWidget,
     );
     expect(h.session.isAuthenticated, isFalse);
+  });
+
+  testWidgets('F-T51: sin enlace de recovery; conserva restablecer PIN',
+      (tester) async {
+    final h = _Harness(reader: FakeBiometricReader(available: false));
+    await _pump(tester, h);
+
+    // El feature `recovery` fue retirado: ya no hay `login-recovery-link`.
+    expect(find.byKey(const Key('login-recovery-link')), findsNothing);
+    expect(find.text('Recuperar acceso'), findsNothing);
+    // El restablecimiento de PIN sigue siendo el camino vigente.
+    expect(find.byKey(const Key('login-pin-reset-link')), findsOneWidget);
+    expect(find.text('Restablecer PIN'), findsOneWidget);
+  });
+
+  testWidgets('F-T49: con consentimiento muestra el boton biometrico',
+      (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      identity: InMemorySessionIdentityStore(biometricEnabled: true),
+    );
+    await _pump(tester, h);
+
+    expect(
+      find.byKey(const Key('login-biometric-button')),
+      findsOneWidget,
+    );
+    // El PIN sigue disponible junto al boton.
+    expect(find.byKey(const Key('login-pin-submit')), findsOneWidget);
+    expect(find.text('o continúa con tu PIN'), findsOneWidget);
+  });
+
+  testWidgets('F-T49: sin consentimiento oculta el boton y queda el PIN',
+      (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      identity: InMemorySessionIdentityStore(biometricEnabled: false),
+    );
+    await _pump(tester, h);
+
+    expect(
+      find.byKey(const Key('login-biometric-button')),
+      findsNothing,
+    );
+    // Sin loadout: el PIN permanece usable (con el divisor preservado).
+    expect(find.byKey(const Key('login-pin-submit')), findsOneWidget);
+    expect(find.text('o continúa con tu PIN'), findsOneWidget);
+    for (var i = 0; i < 6; i++) {
+      expect(find.byKey(Key('login-pin-$i')), findsOneWidget);
+    }
+  });
+
+  testWidgets('F-T49: sin store el boton se oculta por defecto (CA-02)',
+      (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      noIdentity: true,
+    );
+    await _pump(tester, h);
+
+    expect(
+      find.byKey(const Key('login-biometric-button')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('login-pin-submit')), findsOneWidget);
   });
 }

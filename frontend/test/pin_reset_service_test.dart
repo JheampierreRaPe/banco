@@ -141,7 +141,7 @@ void main() {
   });
 
   group('resetPin (POST /auth/pin-reset)', () {
-    test('envía {email, doc_number, code, pin} y parsea user_ref/pin_set',
+    test('envía {email, doc_number, doc_type, code, pin} y parsea user_ref',
         () async {
       _dataToReturn = {'user_ref': 'user-123', 'pin_set': true};
       final service = HttpPinResetService(api: _api(session));
@@ -157,11 +157,33 @@ void main() {
       expect(_capturedBody, {
         'email': 'a@b.com',
         'doc_number': '12345678',
+        'doc_type': 'DNI',
         'code': '654321',
         'pin': '482916',
       });
       expect(result.userRef, 'user-123');
       expect(result.pinSet, isTrue);
+    });
+
+    test('F-T50: envia doc_type RUC en el body', () async {
+      _dataToReturn = {'user_ref': 'user-123', 'pin_set': true};
+      final service = HttpPinResetService(api: _api(session));
+
+      await service.resetPin(
+        email: 'a@b.com',
+        docNumber: '20123456789',
+        docType: 'RUC',
+        code: '654321',
+        pin: '482916',
+      );
+
+      expect(_capturedBody, {
+        'email': 'a@b.com',
+        'doc_number': '20123456789',
+        'doc_type': 'RUC',
+        'code': '654321',
+        'pin': '482916',
+      });
     });
 
     test('la respuesta no abre sesión ni trae tokens (E1-T34)', () async {

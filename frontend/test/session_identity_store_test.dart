@@ -157,4 +157,78 @@ void main() {
     expect(store.userRef, 'u-1');
     expect(notified, greaterThan(0));
   });
+
+  test('F-T49: sin sync el flag biometrico es null en ambos stores', () async {
+    final secure = SecureSessionIdentityStore(storage: InMemorySecureStorage());
+    await secure.load();
+    expect(secure.biometricEnabled, isNull);
+    expect(await secure.readBiometricEnabled(), isNull);
+
+    final memory = InMemorySessionIdentityStore();
+    expect(memory.biometricEnabled, isNull);
+    expect(await memory.readBiometricEnabled(), isNull);
+  });
+
+  test('F-T49: saveBiometricEnabled persiste con la clave biometric.enabled',
+      () async {
+    final storage = InMemorySecureStorage();
+    final store = SecureSessionIdentityStore(storage: storage);
+
+    await store.saveBiometricEnabled(true);
+
+    expect(store.biometricEnabled, isTrue);
+    expect(await store.readBiometricEnabled(), isTrue);
+    expect(
+      storage.debugValues[SecureSessionIdentityStore.biometricEnabledKey],
+      'true',
+    );
+
+    await store.saveBiometricEnabled(false);
+
+    expect(store.biometricEnabled, isFalse);
+    expect(await store.readBiometricEnabled(), isFalse);
+    expect(
+      storage.debugValues[SecureSessionIdentityStore.biometricEnabledKey],
+      'false',
+    );
+  });
+
+  test('F-T49: load() hidrata el flag biometrico', () async {
+    final storage = InMemorySecureStorage();
+    final writer = SecureSessionIdentityStore(storage: storage);
+    await writer.saveUserRef('user-1');
+    await writer.saveBiometricEnabled(true);
+
+    final reopened = SecureSessionIdentityStore(storage: storage);
+    expect(reopened.biometricEnabled, isNull);
+    await reopened.load();
+
+    expect(reopened.userRef, 'user-1');
+    expect(reopened.biometricEnabled, isTrue);
+    expect(await reopened.readBiometricEnabled(), isTrue);
+  });
+
+  test('F-T49: InMemorySessionIdentityStore soporta el flag (ctor + save)',
+      () async {
+    final store = InMemorySessionIdentityStore(biometricEnabled: true);
+    addTearDown(store.dispose);
+    expect(store.biometricEnabled, isTrue);
+    expect(await store.readBiometricEnabled(), isTrue);
+
+    var notified = 0;
+    store.addListener(() => notified++);
+    await store.saveBiometricEnabled(false);
+
+    expect(store.biometricEnabled, isFalse);
+    expect(await store.readBiometricEnabled(), isFalse);
+    expect(notified, greaterThan(0));
+  });
+
+  test('F-T49: load tolera el flag ausente y deja el cache en null', () async {
+    final store = SecureSessionIdentityStore(storage: _ThrowingStorage());
+
+    await store.load();
+
+    expect(store.biometricEnabled, isNull);
+  });
 }

@@ -45,30 +45,51 @@ eventos (`outbox`/`inbox`).
   `pin_hash` + `ACTIVE`; `POST /auth/login/facial` lo exige (`is True`)
   ademas de binding `ACTIVE` + firma valida y, sin el, responde `400
   INVALID_LOGIN` generico (sin sesion ni tocar el binding; sin codigo nuevo
-  de error). La biometria es opcional: el PIN es siempre el fallback.
+   de error). La biometria es opcional: el PIN es siempre el fallback.
+- **Consentimiento post-login (E1-T39, HU02/HU03):** `POST
+  /auth/biometric/consent` (Bearer, `{enabled: bool}`) fija
+  `credentials.biometric_enabled` del `user_id` del JWT (idempotente;
+  `401 NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; auditoria
+  `auth.biometric_consent` sin PII) y `POST /auth/login/pin` devuelve
+  `biometric_enabled` vigente en su `data` para sincronizar el boton
+  biometrico del cliente (el facial sigue intacto).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
   best-effort). `POST /auth/activate` deprecado pero vivo (`Deprecation: true` +
   OpenAPI `deprecated`; la via canonica es `POST /auth/pin/setup`).
-- **OTP de recuperacion (E1-T33, HU04):** `POST /auth/recovery/request {email}` (siempre
-  200 sin enumerar; cooldown reutilizando el `PENDING` vigente; rate-limit por `email+IP`)
-  y `POST /auth/recovery/verify {email, code[, device_id/device_public_key]}` (valida
-  el OTP SIN abrir sesion y devuelve `{user_ref, device_bound}`; registra
-  `device_bindings` y `access_recovery method='OTP'`; la unica sesion la abre
-  `POST /auth/login/pin`).
-   Solo canal `email` (nunca SMS); errores `INVALID_RECOVERY_CODE` (mismo 401
-   generico tambien para OTP vencido/bloqueado: sin oraculo) / `RATE_LIMITED`
-   (solo ventana por `email+IP`); consume `F-T29`.
+- **OTP de recuperacion (E1-T33, HU04; E1-T41 retira `verify`):** `POST
+  /auth/recovery/request {email}` (siempre 200 sin enumerar; cooldown
+  reutilizando el `PENDING` vigente; rate-limit por `email+IP`). `POST
+  /auth/recovery/verify` fue ELIMINADO por decision del dueno (la UI
+  "recupera mi acceso" redirigia a login sin dar acceso); se conservan
+  `request`, `service/recovery.py`, `repository/recovery.py` y la tabla
+  `access_recovery` porque `POST /auth/pin-reset` depende de ellos
+  (consume el OTP `RECOVERY` y registra `access_recovery` con
+  `new_credential_set=true`).
+   Solo canal `email` (nunca SMS); errores `RATE_LIMITED`
+   (ventana por `email+IP`; la ventana de verificacion se conserva y rige
+   a `/auth/pin-reset`).
 - **Reseteo de PIN (E1-T34/SCR-005, HU02/HU04):** `POST /auth/pin-reset
-  {email, doc_number, code, pin}` (consume el OTP `RECOVERY`, valida el DNI
+  {email, doc_number, [doc_type,] code, pin}` (consume el OTP `RECOVERY`, valida el documento
   contra el hash HMAC server-side, fija `pin_hash` + resetea
   `failed_attempts`/`locked_until`, registra `access_recovery` con
   `new_credential_set=true`; devuelve `{user_ref, pin_set: true}` SIN abrir
   sesion; la unica sesion la abre `POST /auth/login/pin`). Error unico
   `INVALID_PIN_RESET` (mismo 401 generico para email/DNI/OTP invalidos: sin
   enumeracion) / `RATE_LIMITED` (ventana por `email+IP`, reutiliza la de
-  verify); consumen `F-T34`..`F-T42`.
+  verify); consumen `F-T34`..`F-T42`. E1-T40: `doc_type` (`DNI`/`RUC`,
+  default `DNI` por compatibilidad F-T43) valida solo formato/longitud
+  (DNI 8 / RUC 11 digitos, 422 estandar; paridad con el lookup E1-T35); la
+  resolucion sigue por `email` + `doc_number_hash` (sin cruzar con
+  `users.doc_type`).
+- **Precheck de email (E1-T40, HU01):** `POST /auth/kyc/email/check
+  {email}` (pre-registro, sin auth) para el boton **Continuar** de
+  `kyc-start`: `200 {available: true}` si no esta registrado, `409
+  DUPLICATE_EMAIL` (`"El correo ya esta registrado"`, neutro) si existe.
+  Normaliza (`strip().lower()`) y lee via `get_by_email`; rate-limit previo
+  (ventana compartida con el proxy KYC); nunca llama al proveedor ni
+  persiste; el 409 de `submit` queda intacto.
 - **`users.email` NOT NULL (E1-T34):** migracion `0018` (con pre-check que
   aborta ante NULL; sin backfill: la demo tenia 0 NULL); el OTP solo viaja
   por email.

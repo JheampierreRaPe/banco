@@ -75,7 +75,7 @@ void main() {
       // La etiqueta no tapa las acciones de la pantalla.
       expect(find.text('Crear mi cuenta'), findsOneWidget);
       expect(
-        find.text('Ya tengo cuenta · Iniciar sesión'),
+        find.text('Ya tengo cuenta · Restablecer PIN'),
         findsOneWidget,
       );
     });

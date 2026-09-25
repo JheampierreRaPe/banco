@@ -80,6 +80,9 @@ class PinLoginData(BaseModel):
     token_type: str = Field(default="Bearer")
     session_id: str
     expires_in: int = Field(ge=0, description="Vigencia del refresh en segundos.")
+    biometric_enabled: bool = Field(
+        default=False, description="Consentimiento vigente del usuario (E1-T39)."
+    )
 
 
 class PinLoginResponse(BaseModel):

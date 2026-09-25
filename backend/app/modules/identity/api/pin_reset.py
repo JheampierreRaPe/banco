@@ -1,11 +1,16 @@
-"""Endpoint del reseteo de PIN con email+DNI+OTP (E1-T34, HU02/HU04, SCR-005).
+"""Endpoint del reseteo de PIN con email+DNI/RUC+OTP (E1-T34, HU02/HU04, SCR-005).
 
-`POST /auth/pin-reset {email, doc_number, code, pin}` -> valida
-`email + DNI + OTP` (OTP `RECOVERY` emitido por `recovery.request`, que lo
+`POST /auth/pin-reset {email, doc_number, [doc_type,] code, pin}` -> valida
+`email + documento + OTP` (OTP `RECOVERY` emitido por `recovery.request`, que lo
 consume: un solo uso) y fija/actualiza `credentials.pin_hash`, resetea
 `failed_attempts`/`locked_until`, registra `access_recovery` con
 `new_credential_set=true` y responde `{user_ref, pin_set: true}` SIN abrir
 sesion (la unica sesion la abre `POST /auth/login/pin`).
+
+E1-T40: `doc_type` (`DNI`/`RUC`, default `DNI` por compatibilidad F-T43)
+gobierna SOLO la validacion de formato/longitud (DNI 8 / RUC 11 digitos);
+la resolucion sigue por `email` + `doc_number_hash` HMAC (sin cruzar con
+`users.doc_type`).
 
 Montado bajo `/api/v1` por `app.main` via `iter_routers` (este `router` lo
 recoge `api/__init__.py`; sin registro extra). Sin logica en el router
@@ -24,7 +29,8 @@ via `AppError`:
 - 429 `RATE_LIMITED`: ventana por `email+IP` excedida (verificada antes de
   la existencia, sin filtrar).
 - 422 estandar de FastAPI (`{"detail": [...]}`) para esquema malformado
-  (email/PIN con mal formato) y 422 problem+json para PIN debil a nivel
+  (email/PIN con mal formato, `doc_type` desconocido o longitud de
+  documento invalida) y 422 problem+json para PIN/documento debil a nivel
   servicio.
 
 Transaccion: el servicio hace `flush`; el endpoint confirma (`commit`) en
@@ -65,15 +71,16 @@ def _client_ip(request: Request) -> str | None:
 @router.post(
     "/auth/pin-reset",
     response_model=PinResetResponse,
-    summary="Resetea el PIN con email, DNI y OTP de recuperacion",
+    summary="Resetea el PIN con email, documento y OTP de recuperacion",
 )
 def reset_pin(body: PinResetRequest, request: Request, db: Session = Depends(get_db)) -> dict:
-    """Fija el PIN con `email + DNI + OTP` (sin abrir sesion; E1-T34)."""
+    """Fija el PIN con `email + DNI/RUC + OTP` (sin abrir sesion; E1-T34/E1-T40)."""
     try:
         result = pin_reset_service.reset_pin(
             db,
             email=body.email,
             doc_number=body.doc_number,
+            doc_type=body.doc_type,
             code=body.code,
             pin=body.pin,
             ip=_client_ip(request),
@@ -91,9 +98,9 @@ def reset_pin(body: PinResetRequest, request: Request, db: Session = Depends(get
         db.commit()
         raise AppError(code="RATE_LIMITED", message=str(exc), status_code=429) from exc
     except ValueError as exc:
-        # PIN debil a nivel servicio (el esquema ya filtra en HTTP con 422
-        # estandar): 422 generico, sin oraculo sobre la cuenta; nada que
-        # persistir (se valido antes de tocar estado).
+        # PIN/documento debil a nivel servicio (el esquema ya filtra en HTTP
+        # con 422 estandar): 422 generico, sin oraculo sobre la cuenta; nada
+        # que persistir (se valido antes de tocar estado).
         db.rollback()
         raise AppError(code="INVALID_PIN_FORMAT", message=str(exc), status_code=422) from exc
     except Exception:

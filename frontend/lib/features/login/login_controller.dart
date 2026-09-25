@@ -50,6 +50,9 @@ class LoginController extends ChangeNotifier {
         _platform = platform,
         _biometricType = biometricType {
     _remainingSeconds = inactivityTimeoutSeconds;
+    // Flag hidratado por el store (F-T49): si el store aun no cargo, queda
+    // en `null` (= sin consentimiento conocido -> boton oculto).
+    _biometricEnabled = identity?.biometricEnabled;
   }
 
   final ApiClient _api;
@@ -58,6 +61,8 @@ class LoginController extends ChangeNotifier {
 
   /// Store F-T20 para recordar el ultimo `user_ref` tras un login exitoso.
   /// Puede ser `null` (tests sin store): en ese caso no se persiste nada.
+  /// Tambien es la fuente del flag `biometric_enabled` (F-T49, E1-T39):
+  /// cache sincronica hidratada por `load()` antes del primer frame.
   final SessionIdentityStore? _identity;
 
   /// Plataforma explicita (`android`/`ios`); `null` = resolver del sistema.
@@ -93,6 +98,7 @@ class LoginController extends ChangeNotifier {
   bool _succeeded = false;
   bool _showPinFallback = false;
   bool _expired = false;
+  bool? _biometricEnabled;
   String? _errorMessage;
   String? _infoMessage;
   int _remainingSeconds = 0;
@@ -108,6 +114,12 @@ class LoginController extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   String? get infoMessage => _infoMessage;
 
+  /// Consentimiento biometrico conocido (F-T49, E1-T39): reflejo local de lo
+  /// que el servidor informo en el ultimo login con PIN. Solo `true` muestra
+  /// el boton biometrico; `null`/`false` (o store ausente) lo oculta. El
+  /// servidor es la autoridad; el cliente no decide seguridad (docs/19#4).
+  bool? get biometricEnabled => _biometricEnabled;
+
   /// Segundos restantes del temporizador visible de inactividad.
   int get remainingSeconds => _remainingSeconds;
 
@@ -115,7 +127,9 @@ class LoginController extends ChangeNotifier {
   ///
   /// - Exito -> guarda sesion y retorna `true` (la pagina navega a `/home`).
   /// - Biometria no disponible/cancelada -> senala el PIN, retorna `false`.
-  /// - Cualquier otro fallo (incluido facial invalido) -> mensaje GENERICO.
+  /// - Cualquier otro fallo (incluido facial invalido o falta de
+  ///   consentimiento `400 INVALID_LOGIN`) -> mensaje GENERICO + guia al PIN
+  ///   (F-T49 CA-03): nunca se revela la causa y nunca queda solo el error.
   Future<bool> loginWithBiometrics({
     required String userRef,
     required String deviceId,
@@ -148,9 +162,15 @@ class LoginController extends ChangeNotifier {
         _showPinFallback = true;
         _infoMessage = pinFallbackMessage;
       } else {
-        // Facial invalido, challenge roto, red, etc.: mensaje generico para no
-        // filtrar que via fallo.
+        // Facial invalido, challenge roto, red o falta de consentimiento
+        // (`400 INVALID_LOGIN` generico de E1-T38 cuando
+        // `biometric_enabled is not True`): mensaje generico para no filtrar
+        // la causa (docs/16 reglas 7 y 9) Y guia al PIN para no dejar al
+        // usuario en un callejon sin salida (F-T49 CA-03). El PIN nunca se
+        // bloquea por biometria.
         _errorMessage = genericAuthErrorMessage;
+        _showPinFallback = true;
+        _infoMessage = pinFallbackMessage;
       }
     } on ApiException {
       _errorMessage = genericAuthErrorMessage;
@@ -203,11 +223,16 @@ class LoginController extends ChangeNotifier {
           data['biometric_type'] = _biometricType;
         }
         final res = await _api.post(pinPath, data: data);
-        ok = await _saveSession(_dataOf(res.data));
+        final resData = _dataOf(res.data);
+        ok = await _saveSession(resData);
         if (ok) {
           _succeeded = true;
           stopInactivityTimer();
           await _rememberUser(userRef);
+          // Sincroniza `biometric_enabled` (F-T49, E1-T39): el servidor es la
+          // autoridad; el cliente solo refleja el flag para la UI. `null` o
+          // ausente -> no se escribe (se conserva la cache previa).
+          await _syncBiometricEnabled(resData['biometric_enabled']);
         } else {
           _errorMessage = genericAuthErrorMessage;
         }
@@ -299,6 +324,24 @@ class LoginController extends ChangeNotifier {
       await store.saveUserRef(userRef);
     } catch (_) {
       // Silencio deliberado: no se registra el `user_ref` ni el error.
+    }
+  }
+
+  /// Sincroniza la cache local de `biometric_enabled` (F-T49, E1-T39).
+  ///
+  /// Solo acepta `bool` (tolerante a `null`/ausente/otro tipo -> no escribe).
+  /// Best-effort como `_rememberUser`: un fallo del store no tumba el login
+  /// ya concedido. Nunca se loguea el flag con datos asociados (docs/16
+  /// reglas 7 y 9).
+  Future<void> _syncBiometricEnabled(Object? value) async {
+    if (value is! bool) return;
+    _biometricEnabled = value;
+    final store = _identity ?? sessionIdentityStoreFactory?.call();
+    if (store == null) return;
+    try {
+      await store.saveBiometricEnabled(value);
+    } catch (_) {
+      // Silencio deliberado: el login ya fue concedido.
     }
   }
 

@@ -1,33 +1,28 @@
-"""Recuperacion de acceso por email: OTP + verify sin sesion (E1-T33, HU04 CA-01..CA-05).
+"""Recuperacion de acceso por email: solicitud de OTP (E1-T33, HU04; E1-T41 retira `verify`).
 
 - Sin Postgres: `TestClient(app)` + override de `get_db` a SQLite en memoria
   con schemas ATTACH (`identity`/`shared`/`notifications`/`audit`), patron de
   `tests/test_pin_login.py` (TestClient) + `tests/test_activation.py` (ATTACH).
 - Casos: `request` con email registrado -> 200 + OTP `RECOVERY` `PENDING`
   notificado SOLO por email; con email no registrado -> 200 con el MISMO
-  cuerpo y sin OTP (CA-01, sin enumeracion); `verify` con el OTP correcto ->
-  `{user_ref, device_bound}` + OTP `USED` (un solo uso) + `access_recovery`,
-  SIN sesion/tokens/`auth.login_succeeded` (CA-01/CA-02, SCR-005); OTP
-  invalido/expirado/bloqueado/sin OTP -> el MISMO 401 generico
-  `INVALID_RECOVERY_CODE` (colapso anti-oraculo: sin filtrar existencia),
-  codigo fuera de respuestas/logs (CA-03); dispositivo nuevo ->
-  `device_bindings` (`ACTIVE`) + `access_recovery` (`method='OTP'`) en la
-  misma transaccion, y sin clave el acceso procede (`device_bound=false`,
-  CA-04); sesion unica: tras `verify` no hay sesion, solo `POST
-  /auth/login/pin` crea `sessions` y emite tokens; cooldown (reutiliza el
+  cuerpo y sin OTP (CA-01, sin enumeracion); cooldown (reutiliza el
   `PENDING` sin duplicar) + rate-limit por `email+IP` (-> 429
-  `RATE_LIMITED`), canal siempre email (nunca SMS, CA-05); logs sin
-  email/OTP/hash (CA-06).
+  `RATE_LIMITED`), canal siempre email (nunca SMS); logs sin
+  email/OTP/hash. El OTP emitido lo consume `POST /auth/pin-reset`
+  (ver `tests/test_pin_reset.py`).
+- E1-T41: `POST /auth/recovery/verify` fue RETIRADO (decision del dueno):
+  este archivo ya no contiene casos de `verify`; hay una prueba de
+  regresion que documenta que la ruta ya no existe (404 y fuera de
+  OpenAPI) y que `request` sigue respondiendo.
 - Reglas estaticas (servicio sin `commit`, sin SMS, reutiliza `otp_service`/
-  `activation`/repositorio, sin tocar otros modulos; `verify` sin
-  sesion/tokens/evento).
+  `activation`/repositorio, sin tocar otros modulos; sin `verify_recovery`
+  ni schemas `RecoveryVerify*`).
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -53,12 +48,11 @@ REPO_PATH = (
     / "repository"
     / "recovery.py"
 )
+SCHEMAS_PATH = (
+    Path(__file__).resolve().parents[1] / "app" / "modules" / "identity" / "schemas" / "recovery.py"
+)
 
 WRONG_CODE = "000000"
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 @pytest.fixture()
@@ -181,41 +175,6 @@ def _recovery_code(session: Session, user_id: uuid.UUID) -> str:
     return str(data["code"])
 
 
-def _login_events(session: Session, user_id: uuid.UUID) -> list:
-    from app.modules.shared.models import OutboxEntry
-
-    session.expire_all()
-    stmt = sa.select(OutboxEntry).where(
-        OutboxEntry.event_type == "auth.login_succeeded",
-        OutboxEntry.aggregate_id == user_id,
-    )
-    return list(session.scalars(stmt).all())
-
-
-def _bindings(session: Session, user_id: uuid.UUID) -> list:
-    from app.modules.identity.models import DeviceBinding
-
-    session.expire_all()
-    stmt = sa.select(DeviceBinding).where(DeviceBinding.user_id == user_id)
-    return list(session.scalars(stmt).all())
-
-
-def _recoveries(session: Session, user_id: uuid.UUID) -> list:
-    from app.modules.identity.models import AccessRecovery
-
-    session.expire_all()
-    stmt = sa.select(AccessRecovery).where(AccessRecovery.user_id == user_id)
-    return list(session.scalars(stmt).all())
-
-
-def _sessions(session: Session, user_id: uuid.UUID) -> list:
-    from app.modules.identity.models import UserSession
-
-    session.expire_all()
-    stmt = sa.select(UserSession).where(UserSession.user_id == user_id)
-    return list(session.scalars(stmt).all())
-
-
 def _audit_rows(session: Session, action: str) -> list:
     from app.modules.audit.models import AuditLog
 
@@ -233,22 +192,28 @@ def test_static_rules_recovery_service_no_commit_no_sms_lazy_facades():
     assert "phone=None" in service, "routing forzado a email (sin fallback a SMS)"
     assert 'channel="email"' in service or "channel=EMAIL_CHANNEL" in service
     assert "otp_code_email" in service, "plantilla de email para el codigo"
-    assert "generate_otp" in service and "validate_otp" in service, "reutiliza otp_service"
+    assert "generate_otp" in service, "emite el OTP via otp_service"
     assert "resolve_activation_delivery" in service, "reutiliza el routing de activation"
-    assert "record_access_recovery" in service, "registra access_recovery via repositorio"
-    assert "register_binding" in service and "touch_binding" in service, "reutiliza bindings"
-    assert "create_access_token(" not in service, "verify ya no emite JWT (E1-T33/SCR-005)"
+    assert "verify_recovery" not in service, "E1-T41: verify retirado del servicio"
+    assert "RecoveryInvalidError" not in service, "E1-T41: sin error tipado de verify"
+    assert "INVALID_RECOVERY_CODE" not in service, "E1-T41: el codigo lo emitia verify"
+    assert "record_access_recovery" not in service, "E1-T41: access_recovery lo registra pin-reset"
+    assert "register_binding" not in service, "E1-T41: bindings solo en pin_login"
+    assert "touch_binding" not in service, "E1-T41: bindings solo en pin_login"
+    assert "validate_otp" not in service, "E1-T41: el consumo del OTP lo hace pin-reset"
+    assert "create_access_token(" not in service, "sin JWT en recovery"
     assert "from app.core.security import" not in service, "sin import de JWT en recovery"
     assert "jwt.encode(" not in service, "no inventa tokens"
-    assert "create_session(" not in service, "verify ya no crea sessions (E1-T33/SCR-005)"
-    assert "hash_refresh_token(" not in service, "verify ya no emite refresh (E1-T33/SCR-005)"
-    assert "token_urlsafe" not in service, "sin refresh opaco en verify (E1-T33/SCR-005)"
-    assert "LOGIN_SUCCEEDED_EVENT" not in service, "verify ya no enlista login (E1-T33/SCR-005)"
-    assert "outbox_record(" not in service, "verify sin outbox (E1-T33/SCR-005)"
-    assert "    from app.core.outbox import" not in service, "verify sin outbox"
+    assert "create_session(" not in service, "sin sessions en recovery"
+    assert "hash_refresh_token(" not in service, "sin refresh en recovery"
+    assert "token_urlsafe" not in service, "sin refresh opaco en recovery"
+    assert "LOGIN_SUCCEEDED_EVENT" not in service, "sin enlistar login"
+    assert "outbox_record(" not in service, "sin outbox"
+    assert "    from app.core.outbox import" not in service, "sin outbox"
     assert "    from app.modules.notifications.service import" in service
     assert "    from app.modules.audit.service import" in service
-    assert "auth.recovery_requested" in service and "auth.access_recovered" in service
+    assert "auth.recovery_requested" in service
+    assert "auth.access_recovered" not in service, "E1-T41: esa auditoria era de verify"
     top_imports = "\n".join(
         line for line in service.splitlines() if line.startswith(("from app.", "import app."))
     )
@@ -265,12 +230,17 @@ def test_static_rules_recovery_service_no_commit_no_sms_lazy_facades():
     assert ".commit(" not in repo, "el repositorio hace flush; el endpoint confirma"
 
     api = API_PATH.read_text(encoding="utf-8")
-    assert "INVALID_RECOVERY_CODE" in api and "RATE_LIMITED" in api
-    assert "EXPIRED_OTP" not in api, "vencido/bloqueado colapsan al 401 generico (sin oraculo)"
-    assert "EXPIRED_OTP" not in service, "el servicio no expone el codigo de vencido"
-    assert "RecoveryExpiredError" not in api, "sin rama tipada que filtre existencia"
-    assert ".commit(" in api, "el endpoint confirma exito y fallos (el contador persiste)"
-    assert ".rollback(" in api, "revierte rate-limit de request y fallos inesperados"
+    assert "verify_recovery" not in api, "E1-T41: verify retirado del router"
+    assert "RecoveryVerify" not in api, "E1-T41: sin schemas de verify en el router"
+    assert "INVALID_RECOVERY_CODE" not in api, "E1-T41: ese error lo emitia verify"
+    assert "RATE_LIMITED" in api, "request conserva su rate-limit"
+    assert ".commit(" in api, "el endpoint confirma el exito"
+    assert ".rollback(" in api, "revierte rate-limit y fallos inesperados"
+
+    schemas = SCHEMAS_PATH.read_text(encoding="utf-8")
+    assert "RecoveryVerify" not in schemas, "E1-T41: schemas de verify retirados"
+    assert "RecoveryRequest" in schemas, "request se conserva"
+    assert "EMAIL_PATTERN" in schemas, "el patron de email se conserva"
 
 
 # ---------------------------------------------------------------- CA-01: request
@@ -327,247 +297,31 @@ def test_request_malformed_email_422(recovery_client: TestClient):
         assert resp.status_code == 422, payload
 
 
-# ---------------------------------------------------------------- CA-02: verify feliz (sin sesion)
-def test_verify_correct_code_returns_user_ref_without_session(
+# ---------------------------------------------------------------- E1-T41: retiro de verify
+def test_verify_endpoint_retired_404_and_request_still_responds(
     recovery_client: TestClient, recovery_session: Session
 ):
+    """Regresion del retiro (E1-T41): `POST /auth/recovery/verify` ya no
+    existe (404) y no aparece en OpenAPI; `POST /auth/recovery/request`
+    sigue respondiendo 200."""
     user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code = _recovery_code(recovery_session, user.id)
 
     resp = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": code}
+        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "123456"}
     )
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert data == {"user_ref": str(user.id), "device_bound": False}
-    for forbidden in ("access_token", "refresh_token", "token_type", "session_id", "expires_in"):
-        assert forbidden not in data, f"verify no expone {forbidden} (E1-T33/SCR-005)"
-    assert code not in resp.text
+    assert resp.status_code == 404, "verify fue retirado: la ruta ya no existe"
 
-    rows = _otp_rows(recovery_session, user.id)
-    assert rows[0].status == "USED", "un solo uso"
-    assert _sessions(recovery_session, user.id) == [], "verify no crea sessions"
-    assert _login_events(recovery_session, user.id) == [], "verify no enlista login_succeeded"
-    recs = _recoveries(recovery_session, user.id)
-    assert len(recs) == 1
-    assert recs[0].method == "OTP" and recs[0].new_credential_set is False
-    assert len(_audit_rows(recovery_session, "auth.access_recovered")) == 1
+    spec = recovery_client.get("/openapi.json").json()
+    assert "/api/v1/auth/recovery/request" in spec["paths"]
+    assert "/api/v1/auth/recovery/verify" not in spec["paths"]
 
-    # Reuso del mismo codigo: ya consumido -> 401 generico.
-    again = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": code}
-    )
-    assert again.status_code == 401
-    assert again.json()["error"]["code"] == "INVALID_RECOVERY_CODE"
-
-
-def test_verify_then_pin_login_opens_the_single_session(
-    recovery_client: TestClient, recovery_session: Session
-):
-    """Sesion unica (E1-T33): `verify` no abre sesion; `POST /auth/login/pin` si."""
-    from app.modules.identity import repository as identity_repo
-    from app.modules.identity.service import pin_login as pin_login_service
-
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code = _recovery_code(recovery_session, user.id)
-
-    resp = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": code}
-    )
-    assert resp.status_code == 200
-    user_ref = resp.json()["data"]["user_ref"]
-    assert _sessions(recovery_session, user.id) == [], "tras verify aun no hay sesion"
-
-    identity_repo.create_credential(
-        recovery_session, user.id, pin_hash=pin_login_service.hash_pin("123456")
-    )
-    recovery_session.commit()
-
-    login = recovery_client.post(
-        "/api/v1/auth/login/pin", json={"user_ref": user_ref, "pin": "123456"}
-    )
-    assert login.status_code == 200
-    login_data = login.json()["data"]
-    assert login_data["access_token"] and login_data["refresh_token"]
-    assert login_data["session_id"]
-    assert len(_sessions(recovery_session, user.id)) == 1
-    assert len(_login_events(recovery_session, user.id)) == 1
-
-
-# ---------------------------------------------------------------- CA-03: errores tipados
-def test_verify_invalid_expired_exhausted_no_oracle(
-    recovery_client: TestClient, recovery_session: Session
-):
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-
-    bad = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": WRONG_CODE}
-    )
-    assert bad.status_code == 401
-    assert bad.json()["error"]["code"] == "INVALID_RECOVERY_CODE"
-
-    missing = recovery_client.post(
-        "/api/v1/auth/recovery/verify",
-        json={"email": "fantasma@example.com", "code": WRONG_CODE},
-    )
-    assert missing.status_code == 401
-    assert missing.json()["error"] == bad.json()["error"], "mismo cuerpo: sin enumeracion"
-
-    # Sin OTP pendiente (usuario elegible que nunca pidio codigo) -> MISMO 401.
-    fresh = _make_active_user(recovery_session)
-    no_otp = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": fresh.email, "code": WRONG_CODE}
-    )
-    assert no_otp.status_code == 401
-    assert no_otp.json()["error"] == bad.json()["error"], "sin OTP: mismo cuerpo"
-
-    rows = _otp_rows(recovery_session, user.id)
-    assert rows[0].status == "PENDING" and int(rows[0].attempts) == 1, "el intento persiste"
-
-    # Vencido -> MISMO 401 generico (colapso anti-oraculo: indistinguible
-    # del email desconocido / codigo incorrecto).
-    rows[0].expires_at = _utcnow() - timedelta(seconds=1)
-    recovery_session.commit()
-    expired = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": WRONG_CODE}
-    )
-    assert expired.status_code == 401
-    assert expired.json()["error"]["code"] == "INVALID_RECOVERY_CODE"
-    assert expired.json()["error"] == bad.json()["error"] == missing.json()["error"]
-
-
-def test_verify_attempts_exhausted_generic_401_without_oracle(
-    recovery_client: TestClient, recovery_session: Session
-):
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-
-    # max_attempts = 3: los tres intentos responden el MISMO 401 generico
-    # (el bloqueo no se anuncia: vencido/bloqueado colapsan al generico
-    # para no filtrar existencia).
-    first = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "111111"}
-    )
-    assert first.status_code == 401
-    second = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "222222"}
-    )
-    assert second.status_code == 401
-    locked = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "333333"}
-    )
-    assert locked.status_code == 401
-    assert locked.json()["error"]["code"] == "INVALID_RECOVERY_CODE"
-    assert locked.json()["error"] == first.json()["error"] == second.json()["error"]
-
-    rows = _otp_rows(recovery_session, user.id)
-    assert rows[0].status == "EXPIRED", "el bloqueo persiste en la fila aunque no se anuncie"
-
-
-def test_verify_non_active_user_generic_401_without_session(
-    recovery_client: TestClient, recovery_session: Session
-):
-    from app.modules.identity.service import otp_service
-
-    user = _make_active_user(recovery_session, status="BLOCKED")
-    _, plain = otp_service.generate_otp(
-        recovery_session, user_id=user.id, purpose="RECOVERY", destination=user.email
-    )
-    recovery_session.commit()
-
-    resp = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": plain}
-    )
-    assert resp.status_code == 401
-    assert resp.json()["error"]["code"] == "INVALID_RECOVERY_CODE"
-    assert _sessions(recovery_session, user.id) == []
-    rows = _otp_rows(recovery_session, user.id)
-    assert rows[0].status == "PENDING", "no se quema el OTP de un no elegible"
-
-
-# ---------------------------------------------------------------- CA-04: binding + access_recovery
-def test_verify_new_device_registers_binding_and_recovery_row(
-    recovery_client: TestClient, recovery_session: Session
-):
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code = _recovery_code(recovery_session, user.id)
-
-    resp = recovery_client.post(
-        "/api/v1/auth/recovery/verify",
-        json={
-            "email": user.email,
-            "code": code,
-            "device_id": "pixel-9",
-            "device_public_key": "hmac:" + "ab" * 16,
-            "platform": "android",
-            "biometric_type": "FACE",
-        },
-    )
-    assert resp.status_code == 200
-    assert resp.json()["data"]["device_bound"] is True
-
-    binds = _bindings(recovery_session, user.id)
-    assert len(binds) == 1
-    assert binds[0].status == "ACTIVE" and binds[0].device_id == "pixel-9"
-
-    recs = _recoveries(recovery_session, user.id)
-    assert len(recs) == 1
-    assert recs[0].method == "OTP" and recs[0].new_credential_set is False
-    assert recs[0].device_id == "pixel-9"
-    assert recs[0].notified_channels == ["email"]
-    assert recs[0].verification_result == {
-        "result": "ok",
-        "at": recs[0].verification_result["at"],
-    }, "sin OTP ni PII en el resultado"
-
-    # Segundo ciclo con el mismo dispositivo: touch (una sola fila), sin re-bind.
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code2 = _recovery_code(recovery_session, user.id)
-    resp2 = recovery_client.post(
-        "/api/v1/auth/recovery/verify",
-        json={
-            "email": user.email,
-            "code": code2,
-            "device_id": "pixel-9",
-            "device_public_key": "hmac:" + "ab" * 16,
-        },
-    )
-    assert resp2.status_code == 200
-    assert resp2.json()["data"]["device_bound"] is False, "la clave ya existia igual"
-    assert len(_bindings(recovery_session, user.id)) == 1
-
-
-def test_verify_binding_failure_keeps_verify_without_session(
-    recovery_client: TestClient, recovery_session: Session, monkeypatch
-):
-    from app.modules.identity import repository as identity_repo
-
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code = _recovery_code(recovery_session, user.id)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("binding caido")
-
-    monkeypatch.setattr(identity_repo, "register_binding", _boom)
-    resp = recovery_client.post(
-        "/api/v1/auth/recovery/verify",
-        json={
-            "email": user.email,
-            "code": code,
-            "device_id": "nuevo",
-            "device_public_key": "hmac:" + "cd" * 16,
-        },
-    )
-    assert resp.status_code == 200, "best-effort: el verify sobrevive"
-    assert resp.json()["data"] == {"user_ref": str(user.id), "device_bound": False}
-    assert _sessions(recovery_session, user.id) == [], "verify no crea sessions"
-    assert _login_events(recovery_session, user.id) == [], "verify no enlista login_succeeded"
-    assert len(_recoveries(recovery_session, user.id)) == 1
+    ok = recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
+    assert ok.status_code == 200
+    assert ok.json()["data"] == {
+        "accepted": True,
+        "ttl_seconds": 600,
+        "resend_wait_seconds": 30,
+    }
 
 
 # ---------------------------------------------------------------- CA-05: cooldown + rate-limit + canal
@@ -625,53 +379,6 @@ def test_request_rate_limit_429_without_enumeration(
     assert unknown.json()["error"] == limited.json()["error"]
 
 
-def test_verify_rate_limit_429_before_existence(
-    recovery_client: TestClient, recovery_session: Session, monkeypatch
-):
-    from app.modules.identity.service import recovery as recovery_service
-
-    monkeypatch.setenv("RECOVERY_VERIFY_RATE_LIMIT_MAX_REQUESTS", "2")
-    monkeypatch.setenv("RECOVERY_VERIFY_RATE_LIMIT_WINDOW_SECONDS", "60")
-    recovery_service.reset_recovery_rate_limits()
-
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    first = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "111111"}
-    )
-    assert first.status_code == 401
-    second = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "222222"}
-    )
-    assert second.status_code == 401
-    limited = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": user.email, "code": "333333"}
-    )
-    assert limited.status_code == 429
-    assert limited.json()["error"]["code"] == "RATE_LIMITED"
-
-    # El limite se verifica ANTES de la existencia: un email inexistente con
-    # su ventana agotada responde el mismo 429 (sin filtrar existencia).
-    ghost = "otro-verify@example.com"
-    assert (
-        recovery_client.post(
-            "/api/v1/auth/recovery/verify", json={"email": ghost, "code": "111111"}
-        ).status_code
-        == 401
-    )
-    assert (
-        recovery_client.post(
-            "/api/v1/auth/recovery/verify", json={"email": ghost, "code": "222222"}
-        ).status_code
-        == 401
-    )
-    unknown = recovery_client.post(
-        "/api/v1/auth/recovery/verify", json={"email": ghost, "code": "333333"}
-    )
-    assert unknown.status_code == 429
-    assert unknown.json()["error"] == limited.json()["error"]
-
-
 def test_request_without_routable_email_same_body_no_otp_no_sms(
     recovery_client: TestClient, recovery_session: Session, monkeypatch
 ):
@@ -686,77 +393,20 @@ def test_request_without_routable_email_same_body_no_otp_no_sms(
     assert _notifications_for(recovery_session, user.id) == [], "nunca cae a SMS"
 
 
-# ---------------------------------------------------------------- CA-06: sin PII en logs
-def test_no_pii_or_otp_in_logs_and_recovery_row(
-    recovery_client: TestClient, recovery_session: Session, caplog
-):
+# ---------------------------------------------------------------- Sin PII en logs
+def test_no_pii_or_otp_in_logs(recovery_client: TestClient, recovery_session: Session, caplog):
     user = _make_active_user(recovery_session)
     with caplog.at_level(logging.INFO, logger="app.modules.identity.service.recovery"):
         recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
         code = _recovery_code(recovery_session, user.id)
-        recovery_client.post(
-            "/api/v1/auth/recovery/verify", json={"email": user.email, "code": code}
-        )
     assert user.email not in caplog.text, "el email no sale en logs"
     assert code not in caplog.text, "el OTP no sale en logs"
     for row in _otp_rows(recovery_session, user.id):
         assert code not in row.code_hash, "solo el hash se persiste"
-    for rec in _recoveries(recovery_session, user.id):
-        text = str(rec.verification_result)
-        assert user.email not in text and code not in text, "resultado sin PII ni OTP"
-
-
-# ---------------------------------------------------------------- Atomicidad
-def test_unexpected_failure_after_flush_rolls_back_everything(
-    recovery_client: TestClient, recovery_session: Session, monkeypatch
-):
-    import pytest as _pytest
-
-    from app.modules.identity.repository import recovery as recovery_repo
-
-    user = _make_active_user(recovery_session)
-    recovery_client.post("/api/v1/auth/recovery/request", json={"email": user.email})
-    code = _recovery_code(recovery_session, user.id)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("access_recovery caido")
-
-    monkeypatch.setattr(recovery_repo, "record_access_recovery", _boom)
-    with _pytest.raises(RuntimeError):
-        recovery_client.post(
-            "/api/v1/auth/recovery/verify", json={"email": user.email, "code": code}
-        )
-    rows = _otp_rows(recovery_session, user.id)
-    assert rows[0].status == "PENDING", "el consumo del OTP tambien se revierte"
-    assert _sessions(recovery_session, user.id) == []
-    assert _recoveries(recovery_session, user.id) == []
-    assert _login_events(recovery_session, user.id) == []
 
 
 # ---------------------------------------------------------------- OpenAPI
-def test_openapi_exposes_recovery_routes(recovery_client: TestClient):
+def test_openapi_exposes_only_request_route(recovery_client: TestClient):
     spec = recovery_client.get("/openapi.json").json()
     assert "/api/v1/auth/recovery/request" in spec["paths"]
-    assert "/api/v1/auth/recovery/verify" in spec["paths"]
-
-
-# ------------------------------------------------- Regresion dictamen: E1-T33
-def test_verify_contract_no_dead_param_no_session_text():
-    """Regresion del dictamen (E1-T33): `verify_recovery` sin `device_info`
-    (el router no lo envia) y `device_id` descrito solo como binding
-    (verify YA NO abre sesion desde E1-T33/SCR-005)."""
-    import inspect
-
-    from app.modules.identity.schemas.recovery import RecoveryVerifyRequest
-    from app.modules.identity.service import recovery as recovery_service
-
-    assert (
-        "device_info" not in inspect.signature(recovery_service.verify_recovery).parameters
-    ), "parametro muerto: el router no envia device_info"
-    description = RecoveryVerifyRequest.model_fields["device_id"].description or ""
-    assert (
-        "se guarda en la sesion" not in description.lower()
-    ), f"descripcion obsoleta (verify no abre sesion): {description!r}"
-    assert (
-        "binding" in description.lower()
-    ), f"la descripcion debe reflejar solo el binding: {description!r}"
+    assert "/api/v1/auth/recovery/verify" not in spec["paths"], "E1-T41: verify retirado"

@@ -39,6 +39,7 @@ class PinResetOtpPage extends StatefulWidget {
     super.key,
     required this.email,
     required this.docNumber,
+    this.docType = 'DNI',
     required this.controller,
     this.autoTick = true,
   });
@@ -46,8 +47,12 @@ class PinResetOtpPage extends StatefulWidget {
   /// Email al que se envió el código (solo se muestra enmascarado).
   final String email;
 
-  /// DNI capturado en el paso inicial (solo memoria; se propaga en `extra`).
+  /// DNI/RUC capturado en el paso inicial (solo memoria; se propaga en
+  /// `extra`). `docType` (`DNI|RUC`, F-T50) viaja igual, nunca en la ruta.
   final String docNumber;
+
+  /// Tipo de documento del paso inicial (default `DNI` preserva F-T43).
+  final String docType;
 
   /// Controlador delgado (propiedad del llamador; ver `pin_reset_routes.dart`).
   final PinResetOtpController controller;
@@ -87,12 +92,14 @@ class _PinResetOtpPageState extends State<PinResetOtpPage> {
     if (_controller.succeeded && !_navigated) {
       _navigated = true;
       final email = Uri.encodeComponent(widget.email);
-      // DNI + código viajan SOLO en memoria (`extra`): nunca en la ruta.
+      // DNI + código + doc_type viajan SOLO en memoria (`extra`): nunca
+      // en la ruta.
       context.go(
         '/pin-reset/new-pin?email=$email',
         extra: PinResetDraft(
           email: widget.email,
           docNumber: widget.docNumber,
+          docType: widget.docType,
           code: _controller.code,
         ),
       );

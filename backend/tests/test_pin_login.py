@@ -283,6 +283,7 @@ def test_pin_success_returns_tokens_and_resets_counter(
         "token_type",
         "session_id",
         "expires_in",
+        "biometric_enabled",
     }
     assert data["token_type"] == "Bearer"
     assert data["expires_in"] > 0
@@ -582,3 +583,41 @@ def test_device_public_key_not_logged_and_binding_audited(
     assert after.get("result") == "registered"
     assert "device_public_key" not in after
     assert key not in str(after), "sin secretos en la auditoria"
+
+
+# ---------------------------------------------------------------- E1-T39: biometric_enabled en el login PIN
+def test_pin_login_exposes_biometric_disabled_by_default(
+    pin_client: TestClient, pin_session: Session
+):
+    """Sin consentimiento, el login PIN trae `biometric_enabled=false` (valor real)."""
+    from app.modules.identity import repository as identity_repo
+
+    user = _make_pin_user(pin_session)
+    resp = pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["biometric_enabled"] is False
+    pin_session.expire_all()
+    row = identity_repo.get_credential(pin_session, user.id)
+    assert row is not None and row.biometric_enabled is not True
+
+
+def test_pin_login_exposes_biometric_enabled_true(pin_client: TestClient, pin_session: Session):
+    """Tras consent `true`, el login PIN trae `biometric_enabled=true` (no constante)."""
+    from app.modules.identity import repository as identity_repo
+
+    user = _make_pin_user(pin_session)
+    pin_session.expire_all()
+    row = identity_repo.get_credential(pin_session, user.id)
+    assert row is not None
+    row.biometric_enabled = True
+    pin_session.commit()
+
+    resp = pin_client.post("/api/v1/auth/login/pin", json={"user_ref": str(user.id), "pin": PIN})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["biometric_enabled"] is True
+    assert PIN not in resp.text, "el PIN nunca se refleja"
+    pin_session.expire_all()
+    stored = identity_repo.get_credential(pin_session, user.id)
+    assert stored is not None
+    assert (stored.biometric_enabled is True) == data["biometric_enabled"]

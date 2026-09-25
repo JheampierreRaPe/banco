@@ -21,10 +21,12 @@ bool isPinResetEmailValid(String email) {
   return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(clean);
 }
 
-/// El DNI son 8 dígitos, como figura en el documento (mockup `pin-reset`).
-bool isDocNumberValid(String docNumber) {
+/// El documento son solo digitos con longitud segun tipo (F-T50, paridad
+/// KYC): DNI 8 / RUC 11. `docType` por defecto `DNI` preserva F-T43.
+bool isDocNumberValid(String docNumber, {String docType = 'DNI'}) {
   final clean = docNumber.trim();
-  if (clean.length != 8) return false;
+  final expected = docType.toUpperCase() == 'RUC' ? 11 : 8;
+  if (clean.length != expected) return false;
   return int.tryParse(clean) != null;
 }
 
@@ -36,6 +38,18 @@ const String pinResetInvalidEmailMessage =
 /// nada del backend).
 const String pinResetInvalidDocMessage =
     'Ingresa los 8 dígitos de tu DNI.';
+
+/// Error de formato del documento segun tipo (F-T50): DNI 8 / RUC 11.
+String pinResetInvalidDocMessageFor(String docType) =>
+    docType.toUpperCase() == 'RUC'
+        ? 'Ingresa los 11 dígitos de tu RUC.'
+        : pinResetInvalidDocMessage;
+
+/// Ayuda dinamica del documento segun tipo (F-T50).
+String pinResetDocHelpFor(String docType) =>
+    docType.toUpperCase() == 'RUC'
+        ? '11 dígitos, como figura en tu RUC.'
+        : '8 dígitos, como figura en tu DNI.';
 
 /// Enmascara el DNI para la UI: `12345678` -> `****5678` (docs/20 §8).
 String maskDocNumber(String docNumber) {

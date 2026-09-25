@@ -30,7 +30,7 @@ Map<String, dynamic> _sessionEnvelope(String access, String refresh) => {
 
 /// Mock HTTP de challenge/facial/pin (sin red).
 class _HttpMock {
-  _HttpMock({this.facialFails = false}) {
+  _HttpMock({this.facialFails = false, this.pinBiometricEnabled}) {
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
@@ -84,11 +84,25 @@ class _HttpMock {
             lastPinPayload = Map<String, dynamic>.from(options.data as Map);
             final pin = (options.data as Map)['pin'] as String?;
             if (pin == '1234') {
+              final data = <String, dynamic>{
+                'access_token': 'acc-pin',
+                'refresh_token': 'ref-pin',
+                'token_type': 'Bearer',
+                'session_id': 'ses-1',
+                'expires_in': 900,
+              };
+              // F-T49 (E1-T39): el servidor informa el consentimiento vigente.
+              if (pinBiometricEnabled != null) {
+                data['biometric_enabled'] = pinBiometricEnabled;
+              }
               handler.resolve(
                 Response(
                   requestOptions: options,
                   statusCode: 200,
-                  data: _sessionEnvelope('acc-pin', 'ref-pin'),
+                  data: {
+                    'data': data,
+                    'meta': {'request_id': 'r-1'},
+                  },
                 ),
               );
             } else {
@@ -120,6 +134,9 @@ class _HttpMock {
 
   final Dio dio = Dio();
   final bool facialFails;
+
+  /// `biometric_enabled` que el PIN exitoso devuelve (`null` = ausente).
+  final bool? pinBiometricEnabled;
   int challengeCalls = 0;
   int facialCalls = 0;
   int pinCalls = 0;
@@ -172,6 +189,13 @@ class _ThrowingSaveSession extends InMemorySessionRepository {
     String? refreshToken,
   }) async =>
       throw StateError('secure storage caido');
+}
+
+/// Store de identidad que falla al persistir el flag biometrico (F-T49).
+class _ThrowingBiometricStore extends InMemorySessionIdentityStore {
+  @override
+  Future<void> saveBiometricEnabled(bool enabled) async =>
+      throw StateError('keystore down');
 }
 
 void main() {
@@ -503,5 +527,152 @@ void main() {
     expect(controller.errorMessage, LoginController.sessionExpiredMessage);
     expect(session.isAuthenticated, isFalse);
     expect(expiredCalls, 1);
+  });
+
+  test('F-T49: PIN con biometric_enabled=true sincroniza el flag (CA-01)',
+      () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(pinBiometricEnabled: true),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(ok, isTrue);
+    expect(controller.biometricEnabled, isTrue);
+    expect(identity.biometricEnabled, isTrue);
+    expect(await identity.readBiometricEnabled(), isTrue);
+  });
+
+  test('F-T49: PIN con biometric_enabled=false sincroniza el flag (CA-01)',
+      () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore(biometricEnabled: true);
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(pinBiometricEnabled: false),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(ok, isTrue);
+    expect(controller.biometricEnabled, isFalse);
+    expect(await identity.readBiometricEnabled(), isFalse);
+  });
+
+  test('F-T49: PIN sin biometric_enabled no escribe el flag', () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(ok, isTrue);
+    expect(controller.biometricEnabled, isNull);
+    expect(await identity.readBiometricEnabled(), isNull);
+  });
+
+  test('F-T49: fallo del store biometrico no tumba el login (CA-01)',
+      () async {
+    final session = InMemorySessionRepository();
+    final identity = _ThrowingBiometricStore();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(pinBiometricEnabled: true),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithPin(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      pin: '1234',
+    );
+
+    expect(ok, isTrue);
+    expect(controller.succeeded, isTrue);
+    expect(session.isAuthenticated, isTrue);
+    // La cache del controlador refleja el servidor aunque el store falle.
+    expect(controller.biometricEnabled, isTrue);
+  });
+
+  test('F-T49: facial fallido guia al PIN sin revelar la causa (CA-03)',
+      () async {
+    final session = InMemorySessionRepository();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(facialFails: true),
+      reader: FakeBiometricReader(available: true, succeeds: true),
+    );
+    addTearDown(controller.dispose);
+
+    final ok = await controller.loginWithBiometrics(
+      userRef: 'u-1',
+      deviceId: 'd-1',
+      reason: 'Confirma tu identidad para ingresar',
+    );
+
+    expect(ok, isFalse);
+    // Nunca queda solo el error generico: hay salida al PIN.
+    expect(controller.showPinFallback, isTrue);
+    expect(controller.infoMessage, LoginController.pinFallbackMessage);
+    // El mensaje generico se mantiene y no filtra la causa (400 por falta
+    // de consentimiento, firma invalida, red, etc.).
+    expect(controller.errorMessage, LoginController.genericAuthErrorMessage);
+    expect(controller.errorMessage, isNot(contains('consentimiento')));
+    expect(controller.infoMessage, isNot(contains('consentimiento')));
+  });
+
+  test('F-T49: controlador hidrata biometricEnabled desde el store', () async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore(biometricEnabled: true);
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: false),
+      identity: identity,
+    );
+    addTearDown(controller.dispose);
+
+    expect(controller.biometricEnabled, isTrue);
+  });
+
+  test('F-T49: sin store el flag es null (boton oculto)', () async {
+    final session = InMemorySessionRepository();
+    final controller = _controller(
+      session: session,
+      http: _HttpMock(),
+      reader: FakeBiometricReader(available: false),
+    );
+    addTearDown(controller.dispose);
+
+    expect(controller.biometricEnabled, isNull);
   });
 }

@@ -86,41 +86,40 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/kyc/evaluate` | Evalua un paso de liveness en vivo (rafaga `frames_b64`). |
 | POST | `/auth/kyc/document/validate` | Valida la legibilidad del documento (proxy; E1-T30). |
 | POST | `/auth/kyc/document/lookup` | Consulta el titular por DNI/RUC (proxy a apiinti; E1-T35). |
+| POST | `/auth/kyc/email/check` | Prechequea si el email ya esta registrado: `200 {available: true}` o `409 DUPLICATE_EMAIL` (E1-T40; paso "Continuar", sin proveedor ni persistencia). |
 | POST | `/auth/kyc/submit` | Envia documento + segmentos de liveness y obtiene resultado. |
 | POST | `/auth/activate` | Valida OTP y activa la cuenta (HU02; **deprecado pero vivo**, E1-T32/SCR-005: cabecera `Deprecation: true` y OpenAPI `deprecated`; la via canonica es `POST /auth/pin/setup`). |
 | POST | `/auth/otp/resend` | Reenvia OTP con control de intentos (entrega solo por email). |
 | POST | `/auth/login/challenge` | Emite `nonce` para firmar con biometria del dispositivo (HU03). |
 | POST | `/auth/login/facial` | Valida el `nonce` firmado y abre sesion (HU03, biometria local). |
-| POST | `/auth/login/pin` | Login alterno con PIN. |
+| POST | `/auth/login/pin` | Login alterno con PIN (E1-T39: `data` incluye `biometric_enabled: bool`). |
+| POST | `/auth/biometric/consent` | Fija `credentials.biometric_enabled` del usuario del JWT (E1-T39, Bearer). |
 | POST | `/auth/refresh` | Renueva tokens. |
 | POST | `/auth/logout` | Revoca la sesion. |
 | POST | `/auth/recover` | Recuperacion con dispositivo confiable + OTP (HU04). |
-| POST | `/auth/recovery/request` | Solicita OTP de recuperacion por email, siempre 200 sin enumerar (E1-T31; consume `F-T29`). |
-| POST | `/auth/recovery/verify` | Valida el OTP sin abrir sesion y devuelve `{user_ref, device_bound}` (E1-T33/SCR-005; consume `F-T29`). |
-| POST | `/auth/pin-reset` | Fija el PIN con `email + DNI + OTP` y devuelve `{user_ref, pin_set: true}` sin abrir sesion (E1-T34/SCR-005; consumen `F-T34`..`F-T43`). |
+| POST | `/auth/recovery/request` | Solicita OTP de recuperacion por email, siempre 200 sin enumerar (E1-T31; el OTP emitido lo consume `POST /auth/pin-reset`). |
+| POST | `/auth/pin-reset` | Fija el PIN con `email + documento (DNI\|RUC) + OTP` y devuelve `{user_ref, pin_set: true}` sin abrir sesion (E1-T34/SCR-005; E1-T40: `doc_type` con default `DNI`; consumen `F-T34`..`F-T43`). |
 | GET | `/me` | Perfil y productos del usuario. |
 
+> Decision E1-T41 (retiro de `verify`, item 4 del dueno): `POST
+> /auth/recovery/verify` fue ELIMINADO (la UI "recupera mi acceso" no tenia
+> sentido: redirigia a login sin dar acceso). Se CONSERVA `POST
+> /auth/recovery/request` (+ `service/recovery.py`, `repository/recovery.py`
+> y la tabla `access_recovery`) porque `POST /auth/pin-reset` depende de
+> ellos: consume el OTP `RECOVERY` emitido por `request` y registra
+> `access_recovery` con `new_credential_set=true`. El error
+> `INVALID_RECOVERY_CODE` deja de existir en el catalogo (solo lo emitia
+> `verify`); `RATE_LIMITED` de `request` y la ventana compartida de
+> verificacion (que ahora rige a `/auth/pin-reset`) se conservan.
+>
 > Decision E1-T31: el `/auth/recover` canonico de HU04 (dispositivo confiable +
-> `nonce` firmado + cambio de credencial) queda como esta. Los dos endpoints nuevos
-> son pre-sesion para el caso "sin `user_ref` local" (reinstalar/borrar datos):
+> `nonce` firmado + cambio de credencial) queda como esta. El endpoint nuevo
+> es pre-sesion para el caso "sin `user_ref` local" (reinstalar/borrar datos):
 > `request {email}` -> `data: {accepted: true, ttl_seconds, resend_wait_seconds}`
 > (constantes globales, identico exista o no el email; `429 RATE_LIMITED` por
-> `email+IP`); `verify {email, code[, device_id/device_public_key/platform/
-> biometric_type]}` -> `data: {user_ref, device_bound}` (E1-T33/SCR-005:
-> `verify` ya NO abre sesion ni emite tokens; `user_ref = str(user.id)`, lo
-> persiste `F-T29`; `device_bound=true` solo si se REGISTRO un binding nuevo;
-> en el flujo recuperacion/pin-reset la sesion NO se abre ahi; se abre al
-> autenticarse en login (PIN con `POST /auth/login/pin` o biometria con
-> `POST /auth/login/facial`).
-> Errores: `401 INVALID_RECOVERY_CODE` (mismo cuerpo para email no registrado, no
-> elegible, sin OTP, codigo incorrecto, OTP vencido y OTP bloqueado por intentos
-> agotados: vencido/bloqueado colapsan al generico para no filtrar existencia;
-> ya NO existe `400 EXPIRED_OTP` en este flujo —fix anti-oraculo E1-T31, ver
-> `docs/tasks/E1-T31.md` §6.1; `F-T29` debe tratar el vencimiento como generico
-> con reintento), `429 RATE_LIMITED` (solo ventana de solicitud/verificacion por
 > `email+IP`). OTP `RECOVERY` solo por
 > email (plantilla `otp_code_email`; nunca SMS), cooldown reutilizando el `PENDING`
-> vigente, auditoria `auth.recovery_requested` / `auth.access_recovered` (sin PII).
+> vigente, auditoria `auth.recovery_requested` (sin PII).
 >
 > Decision E1-T34/SCR-005: `POST /auth/pin-reset` cierra el flujo para el
 > usuario que recupera el acceso pero no recuerda su PIN: request
@@ -157,6 +156,35 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > INVALID_LOGIN` generico (mismo cuerpo que firma/binding invalidos, sin
 > sesion ni tocar el binding; la biometria es opcional y el PIN es siempre
 > el fallback).
+>
+> Decision E1-T40: `POST /auth/kyc/email/check` (pre-registro, sin auth)
+> prechequea el email al pulsar **Continuar** en `kyc-start` (decision del
+> dueno items 2 y 5): request `{email}` -> `data: {available: true}` si no
+> esta registrado; `409 DUPLICATE_EMAIL` con `"El correo ya esta
+> registrado"` (neutro, sin eco del email) si existe. Normaliza
+> (`strip().lower()`, igual que el alta) y consulta `get_by_email`; nunca
+> llama al proveedor ni persiste. El rate-limit corre ANTES de resolver
+> existencia (ventana en memoria compartida con el proxy KYC; prod:
+> Redis/middleware); `422` estandar para email malformado. El `409
+> DUPLICATE_EMAIL` de `POST /auth/kyc/submit` queda intacto (respaldo de
+> carrera). `POST /auth/pin-reset` acepta `doc_type: "DNI"|"RUC"` (default
+> `"DNI"` por compatibilidad F-T43): valida en el esquema (422 estandar)
+> `doc_number` solo digitos con longitud exacta (DNI 8 / RUC 11, paridad
+> con el lookup E1-T35); la resolucion sigue por `email` +
+> `doc_number_hash` HMAC (`doc_type` NO se cruza con `users.doc_type`);
+> errores intactos (`401 INVALID_PIN_RESET` generico, `429 RATE_LIMITED`,
+> `422` de PIN). Sin migracion.
+>
+> Decision E1-T39: `POST /auth/biometric/consent` (Bearer) gestiona el
+> consentimiento post-alta: request `{"enabled": true|false}` -> `200
+> {"data": {"biometric_enabled": <bool>}, "meta": {"request_id": ...}}`
+> (idempotente; `401 NOT_AUTHENTICATED` sin cabecera/`Bearer` invalido/`sub`
+> no UUID; `404 NOT_FOUND` neutro si falta la credencial; `422` estandar de
+> esquema). `POST /auth/login/pin` amplia su `data` con `biometric_enabled:
+> bool` (consentimiento vigente, solo tras exito; tokens, `session_id`,
+> `expires_in` y errores intactos) para que el cliente sincronice el boton
+> biometrico. `POST /auth/login/facial` no cambia su contrato: el flag solo
+> lo habilita/revoca.
 
 Detalle del flujo KYC (`identity`, E1-T29):
 

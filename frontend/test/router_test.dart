@@ -208,6 +208,39 @@ void main() {
     expect(find.text('Inicia sesión'), findsNothing);
   });
 
+  testWidgets('F-T51: /recovery retirada redirige al onboarding',
+      (tester) async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    addTearDown(identity.dispose);
+    await tester.pumpWidget(
+      _harness(session, identity, initial: '/recovery'),
+    );
+    await tester.pumpAndSettle();
+
+    // El feature `recovery` fue retirado: ya no hay pantalla de
+    // recuperación; sin sesión ni `userRef` la guarda manda a `/welcome`.
+    expect(find.text('Crear mi cuenta'), findsOneWidget);
+    expect(find.text('Recuperar acceso'), findsNothing);
+  });
+
+  testWidgets('F-T51: /recovery/otp retirada resuelve /login con userRef',
+      (tester) async {
+    debugDisableLoginAutoTick = true;
+    addTearDown(() => debugDisableLoginAutoTick = false);
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore(userRef: 'u-1');
+    addTearDown(identity.dispose);
+    await tester.pumpWidget(
+      _harness(session, identity, initial: '/recovery/otp'),
+    );
+    await _pumpSettled(tester);
+
+    // Con `userRef` las rutas desconocidas son privadas: van a `/login`.
+    expect(find.text('Inicia sesión'), findsOneWidget);
+    expect(find.text('Recuperar acceso'), findsNothing);
+  });
+
   testWidgets('buildRouter hidrata userRef/deviceId en LoginRouteDeps',
       (tester) async {
     debugDisableLoginAutoTick = true;

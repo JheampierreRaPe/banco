@@ -144,7 +144,7 @@ class _PinResetNewPinPageState extends State<PinResetNewPinPage> {
               const SizedBox(height: AppSpacing.stackSm),
               Text(
                 'Para ${maskPinResetEmail(draft.email)} · '
-                'DNI ${maskDocNumber(draft.docNumber)}',
+                '${draft.docType == 'RUC' ? 'RUC' : 'DNI'} ${maskDocNumber(draft.docNumber)}',
                 key: const Key('pin-reset-newpin-identity'),
                 style: AppTypography.bodyMd.copyWith(
                   color: AppColors.secondaryText,

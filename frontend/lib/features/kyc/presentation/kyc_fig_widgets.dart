@@ -319,7 +319,14 @@ InputDecoration kycFieldDecoration({
   required String hintText,
   String? errorText,
   Widget? prefixIcon,
+  bool hasError = false,
 }) {
+  final enabled = hasError
+      ? kycInputBorder(AppColors.errorCarmine)
+      : kycInputBorder(AppColors.outlineVariant);
+  final focused = hasError
+      ? kycInputBorder(AppColors.errorCarmine, width: 2)
+      : kycInputBorder(AppColors.primary, width: 2);
   return InputDecoration(
     hintText: hintText,
     hintStyle: AppTypography.bodyLg.copyWith(color: AppColors.secondaryText),
@@ -332,8 +339,8 @@ InputDecoration kycFieldDecoration({
       vertical: AppSpacing.stackSm + AppSpacing.unit,
     ),
     prefixIcon: prefixIcon,
-    enabledBorder: kycInputBorder(AppColors.outlineVariant),
-    focusedBorder: kycInputBorder(AppColors.primary, width: 2),
+    enabledBorder: enabled,
+    focusedBorder: focused,
     errorBorder: kycInputBorder(AppColors.errorCarmine),
     focusedErrorBorder: kycInputBorder(AppColors.errorCarmine, width: 2),
     disabledBorder: kycInputBorder(AppColors.outlineVariant),

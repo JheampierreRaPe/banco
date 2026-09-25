@@ -32,6 +32,10 @@ class PinSetupRequest(BaseModel):
         pattern=r"^\d{4,6}$",
         description="PIN nuevo en claro, 4-6 digitos (solo transito, nunca se persiste).",
     )
+    biometric_enabled: bool = Field(
+        default=False,
+        description="Consentimiento de acceso biometrico en este dispositivo.",
+    )
 
 
 class PinSetupData(BaseModel):

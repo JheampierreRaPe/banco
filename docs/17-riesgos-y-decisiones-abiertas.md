@@ -53,6 +53,15 @@
 | R26 | `device_public_key` = `"hmac:"+hex(secreto de firma)`: una fuga de `device_bindings.public_key` expone el mismo secreto usado para firmar (no es una clave publica asimetrica real) | 2 | 3 | Alto | Aceptado por ahora: el formato `hmac:<hex>` lo exige el backend (E1-T27) y no se cambia desde el cliente. Mitigacion: el backend debe tratar `public_key` como material secreto (no exponerlo en respuestas/logs, control de acceso a `device_bindings`) y rotar el binding ante sospecha. **Recomendacion a futuro:** migrar a un par asimetrico Ed25519/EC (que el backend ya soporta) donde solo la clave publica viaje y el secreto nunca se derive ni se comparta. |
 | R27 | `biometric_type` se omite en produccion: `BiometricReader` no expone si fue FACE o FINGERPRINT | 1 | 1 | Bajo | Aceptado: `local_auth` no esta en `pubspec.yaml` y, aun instalado, `getAvailableBiometrics()` devuelve los tipos *enrolados* (face/fingerprint), no cual se uso en cada autenticacion; con ambos enrolados es ambiguo. El backend acepta la solicitud sin `biometric_type`, por lo que se deja omitido (no se inventa). Mitigacion futura: exponer el tipo desde el reader cuando la plataforma lo garantice y cablearlo a `LoginRouteDeps.biometricType`/binding. |
 | R28 | Rate-limit de recuperacion (`E1-T31`) en memoria por replica (no compartido) | 2 | 2 | Medio | Aceptado por alcance (mismo patron que activacion/KYC): buckets `RECOVERY_REQUEST_*` / `RECOVERY_VERIFY_*` por `email+IP`, candidatos a `config.parameters` (`auth.recovery_request_*` / `auth.recovery_verify_*`). En prod multirreplica mover a Redis o a un middleware de rate limiting (misma clave). Nota: el drift de esquema de `identity.access_recovery` quedo resuelto con la migracion `0017_identity_access_recovery.py` (`alembic check` limpio). |
+| R29 | Soporte RUC validado solo contra el mock: si `kyc-service/verify-full` rechazara `document_type=RUC`, el submit fallaria en vivo | 2 | 2 | Medio | Aceptado: validacion local + mock en verde (`docs/tasks/E1-T36.md`); `kyc-service/` no se toca (prohibido) por lo que no es verificable aqui. Verificar contra el servicio real cuando este disponible; si se confirma el rechazo, adaptar el contrato o documentar la limitacion. |
+
+> **Nota operativa — swap solo-texto `arriba`/`abajo` (F-T48):** el intercambio es
+> solo presentacion Flutter (`kyc_task_page.dart::instructionFor`); el microservicio
+> (`kyc-service/` intacto, `liveness_service.py` sin cambios) conserva el mapeo invertido.
+> `failed_step`/logs/BD guardan los nombres del servicio, es decir lo inverso a lo que
+> ve el usuario: `arriba` en logs = lo que la UI mostro como "mira hacia abajo" y
+> `abajo` en logs = lo que la UI mostro como "mira hacia arriba". No reinterpretar
+> al leer logs/soporte.
 
 ## 4. Dependencias externas
 

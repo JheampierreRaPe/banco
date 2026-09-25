@@ -31,7 +31,7 @@
 |---|---|
 | `user_status` | `PENDING_ACTIVATION`, `ACTIVE`, `BLOCKED`, `CLOSED` |
 | `kyc_status` | `PENDING`, `VERIFIED`, `REJECTED`, `MANUAL_REVIEW` |
-| `doc_type` | `DNI`, `CE`, `PASSPORT` |
+| `doc_type` | `DNI`, `CE`, `PASSPORT`, `RUC` |
 | `credential_type` | `PIN`, `PASSWORD` |
 | `otp_purpose` | `ACTIVATION`, `RECOVERY`, `PAYMENT`, `LOGIN` |
 | `account_type` | `AHORRO`, `CORRIENTE`, `WALLET`, `POCKET`, `MULTICURRENCY` |
@@ -134,8 +134,9 @@
 | doc_type | VARCHAR(10) | No | - | CK `doc_type` | Tipo de documento. |
 | doc_number_hash | VARCHAR(128) | No | - | UQ | Hash del numero (no claro). |
 | doc_number_masked | VARCHAR(20) | Si | - | | Version enmascarada. |
-| first_name | VARCHAR(100) | No | - | | - |
-| last_name | VARCHAR(100) | No | - | | - |
+| first_name | VARCHAR(100) | No | - | | Nombres; `""` si RUC de persona juridica (la razon social va en `business_name`). |
+| last_name | VARCHAR(100) | No | - | | Apellidos; `""` si RUC de persona juridica. |
+| business_name | VARCHAR(150) | Si | - | | Razon social (E1-T36); solo RUC de persona juridica, el resto `NULL`. |
 | birth_date | DATE | Si | - | | - |
 | email | CITEXT | No | - | UQ | - |
 | phone | VARCHAR(20) | Si | - | IDX | - |

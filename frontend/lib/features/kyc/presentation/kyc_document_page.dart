@@ -79,20 +79,32 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
       await context.push('/kyc/task');
     }
   }
-
   @override
   Widget build(BuildContext context) {
     final c = _resolve(context);
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
-        child: KycTopBar(
-          title: 'Verifica tu identidad',
-          onBack: () => context.pop(),
+    // F-T47: el retroceso VOLUNTARIO (botón de la barra o sistema) pide
+    // confirmación porque reinicia TODO el registro. El botón llama
+    // directo al flujo de confirmación (`context.pop()` con go_router es
+    // declarativo y no consultaría al `PopScope`); el `PopScope` cubre el
+    // botón del sistema. El reinicio por fallo final usa `go('/kyc')` y NO
+    // pasa por aquí (silencioso, sin popup).
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        unawaited(requestKycBackRestart(context, c));
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        appBar: PreferredSize(
+          preferredSize:
+              const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
+          child: KycTopBar(
+            title: 'Verifica tu identidad',
+            onBack: () => unawaited(requestKycBackRestart(context, c)),
+          ),
         ),
-      ),
-      body: ListenableBuilder(
+        body: ListenableBuilder(
         listenable: c,
         builder: (context, _) {
           if (c.challenge == null) {
@@ -217,6 +229,7 @@ class _KycDocumentPageState extends State<KycDocumentPage> {
             ),
           );
         },
+        ),
       ),
     );
   }

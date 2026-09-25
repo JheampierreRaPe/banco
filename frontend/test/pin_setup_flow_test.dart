@@ -6,6 +6,7 @@
 // la ruta.
 import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/activation/activation_service.dart';
+import 'package:banca_online/features/biometrics/biometric_reader.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_routes.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_service.dart';
 import 'package:flutter/material.dart';
@@ -14,13 +15,20 @@ import 'package:go_router/go_router.dart';
 
 /// Fake del setup (sin red).
 class _FakePinSetupService implements PinSetupService {
+  String? lastPin;
+  bool? lastBiometricEnabled;
+
   @override
   Future<PinSetupResult> setup({
     required String userRef,
     required String code,
     required String pin,
-  }) async =>
-      const PinSetupResult(userId: 'u-1', status: 'ACTIVE');
+    bool biometricEnabled = false,
+  }) async {
+    lastPin = pin;
+    lastBiometricEnabled = biometricEnabled;
+    return const PinSetupResult(userId: 'u-1', status: 'ACTIVE');
+  }
 }
 
 /// Fake del reenvio (mismo contrato de `activation`, sin red).
@@ -74,10 +82,14 @@ void main() {
   setUp(() {
     pinSetupServiceFactory = () => _FakePinSetupService();
     pinSetupResendServiceFactory = () => _FakeResendService();
+    // Sin plataforma no hay prompt del SO: el gate biometrico se inyecta
+    // (el lector real con estados se cubre en `biometric_reader_test.dart`).
+    pinSetupBiometricReaderFactory = () => FakeBiometricReader();
   });
   tearDown(() {
     pinSetupServiceFactory = null;
     pinSetupResendServiceFactory = null;
+    pinSetupBiometricReaderFactory = null;
   });
 
   testWidgets('crear PIN valido avanza a confirmar (fig 0:497 -> 0:604)',
@@ -139,8 +151,8 @@ void main() {
     await _enterPin(tester, '482916');
     await _enterPin(tester, '482916');
 
-    // Aceptar la oferta (gate local con el lector del SO: cae a PIN sin
-    // bloquear porque `local_auth` no esta cableado).
+    // Aceptar la oferta (gate local con el lector del SO: en tests no hay
+    // plugin y cae a PIN sin bloquear).
     final cont = find.byKey(const Key('biometric-continue'));
     await tester.ensureVisible(cont);
     await tester.tap(cont);
@@ -184,6 +196,80 @@ void main() {
     final location =
         router.routerDelegate.currentConfiguration.last.matchedLocation;
     expect(location, '/pin-setup/confirm');
+  });
+
+  testWidgets(
+      'regresion F-T46: crear -> confirmar (desajuste) -> volver -> '
+      'reescribir -> confirmar -> biometrico -> OTP envia el ultimo PIN', (
+    tester,
+  ) async {
+    await _pump(tester);
+
+    // 1. Crear el primer PIN y llegar a confirmar.
+    await _enterPin(tester, '482916');
+    expect(find.text('Confírmalo'), findsOneWidget);
+
+    // 2. Desajuste: no avanza y conserva el error.
+    await _enterPin(tester, '482917');
+    expect(find.text('Los PIN no coinciden.'), findsOneWidget);
+    expect(find.text('Confírmalo'), findsOneWidget);
+
+    // 3. Volver: regresa a crear con el estado limpio (vacio y editable).
+    // Con el bug (`pop()` sin destino + `_navigated` bloqueado) este paso
+    // falla: nunca se vuelve a "Crea tu PIN".
+    await tester.ensureVisible(find.byKey(const Key('pin-flow-back')));
+    await tester.tap(find.byKey(const Key('pin-flow-back')));
+    await tester.pumpAndSettle();
+    expect(find.text('Crea tu PIN de seguridad'), findsOneWidget);
+    expect(find.text('Los PIN no coinciden.'), findsNothing);
+
+    // 4. Reescribir un PIN NUEVO (el campo debe estar editable: si quedo el
+    // PIN viejo o el bloqueo, nunca se avanza a confirmar).
+    await _enterPin(tester, '739581');
+    expect(find.text('Confírmalo'), findsOneWidget);
+
+    // 5. Confirmar identico -> oferta biometrica -> OTP.
+    await _enterPin(tester, '739581');
+    expect(
+      find.text('¿Quieres entrar con tu huella?'),
+      findsOneWidget,
+    );
+    final cont = find.byKey(const Key('biometric-continue'));
+    await tester.ensureVisible(cont);
+    await tester.tap(cont);
+    await tester.pumpAndSettle();
+    expect(find.text('Revisa tu correo'), findsOneWidget);
+  });
+
+  testWidgets(
+      'el OTP envia el ultimo PIN confirmado con biometric_enabled=true', (
+    tester,
+  ) async {
+    final setup = _FakePinSetupService();
+    pinSetupServiceFactory = () => setup;
+    await _pump(tester);
+
+    await _enterPin(tester, '739581');
+    await _enterPin(tester, '739581');
+
+    // Oferta biometrica con el switch por defecto (activo) -> el borrador
+    // lleva el consentimiento en `true`.
+    final cont = find.byKey(const Key('biometric-continue'));
+    await tester.ensureVisible(cont);
+    await tester.tap(cont);
+    await tester.pumpAndSettle();
+    expect(find.text('Revisa tu correo'), findsOneWidget);
+
+    await _enterPin(tester, '123456');
+    final submit = find.byKey(const Key('pin-setup-submit'));
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+
+    // El payload del `pin/setup` es el ultimo PIN confirmado (no un PIN
+    // viejo descartado) con el consentimiento elegido en `0:704`.
+    expect(setup.lastPin, '739581');
+    expect(setup.lastBiometricEnabled, isTrue);
   });
 
   testWidgets('guardado tardio: el flujo previo no persiste el user_ref',

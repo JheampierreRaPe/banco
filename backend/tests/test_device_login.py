@@ -123,8 +123,13 @@ def login_client(login_session: Session):
         nonce_domain.reset_nonces()
 
 
-def _make_enrolled_user(session: Session, *, device_id: str = "pixel-8-pro"):
-    """Usuario + binding HMAC registrado (retorna `(user, secret_hex)`)."""
+def _make_enrolled_user(session: Session, *, device_id: str = "pixel-8-pro", consent: bool = True):
+    """Usuario + credencial + binding HMAC registrado (retorna `(user, secret_hex)`).
+
+    E1-T38: concede el consentimiento biometrico (`biometric_enabled=True`)
+    por defecto para conservar el camino feliz facial; `consent=False` deja
+    la credencial apagada (regresion sin consentimiento).
+    """
     from app.modules.identity import repository as identity_repo
 
     suffix = uuid.uuid4().hex[:8]
@@ -137,6 +142,10 @@ def _make_enrolled_user(session: Session, *, device_id: str = "pixel-8-pro"):
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
     )
+    credential = identity_repo.create_credential(session, user.id)
+    if consent:
+        credential.biometric_enabled = True
+        session.flush()
     secret_hex = secrets.token_hex(24)
     identity_repo.register_binding(
         session,
@@ -356,6 +365,66 @@ def test_unknown_device_matches_invalid_signature(login_client: TestClient, logi
     )
     assert no_binding.status_code == 400
     assert no_binding.json()["error"]["code"] == "INVALID_LOGIN"
+
+
+def test_facial_without_consent_rejected_generic(login_client: TestClient, login_session: Session):
+    """Sin consentimiento -> 400 `INVALID_LOGIN` generico, sin sesion ni tocar binding (E1-T38 CA-03).
+
+    Regresion: falla con el codigo anterior (el facial solo exigia binding
+    `ACTIVE` + firma y abria sesion aunque `biometric_enabled` fuera `False`).
+    """
+    from app.modules.identity import repository as identity_repo
+    from app.modules.identity.models import UserSession
+
+    user, secret_hex = _make_enrolled_user(login_session, consent=False)
+    challenge = _challenge(login_client, str(user.id))
+    headers = {"X-Request-Id": "probe-no-consent"}
+
+    login_session.expire_all()
+    before = identity_repo.get_binding(login_session, user.id, "pixel-8-pro")
+    assert before is not None and before.status == "ACTIVE"
+    before_last_used = before.last_used_at
+
+    resp = login_client.post(
+        "/api/v1/auth/login/facial",
+        json={
+            "nonce": challenge["nonce"],
+            "device_id": "pixel-8-pro",
+            "signature": _sign_hmac(secret_hex, challenge["nonce"]),
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_LOGIN"
+    assert "access_token" not in resp.text, "sin tokens en el rechazo"
+    assert "refresh_token" not in resp.text, "sin tokens en el rechazo"
+
+    login_session.expire_all()
+    rows = list(
+        login_session.scalars(sa.select(UserSession).where(UserSession.user_id == user.id)).all()
+    )
+    assert rows == [], "sin consentimiento no se abre sesion"
+
+    login_session.expire_all()
+    after = identity_repo.get_binding(login_session, user.id, "pixel-8-pro")
+    assert after is not None and after.status == "ACTIVE"
+    assert after.last_used_at == before_last_used, "el binding queda intacto"
+
+    # Generico: mismo cuerpo que una firma invalida con consentimiento.
+    user2, _secret2 = _make_enrolled_user(login_session, consent=True)
+    challenge2 = _challenge(login_client, str(user2.id))
+    bad_sig = login_client.post(
+        "/api/v1/auth/login/facial",
+        json={
+            "nonce": challenge2["nonce"],
+            "device_id": "pixel-8-pro",
+            "signature": "00" * 32,
+        },
+        headers=headers,
+    )
+    assert bad_sig.status_code == 400
+    assert bad_sig.json() == body, "sin oraculo: el rechazo por consentimiento es identico"
 
 
 def test_expired_nonce_returns_expired(login_client: TestClient, login_session: Session):

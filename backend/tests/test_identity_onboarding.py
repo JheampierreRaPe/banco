@@ -79,6 +79,7 @@ def test_tables_registered_with_schema_columns_constraints():
         "doc_number_masked",
         "first_name",
         "last_name",
+        "business_name",
         "birth_date",
         "email",
         "phone",
@@ -100,6 +101,7 @@ def test_tables_registered_with_schema_columns_constraints():
         str(c.sqltext) for c in users.constraints if isinstance(c, sa.CheckConstraint)
     )
     assert "doc_type" in checks
+    assert "RUC" in checks, "E1-T36: ck_users_doc_type debe incluir RUC"
     assert "PENDING_ACTIVATION" in checks
 
     credentials = Base.metadata.tables["identity.credentials"]

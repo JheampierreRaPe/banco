@@ -20,12 +20,18 @@ class PinSetupResult {
 abstract class PinSetupService {
   /// Crea el PIN consumiendo un OTP ACTIVATION válido y sin usar.
   ///
+  /// [biometricEnabled] es el consentimiento de la oferta biometrica
+  /// (fig `0:704`, F-T46): viaja como `biometric_enabled` y el backend
+  /// (`E1-T38`) lo persiste en `identity.credentials.biometric_enabled`
+  /// (default `false`, preserva el contrato anterior).
+  ///
   /// Lanza [ApiException] con `code` `INVALID_SETUP_CODE` (401, exista o no
   /// el usuario), `PIN_ALREADY_SET` (409), validación (422) o de red.
   Future<PinSetupResult> setup({
     required String userRef,
     required String code,
     required String pin,
+    bool biometricEnabled = false,
   });
 }
 
@@ -47,6 +53,7 @@ class HttpPinSetupService implements PinSetupService {
     required String userRef,
     required String code,
     required String pin,
+    bool biometricEnabled = false,
   }) async {
     final response = await _api.post<dynamic>(
       setupPath,
@@ -54,6 +61,7 @@ class HttpPinSetupService implements PinSetupService {
         'user_ref': userRef,
         'code': code,
         'pin': pin,
+        'biometric_enabled': biometricEnabled,
       },
     );
     final data = _dataOf(response.data);

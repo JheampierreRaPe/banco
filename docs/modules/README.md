@@ -20,11 +20,32 @@ eventos (`outbox`/`inbox`).
 - **Titular por documento (E1-T35, HU01):** `POST /auth/kyc/document/lookup
   {type: DNI|RUC, number}` -> `{document_type, first_name, last_name,
   business_name}` (persona natural: nombres/apellidos; RUC juridica: razon
-  social en `business_name`; consume `F-T44`). Proxy server-side a apiinti
-  (`GET /dni/{numero}`, `GET /ruc/{numero}` con `Authorization: Bearer
-  <APIINTI_API_KEY>`; parseo tolerante en un unico punto; errores neutros
-  `VALIDATION_ERROR`/`DOCUMENT_NOT_FOUND`/`DOC_LOOKUP_UNAVAILABLE`/
-  `RATE_LIMITED`; sin persistencia; rate limit en memoria compartido con KYC).
+   social en `business_name`; consume `F-T44`). Proxy server-side a apiinti
+   (`GET /dni/{numero}`, `GET /ruc/{numero}` con `Authorization: Bearer
+   <APIINTI_API_KEY>`; parseo tolerante en un unico punto; errores neutros
+   `VALIDATION_ERROR`/`DOCUMENT_NOT_FOUND`/`DOC_LOOKUP_UNAVAILABLE`/
+   `RATE_LIMITED`; sin persistencia; rate limit en memoria compartido con KYC).
+   Precheck "documento ya registrado" (E1-T37, DNI y RUC): despues del 422 y
+   antes de la red, `document_is_registered` (HMAC de
+   `kyc_onboarding.hash_document_number` + `get_by_doc_hash`) -> `409
+   DUPLICATE_DOCUMENT` (`"El documento ya se encuentra registrado"`) sin
+   consulta externa; el 409 de `submit` queda intacto.
+- **Alta con RUC (E1-T36, HU01):** `POST /auth/kyc/submit` acepta
+  `document.type=RUC` con `applicant.business_name` (razon social, max 150;
+  se persiste en `identity.users.business_name` via `create_user`/
+  `onboard_customer`/`persist_kyc_submission`; RUC juridica = nombres `""`,
+  RUC natural = nombres completos). Validacion por tipo ANTES del proveedor
+  (`kyc_proxy.validate_applicant` -> `422 VALIDATION_ERROR` sin invocar al
+  microservicio); `DNI|CE|PASSPORT` intactos (`business_name` se ignora).
+   CHECK `ck_users_doc_type` = `('DNI','CE','PASSPORT','RUC')` (migracion
+   `0020`). `kyc-service/` intacto.
+- **Consentimiento biometrico (E1-T38, HU02/HU03):** `POST /auth/pin/setup`
+  acepta `biometric_enabled?: bool = false` (default preserva el contrato) y
+  lo persiste en `identity.credentials.biometric_enabled` junto a
+  `pin_hash` + `ACTIVE`; `POST /auth/login/facial` lo exige (`is True`)
+  ademas de binding `ACTIVE` + firma valida y, sin el, responde `400
+  INVALID_LOGIN` generico (sin sesion ni tocar el binding; sin codigo nuevo
+  de error). La biometria es opcional: el PIN es siempre el fallback.
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega

@@ -108,6 +108,14 @@ class KycFlowController extends ChangeNotifier {
 
   KycChallenge? _challenge;
 
+  /// Generación de reinicio (F-T47): crece en cada `reset()`/`resetFull()`.
+  ///
+  /// Señal para las pantallas que guardan estado local fuera del controller
+  /// (hoy `KycStartPage`): al cambiar, limpian sus controllers/campos. No
+  /// lleva PII ni decide nada (solo conteo).
+  int _resetGeneration = 0;
+  int get resetGeneration => _resetGeneration;
+
   /// Momento de emisión del desafío vigente (TTL local, E1-T06).
   DateTime? _challengeIssuedAt;
   DateTime? get challengeIssuedAt => _challengeIssuedAt;
@@ -588,6 +596,41 @@ class KycFlowController extends ChangeNotifier {
     }
   }
 
+  /// `true` cuando el flujo alcanzó un FALLO FINAL (F-T47, decisión del
+  /// dueño): (a) `submit` sin resultado que permita continuar
+  /// (`overall_result=false`, o `errorMessage` con acción `manualReview` de
+  /// negocio definitiva), o (b) `needsManualReviewAny` (3 intentos agotados
+  /// en una tarea del challenge, `kyc_error_handler.dart:125-126`).
+  ///
+  /// Los fallos recuperables (red `retryTask`/`retrySubmit`, token expirado
+  /// `refreshChallenge`) NO son finales: se conserva el estado.
+  bool get isFinalFailure {
+    final current = _result;
+    if (current != null && !current.overallResult) return true;
+    if (needsManualReviewAny) return true;
+    if (_lastError?.action == KycErrorAction.manualReview) return true;
+    return false;
+  }
+
+  /// Reinicio silencioso ante fallo final (F-T47).
+  ///
+  /// Si [isFinalFailure], ejecuta [resetFull] (sin diálogo) y devuelve
+  /// `true` para que la página navegue a `/kyc` con `go` (el `go` no dispara
+  /// los `PopScope` de confirmación). Si no hay fallo final, no toca nada y
+  /// devuelve `false`.
+  ///
+  /// El disparo vive AQUÍ como helper puro + en las páginas que deciden la
+  /// navegación (`KycTaskPage._submit`/`_capture`, `KycResultPage._retry`):
+  /// el controller no navega (cliente delgado) y NO se auto-reinicia en
+  /// `submit`/`captureAndResolveCurrentTask` para no romper
+  /// `refreshChallengePreservingProgress`, el `dispose`/`releaseCamera` ni
+  /// los tests E1-T06 que verifican folio/derivación a nivel de controller.
+  bool resetFullOnFinalFailure() {
+    if (!isFinalFailure) return false;
+    resetFull();
+    return true;
+  }
+
   void clearError() {
     if (_errorMessage == null && _lastError == null) return;
     _errorMessage = null;
@@ -620,6 +663,11 @@ class KycFlowController extends ChangeNotifier {
   /// F-T33: también libera la sesión de cámara vigente (best-effort, sin
   /// await: `reset` es síncrono) para que el reintento no deje la sesión
   /// previa viva; la siguiente captura reabre una sesión nueva.
+  ///
+  /// F-T47: además emite la señal [resetGeneration] para que las pantallas
+  /// con estado local (hoy `KycStartPage`) lo limpien. NO borra tipo/número
+  /// de documento ni titular (contrato legacy: otros flujos/tests lo usan;
+  /// para el borrado total ver [resetFull]).
   void reset() {
     unawaited(releaseCamera());
     _challenge = null;
@@ -638,6 +686,44 @@ class KycFlowController extends ChangeNotifier {
     _documentValidationError = null;
     _validatingDocument = false;
     _documentAttempts = 0;
+    _resetGeneration++;
+    notifyListeners();
+  }
+
+  /// Reinicio TOTAL del registro (F-T47, decisión del dueño).
+  ///
+  /// Todo lo que limpia [reset] MÁS `_documentType -> 'DNI'`,
+  /// `_documentNumber -> ''`, `_applicant -> null` y el folio/error de
+  /// revisión manual; libera la cámara (best-effort, igual que `reset`) y
+  /// emite la señal [resetGeneration] para que `KycStartPage` limpie su
+  /// estado local (email/teléfono/nombres/número).
+  ///
+  /// Se usa (siempre SIN diálogo + navegación a `/kyc` desde la página) ante
+  /// fallo final ([resetFullOnFinalFailure]) o al confirmar el popup de
+  /// retroceso voluntario. No toca la sesión (`user.ref`/`device.id`,
+  /// `device.secret`): solo estado en memoria del flujo KYC.
+  void resetFull() {
+    unawaited(releaseCamera());
+    _challenge = null;
+    _challengeIssuedAt = null;
+    _lastError = null;
+    _manualReviewFolio = null;
+    _documentType = 'DNI';
+    _documentNumber = '';
+    _applicant = null;
+    _stepIndex = 0;
+    _framesByTask.clear();
+    _passedTasks.clear();
+    _attemptsByTask.clear();
+    _errorMessage = null;
+    _result = null;
+    _documentImage = null;
+    _documentValidation = null;
+    _documentIssues = const [];
+    _documentValidationError = null;
+    _validatingDocument = false;
+    _documentAttempts = 0;
+    _resetGeneration++;
     notifyListeners();
   }
 

@@ -68,6 +68,11 @@ class _KycStartPageState extends State<KycStartPage> {
   /// vigentes son los de esa respuesta. Cambiar tipo/numero lo invalida.
   bool _lookupValid = false;
 
+  /// `true` cuando el titular validado es persona juridica (RUC con
+  /// `business_name`, E1-T36/F-T48): el submit lleva `business_name` y la
+  /// etiqueta del campo es "Razón social". Cambiar tipo/numero lo invalida.
+  bool _lookupIsBusiness = false;
+
   /// Numero con el que se obtuvo [_lookupValid] (para invalidar al cambiarlo
   /// y no arrastrar datos obsoletos). El tipo se invalida en
   /// [_onDocTypeChanged].
@@ -75,6 +80,10 @@ class _KycStartPageState extends State<KycStartPage> {
 
   /// Error neutro de la ultima validacion (con reintento); `null` si no hay.
   String? _lookupError;
+
+  /// Suscripción a la señal de reinicio del controller (F-T47).
+  KycFlowController? _listenedController;
+  int _lastResetGeneration = 0;
 
   KycFlowController get _controller =>
       widget.controller ?? KycDependencies.controller;
@@ -101,7 +110,53 @@ class _KycStartPageState extends State<KycStartPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // F-T47: la pantalla guarda estado local fuera del controller (email,
+    // teléfono, nombres, número, tipo, flags de validación). Se suscribe a
+    // la señal `resetGeneration`: ante un reinicio total (fallo final
+    // silencioso o retroceso confirmado) limpia todo lo local para que
+    // ningún dato de la corrida anterior reaparezca ni se salte la
+    // revalidación del documento.
+    KycFlowController? current;
+    try {
+      current = _controller;
+    } on StateError {
+      return;
+    }
+    if (!identical(current, _listenedController)) {
+      _listenedController?.removeListener(_handleResetSignal);
+      _listenedController = current;
+      _lastResetGeneration = current.resetGeneration;
+      current.addListener(_handleResetSignal);
+    }
+  }
+
+  /// Limpia el estado local al detectar un reinicio del controller.
+  void _handleResetSignal() {
+    final current = _listenedController;
+    if (current == null || !mounted) return;
+    if (current.resetGeneration == _lastResetGeneration) return;
+    _lastResetGeneration = current.resetGeneration;
+    _firstNameController.clear();
+    _lastNameController.clear();
+    _emailController.clear();
+    _phoneController.clear();
+    _numberController.clear();
+    setState(() {
+      _docType = KycStartPage.documentTypes.first;
+      _lookupValid = false;
+      _lookupIsBusiness = false;
+      _validatedNumber = null;
+      _lookupError = null;
+      _showFormErrors = false;
+      _validating = false;
+    });
+  }
+
+  @override
   void dispose() {
+    _listenedController?.removeListener(_handleResetSignal);
     _firstNameController.dispose();
     _lastNameController.dispose();
     _emailController.dispose();
@@ -141,6 +196,7 @@ class _KycStartPageState extends State<KycStartPage> {
   /// Limpia los nombres recuperados y bloquea `Continuar` (datos obsoletos).
   void _invalidateLookup() {
     _lookupValid = false;
+    _lookupIsBusiness = false;
     _validatedNumber = null;
     _lookupError = null;
     _firstNameController.clear();
@@ -165,9 +221,11 @@ class _KycStartPageState extends State<KycStartPage> {
 
   /// `Validar documento`: consulta el titular al backend (E1-T35) y rellena
   /// `Nombres`/`Apellidos` (no editables). RUC de persona juridica: muestra
-  /// `business_name` donde iria el nombre y deja apellidos vacio. En `404` o
-  /// fallo de red muestra un mensaje neutro con reintento y no habilita
-  /// `Continuar`. Sin PII en logs: no se registra el numero ni la respuesta.
+  /// `business_name` donde iria el nombre y deja apellidos vacio. En `404`,
+  /// `409 DUPLICATE_DOCUMENT` (E1-T37, documento ya registrado: muestra el
+  /// mensaje y bloquea `Continuar`, sin consulta ni avance) o fallo de red
+  /// muestra un mensaje neutro con reintento y no habilita `Continuar`.
+  /// Sin PII en logs: no se registra el numero ni la respuesta.
   Future<void> _validateDocument() async {
     final number = _numberController.text.trim();
     if (_validateNumber(number) != null) {
@@ -208,6 +266,7 @@ class _KycStartPageState extends State<KycStartPage> {
           _lastNameController.text = owner.lastName;
         }
         _lookupValid = true;
+        _lookupIsBusiness = owner.isBusiness;
         _validatedNumber = number;
         _lookupError = null;
         _showFormErrors = false;
@@ -249,6 +308,11 @@ class _KycStartPageState extends State<KycStartPage> {
         lastName: _lastNameController.text.trim(),
         email: _emailController.text.trim(),
         phone: _phoneController.text.trim(),
+        // F-T48 (E1-T36): la razon social viaja como `business_name` en el
+        // submit; en persona natural va vacio y el servidor la ignora.
+        businessName: _lookupIsBusiness
+            ? _firstNameController.text.trim()
+            : '',
       ),
     );
     _controller.setDocument(
@@ -382,7 +446,13 @@ class _KycStartPageState extends State<KycStartPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const KycFieldLabel(text: 'Nombres'),
+                          // F-T48: con tipo RUC la etiqueta es "Razón social"
+                          // (fig `crearCuenta-1Datos`); con DNI es "Nombres".
+                          KycFieldLabel(
+                            text: _docType == 'RUC'
+                                ? 'Razón social'
+                                : 'Nombres',
+                          ),
                           const SizedBox(height: AppSpacing.stackSm),
                           TextFormField(
                             key: const Key('firstNameField'),

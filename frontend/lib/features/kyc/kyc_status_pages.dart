@@ -4,6 +4,13 @@
 ///   del servidor + botón de reintento y, si aplica, derivación a revisión).
 /// - [KycManualReviewPage]: derivación a revisión manual con folio.
 ///
+/// F-T47 (decisión del dueño): en el flujo de ALTA la derivación a revisión
+/// manual con folio YA NO se ofrece; el fallo final (submit sin resultado que
+/// permita continuar o 3 intentos agotados) hace reinicio total silencioso
+/// (`KycFlowController.resetFull` + `go('/kyc')`). Estos widgets se
+/// conservan (funciones puras de presentación + sus pruebas) sin cambios de
+/// comportamiento.
+///
 /// Siguen la convención de `lib/features/README.md` (estados con
 /// `LoadingView`/`EmptyView`/`ErrorView` de `lib/core/widgets/`).
 library;

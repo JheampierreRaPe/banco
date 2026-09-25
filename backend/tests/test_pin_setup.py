@@ -352,6 +352,45 @@ def test_setup_unknown_user_same_body_as_invalid_code(
     assert ghost.json()["error"]["message"] == bad_code.json()["error"]["message"]
 
 
+def _biometric_enabled(setup_session: Session, user_id: uuid.UUID) -> bool:
+    from app.modules.identity import repository as identity_repo
+
+    setup_session.expire_all()
+    row = identity_repo.get_credential(setup_session, user_id)
+    assert row is not None
+    return row.biometric_enabled
+
+
+def test_setup_default_biometric_stays_disabled(setup_client: TestClient, setup_session: Session):
+    """Sin `biometric_enabled` el contrato es identico: credencial en `False` (E1-T38 CA-01)."""
+    user, plain = _make_setup_user(setup_session)
+
+    resp = setup_client.post(
+        "/api/v1/auth/pin/setup",
+        json={"user_ref": str(user.id), "code": plain, "pin": PIN},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"user_id": str(user.id), "status": "ACTIVE"}
+    assert _biometric_enabled(setup_session, user.id) is False
+    assert "biometric" not in resp.text, "el flag no viaja en la respuesta"
+
+
+def test_setup_biometric_true_persisted(setup_client: TestClient, setup_session: Session):
+    """Con `biometric_enabled=true` la credencial queda en `True` (E1-T38 CA-02)."""
+    user, plain = _make_setup_user(setup_session)
+
+    resp = setup_client.post(
+        "/api/v1/auth/pin/setup",
+        json={"user_ref": str(user.id), "code": plain, "pin": PIN, "biometric_enabled": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"user_id": str(user.id), "status": "ACTIVE"}
+    assert _biometric_enabled(setup_session, user.id) is True
+    assert _pin_hash(setup_session, user.id) is not None
+    assert _user_status(setup_session, user.id) == "ACTIVE"
+    assert "biometric" not in resp.text, "el flag no viaja en la respuesta"
+
+
 def test_openapi_exposes_pin_setup(setup_client: TestClient):
     spec = setup_client.get("/openapi.json")
     assert spec.status_code == 200

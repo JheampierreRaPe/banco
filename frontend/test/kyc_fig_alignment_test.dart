@@ -349,12 +349,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('Mira de frente'), findsOneWidget);
-      expect(find.text('Buena iluminación'), findsOneWidget);
-      expect(find.text('Rostro descubierto'), findsOneWidget);
-      expect(
-        find.text('Prueba de vida (En proceso)'),
-        findsOneWidget,
-      );
+      // F-T48: el checklist se retiró por decisión del dueño (ni card ni
+      // espacio en kyc-task).
+      expect(find.text('Buena iluminación'), findsNothing);
+      expect(find.text('Rostro descubierto'), findsNothing);
+      expect(find.textContaining('Prueba de vida'), findsNothing);
       expect(
         find.text('No cierres la app durante la verificación.'),
         findsOneWidget,
@@ -396,7 +395,9 @@ void main() {
   });
 
   group('F-T38 resultado conserva failed_step y estilos', () {
-    testWidgets('fallo muestra el paso y el motivo con tokens', (tester) async {
+    testWidgets(
+        'F-T47: fallo final reinicia todo en silencio a /kyc (sin popup)',
+        (tester) async {
       final c = KycFlowController(
         service: _FailingSubmitService(),
         documentValidator: (image) async =>
@@ -405,7 +406,7 @@ void main() {
       addTearDown(c.dispose);
       await _pumpStart(tester, c);
 
-      // F-T44+F-T45: se alcanza el resultado por el flujo documentado
+      // F-T44+F-T45: se alcanza el submit por el flujo documentado
       // (lookup válido -> captura -> validación -> liveness -> submit).
       await _fillValidateAndContinue(tester);
       await tester.tap(find.byKey(const Key('captureDocumentButton')));
@@ -415,18 +416,20 @@ void main() {
       await tester.pumpAndSettle();
       await _tapTaskButton(tester, 'Capturar');
       await _tapTaskButton(tester, 'Capturar');
-      await _tapTaskButton(tester, 'Enviar verificacion');
+      await _tapTaskButton(tester, 'Enviar verificación');
       await tester.pumpAndSettle();
 
-      expect(
-        tester.widget<Text>(find.byKey(const Key('kycResultFailedStep'))).data,
-        contains('blink'),
-      );
-      expect(
-        tester.widget<Text>(find.byKey(const Key('kycResultReason'))).data,
-        contains('movimiento'),
-      );
-      expect(find.text('Reintentar verificacion'), findsOneWidget);
+      // F-T47 (decisión del dueño): el `overall_result=false` ya no muestra
+      // el flujo de reintento con el estado anterior; reinicia TODO en
+      // silencio y vuelve a `/kyc` para empezar de nuevo.
+      expect(find.byKey(const Key('kycBackConfirmDialog')), findsNothing);
+      expect(find.text('Empecemos por ti'), findsOneWidget);
+      expect(c.challenge, isNull);
+      expect(c.result, isNull);
+      expect(c.documentType, 'DNI');
+      expect(c.documentNumber, isEmpty);
+      expect(c.applicant, isNull);
+      expect(c.manualReviewFolio, isNull);
     });
   });
 }

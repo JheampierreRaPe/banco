@@ -469,6 +469,21 @@ def test_submit_rejects_unknown_doc_type_422(kyc_client: TestClient):
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_submit_accepts_ruc_with_business_name(kyc_client: TestClient):
+    """E1-T36: RUC juridica (nombres vacios + razon social) pasa el submit."""
+    payload = _submit_payload()
+    payload["document"]["type"] = "RUC"
+    payload["document"]["number"] = "20100017491"
+    payload["applicant"]["first_name"] = ""
+    payload["applicant"]["last_name"] = ""
+    payload["applicant"]["business_name"] = "ACME SAC"
+    resp = kyc_client.post("/api/v1/auth/kyc/submit", json=payload)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["overall_result"] is True
+    assert data["status"] == "ONBOARDED"
+
+
 def test_service_down_returns_503_without_internals(kyc_client: TestClient):
     _override_provider("down")
     try:

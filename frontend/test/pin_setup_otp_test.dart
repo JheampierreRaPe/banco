@@ -23,15 +23,18 @@ class FakePinSetupService implements PinSetupService {
   int calls = 0;
   ApiException? error;
   Map<String, String> lastArgs = {};
+  bool? lastBiometricEnabled;
 
   @override
   Future<PinSetupResult> setup({
     required String userRef,
     required String code,
     required String pin,
+    bool biometricEnabled = false,
   }) async {
     calls++;
     lastArgs = {'userRef': userRef, 'code': code, 'pin': pin};
+    lastBiometricEnabled = biometricEnabled;
     final e = error;
     if (e != null) throw e;
     return const PinSetupResult(userId: kUserRef, status: 'ACTIVE');
@@ -66,6 +69,7 @@ GoRouter _router(
   FakePinSetupService setup,
   FakeResendService resend, {
   SessionIdentityStore? identity,
+  bool biometricEnabled = false,
 }) =>
     GoRouter(
       initialLocation: '/otp',
@@ -75,6 +79,7 @@ GoRouter _router(
           builder: (context, state) => PinSetupOtpPage(
             userRef: kUserRef,
             pin: kPin,
+            biometricEnabled: biometricEnabled,
             setupService: setup,
             resendService: resend,
             identity: identity,
@@ -102,8 +107,14 @@ Future<void> _pump(
   FakePinSetupService setup,
   FakeResendService resend, {
   SessionIdentityStore? identity,
+  bool biometricEnabled = false,
 }) async {
-  final router = _router(setup, resend, identity: identity);
+  final router = _router(
+    setup,
+    resend,
+    identity: identity,
+    biometricEnabled: biometricEnabled,
+  );
   addTearDown(router.dispose);
   await tester.pumpWidget(MaterialApp.router(routerConfig: router));
   await tester.pumpAndSettle();
@@ -231,7 +242,6 @@ void main() {
     );
     expect(find.text('success-ok:$kUserRef'), findsNothing);
   });
-
   testWidgets('codigo incompleto no envia', (tester) async {
     final setup = FakePinSetupService();
     await _pump(tester, setup, FakeResendService());
@@ -243,6 +253,53 @@ void main() {
     );
     expect(submit.onPressed, isNull);
     expect(setup.calls, 0);
+  });
+
+  testWidgets('el setup envia biometric_enabled=true cuando se eligio',
+      (tester) async {
+    final setup = FakePinSetupService();
+    await _pump(
+      tester,
+      setup,
+      FakeResendService(),
+      biometricEnabled: true,
+    );
+
+    await _enterCode(tester, '123456');
+    await _tapKey(tester, const Key('pin-setup-submit'));
+
+    expect(setup.calls, 1);
+    expect(setup.lastArgs['pin'], kPin);
+    expect(setup.lastBiometricEnabled, isTrue);
+    expect(find.text('success-ok:$kUserRef'), findsOneWidget);
+  });
+
+  testWidgets('el setup envia biometric_enabled=false por defecto',
+      (tester) async {
+    final setup = FakePinSetupService();
+    await _pump(tester, setup, FakeResendService());
+
+    await _enterCode(tester, '123456');
+    await _tapKey(tester, const Key('pin-setup-submit'));
+
+    expect(setup.calls, 1);
+    expect(setup.lastBiometricEnabled, isFalse);
+    expect(find.text('success-ok:$kUserRef'), findsOneWidget);
+  });
+
+  test('el controlador propaga biometric_enabled al servicio', () async {
+    final setup = FakePinSetupService();
+    final controller = PinSetupOtpController(
+      setupService: setup,
+      resendService: FakeResendService(),
+      userRef: kUserRef,
+      biometricEnabled: true,
+    );
+    addTearDown(controller.dispose);
+
+    controller.setCode('123456');
+    expect(await controller.submit(kPin), isTrue);
+    expect(setup.lastBiometricEnabled, isTrue);
   });
 
   test('los mensajes del controlador nunca contienen secretos', () async {
@@ -280,6 +337,7 @@ class _ThrowingSetupService implements PinSetupService {
     required String userRef,
     required String code,
     required String pin,
+    bool biometricEnabled = false,
   }) async {
     throw ApiException(code: 'UNKNOWN', message: 'Fallo el servidor');
   }

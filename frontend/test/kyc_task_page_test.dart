@@ -258,8 +258,11 @@ void main() {
 
   group('instructionFor', () {
     test('cubre los pasos reales del microservicio', () {
-      expect(KycTaskPage.instructionFor('arriba'), contains('arriba'));
-      expect(KycTaskPage.instructionFor('abajo'), contains('abajo'));
+      // F-T48 (swap SOLO-texto, decisión del dueño): el microservicio tiene
+      // `arriba`/`abajo` invertidos y NO se corrige; solo se intercambian
+      // las etiquetas que ve el usuario. `kyc-service/` intacto.
+      expect(KycTaskPage.instructionFor('arriba'), contains('abajo'));
+      expect(KycTaskPage.instructionFor('abajo'), contains('arriba'));
       expect(KycTaskPage.instructionFor('izquierda'), contains('izquierda'));
       expect(KycTaskPage.instructionFor('derecha'), contains('derecha'));
       expect(KycTaskPage.instructionFor('parpadeo'), contains('Parpadea'));

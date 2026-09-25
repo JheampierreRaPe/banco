@@ -201,8 +201,22 @@ def kyc_submit(
     provider: KycProvider = Depends(get_kyc_provider),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Valida imagenes, reenvia al microservicio, da de alta y persiste el intento."""
+    """Valida imagenes, reenvia al microservicio, da de alta y persiste el intento.
+
+    E1-T36: valida al titular por tipo (`validate_applicant`) ANTES del
+    proveedor (RUC exige `business_name` o nombres; el resto exige nombres)
+    y propaga `business_name` al alta.
+    """
     _enforce_rate_limit(request, None)
+    try:
+        kyc_proxy.validate_applicant(
+            body.document.type,
+            body.applicant.first_name,
+            body.applicant.last_name,
+            body.applicant.business_name,
+        )
+    except kyc_proxy.KycProxyValidationError as exc:
+        raise _service_error(exc) from exc
     try:
         data = kyc_proxy.submit_kyc(
             provider,
@@ -226,6 +240,7 @@ def kyc_submit(
             document_number=body.document.number,
             first_name=body.applicant.first_name,
             last_name=body.applicant.last_name,
+            business_name=body.applicant.business_name,
             email=body.applicant.email,
             phone=body.applicant.phone,
             challenge_token=body.challenge_token,
@@ -328,21 +343,30 @@ def kyc_document_lookup(
     body: DocumentLookupRequest,
     request: Request,
     provider: DocumentLookupProvider = Depends(get_document_lookup_provider),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Consulta `GET /dni/{numero}` o `GET /ruc/{numero}` desde el servidor (E1-T35, HU01).
 
     Cliente delgado: el frontend nunca ve la `APIINTI_API_KEY` (solo el
     backend la envia como `Authorization: Bearer`); los datos se muestran en
     campos no editables. Sin persistencia (pre-registro, read-only).
-    `type`/`number` se validan antes de la red (422); sin datos -> 404
+    `type`/`number` se validan antes de la red (422); E1-T37: precheck de
+    duplicado en BD (DNI y RUC) ANTES del proveedor -> 409
+    `DUPLICATE_DOCUMENT` neutro sin consulta externa; sin datos -> 404
     neutro; proveedor caido/timeout -> 503/504; ventana excedida -> 429.
     """
     # Rate limit en memoria compartido con el proxy KYC (prod: Redis/middleware).
     _enforce_rate_limit(request, None)
     try:
-        data = document_lookup.lookup_holder(provider, doc_type=body.type, number=body.number)
+        data = document_lookup.lookup_holder(
+            provider,
+            doc_type=body.type,
+            number=body.number,
+            is_registered=lambda number: document_lookup.document_is_registered(db, number),
+        )
     except (
         document_lookup.DocumentLookupValidationError,
+        document_lookup.DocumentAlreadyRegisteredError,
         DocumentNotFoundError,
         DocumentLookupTimeoutError,
         DocumentLookupUnavailableError,
@@ -359,6 +383,12 @@ def _lookup_service_error(exc: Exception) -> AppError:
     """
     if isinstance(exc, document_lookup.DocumentLookupValidationError):
         return AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422)
+    if isinstance(exc, document_lookup.DocumentAlreadyRegisteredError):
+        return AppError(
+            code="DUPLICATE_DOCUMENT",
+            message="El documento ya se encuentra registrado",
+            status_code=409,
+        )
     if isinstance(exc, DocumentNotFoundError):
         return AppError(
             code="DOCUMENT_NOT_FOUND",

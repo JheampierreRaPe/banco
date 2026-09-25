@@ -65,6 +65,7 @@ def setup_pin(body: PinSetupRequest, request: Request, db: Session = Depends(get
             user_ref=body.user_ref,
             code=body.code,
             pin=body.pin,
+            biometric_enabled=body.biometric_enabled,
         )
     except pin_setup_service.PinAlreadySetError as exc:
         # El OTP validado ya quedo en `flush` como USED: se confirma para

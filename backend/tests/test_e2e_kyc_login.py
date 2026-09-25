@@ -247,9 +247,11 @@ def test_e2e_full_alta_y_login(e2e_client, e2e_session: Session):
     assert email_rows[0].payload_json["data"]["code"] == code
 
     # --- 2. pin/setup activa + fija PIN con un solo OTP ---------------------
+    # E1-T38: se envia `biometric_enabled: true` para conservar el segundo
+    # factor facial (sin el, `POST /auth/login/facial` responde generico).
     setup = client.post(
         "/api/v1/auth/pin/setup",
-        json={"user_ref": user_id, "code": code, "pin": PIN},
+        json={"user_ref": user_id, "code": code, "pin": PIN, "biometric_enabled": True},
     )
     assert setup.status_code == 200, setup.text
     assert setup.json()["data"] == {"user_id": user_id, "status": "ACTIVE"}

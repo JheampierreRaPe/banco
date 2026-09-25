@@ -2,6 +2,9 @@
     <!-- KYC con cámara real: 1 foto por tarea a demanda, solo en memoria
          (sin guardar en disco/galería). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Biometria local opcional con `local_auth` (F-T46): solo desbloquea
+         con el biometrico del SO; el fallback a PIN siempre existe. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />

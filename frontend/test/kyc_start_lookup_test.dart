@@ -547,4 +547,94 @@ void main() {
       AppColors.secondaryText,
     );
   });
+
+  testWidgets('F-T48: con RUC la etiqueta es "Razón social" (CA-05)',
+      (tester) async {
+    final controller =
+        KycFlowController(service: const _ChallengeOnlyService());
+    addTearDown(controller.dispose);
+    await _pumpStart(tester, controller, FakeDocumentLookup());
+
+    // Default DNI: etiqueta "Nombres".
+    expect(find.text('Nombres'), findsOneWidget);
+    expect(find.text('Razón social'), findsNothing);
+
+    await _selectRuc(tester);
+
+    expect(find.text('Razón social'), findsOneWidget);
+    expect(find.text('Nombres'), findsNothing);
+  });
+
+  testWidgets('F-T48: RUC juridica guarda business_name en el submit (CA-05)',
+      (tester) async {
+    final lookup = FakeDocumentLookup(
+      owner: const KycDocumentOwner(
+        documentType: 'RUC',
+        businessName: 'ACME SAC',
+      ),
+    );
+    final controller =
+        KycFlowController(service: const _ChallengeOnlyService());
+    addTearDown(controller.dispose);
+    await _pumpStart(tester, controller, lookup);
+
+    await _selectRuc(tester);
+    await tester.enterText(
+      find.byKey(const Key('emailField')),
+      'contacto@acme.pe',
+    );
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '20123456789',
+    );
+    await tester.pump();
+    await _tapValidar(tester);
+
+    await tester.ensureVisible(find.text('Continuar'));
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+
+    // La razón social viaja como `business_name` (E1-T36).
+    expect(controller.applicant?.businessName, 'ACME SAC');
+    expect(controller.applicant?.isComplete, isTrue);
+    expect(
+      controller.applicant?.toJson()['business_name'],
+      'ACME SAC',
+    );
+  });
+
+  testWidgets('F-T48: 409 del lookup muestra el mensaje y bloquea Continuar',
+      (tester) async {
+    final lookup = FakeDocumentLookup(
+      error: ApiException(
+        code: 'DUPLICATE_DOCUMENT',
+        message: messageForCode('DUPLICATE_DOCUMENT'),
+        statusCode: 409,
+      ),
+    );
+    final controller =
+        KycFlowController(service: const _ChallengeOnlyService());
+    addTearDown(controller.dispose);
+    await _pumpStart(tester, controller, lookup);
+
+    await tester.enterText(
+      find.byKey(const Key('emailField')),
+      'juan@example.com',
+    );
+    await tester.enterText(
+      find.byKey(const Key('docNumberField')),
+      '12345678',
+    );
+    await tester.pump();
+    await _tapValidar(tester);
+
+    // Mensaje claro del catálogo y sin avance: ya no hay consulta.
+    expect(find.byKey(const Key('kycLookupError')), findsOneWidget);
+    expect(
+      find.text('El documento ya se encuentra registrado.'),
+      findsOneWidget,
+    );
+    expect(_continuarEnabled(tester), isFalse);
+    expect(controller.challenge, isNull);
+  });
 }

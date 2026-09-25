@@ -117,6 +117,25 @@ String kycReasonMessage(String? reason) {
   return raw;
 }
 
+/// ¿El motivo del servidor significa "documento ya registrado"? (F-T48)
+///
+/// Reconoce el codigo `DUPLICATE_DOCUMENT` y los textos equivalentes
+/// ("documento ya esta/está registrado", "ya se encuentra registrado").
+/// La UI de task y de resultado OCULTA la linea `Motivo: ...` en ese caso:
+/// el duplicado ya se informa en el lookup (E1-T37) y no es accionable con
+/// un reintento de captura. No decide nada: solo clasifica texto.
+bool isDocumentAlreadyRegisteredReason(String? reason) {
+  final raw = (reason ?? '').trim();
+  if (raw.isEmpty) return false;
+  final upper = raw.toUpperCase();
+  if (upper.contains('DUPLICATE_DOCUMENT')) return true;
+  final lower = raw.toLowerCase();
+  if (lower.contains('ya se encuentra registrado')) return true;
+  if (lower.contains('documento ya esta registrado')) return true;
+  if (lower.contains('documento ya está registrado')) return true;
+  return false;
+}
+
 /// Clasificador de errores del flujo KYC (puro Dart, sin widgets).
 class KycErrorHandler {
   KycErrorHandler._();

@@ -31,13 +31,20 @@ class PinSetupOtpController extends ChangeNotifier {
     required PinSetupService setupService,
     required ActivationService resendService,
     required String userRef,
+    bool biometricEnabled = false,
   })  : _setupService = setupService,
         _resendService = resendService,
-        _userRef = userRef;
+        _userRef = userRef,
+        _biometricEnabled = biometricEnabled;
 
   final PinSetupService _setupService;
   final ActivationService _resendService;
   final String _userRef;
+
+  /// Consentimiento de la oferta biometrica (fig `0:704`, F-T46): viaja como
+  /// `biometric_enabled` en el setup. Lo fija la pagina desde el borrador en
+  /// memoria; el servidor es la autoridad (E1-T38).
+  final bool _biometricEnabled;
 
   PinSetupOtpStatus _status = PinSetupOtpStatus.idle;
   String? _errorMessage;
@@ -52,6 +59,9 @@ class PinSetupOtpController extends ChangeNotifier {
   bool get isResending => _isResending;
   bool get isBusy =>
       _status == PinSetupOtpStatus.submitting || _isResending;
+
+  /// Consentimiento elegido en la oferta biometrica.
+  bool get biometricEnabled => _biometricEnabled;
 
   /// `true` si el PIN ya existe (409): la pagina ofrece ir al login.
   bool get isPinAlreadySet => _status == PinSetupOtpStatus.pinAlreadySet;
@@ -93,6 +103,7 @@ class PinSetupOtpController extends ChangeNotifier {
         userRef: _userRef,
         code: cleanCode,
         pin: pin,
+        biometricEnabled: _biometricEnabled,
       );
       _status = PinSetupOtpStatus.success;
       notifyListeners();

@@ -452,6 +452,50 @@ void main() {
     );
   });
 
+  test('F-T48: submit incluye business_name de RUC juridica (E1-T36)',
+      () async {
+    final dio = _bareDio();
+    final service = _service(dio);
+    RequestOptions? captured;
+    _respond(
+      dio,
+      (_) => {
+        'data': {'overall_result': true, 'detail_code': 'OK'},
+      },
+      onRequest: (o) => captured = o,
+    );
+
+    await service.submit(
+      challengeToken: 'tok-abc',
+      documentType: 'RUC',
+      documentNumber: '20123456789',
+      applicant: const KycApplicant(
+        firstName: 'ACME SAC',
+        lastName: '',
+        email: 'contacto@acme.pe',
+        businessName: 'ACME SAC',
+      ),
+      framesByTask: {
+        'front': [Uint8List.fromList([1, 2, 3])],
+      },
+    );
+
+    final data = captured!.data as Map<String, dynamic>;
+    final applicant = data['applicant'] as Map<String, dynamic>;
+    expect(applicant['business_name'], 'ACME SAC');
+  });
+
+  test('F-T48: KycApplicant juridico es completo sin nombres', () {
+    const applicant = KycApplicant(
+      firstName: 'ACME SAC',
+      lastName: '',
+      email: 'contacto@acme.pe',
+      businessName: 'ACME SAC',
+    );
+    expect(applicant.isComplete, isTrue);
+    expect(applicant.toJson()['business_name'], 'ACME SAC');
+  });
+
   test('error del backend se propaga como ApiException', () {
     final dio = _bareDio();
     final service = _service(dio);

@@ -147,6 +147,7 @@ def onboard_customer(
     first_name: str,
     last_name: str,
     doc_type: str,
+    business_name: str | None = None,
     doc_number_masked: str | None = None,
     birth_date: date | None = None,
     email: str | None = None,
@@ -179,6 +180,10 @@ def onboard_customer(
 
     Con `overall_result=false` no crea nada y retorna
     `{"status": "REJECTED", "reason": ...}`.
+
+    E1-T36: `business_name` (razon social) se propaga a `create_user`;
+    para `RUC` de persona juridica es obligatorio y los nombres pueden
+    venir vacios (se persisten `""`).
     """
     if not isinstance(kyc_result, dict):
         raise TypeError(f"kyc_result debe ser dict, recibido: {kyc_result!r}")
@@ -210,6 +215,7 @@ def onboard_customer(
         doc_number_hash=doc_hash.strip(),
         first_name=first_name,
         last_name=last_name,
+        business_name=business_name,
         doc_number_masked=doc_number_masked,
         birth_date=birth_date,
         email=email,

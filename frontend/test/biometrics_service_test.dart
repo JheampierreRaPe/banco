@@ -168,7 +168,8 @@ void main() {
       expect(result.requiresPinFallback, isTrue);
     });
 
-    test('SystemBiometricReader (sin local_auth) reporta no disponible', () async {
+    test('SystemBiometricReader real sin plugin cae a PIN sin bloquear',
+        () async {
       final service = BiometricService(
         session: SecureSessionRepository(storage: InMemorySecureStorage()),
         reader: SystemBiometricReader(),

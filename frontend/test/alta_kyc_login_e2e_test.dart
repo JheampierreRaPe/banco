@@ -30,6 +30,7 @@ import 'package:banca_online/features/login/login_controller.dart';
 import 'package:banca_online/features/login/login_page.dart';
 import 'package:banca_online/features/pin_setup/pin_confirm_page.dart';
 import 'package:banca_online/features/pin_setup/pin_create_page.dart';
+import 'package:banca_online/features/pin_setup/pin_setup_draft.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_otp_page.dart';
 import 'package:banca_online/features/pin_setup/pin_setup_service.dart';
 import 'package:banca_online/features/pin_setup/registration_success_page.dart';
@@ -91,6 +92,7 @@ class _FakePinSetupService implements PinSetupService {
     required String userRef,
     required String code,
     required String pin,
+    bool biometricEnabled = false,
   }) async {
     calls++;
     lastArgs = {'userRef': userRef, 'code': code, 'pin': pin};
@@ -218,14 +220,14 @@ void main() {
           path: '/pin-setup/confirm',
           builder: (context, state) => PinConfirmPage(
             userRef: state.uri.queryParameters['userRef'] ?? '',
-            pin: state.extra is String ? state.extra as String : '',
+            pin: PinSetupDraft.fromExtra(state.extra).pin,
           ),
         ),
         GoRoute(
           path: '/pin-setup/biometrics',
           builder: (context, state) => BiometricOfferPage(
             userRef: state.uri.queryParameters['userRef'] ?? '',
-            pin: state.extra is String ? state.extra as String : '',
+            pin: PinSetupDraft.fromExtra(state.extra).pin,
             reader: FakeBiometricReader(available: false),
           ),
         ),
@@ -233,7 +235,7 @@ void main() {
           path: '/pin-setup/otp',
           builder: (context, state) => PinSetupOtpPage(
             userRef: state.uri.queryParameters['userRef'] ?? '',
-            pin: state.extra is String ? state.extra as String : '',
+            pin: PinSetupDraft.fromExtra(state.extra).pin,
             setupService: pinSetup,
             resendService: resend,
             identity: identity,

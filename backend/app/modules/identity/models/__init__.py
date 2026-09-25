@@ -39,7 +39,10 @@ SCHEMA = "identity"
 
 USER_STATUSES = ("PENDING_ACTIVATION", "ACTIVE", "BLOCKED", "CLOSED")
 KYC_STATUSES = ("PENDING", "VERIFIED", "REJECTED", "MANUAL_REVIEW")
-DOC_TYPES = ("DNI", "CE", "PASSPORT")
+#: Tipos de documento aceptados (E1-T36: RUC = persona juridica con razon
+#: social en `business_name`; espejos en `schemas/kyc.py::KYC_DOC_TYPES` y
+#: `service/kyc_proxy.py::DOC_TYPES`, sin divergencias).
+DOC_TYPES = ("DNI", "CE", "PASSPORT", "RUC")
 #: Propositos de OTP (`docs/03b#1` enum `otp_purpose`).
 OTP_PURPOSES = ("ACTIVATION", "RECOVERY", "PAYMENT", "LOGIN")
 #: Estados de OTP (`docs/03b#4.5`: `PENDING`/`USED`/`EXPIRED`; `USED` es el
@@ -55,6 +58,10 @@ class User(Base):
     es unico: evita clientes duplicados por documento. Solo se guarda el
     hash y la version enmascarada, nunca el numero en claro en otra
     columna ni PII biometrica.
+
+    E1-T36: `doc_type` acepta `RUC` (persona juridica) con la razon social
+    en `business_name` (`VARCHAR(150)` nulable); para RUC juridica
+    `first_name`/`last_name` se persisten `""` (siguen `NOT NULL`).
     """
 
     __tablename__ = "users"
@@ -62,7 +69,7 @@ class User(Base):
         sa.UniqueConstraint("doc_number_hash", name="uq_users_doc_number_hash"),
         sa.UniqueConstraint("email", name="uq_users_email"),
         sa.CheckConstraint(
-            "doc_type IN ('DNI', 'CE', 'PASSPORT')",
+            "doc_type IN ('DNI', 'CE', 'PASSPORT', 'RUC')",
             name="ck_users_doc_type",
         ),
         sa.CheckConstraint(
@@ -81,6 +88,10 @@ class User(Base):
     doc_number_masked: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     first_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    #: Razon social (E1-T36, HU01): solo RUC de persona juridica (con
+    #: `first_name`/`last_name` en `""` porque siguen `NOT NULL`); RUC de
+    #: persona natural y `DNI`/`CE`/`PASSPORT` la dejan `NULL`.
+    business_name: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(sa.Date(), nullable=True)
     email: Mapped[str] = mapped_column(sa.String(320), nullable=False)
     phone: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)

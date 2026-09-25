@@ -39,6 +39,7 @@ dependencies:
   uuid: ^4.6.0
   flutter_secure_storage: ^11.2.0
   camera: ^0.12.1
+  local_auth: ^2.3.0
 
 dev_dependencies:
   flutter_test:

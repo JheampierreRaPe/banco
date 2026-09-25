@@ -182,6 +182,34 @@ void main() {
     });
   });
 
+  group('F-T48 isDocumentAlreadyRegisteredReason (motivo oculto)', () {
+    test('reconoce DUPLICATE_DOCUMENT y textos equivalentes', () {
+      expect(isDocumentAlreadyRegisteredReason('DUPLICATE_DOCUMENT'), isTrue);
+      expect(
+        isDocumentAlreadyRegisteredReason('409 DUPLICATE_DOCUMENT: x'),
+        isTrue,
+      );
+      expect(
+        isDocumentAlreadyRegisteredReason(
+          'El documento ya se encuentra registrado',
+        ),
+        isTrue,
+      );
+      expect(
+        isDocumentAlreadyRegisteredReason(
+          'El documento ya está registrado',
+        ),
+        isTrue,
+      );
+    });
+
+    test('otros motivos y vacio no se ocultan', () {
+      expect(isDocumentAlreadyRegisteredReason('NO_BLINK'), isFalse);
+      expect(isDocumentAlreadyRegisteredReason(null), isFalse);
+      expect(isDocumentAlreadyRegisteredReason(''), isFalse);
+    });
+  });
+
   group('kycReasonMessage (traduccion de motivos, F-T23)', () {
     test('mapea los motivos del microservicio a mensajes ES', () {
       expect(kycReasonMessage('MIN_FRAMES'), contains('frames'));

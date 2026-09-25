@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-#: Tipos de documento aceptados en el submit (validacion temprana, 05#5/422).
-KYC_DOC_TYPES: tuple[str, ...] = ("DNI", "CE", "PASSPORT")
+#: Tipos de documento aceptados en el submit (validacion temprana, 05#5/422;
+#: E1-T36 suma `RUC`, en paridad con `models.DOC_TYPES`).
+KYC_DOC_TYPES: tuple[str, ...] = ("DNI", "CE", "PASSPORT", "RUC")
 
 
 class KycChallengeRequest(BaseModel):
@@ -42,7 +43,7 @@ class KycChallengeResponse(BaseModel):
 
 
 class KycDocumentPayload(BaseModel):
-    type: str = Field(description="Tipo de documento: DNI|CE|PASSPORT.")
+    type: str = Field(description="Tipo de documento: DNI|CE|PASSPORT|RUC.")
     number: str = Field(
         min_length=1,
         max_length=32,
@@ -52,10 +53,20 @@ class KycDocumentPayload(BaseModel):
 
 
 class KycApplicantPayload(BaseModel):
-    """Datos del titular para el alta (`onboard_customer`, E1-T24)."""
+    """Datos del titular para el alta (`onboard_customer`, E1-T24).
 
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
+    E1-T36: `first_name`/`last_name` aceptan vacio a nivel de esquema (el
+    RUC de persona juridica trae nombres vacios y razon social); la regla
+    por tipo la valida `kyc_proxy.validate_applicant` ANTES del proveedor
+    (`RUC` exige `business_name` o nombres completos; `DNI`/`CE`/`PASSPORT`
+    exigen nombres). `business_name` es la razon social (max 150).
+    """
+
+    first_name: str = Field(default="", max_length=100)
+    last_name: str = Field(default="", max_length=100)
+    business_name: str | None = Field(
+        default=None, max_length=150, description="Razon social (RUC de persona juridica)."
+    )
     email: str = Field(min_length=1, max_length=320, description="Correo obligatorio (UQ).")
     phone: str | None = Field(default=None, max_length=20)
 

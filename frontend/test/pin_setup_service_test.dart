@@ -93,6 +93,45 @@ void main() {
     expect(result.status, 'PIN_SET');
   });
 
+  test('setup envia biometric_enabled=true cuando se eligio', () async {
+    final captured = <String, dynamic>{};
+    final service = HttpPinSetupService(
+      api: _successClient(
+        capturedBody: captured,
+        json: {
+          'data': {'user_id': 'u-1', 'status': 'PIN_SET'},
+          'meta': {'request_id': 'r-1'},
+        },
+      ),
+    );
+
+    await service.setup(
+      userRef: 'u-1',
+      code: '123456',
+      pin: '482916',
+      biometricEnabled: true,
+    );
+
+    expect(captured['biometric_enabled'], isTrue);
+  });
+
+  test('setup envia biometric_enabled=false por defecto', () async {
+    final captured = <String, dynamic>{};
+    final service = HttpPinSetupService(
+      api: _successClient(
+        capturedBody: captured,
+        json: {
+          'data': {'user_id': 'u-1', 'status': 'PIN_SET'},
+          'meta': {'request_id': 'r-1'},
+        },
+      ),
+    );
+
+    await service.setup(userRef: 'u-1', code: '123456', pin: '482916');
+
+    expect(captured['biometric_enabled'], isFalse);
+  });
+
   test('usa ruta relativa /auth/pin/setup (baseUrl ya incluye /api/v1)',
       () async {
     final paths = <String>[];

@@ -15,6 +15,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import 'pin_flow_widgets.dart';
+import 'pin_setup_draft.dart';
 import 'pin_setup_validators.dart';
 
 /// Crea tu PIN de seguridad (fig `0:497`: "Protege tu cuenta",
@@ -53,6 +54,11 @@ class _PinCreatePageState extends State<PinCreatePage> {
   }
 
   void _maybeAdvance() {
+    // Causa raiz del bug F-T46: antes se navegaba al 6to digito y `_navigated`
+    // quedaba en `true` para siempre; al volver de confirmar el campo no era
+    // modificable. Ahora solo se navega con PIN valido y, si esta pagina
+    // sigue viva tras navegar, se deja editable y limpia (sin PIN viejo).
+    if (_navigated) return;
     final error = pinCreateError(_pin);
     if (error != null) {
       setState(() => _error = error);
@@ -60,7 +66,18 @@ class _PinCreatePageState extends State<PinCreatePage> {
     }
     _navigated = true;
     final ref = Uri.encodeComponent(widget.userRef);
-    context.go('/pin-setup/confirm?userRef=$ref', extra: _pin);
+    context.go(
+      '/pin-setup/confirm?userRef=$ref',
+      extra: PinSetupDraft(pin: _pin),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _pin = '';
+        _error = null;
+        _navigated = false;
+      });
+    });
   }
 
   @override

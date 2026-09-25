@@ -24,8 +24,9 @@ Flujo (`POST /auth/pin/setup {user_ref, code, pin}`):
 4. Si la credencial ya tiene `pin_hash` -> `PinAlreadySetError`
    (`PIN_ALREADY_SET`, 409): el PIN solo se fija una vez (no hay re-fijado).
 5. Si no, fija `pin_hash = hash_pin(pin)` (PBKDF2 de `pin_login`, sin
-   reinventar cripto) y, en la MISMA transaccion (un solo OTP, decision
-   E1-T28), transiciona `users.status: PENDING_ACTIVATION -> ACTIVE`;
+   reinventar cripto), persiste el consentimiento
+   `credential.biometric_enabled` (solo `True` explicito; default `False`)
+   y, en la MISMA transaccion (un solo OTP, decision E1-T28), transiciona `users.status: PENDING_ACTIVATION -> ACTIVE`;
    retorna `{user_id, status}` con `status='ACTIVE'` (forma de E1-T10).
    El `user.activated` ya lo enlista `validate_otp` via outbox: aqui NO se
    re-emite. Se fija primero el PIN y despues el estado para que un fallo no
@@ -105,11 +106,13 @@ def _validate_pin_format(pin: object) -> str:
     return pin
 
 
-def _audit_pin_setup(session: Session, *, user_id: uuid.UUID) -> None:
+def _audit_pin_setup(
+    session: Session, *, user_id: uuid.UUID, biometric_enabled: bool = False
+) -> None:
     """Registra `auth.pin_setup` via fachada (best-effort como `pin_login`).
 
-    Nunca `commit` (solo `flush` via la fachada). Sin PII: solo IDs; jamas
-    el PIN ni su hash.
+    Nunca `commit` (solo `flush` via la fachada). Sin PII: solo IDs y el
+    flag booleano `biometric_enabled`; jamas el PIN ni su hash.
     """
     try:
         from app.modules.audit.service import record as audit_record
@@ -123,17 +126,26 @@ def _audit_pin_setup(session: Session, *, user_id: uuid.UUID) -> None:
             action=AUDIT_PIN_SETUP,
             entity=USER_AGGREGATE_TYPE,
             entity_id=user_id,
-            metadata={"method": "otp-setup"},
+            metadata={"method": "otp-setup", "biometric_enabled": bool(biometric_enabled)},
         )
         session.flush()
     except Exception as exc:  # noqa: BLE001 - best-effort documentado E1-T17
         logger.warning("pin_setup audit no registrado error=%s", type(exc).__name__)
 
 
-def setup_pin(session: Session, *, user_ref: str, code: str, pin: str) -> dict:
+def setup_pin(
+    session: Session,
+    *,
+    user_ref: str,
+    code: str,
+    pin: str,
+    biometric_enabled: bool = False,
+) -> dict:
     """Fija el PIN inicial y activa la cuenta con un solo OTP (`flush`, sin `commit`).
 
-    Exito: consume el OTP `ACTIVATION`, fija `pin_hash` y transiciona
+    Exito: consume el OTP `ACTIVATION`, fija `pin_hash`, persiste el
+    consentimiento `credential.biometric_enabled` (solo `True` explicito lo
+    habilita; ausente/`False` lo deja apagado) y transiciona
     `users.status` a `ACTIVE` en la misma sesion; retorna
     `{"user_id", "status"}` con `status='ACTIVE'`. El `user.activated` ya lo
     enlista `validate_otp` (no se duplica). Fallos: formato de PIN debil ->
@@ -166,9 +178,10 @@ def setup_pin(session: Session, *, user_ref: str, code: str, pin: str) -> dict:
         raise PinAlreadySetError(ALREADY_SET_MESSAGE)
 
     credential.pin_hash = pin_login_service.hash_pin(pin)
+    credential.biometric_enabled = biometric_enabled is True
     user.status = "ACTIVE"
     session.flush()
-    _audit_pin_setup(session, user_id=user.id)
+    _audit_pin_setup(session, user_id=user.id, biometric_enabled=credential.biometric_enabled)
     logger.info("pin_setup ok")
     return {"user_id": str(user.id), "status": user.status}
 

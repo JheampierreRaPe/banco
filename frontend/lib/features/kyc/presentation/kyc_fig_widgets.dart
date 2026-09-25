@@ -1,11 +1,13 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_card.dart';
+import '../kyc_flow_controller.dart';
 
 /// Widgets compartidos del rediseño KYC alineado al `.fig` (F-T38).
 ///
@@ -371,6 +373,77 @@ class KycFieldHelper extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Diálogo de confirmación de retroceso voluntario (F-T47, decisión del
+/// dueño): avisa que al retroceder se reiniciará TODO el proceso de creación
+/// de cuenta.
+///
+/// Solo presentación con tokens (docs/20 §3/§6): sin PII (no muestra número
+/// de documento, nombres ni correo), sin logs, objetivos táctiles >= 44px.
+/// Devuelve `true` solo si el usuario confirma; cualquier otra salida
+/// (cancelar, fuera del diálogo, botón del sistema) es `false`.
+Future<bool> showKycRestartConfirmDialog(BuildContext context) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    barrierDismissible: true,
+    builder: (dialogContext) => AlertDialog(
+      key: const Key('kycBackConfirmDialog'),
+      backgroundColor: AppColors.surfaceContainerLowest,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+      ),
+      title: Text(
+        '¿Volver al inicio?',
+        style: AppTypography.titleMd.copyWith(color: AppColors.primary),
+      ),
+      content: Text(
+        'Al retroceder se reiniciará todo el proceso de creación de cuenta '
+        'y deberás empezar de nuevo.',
+        style: AppTypography.bodyMd.copyWith(
+          color: AppColors.onSurfaceVariant,
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const Key('kycBackCancelButton'),
+          style: TextButton.styleFrom(
+            minimumSize: const Size(48, 48),
+            foregroundColor: AppColors.primary,
+          ),
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          key: const Key('kycBackConfirmButton'),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(48, 48),
+            backgroundColor: AppColors.primary,
+            foregroundColor: AppColors.onPrimary,
+          ),
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('Sí, empezar de nuevo'),
+        ),
+      ],
+    ),
+  );
+  return confirmed ?? false;
+}
+
+/// Retroceso voluntario del KYC (F-T47): pide confirmación y, al confirmar,
+/// reinicia TODO ([KycFlowController.resetFull]) y vuelve a `/kyc` con `go`
+/// (el `go` no dispara los `PopScope`, así que no hay doble diálogo).
+///
+/// Al cancelar (o cerrar el diálogo) no navega ni cambia el estado.
+/// No toca la sesión: solo el estado en memoria del flujo KYC.
+Future<void> requestKycBackRestart(
+  BuildContext context,
+  KycFlowController controller,
+) async {
+  final confirmed = await showKycRestartConfirmDialog(context);
+  if (!confirmed || !context.mounted) return;
+  controller.resetFull();
+  if (context.mounted) context.go('/kyc');
 }
 
 /// Diámetro del viewport facial del fig `0:198` (constante nombrada de la

@@ -33,6 +33,7 @@ class PinSetupOtpPage extends StatefulWidget {
     required this.pin,
     required this.setupService,
     required this.resendService,
+    this.biometricEnabled = false,
     this.identity,
   });
 
@@ -41,6 +42,10 @@ class PinSetupOtpPage extends StatefulWidget {
 
   /// PIN creado en los pasos previos (solo memoria, jamas en ruta/logs).
   final String pin;
+
+  /// Consentimiento de la oferta biometrica (fig `0:704`, F-T46): viaja como
+  /// `biometric_enabled` en `POST /auth/pin/setup` (default `false`).
+  final bool biometricEnabled;
 
   /// Servicio de creacion de PIN (inyectado; en tests se pasa un fake).
   final PinSetupService setupService;
@@ -68,6 +73,7 @@ class _PinSetupOtpPageState extends State<PinSetupOtpPage> {
       setupService: widget.setupService,
       resendService: widget.resendService,
       userRef: widget.userRef,
+      biometricEnabled: widget.biometricEnabled,
     );
     _controller.addListener(_onControllerChanged);
   }

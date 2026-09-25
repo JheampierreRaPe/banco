@@ -279,9 +279,9 @@ void main() {
 
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    expect(find.text('Enviar verificacion'), findsOneWidget);
+    expect(find.text('Enviar verificación'), findsOneWidget);
 
-    await _tapText(tester, 'Enviar verificacion');
+    await _tapText(tester, 'Enviar verificación');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
   });
@@ -305,7 +305,7 @@ void main() {
     await tester.pumpAndSettle();
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await _tapText(tester, 'Enviar verificacion');
+    await _tapText(tester, 'Enviar verificación');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
 
@@ -332,7 +332,7 @@ void main() {
     await tester.pumpAndSettle();
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await _tapText(tester, 'Enviar verificacion');
+    await _tapText(tester, 'Enviar verificación');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
 
@@ -378,7 +378,8 @@ void main() {
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
   });
 
-  testWidgets('resultado fallido muestra el motivo del servidor',
+  testWidgets(
+      'F-T47: submit fallido reinicia todo en silencio a /kyc (sin popup)',
       (tester) async {
     final controller = KycFlowController(
       service: _FailingSubmitService(),
@@ -394,11 +395,18 @@ void main() {
     await tester.pumpAndSettle();
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await _tapText(tester, 'Enviar verificacion');
+    await _tapText(tester, 'Enviar verificación');
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Motivo: LOW_QUALITY'), findsOneWidget);
-    expect(find.text('Reintentar verificacion'), findsOneWidget);
+    // F-T47 (decisión del dueño): el fallo final ya no muestra el flujo de
+    // reintento con el estado anterior; vuelve a `/kyc` en silencio.
+    expect(find.byKey(const Key('kycBackConfirmDialog')), findsNothing);
+    expect(find.text('Empecemos por ti'), findsOneWidget);
+    expect(controller.challenge, isNull);
+    expect(controller.result, isNull);
+    expect(controller.documentType, 'DNI');
+    expect(controller.documentNumber, isEmpty);
+    expect(controller.applicant, isNull);
   });
 
   testWidgets(
@@ -428,7 +436,7 @@ void main() {
     await tester.pumpAndSettle();
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    await _tapText(tester, 'Enviar verificacion');
+    await _tapText(tester, 'Enviar verificación');
     await tester.pumpAndSettle();
     expect(find.text('Verificacion exitosa'), findsOneWidget);
   });
@@ -477,23 +485,51 @@ void main() {
     expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
   });
 
-  testWidgets('resultado fallido muestra el paso y el motivo traducido',
+  testWidgets(
+      'F-T47: reintentar en el resultado reinicia todo y vuelve a /kyc',
       (tester) async {
+    // Cobertura del fallback de `/kyc/result` con fallo: muestra QUÉ paso
+    // falló y el motivo traducido, y `Reintentar verificacion` hace
+    // `resetFull()` + `go('/kyc')` (ya no reintenta con el estado anterior).
     final controller = KycFlowController(
       service: _FailedStepSubmitService(),
       documentValidator: (image) async =>
           const KycDocumentValidation(isValid: true),
     );
     addTearDown(controller.dispose);
-    await _pumpKyc(tester, controller);
+    await controller.loadChallenge();
+    controller.setDocument(type: 'DNI', number: '12345678');
+    controller.setApplicant(const KycApplicant(
+      firstName: 'Ana',
+      lastName: 'Perez',
+      email: 'ana@example.com',
+    ));
+    await controller.captureAndResolveCurrentTask();
+    await controller.captureAndResolveCurrentTask();
+    await controller.submit();
+    expect(controller.result?.overallResult, isFalse);
 
-    await _completeStartPage(tester);
-    await _captureDocument(tester);
-    await _tapText(tester, 'Capturar');
-    await tester.pumpAndSettle();
-    await _tapText(tester, 'Capturar');
-    await tester.pumpAndSettle();
-    await _tapText(tester, 'Enviar verificacion');
+    final router = GoRouter(
+      initialLocation: '/kyc/result',
+      routes: [
+        GoRoute(
+          path: '/kyc',
+          builder: (context, state) => KycStartPage(
+            controller: controller,
+            lookupService: const FakeKycDocumentLookup(),
+          ),
+        ),
+        GoRoute(
+          path: '/kyc/result',
+          builder: (context, state) =>
+              KycResultPage(controller: controller),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      MaterialApp.router(routerConfig: router),
+    );
     await tester.pumpAndSettle();
 
     expect(
@@ -504,6 +540,14 @@ void main() {
       tester.widget<Text>(find.byKey(const Key('kycResultReason'))).data,
       contains('movimiento'),
     );
+
+    await _tapText(tester, 'Reintentar verificacion');
+    expect(find.text('Empecemos por ti'), findsOneWidget);
+    expect(controller.challenge, isNull);
+    expect(controller.result, isNull);
+    expect(controller.documentType, 'DNI');
+    expect(controller.documentNumber, isEmpty);
+    expect(controller.applicant, isNull);
   });
 
   testWidgets('F-T26: documento valido avanza al challenge', (tester) async {

@@ -15,6 +15,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import 'pin_flow_widgets.dart';
+import 'pin_setup_draft.dart';
 import 'pin_setup_validators.dart';
 
 /// Confirma tu PIN (fig `0:604`: "Confírmalo",
@@ -59,6 +60,9 @@ class _PinConfirmPageState extends State<PinConfirmPage> {
   }
 
   void _maybeAdvance() {
+    // El desajuste no avanza (se conserva el error en pantalla); solo el PIN
+    // identico llega a la oferta biometrica, con el borrador en memoria.
+    if (_navigated) return;
     final error = pinConfirmError(widget.pin, _confirm);
     if (error != null) {
       setState(() => _error = error);
@@ -66,7 +70,27 @@ class _PinConfirmPageState extends State<PinConfirmPage> {
     }
     _navigated = true;
     final ref = Uri.encodeComponent(widget.userRef);
-    context.go('/pin-setup/biometrics?userRef=$ref', extra: widget.pin);
+    context.go(
+      '/pin-setup/biometrics?userRef=$ref',
+      extra: PinSetupDraft(pin: widget.pin),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _confirm = '';
+        _error = null;
+        _navigated = false;
+      });
+    });
+  }
+
+  /// Vuelve a crear descartando el borrador: `go` reconstruye crear con el
+  /// estado limpio (PIN vacio, editable, sin error). No se usa `pop()` porque
+  /// `go` reemplaza la pila y no habria a donde volver.
+  void _goBackToCreate() {
+    if (_navigated) return;
+    final ref = Uri.encodeComponent(widget.userRef);
+    context.go('/pin-setup?userRef=$ref');
   }
 
   @override
@@ -83,7 +107,7 @@ class _PinConfirmPageState extends State<PinConfirmPage> {
                 title: 'Protege tu cuenta',
                 step: 4,
                 stageLabel: 'Seguridad',
-                onBack: () => context.pop(),
+                onBack: _goBackToCreate,
               ),
               const SizedBox(height: AppSpacing.stackMd),
               const PinStepHeading(

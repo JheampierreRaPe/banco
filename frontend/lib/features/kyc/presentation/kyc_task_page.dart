@@ -8,7 +8,6 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_button.dart';
-import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../camera_frame_source.dart';
@@ -25,11 +24,14 @@ import 'kyc_fig_widgets.dart';
 /// Diseño canónico (F-T38): fig `0:198` "Reconocimiento Facial" adaptado a
 /// **modo claro** (docs/20 manda solo claro; el fig es dark y NO se
 /// implementa tema oscuro): título `Centra tu rostro en el círculo`,
-/// stepper `Paso 3 de 4 · Rostro`, instrucción destacada, viewport circular,
-/// checklist (`Buena iluminación`, `Rostro descubierto`, `Prueba de vida`) y
-/// `No cierres la app durante la verificación`. El error sigue el fig
-/// `0:269` (`No pudimos verificarte`, motivo accionable, `Intento N de 3`,
-/// reintento de la misma tarea). Solo presentación: la lógica de captura
+/// stepper `Paso 3 de 4 · Rostro`, instrucción destacada, viewport circular
+/// y `No cierres la app durante la verificación`. F-T48 retiró el checklist
+/// (`Buena iluminación`, `Rostro descubierto`, `Prueba de vida`) por decisión
+/// del dueño: ya no se muestra ni reserva espacio. El error sigue el fig
+/// `0:269` (`No pudimos verificarte`, paso fallido y motivo accionable,
+/// `Intento N de 3`); el card de error NO lleva reintento (el reintento de
+/// tareas anteriores vive en el botón principal mientras no sea la última
+/// foto). Solo presentación: la lógica de captura
 /// (ráfaga, close-before-open, teardown) no cambia.
 ///
 /// - Fuente real ([CameraFrameSource]): muestra el viewfinder en vivo
@@ -57,6 +59,11 @@ class KycTaskPage extends StatefulWidget {
 
   /// Instruccion amigable por tarea; ante tareas desconocidas del servidor se
   /// muestra el nombre tal cual (el orden siempre lo impone el servidor).
+  ///
+  /// F-T48 (swap SOLO-texto por decisión del dueño): el microservicio tiene
+  /// el mapeo de `arriba`/`abajo` invertido y NO se corrige (`kyc-service/`
+  /// intocable, `liveness_service.py` intacto); aquí solo se intercambian las
+  /// ETIQUETAS que ve el usuario.
   static String instructionFor(String task) {
     switch (task.toLowerCase()) {
       case 'front':
@@ -73,9 +80,9 @@ class KycTaskPage extends StatefulWidget {
       case 'derecha':
         return 'Gira la cabeza lentamente a la derecha.';
       case 'arriba':
-        return 'Levanta la cabeza y mira hacia arriba.';
-      case 'abajo':
         return 'Baja la cabeza y mira hacia abajo.';
+      case 'abajo':
+        return 'Levanta la cabeza y mira hacia arriba.';
       case 'nod':
         return 'Asiente lentamente con la cabeza.';
       default:
@@ -109,12 +116,27 @@ class _KycTaskPageState extends State<KycTaskPage> {
   KycFlowController _resolve(BuildContext context) =>
       widget.controller ?? KycDependencies.controller;
 
-  Future<void> _capture(KycFlowController c) =>
-      c.captureAndResolveCurrentTask();
+  Future<void> _capture(KycFlowController c) async {
+    await c.captureAndResolveCurrentTask();
+    if (!mounted) return;
+    // F-T47: agotar los 3 intentos (`needsManualReviewAny`) es fallo final:
+    // reinicio total SILENCIOSO a `/kyc` (sin popup; el `go` no dispara el
+    // `PopScope`). Los fallos recuperables se quedan con su reintento.
+    if (c.resetFullOnFinalFailure()) {
+      context.go('/kyc');
+    }
+  }
 
   Future<void> _submit(BuildContext context, KycFlowController c) async {
     await c.submit();
     if (!context.mounted) return;
+    // F-T47: `submit` sin resultado que permita continuar
+    // (`overall_result=false` o error definitivo) es fallo final: reinicio
+    // total SILENCIOSO a `/kyc`, sin popup.
+    if (c.resetFullOnFinalFailure()) {
+      context.go('/kyc');
+      return;
+    }
     if (c.errorMessage != null) return; // fallo de red: conservar estado.
     if (c.result != null) {
       await context.push('/kyc/result');
@@ -189,20 +211,32 @@ class _KycTaskPageState extends State<KycTaskPage> {
     if (c != null) unawaited(c.releaseCamera());
     super.dispose();
   }
-
   @override
   Widget build(BuildContext context) {
     final c = _resolve(context);
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
-        child: KycTopBar(
-          title: 'Reconocimiento facial',
-          onBack: () => context.pop(),
+    // F-T47: el retroceso VOLUNTARIO (botón de la barra o sistema) pide
+    // confirmación porque reinicia TODO el registro. El botón llama
+    // directo al flujo de confirmación (`context.pop()` con go_router es
+    // declarativo y no consultaría al `PopScope`); el `PopScope` cubre el
+    // botón del sistema. El reinicio por fallo final usa `go('/kyc')` y NO
+    // pasa por aquí (silencioso, sin popup).
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        unawaited(requestKycBackRestart(context, c));
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        appBar: PreferredSize(
+          preferredSize:
+              const Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
+          child: KycTopBar(
+            title: 'Reconocimiento facial',
+            onBack: () => unawaited(requestKycBackRestart(context, c)),
+          ),
         ),
-      ),
-      body: ListenableBuilder(
+        body: ListenableBuilder(
         listenable: c,
         builder: (context, _) {
           final step = c.currentStep;
@@ -325,8 +359,6 @@ class _KycTaskPageState extends State<KycTaskPage> {
                   ),
                 ),
                 const SizedBox(height: AppSpacing.stackMd),
-                _LivenessChecklist(passed: c.taskPassed(step)),
-                const SizedBox(height: AppSpacing.stackMd),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -382,25 +414,29 @@ class _KycTaskPageState extends State<KycTaskPage> {
                   ),
                 ],
                 const SizedBox(height: AppSpacing.stackLg),
-                AppPrimaryButton(
-                  key: const Key('kycCaptureButton'),
-                  label: attempts == 0 ? 'Capturar' : 'Reintentar captura',
-                  icon: Icons.camera_alt_outlined,
-                  loading: c.busy,
-                  onPressed: captureEnabled ? () => _capture(c) : null,
-                ),
+                // F-T48: en la última foto (`readyToSubmit`) ya no hay botón
+                // de captura/reintento: solo queda `Enviar verificación`.
+                // En tareas anteriores el botón principal sigue siendo el
+                // reintento de la misma tarea.
+                if (!c.readyToSubmit)
+                  AppPrimaryButton(
+                    key: const Key('kycCaptureButton'),
+                    label: attempts == 0 ? 'Capturar' : 'Reintentar captura',
+                    icon: Icons.camera_alt_outlined,
+                    loading: c.busy,
+                    onPressed: captureEnabled ? () => _capture(c) : null,
+                  ),
                 if (hasError) ...[
                   const SizedBox(height: AppSpacing.stackMd),
                   _FacialErrorCard(
                     controller: c,
                     step: step,
-                    onRetry: captureEnabled ? () => _capture(c) : null,
                   ),
                 ],
                 if (c.readyToSubmit) ...[
                   const SizedBox(height: AppSpacing.stackMd),
                   AppPrimaryButton(
-                    label: 'Enviar verificacion',
+                    label: 'Enviar verificación',
                     onPressed: () => _submit(context, c),
                   ),
                 ],
@@ -416,6 +452,7 @@ class _KycTaskPageState extends State<KycTaskPage> {
             ),
           );
         },
+        ),
       ),
     );
   }
@@ -440,98 +477,36 @@ class _MockFaceAvatar extends StatelessWidget {
   }
 }
 
-/// Checklist de la prueba de vida (fig `0:198`, en claro).
+/// Error facial informativo (fig `0:269`, en claro).
 ///
-/// Presentación pura: los checks de iluminación/rostro son guía estática del
-/// fig; el estado real de la tarea lo da el servidor (cliente delgado).
-class _LivenessChecklist extends StatelessWidget {
-  const _LivenessChecklist({required this.passed});
-
-  final bool passed;
-
-  @override
-  Widget build(BuildContext context) {
-    return AppCard(
-      child: Column(
-        children: [
-          _checkRow(
-            done: true,
-            label: 'Buena iluminación',
-            doneColor: AppColors.success,
-          ),
-          const SizedBox(height: AppSpacing.stackMd),
-          _checkRow(
-            done: true,
-            label: 'Rostro descubierto',
-            doneColor: AppColors.success,
-          ),
-          const SizedBox(height: AppSpacing.stackMd),
-          _checkRow(
-            done: passed,
-            label: passed ? 'Prueba de vida (Superada)' : 'Prueba de vida (En proceso)',
-            doneColor: AppColors.success,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _checkRow({
-    required bool done,
-    required String label,
-    required Color doneColor,
-  }) {
-    return Row(
-      children: [
-        Container(
-          width: AppSpacing.stackLg,
-          height: AppSpacing.stackLg,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: done
-                ? doneColor.withValues(alpha: 0.15)
-                : AppColors.surfaceContainerHigh,
-          ),
-          child: Icon(
-            done ? Icons.check : Icons.hourglass_empty,
-            size: AppSpacing.stackMd,
-            color: done ? doneColor : AppColors.secondaryText,
-          ),
-        ),
-        const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
-        Expanded(
-          child: Text(
-            label,
-            style: AppTypography.bodyMd.copyWith(
-              color: AppColors.onSurface,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// Error facial accionable (fig `0:269`, en claro).
-///
-/// Conserva las claves de regresión (`kycFailedStep`, `kycReasonMessage`) y
-/// el [ErrorView] con reintento de la misma tarea. Sin lógica de negocio:
-/// solo presenta el paso fallido, el motivo traducido del servidor y el
-/// contador de intentos.
+/// F-T48 (decisión del dueño): el card NO lleva acción de reintento (el
+/// `ErrorView` va sin `onRetry`); el reintento de tareas anteriores vive en
+/// el botón principal `Reintentar captura` mientras no sea la última foto.
+/// Conserva las claves de regresión (`kycFailedStep`, `kycReasonMessage`):
+/// muestra EN QUÉ paso se falló (`lastError.task` o el paso vigente) y el
+/// motivo traducido del servidor, EXCEPTO cuando el motivo es
+/// documento-registrado (entonces la línea `Motivo: ...` no aparece).
+/// Sin lógica de negocio: solo presenta lo que responde el servidor.
 class _FacialErrorCard extends StatelessWidget {
   const _FacialErrorCard({
     required this.controller,
     required this.step,
-    required this.onRetry,
   });
 
   final KycFlowController controller;
   final String step;
-  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
     final c = controller;
+    final serverReason = c.lastError?.serverReason ?? '';
+    // Paso en el que se falló: el informado por el error o el vigente.
+    final failedTask = (c.lastError?.task?.isNotEmpty ?? false)
+        ? c.lastError!.task!
+        : step;
+    // El motivo documento-registrado no se muestra (F-T48).
+    final showReason = serverReason.isNotEmpty &&
+        !isDocumentAlreadyRegisteredReason(serverReason);
     return Container(
       padding: const EdgeInsets.all(AppSpacing.stackMd),
       decoration: BoxDecoration(
@@ -573,24 +548,25 @@ class _FacialErrorCard extends StatelessWidget {
           const SizedBox(height: AppSpacing.stackSm),
           ErrorView(
             message: c.errorMessage!,
-            onRetry: onRetry,
           ),
           // F-T23: al fallar el paso se indica CUAL y POR QUE (motivo
           // del servidor traducido) para que el reintento sea
           // accionable. No se avanza de tarea sin `passed:true`.
-          if ((c.lastError?.serverReason ?? '').isNotEmpty) ...[
-            const SizedBox(height: AppSpacing.stackSm),
-            Text(
-              'Paso fallido: $step',
-              key: const Key('kycFailedStep'),
-              textAlign: TextAlign.center,
-              style: AppTypography.bodyMd.copyWith(
-                color: AppColors.onSurface,
-              ),
+          // F-T48: el paso fallido siempre se muestra; el motivo se oculta
+          // cuando es documento-registrado.
+          const SizedBox(height: AppSpacing.stackSm),
+          Text(
+            'Paso fallido: $failedTask',
+            key: const Key('kycFailedStep'),
+            textAlign: TextAlign.center,
+            style: AppTypography.bodyMd.copyWith(
+              color: AppColors.onSurface,
             ),
+          ),
+          if (showReason) ...[
             const SizedBox(height: AppSpacing.unit),
             Text(
-              'Motivo: ${kycReasonMessage(c.lastError!.serverReason)}',
+              'Motivo: ${kycReasonMessage(serverReason)}',
               key: const Key('kycReasonMessage'),
               textAlign: TextAlign.center,
               style: AppTypography.bodyMd.copyWith(

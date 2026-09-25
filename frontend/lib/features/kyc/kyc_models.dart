@@ -102,12 +102,18 @@ class KycDocumentOwner {
 ///
 /// Viven SOLO en memoria durante el flujo; no se persisten ni se registran en
 /// logs (sin PII en logs, docs/16 §2.7).
+///
+/// F-T48 (RUC real, E1-T36): el titular puede ser persona juridica; en ese
+/// caso la razon social viaja en [businessName] y `first_name`/`last_name`
+/// pueden ir vacios (el lookup devuelve `business_name` y la pantalla lo
+/// muestra donde iria el nombre).
 class KycApplicant {
   const KycApplicant({
     required this.firstName,
     required this.lastName,
     required this.email,
     this.phone = '',
+    this.businessName = '',
   });
 
   final String firstName;
@@ -115,17 +121,23 @@ class KycApplicant {
   final String email;
   final String phone;
 
+  /// Razon social (RUC de persona juridica). Vacia en persona natural;
+  /// `DNI|CE|PASSPORT` la ignoran en el servidor.
+  final String businessName;
+
   /// `true` cuando estan los datos minimos que el backend espera. La UI valida
-  /// el formato del email; el servidor es la autoridad final.
+  /// el formato del email; el servidor es la autoridad final. Un RUC juridico
+  /// (`businessName` no vacio) es completo aunque no tenga nombres.
   bool get isComplete =>
-      firstName.trim().isNotEmpty &&
-      lastName.trim().isNotEmpty &&
+      (firstName.trim().isNotEmpty && lastName.trim().isNotEmpty ||
+          businessName.trim().isNotEmpty) &&
       email.trim().isNotEmpty;
 
   /// Forma del payload (`applicant` en `POST /auth/kyc/submit`).
   Map<String, dynamic> toJson() => {
         'first_name': firstName,
         'last_name': lastName,
+        'business_name': businessName,
         'email': email,
         'phone': phone,
       };

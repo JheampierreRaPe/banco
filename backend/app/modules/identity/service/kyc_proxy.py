@@ -35,8 +35,9 @@ from app.adapters.kyc_provider import KycProvider, hash_token
 
 logger = logging.getLogger(__name__)
 
-#: Tipos de documento aceptados (validacion temprana, espejo del schema).
-DOC_TYPES: tuple[str, ...] = ("DNI", "CE", "PASSPORT")
+#: Tipos de documento aceptados (validacion temprana, espejo del schema;
+#: E1-T36 suma `RUC` = persona juridica, en paridad con `models.DOC_TYPES`).
+DOC_TYPES: tuple[str, ...] = ("DNI", "CE", "PASSPORT", "RUC")
 
 #: Magic bytes aceptados: JPEG (FF D8 FF) y PNG (89 50 4E 47 0D 0A 1A 0A).
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -83,6 +84,60 @@ class KycProxyValidationError(ValueError):
 
 class KycRateLimitedError(RuntimeError):
     """Ventana de rate limit excedida -> HTTP 429."""
+
+
+def validate_applicant(
+    doc_type: str,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    business_name: str | None = None,
+) -> dict[str, str | None]:
+    """Valida los datos del titular segun el tipo de documento (E1-T36, HU01).
+
+    Funcion pura (sin red ni BD): el endpoint la exige ANTES de llamar al
+    proveedor, asi los 422 no consumen verificaciones externas. Reglas:
+
+    - Tipo desconocido -> `KycProxyValidationError` (422).
+    - `RUC`: `business_name` no vacio (juridica) o nombres completos
+      (RUC de persona natural); si faltan ambos -> 422.
+    - `DNI`/`CE`/`PASSPORT`: nombres obligatorios (paridad con el contrato
+      actual); `business_name` no aplica y se ignora.
+
+    Retorna el titular normalizado (`first_name`/`last_name`/`business_name`
+    con trim; `business_name=None` si no aplica o viene vacio). Sin PII en
+    logs ni en los mensajes: solo tipo y presencia/ausencia de campos.
+    """
+    if doc_type not in DOC_TYPES:
+        raise KycProxyValidationError(f"document.type debe ser uno de {DOC_TYPES}")
+    first = first_name.strip() if isinstance(first_name, str) else ""
+    last = last_name.strip() if isinstance(last_name, str) else ""
+    business = business_name.strip() if isinstance(business_name, str) else ""
+    if doc_type == "RUC":
+        if not business and not (first and last):
+            logger.warning("kyc applicant_rejected doc_type=RUC reason=nombres_o_razon_faltantes")
+            raise KycProxyValidationError(
+                "applicant.business_name es obligatorio para RUC de persona juridica"
+            )
+        logger.info(
+            "kyc applicant_validated doc_type=RUC has_business_name=%s has_names=%s",
+            bool(business),
+            bool(first and last),
+        )
+        return {
+            "doc_type": doc_type,
+            "first_name": first,
+            "last_name": last,
+            "business_name": business or None,
+        }
+    if not first or not last:
+        logger.warning("kyc applicant_rejected doc_type=%s reason=nombres_faltantes", doc_type)
+        raise KycProxyValidationError("applicant.first_name y applicant.last_name son obligatorios")
+    return {
+        "doc_type": doc_type,
+        "first_name": first,
+        "last_name": last,
+        "business_name": None,
+    }
 
 
 def validate_image_b64(image_b64: str, *, field: str) -> bytes:
@@ -404,6 +459,7 @@ __all__ = [
     "request_challenge",
     "reset_rate_limits",
     "submit_kyc",
+    "validate_applicant",
     "validate_document",
     "validate_image_b64",
 ]

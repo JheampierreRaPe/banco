@@ -144,6 +144,7 @@ def persist_kyc_submission(
     document_number: str,
     first_name: str,
     last_name: str,
+    business_name: str | None = None,
     email: str,
     phone: str | None = None,
     challenge_token: str | None = None,
@@ -156,6 +157,10 @@ def persist_kyc_submission(
     verificacion con `user_id=None` y `failure_reason`. Cualquier fallo de
     las fachadas `accounts`/`ledger`/`outbox` propaga para el rollback del
     llamante (sin usuario a medias). Retorno listo para `KycSubmitData`.
+
+    E1-T36: `business_name` (razon social del `applicant`) se propaga al
+    alta; la validacion por tipo vive en `kyc_proxy.validate_applicant`
+    (el endpoint la exige ANTES del proveedor).
     """
     if not isinstance(kyc_result, dict):
         raise TypeError(f"kyc_result debe ser dict, recibido: {kyc_result!r}")
@@ -182,6 +187,7 @@ def persist_kyc_submission(
                     first_name=first_name,
                     last_name=last_name,
                     doc_type=doc_type,
+                    business_name=business_name,
                     doc_number_masked=doc_masked,
                     email=normalized_email,
                     phone=phone,

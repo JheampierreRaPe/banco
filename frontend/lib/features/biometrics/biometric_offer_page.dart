@@ -18,6 +18,7 @@ import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/widgets/app_button.dart';
 import '../../core/widgets/app_card.dart';
+import '../pin_setup/pin_setup_draft.dart';
 import 'biometric_reader.dart';
 
 /// Ofrece el acceso biometrico (fig `0:704`:
@@ -54,20 +55,29 @@ class _BiometricOfferPageState extends State<BiometricOfferPage> {
 
   BiometricReader get _reader => widget.reader ?? SystemBiometricReader();
 
-  void _goToOtp() {
+  void _goToOtp({required bool biometricEnabled}) {
     if (_navigated) return;
     _navigated = true;
     final ref = Uri.encodeComponent(widget.userRef);
-    context.go('/pin-setup/otp?userRef=$ref', extra: widget.pin);
+    context.go(
+      '/pin-setup/otp?userRef=$ref',
+      extra: PinSetupDraft(
+        pin: widget.pin,
+        biometricEnabled: biometricEnabled,
+      ),
+    );
   }
 
-  /// Continua al OTP. Si el switch esta activo, intenta el gate biometrico
-  /// local; cualquier resultado (exito, cancelacion o no disponible) sigue
-  /// al OTP: el biometrico nunca bloquea el registro.
+  /// Continua al OTP. El switch (`biometric-switch`) es la fuente del
+  /// consentimiento y su valor se conserva en el borrador en memoria (viaja
+  /// como `biometric_enabled` en `pin/setup`); omitir equivale a `false`. Si
+  /// el switch esta activo, intenta el gate biometrico local; cualquier
+  /// resultado (exito, cancelacion o no disponible) sigue al OTP: el
+  /// biometrico nunca bloquea el registro.
   Future<void> _continue() async {
     if (_checking || _navigated) return;
     if (!_enabled) {
-      _goToOtp();
+      _goToOtp(biometricEnabled: false);
       return;
     }
     setState(() => _checking = true);
@@ -80,7 +90,7 @@ class _BiometricOfferPageState extends State<BiometricOfferPage> {
     }
     if (!mounted) return;
     setState(() => _checking = false);
-    _goToOtp();
+    _goToOtp(biometricEnabled: true);
   }
 
   @override
@@ -218,7 +228,9 @@ class _BiometricOfferPageState extends State<BiometricOfferPage> {
               AppGhostButton(
                 key: const Key('biometric-skip'),
                 label: 'Omitir por ahora',
-                onPressed: _checking ? null : _goToOtp,
+                onPressed: _checking
+                    ? null
+                    : () => _goToOtp(biometricEnabled: false),
               ),
             ],
           ),

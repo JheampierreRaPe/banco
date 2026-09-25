@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -41,13 +43,23 @@ class KycResultPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = _resolve(context);
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      appBar: const PreferredSize(
-        preferredSize: Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
-        child: KycTopBar(title: 'Resultado de verificación'),
-      ),
-      body: ListenableBuilder(
+    // F-T47: el retroceso VOLUNTARIO (sistema) pide confirmación porque
+    // reinicia TODO el registro. El reinicio por fallo final usa `go('/kyc')`
+    // y NO pasa por aquí (silencioso, sin popup).
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        unawaited(requestKycBackRestart(context, c));
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.surface,
+        appBar: const PreferredSize(
+          preferredSize:
+              Size.fromHeight(AppSpacing.stackXl + AppSpacing.stackMd),
+          child: KycTopBar(title: 'Resultado de verificación'),
+        ),
+        body: ListenableBuilder(
         listenable: c,
         builder: (context, _) {
           if (c.busy) {
@@ -161,6 +173,8 @@ class KycResultPage extends StatelessWidget {
                       ),
                       // F-T23: se indica QUE paso fallo y el motivo traducido del
                       // servidor (E1-T29).
+                      // F-T48: el motivo documento-registrado no se muestra
+                      // (la linea `Motivo: ...` se oculta en ese caso).
                       if (result.failedStep != null) ...[
                         const SizedBox(height: AppSpacing.stackSm),
                         Text(
@@ -172,15 +186,19 @@ class KycResultPage extends StatelessWidget {
                           ),
                         ),
                       ],
-                      const SizedBox(height: AppSpacing.stackSm),
-                      Text(
-                        'Motivo: ${kycReasonMessage(result.failureReason)}',
-                        key: const Key('kycResultReason'),
-                        textAlign: TextAlign.center,
-                        style: AppTypography.bodyMd.copyWith(
-                          color: AppColors.onSurfaceVariant,
+                      if (!isDocumentAlreadyRegisteredReason(
+                        result.failureReason,
+                      )) ...[
+                        const SizedBox(height: AppSpacing.stackSm),
+                        Text(
+                          'Motivo: ${kycReasonMessage(result.failureReason)}',
+                          key: const Key('kycResultReason'),
+                          textAlign: TextAlign.center,
+                          style: AppTypography.bodyMd.copyWith(
+                            color: AppColors.onSurfaceVariant,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -193,12 +211,16 @@ class KycResultPage extends StatelessWidget {
             ),
           );
         },
+        ),
       ),
     );
   }
 
+  /// F-T47: el fallo final ya no reintenta con el estado anterior: reinicia
+  /// TODO el registro ([KycFlowController.resetFull], incluye email/teléfono
+  /// y documento/titular) y vuelve a `/kyc` para empezar de nuevo.
   void _retry(BuildContext context, KycFlowController c) {
-    c.reset();
+    c.resetFull();
     context.go('/kyc');
   }
 

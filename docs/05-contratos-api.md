@@ -146,6 +146,17 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > /auth/activate` queda **deprecado pero vivo** (mismo request/response/errores;
 > `Deprecation: true` + OpenAPI `deprecated`); la activacion canonica con un solo
 > OTP es `POST /auth/pin/setup`.
+>
+> Decision E1-T38: `POST /auth/pin/setup` acepta `biometric_enabled?: bool =
+> false` (opcional; ausente/`false` preserva el contrato anterior y deja la
+> credencial en `False`); con `true` lo persiste en
+> `identity.credentials.biometric_enabled` en la misma transaccion que
+> `pin_hash` + `ACTIVE` (el flag no viaja en la respuesta). `POST
+> /auth/login/facial` exige consentimiento (`biometric_enabled is True`)
+> ademas de binding `ACTIVE` + firma valida: sin el responde `400
+> INVALID_LOGIN` generico (mismo cuerpo que firma/binding invalidos, sin
+> sesion ni tocar el binding; la biometria es opcional y el PIN es siempre
+> el fallback).
 
 Detalle del flujo KYC (`identity`, E1-T29):
 
@@ -154,7 +165,15 @@ Detalle del flujo KYC (`identity`, E1-T29):
   y `data: {step, passed, reason, frames_analyzed, details}`.
 - `POST /auth/kyc/submit` -> cada segmento acepta `frames_b64: [str]` (rafaga; fuente
   unica) **o** `image_b64: str` (compatibilidad, un solo frame); `document` lleva
-  `{type, number, image_b64}` y `applicant` los datos del titular. La respuesta amplia
+  `{type: DNI|CE|PASSPORT|RUC, number, image_b64}` y `applicant` los datos del titular:
+  `{first_name, last_name, business_name?, email, phone?}` (E1-T36: `business_name` es la
+  razon social, opcional, max 150; `first_name`/`last_name` aceptan vacio a nivel de
+  esquema). Validacion por tipo ANTES del proveedor (`422 VALIDATION_ERROR` sin invocar
+  al microservicio): `RUC` exige `business_name` no vacio (juridica) o nombres completos
+  (RUC de persona natural); `DNI|CE|PASSPORT` exigen nombres y `business_name` se ignora;
+  tipo desconocido -> `422`. Con KYC exitoso el alta persiste la razon social en
+  `identity.users.business_name` (RUC juridica: nombres `""`; el resto: `business_name`
+  `NULL`). Duplicados -> `409 DUPLICATE_DOCUMENT`/`DUPLICATE_EMAIL`. La respuesta amplia
   `data` con:
   - `steps_verified: [str]` — **nombres** de los pasos de liveness verificados (no un
     conteo; para totales en UI usar `len`).
@@ -172,16 +191,23 @@ Detalle del flujo KYC (`identity`, E1-T29):
 - `POST /auth/kyc/document/lookup` (E1-T35) -> request `{type: "DNI"|"RUC", number: str}`
   y `data: {document_type, first_name, last_name, business_name}`. Persona natural:
   `first_name`/`last_name` con valores y `business_name` vacio; RUC de persona juridica:
-  `business_name` con la razon social y `first_name`/`last_name` vacios (campos no
-  editables en el cliente; consume `F-T44`). El backend valida el formato antes de la
-  red (`type` conocido, `number` solo digitos, DNI=8/RUC=11 -> `422 VALIDATION_ERROR`);
-  consulta desde el servidor `GET /dni/{numero}` o `GET /ruc/{numero}` contra
+   `business_name` con la razon social y `first_name`/`last_name` vacios (campos no
+   editables en el cliente; consume `F-T44`). El backend valida el formato antes de la
+   red (`type` conocido, `number` solo digitos, DNI=8/RUC=11 -> `422 VALIDATION_ERROR`);
+   luego prechequea en BD que el documento (DNI **y** RUC) no este ya registrado
+   (`doc_number_hash` HMAC de `kyc_onboarding.hash_document_number` via
+   `get_by_doc_hash`; E1-T37): si existe -> `409 DUPLICATE_DOCUMENT` con
+   `"El documento ya se encuentra registrado"`, sin consulta externa y sin
+   devolver datos del titular. Orden de chequeos: rate-limit -> `422` ->
+   `409` -> proveedor. Solo si no existe, consulta desde el servidor
+   `GET /dni/{numero}` o `GET /ruc/{numero}` contra
   `https://app.apiinti.dev/api/v1` (`APIINTI_BASE_URL`) con `Authorization: Bearer
   <APIINTI_API_KEY>` + `Content-Type: application/json` y normaliza la respuesta
   (punto unico de parseo: tolera `{"data": {...}}` o plana y claves alternativas;
   la forma exacta del JSON de apiinti se fija al probar contra el proveedor real).
-  Errores neutros sin eco del numero ni del cuerpo del proveedor: `404
-  DOCUMENT_NOT_FOUND`, `503/504 DOC_LOOKUP_UNAVAILABLE`, `429 RATE_LIMITED`
+   Errores neutros sin eco del numero ni del cuerpo del proveedor: `404
+   DOCUMENT_NOT_FOUND`, `409 DUPLICATE_DOCUMENT` (documento ya registrado,
+   antes de la red), `503/504 DOC_LOOKUP_UNAVAILABLE`, `429 RATE_LIMITED`
   (ventana en memoria compartida con el proxy KYC; prod: Redis/middleware). La key
   vive solo en el entorno del backend (`.env` de la raiz, cableada por
   `docker-compose.yml` al servicio `backend` con `${APIINTI_API_KEY:-}`); el

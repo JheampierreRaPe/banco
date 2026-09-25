@@ -31,11 +31,15 @@ from app.adapters.document_lookup_provider import (
     MockDocumentLookupProvider,
     clean_text,
     create_document_lookup_provider,
+    hash_document,
 )
 from app.core.config import Settings
+from app.core.db import get_db
 from app.main import app
+from app.modules.identity import repository as identity_repo
 from app.modules.identity.api.kyc import get_document_lookup_provider
 from app.modules.identity.service import document_lookup, kyc_proxy
+from app.modules.identity.service.kyc_onboarding import hash_document_number
 
 DNI_OK = "12345678"
 RUC_OK = "20123456789"
@@ -76,7 +80,62 @@ def _http_provider(api_key: str = "sentinel-key-xyz") -> HttpDocumentLookupProvi
 
 
 @pytest.fixture()
-def doc_client(monkeypatch):
+def sqlite_session():
+    """Sesion SQLite aislada para el precheck de duplicado (E1-T37).
+
+    Mismo patron que `test_kyc_proxy.py` (schemas ATTACH): el lookup
+    comparte la sesion via override de `get_db` y solo lee
+    `identity.users` por `doc_number_hash`.
+    """
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    import app.modules.accounts.models as _a  # noqa: F401
+    import app.modules.audit.models as _au  # noqa: F401
+    import app.modules.identity.models as _i  # noqa: F401
+    import app.modules.ledger.models as _l  # noqa: F401
+    import app.modules.notifications.models as _n  # noqa: F401
+    import app.modules.shared.models as _s  # noqa: F401
+    from app.core.db import Base
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+
+    def _attach(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        for schema in ("identity", "accounts", "ledger", "shared", "notifications", "audit"):
+            cur.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
+        cur.close()
+
+    event.listen(engine, "connect", _attach)
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Base.metadata.tables["identity.users"],
+            Base.metadata.tables["identity.credentials"],
+            Base.metadata.tables["identity.kyc_verifications"],
+            Base.metadata.tables["identity.otp_codes"],
+            Base.metadata.tables["accounts.accounts"],
+            Base.metadata.tables["accounts.account_balances"],
+            Base.metadata.tables["ledger.ledger_accounts"],
+            Base.metadata.tables["shared.outbox"],
+            Base.metadata.tables["notifications.notifications"],
+            Base.metadata.tables["notifications.notification_templates"],
+            Base.metadata.tables["audit.audit_log"],
+        ],
+    )
+    session = Session(bind=engine, autoflush=False, expire_on_commit=False)
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.fixture()
+def doc_client(monkeypatch, sqlite_session):
     """TestClient con proveedor mock en modo `success` y rate limit limpio."""
     monkeypatch.delenv("DOC_LOOKUP_PROVIDER", raising=False)
     monkeypatch.delenv("DOC_LOOKUP_MOCK_MODE", raising=False)
@@ -86,11 +145,17 @@ def doc_client(monkeypatch):
     app.dependency_overrides[get_document_lookup_provider] = lambda: MockDocumentLookupProvider(
         mode="success"
     )
+
+    def _override_db():
+        yield sqlite_session
+
+    app.dependency_overrides[get_db] = _override_db
     try:
         with TestClient(app) as client:
             yield client
     finally:
         app.dependency_overrides.pop(get_document_lookup_provider, None)
+        app.dependency_overrides.pop(get_db, None)
         kyc_proxy.reset_rate_limits()
 
 
@@ -619,3 +684,177 @@ def test_root_env_example_declares_apiinti_placeholders():
     text = example.read_text(encoding="utf-8")
     assert "APIINTI_API_KEY=change-me" in text
     assert "APIINTI_BASE_URL=https://app.apiinti.dev/api/v1" in text
+
+
+# ------------------------------------------------------- Precheck duplicado (E1-T37)
+def _seed_user(session, *, doc_type: str, number: str, email: str) -> None:
+    """Crea un usuario con el hash HMAC del numero (el mismo que el alta)."""
+    if doc_type == "RUC":
+        first_name, last_name, business_name = "", "", "EMPRESA EJEMPLO S.A.C."
+    else:
+        first_name, last_name, business_name = "Ana", "Quispe", None
+    identity_repo.create_user(
+        session,
+        doc_type=doc_type,
+        doc_number_hash=hash_document_number(number),
+        first_name=first_name,
+        last_name=last_name,
+        business_name=business_name,
+        email=email,
+    )
+
+
+def test_lookup_registered_dni_returns_409_without_provider_call(
+    doc_client: TestClient, sqlite_session
+):
+    _seed_user(sqlite_session, doc_type="DNI", number=DNI_OK, email="duplicada@example.com")
+    recording = RecordingLookupProvider()
+    _override_lookup(recording)
+    try:
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": DNI_OK}
+        )
+        assert resp.status_code == 409, resp.text
+        error = resp.json()["error"]
+        assert error["code"] == "DUPLICATE_DOCUMENT"
+        assert error["message"] == "El documento ya se encuentra registrado"
+        assert DNI_OK not in resp.text
+        assert "Ana" not in resp.text
+        assert recording.calls == []
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))
+
+
+def test_lookup_registered_ruc_returns_409_without_provider_call(
+    doc_client: TestClient, sqlite_session
+):
+    _seed_user(sqlite_session, doc_type="RUC", number=RUC_OK, email="empresa@example.com")
+    recording = RecordingLookupProvider()
+    _override_lookup(recording)
+    try:
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "RUC", "number": RUC_OK}
+        )
+        assert resp.status_code == 409, resp.text
+        error = resp.json()["error"]
+        assert error["code"] == "DUPLICATE_DOCUMENT"
+        assert error["message"] == "El documento ya se encuentra registrado"
+        assert RUC_OK not in resp.text
+        assert recording.calls == []
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))
+
+
+def test_lookup_new_document_returns_200_and_calls_provider_once(
+    doc_client: TestClient, sqlite_session
+):
+    """Documento no registrado: 200 con el titular y 1 sola llamada externa."""
+    assert document_lookup.document_is_registered(sqlite_session, DNI_OK) is False
+    recording = RecordingLookupProvider()
+    _override_lookup(recording)
+    try:
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": DNI_OK}
+        )
+        assert resp.status_code == 200, resp.text
+        assert len(recording.calls) == 1
+        assert resp.json()["data"]["first_name"]
+        assert DNI_OK not in resp.text
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))
+
+
+def test_lookup_invalid_input_returns_422_without_db_or_provider(
+    doc_client: TestClient, sqlite_session
+):
+    """El 422 de formato llega antes del precheck (ni BD ni proveedor)."""
+    recording = RecordingLookupProvider()
+    _override_lookup(recording)
+    try:
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": "123"}
+        )
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+        assert recording.calls == []
+        assert document_lookup.document_is_registered(sqlite_session, "12345678") is False
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))
+
+
+def test_lookup_duplicate_does_not_log_number(doc_client: TestClient, sqlite_session, caplog):
+    _seed_user(sqlite_session, doc_type="DNI", number=DNI_OK, email="duplicada@example.com")
+    with caplog.at_level(logging.INFO):
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": DNI_OK}
+        )
+    assert resp.status_code == 409
+    assert DNI_OK not in caplog.text
+    assert "Ana" not in caplog.text
+    assert DNI_OK not in resp.text
+
+
+def test_document_is_registered_uses_hmac_hash(sqlite_session):
+    """El precheck usa el HMAC del alta, no el hash de correlacion de logs."""
+    assert document_lookup.document_is_registered(sqlite_session, DNI_OK) is False
+    _seed_user(sqlite_session, doc_type="DNI", number=DNI_OK, email="hmac@example.com")
+    assert document_lookup.document_is_registered(sqlite_session, DNI_OK) is True
+    assert document_lookup.document_is_registered(sqlite_session, "87654321") is False
+    assert hash_document_number(DNI_OK) != hash_document(DNI_OK)
+    assert identity_repo.get_by_doc_hash(sqlite_session, hash_document_number(DNI_OK)) is not None
+    assert identity_repo.get_by_doc_hash(sqlite_session, hash_document(DNI_OK)) is None
+
+
+def test_lookup_holder_with_is_registered_skips_provider():
+    """Seam inyectado: registrado -> 409 sin red; nuevo -> flujo normal."""
+    recording = RecordingLookupProvider()
+    data = document_lookup.lookup_holder(
+        recording, doc_type="DNI", number=DNI_OK, is_registered=lambda _n: False
+    )
+    assert data["first_name"] == "Juan"
+    assert len(recording.calls) == 1
+    with pytest.raises(document_lookup.DocumentAlreadyRegisteredError):
+        document_lookup.lookup_holder(
+            recording, doc_type="DNI", number=DNI_OK, is_registered=lambda _n: True
+        )
+    assert len(recording.calls) == 1
+
+
+def test_lookup_endpoint_injects_precheck_seam_contract(
+    doc_client: TestClient, sqlite_session, monkeypatch
+):
+    """Contrato del seam: el router SIEMPRE inyecta `document_is_registered` (H3).
+
+    El precheck de `lookup_holder` es opt-in (`is_registered is None` => sin
+    chequeo); solo el router `api/kyc.py::kyc_document_lookup` lo inyecta en
+    produccion. Este test espía `document_is_registered` a través del endpoint
+    real: con el documento ya registrado, el `POST` debe devolver 409 neutro
+    SIN llamar al proveedor. Sin la inyección (seam olvidado) el mismo POST
+    devolvería 200 con 1 llamada al proveedor, por lo que el test fallaría.
+    """
+    _seed_user(sqlite_session, doc_type="DNI", number=DNI_OK, email="seam@example.com")
+    recording = RecordingLookupProvider()
+    _override_lookup(recording)
+    seen: list = []
+    real_is_registered = document_lookup.document_is_registered
+
+    def _spy(session, number: str) -> bool:
+        seen.append(number)
+        return real_is_registered(session, number)
+
+    monkeypatch.setattr(document_lookup, "document_is_registered", _spy)
+    try:
+        resp = doc_client.post(
+            "/api/v1/auth/kyc/document/lookup", json={"type": "DNI", "number": DNI_OK}
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "DUPLICATE_DOCUMENT"
+        assert DNI_OK not in resp.text
+        assert recording.calls == []
+        assert seen == [DNI_OK]
+        # Contraste: sin el seam el mismo caso NO haría precheck (200 + 1 red).
+        direct = document_lookup.lookup_holder(recording, doc_type="DNI", number=DNI_OK)
+        assert direct["first_name"] == "Juan"
+        assert len(recording.calls) == 1
+    finally:
+        _override_lookup(MockDocumentLookupProvider(mode="success"))

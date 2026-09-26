@@ -76,8 +76,8 @@
   defecto, revertirlo y dejar el codigo minimo.
 
 **Referencias**
-- Fix: `docs/tasks/F-T32.md`
-- Intentos: `docs/tasks/F-T31.md`, `docs/tasks/F-T28.md`
+- Fix: `docs/tasks/archive/F-T32.md`
+- Intentos: `docs/tasks/archive/F-T31.md`, `docs/tasks/archive/F-T28.md`
 - Codigo: `frontend/lib/features/kyc/camera_frame_source.dart`
 - Commit: `947d570`
 

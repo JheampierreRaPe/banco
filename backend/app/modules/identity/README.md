@@ -59,6 +59,30 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
   registrado, `409 DUPLICATE_EMAIL` neutro si existe; rate-limit previo
   (ventana compartida con el proxy KYC); solo lectura via `get_by_email`,
   sin proveedor ni persistencia; el 409 de `submit` queda intacto.
+- `POST /auth/login/device/request` (`api/device_login_request.py` +
+  `service/device_login_request.py` + `schemas/device_login_request.py`,
+  E1-T45): paso 1 del login en dispositivo nuevo (pre-sesion, sin `userRef`
+  local): `email + documento (DNI|RUC, default DNI, solo formato/longitud)`
+  -> OTP proposito `LOGIN` solo por email (`otp_code_email`, best-effort) si
+  son de la MISMA cuenta `ACTIVE` (hash HMAC + `compare_digest`, sin cruzar
+  `users.doc_type`); siempre 200 identico (anti-enumeracion), cooldown
+  reutiliza el `PENDING` vigente; rate-limit por `email+IP` ANTES de la
+  existencia reutilizando `auth.recovery_verify_*` con scope `"device_login"`
+  (sin claves nuevas); auditoria `auth.device_login_requested` sin PII; el
+   paso 2 es E1-T46; sin migracion.
+- `POST /auth/login/device/complete` (`api/device_login_complete.py` +
+  `service/device_login_complete.py` + `schemas/device_login_complete.py`,
+  E1-T46): paso 2 del login en dispositivo nuevo (pre-sesion, sin `userRef`):
+  OTP proposito `LOGIN` + PIN de la MISMA cuenta `ACTIVE` (email + documento
+  via HMAC + `compare_digest`) en la misma transaccion (**PIN primero**: un OTP
+  valido con PIN erroneo no se consume; lockout del PIN reutilizado, 5 fallos
+  -> `423 ACCOUNT_LOCKED`) -> binding best-effort en savepoint (alta `ACTIVE`;
+  existente preserva `status`: un `REVOKED` no revive pero la sesion abre igual)
+  + sesion (`{access_token, refresh_token, session_id, user_ref,
+  biometric_enabled}`); unico `401 INVALID_LOGIN` generico (anti-enumeracion),
+  `429 RATE_LIMITED` compartido con el paso 1; auditoria `auth.device_login` +
+  `auth.device_binding` sin PII; evento `auth.login_succeeded` via outbox; sin
+  migracion.
 - Login biometrico/PIN, sesiones y recuperacion (`api/device_login.py`,
   `api/pin_login.py`, `api/pin_setup.py`, `api/sessions.py`). E1-T38:
   `POST /auth/pin/setup` acepta `biometric_enabled?: bool = false` y lo
@@ -72,6 +96,21 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
    `auth.biometric_consent` sin PII) y `POST /auth/login/pin` devuelve
    `biometric_enabled` vigente en su `data` (solo tras exito) para que el
    cliente sincronice el boton biometrico.
+- E1-T42 (rebind en login con PIN): `POST /auth/login/pin` con `device_id` +  `device_public_key` reescribe el `public_key` del binding existente con la
+  clave vigente (una sola fila por `user_id`+`device_id`, `last_used_at`
+  refrescado, `status` preservado: un `REVOKED` no se reactiva; el alta sigue
+  `ACTIVE`) en savepoint best-effort (un fallo no rompe los tokens; auditoria
+  `auth.device_binding` con `registered`/`touched`/`failed`); la clave se
+  persiste tal cual (`hmac:`/PEM, `verify_signature` autodetecta); contrato de
+  request/response sin cambios (el facial posterior verifica contra la clave
+   vigente con el unico `400 INVALID_LOGIN` generico).
+- `GET /me` (`api/profile.py` + `service/profile.py` + `schemas/profile.py`,
+  E1-T44): nombre del titular autenticado para saludo/avatar (Bearer, `sub`
+  via `core.security.decode_token`): `200 {"data": {"first_name",
+  "last_name", "business_name"}, "meta": {"request_id": ...}}` (RUC juridica
+  = nombres `""` + razon social; el resto `business_name` `null`); `401
+  NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; jamas documento, correo,
+  telefono ni hashes; solo lectura, sin migracion.
 
 ## Casos de uso (`service/`)
 
@@ -105,6 +144,11 @@ usuarios, roles. Dueno de `users`, `credentials`, `kyc_verifications`,
 - `email_is_registered` (`service/email_check.py`, E1-T40): precheck de
   email (normaliza + `get_by_email`, solo lectura; logs con `has_match` y
   hash corto, sin PII).
+- `request_device_login` (`service/device_login_request.py`, E1-T45): paso 1
+  (normaliza email, rate-limit verify con scope `"device_login"` antes de la
+  existencia, misma cuenta via HMAC + `compare_digest`, entrega solo email,
+  cooldown `LOGIN` `PENDING`, auditoria `auth.device_login_requested`; sin
+  sesion/binding; `flush` sin `commit`).
 - Parametros en `config.parameters` (E1-T34, regla de oro 6): `pin_login`
   lee `auth.lockout_seconds`/`auth.max_failed_attempts`, `otp_service`
   `otp.resend_wait_seconds`/`otp.max_attempts` (+ `otp.ttl_seconds`/

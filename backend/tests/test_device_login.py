@@ -578,6 +578,87 @@ def test_consent_endpoint_enables_then_revokes_facial(
     assert credential is not None and credential.biometric_enabled is not True
 
 
+# ---------------------------------------------------------------- E1-T42: rebind via PIN habilita el facial vigente
+def test_pin_rebind_updates_key_and_facial_uses_current_key(
+    login_client: TestClient, login_session: Session
+):
+    """E1-T42: tras rotar `device.secret`, el login con PIN reescribe el binding.
+
+    Regresion del bug "facial 400 tras inactividad": el PIN con la clave
+    vigente deja una sola fila con `public_key` nuevo; el facial firmado con
+    la clave vigente abre sesion (200) y con la vieja sigue 400
+    `INVALID_LOGIN` generico sin sesion nueva.
+    """
+    from app.modules.identity import repository as identity_repo
+    from app.modules.identity.models import UserSession
+    from app.modules.identity.service import pin_login as pin_login_service
+
+    PIN = "482917"
+    user, old_secret = _make_enrolled_user(login_session)
+    login_session.expire_all()
+    credential = identity_repo.get_credential(login_session, user.id)
+    assert credential is not None
+    credential.pin_hash = pin_login_service.hash_pin(PIN)
+    login_session.commit()
+
+    new_secret = secrets.token_hex(24)
+    assert new_secret != old_secret
+    pin_resp = login_client.post(
+        "/api/v1/auth/login/pin",
+        json={
+            "user_ref": str(user.id),
+            "pin": PIN,
+            "device_id": "pixel-8-pro",
+            "device_public_key": f"hmac:{new_secret}",
+            "platform": "android",
+            "biometric_type": "FACE",
+        },
+    )
+    assert pin_resp.status_code == 200, pin_resp.text
+
+    login_session.expire_all()
+    binding = identity_repo.get_binding(login_session, user.id, "pixel-8-pro")
+    assert binding is not None
+    assert binding.public_key == f"hmac:{new_secret}", "el PIN reescribe la clave vigente"
+    assert binding.status == "ACTIVE"
+    stmt = sa.select(UserSession).where(UserSession.user_id == user.id)
+    assert len(list(login_session.scalars(stmt).all())) == 1, "el PIN abre su sesion"
+
+    challenge = _challenge(login_client, str(user.id))
+    ok = login_client.post(
+        "/api/v1/auth/login/facial",
+        json={
+            "nonce": challenge["nonce"],
+            "device_id": "pixel-8-pro",
+            "signature": _sign_hmac(new_secret, challenge["nonce"]),
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["data"]["session_id"], "la firma vigente abre sesion"
+    login_session.expire_all()
+    sessions_after_ok = list(login_session.scalars(stmt).all())
+    assert len(sessions_after_ok) == 2
+
+    challenge_old = _challenge(login_client, str(user.id))
+    headers = {"X-Request-Id": "probe-rebind-old"}
+    stale = login_client.post(
+        "/api/v1/auth/login/facial",
+        json={
+            "nonce": challenge_old["nonce"],
+            "device_id": "pixel-8-pro",
+            "signature": _sign_hmac(old_secret, challenge_old["nonce"]),
+        },
+        headers=headers,
+    )
+    assert stale.status_code == 400, stale.text
+    assert stale.json()["error"]["code"] == "INVALID_LOGIN"
+    assert "access_token" not in stale.text and "refresh_token" not in stale.text
+    login_session.expire_all()
+    assert len(list(login_session.scalars(stmt).all())) == len(
+        sessions_after_ok
+    ), "la clave obsoleta no abre sesion"
+
+
 # ---------------------------------------------------------------- Contrato
 def test_openapi_includes_login_paths(login_client: TestClient):
     spec = login_client.get("/openapi.json").json()

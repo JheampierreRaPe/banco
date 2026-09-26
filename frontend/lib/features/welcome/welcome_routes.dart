@@ -5,9 +5,10 @@
 // `lib/core/router/app_router.dart`; el orquestador hace `...welcomeRoutes`.
 //
 // - `/welcome`: pantalla unica de onboarding (PageView de 3 slides,
-//   "Crear mi cuenta" -> `/kyc`, "Ya tengo cuenta · Restablecer PIN" ->
-//   `/pin-reset`; `/recovery` y `/recovery/otp` fueron retirados en F-T51
-//   y ya no existen). Es el path canonico; `/entry` queda retirado (F-T36):
+//   "Crear mi cuenta" -> `/kyc`, "Ya tengo cuenta · Iniciar sesión" ->
+//   `/login/device` (F-T57/F-T56); `/recovery` y `/recovery/otp` fueron
+//   retirados en F-T51 y ya no existen; `/pin-reset` sigue como opción
+//   secundaria "Olvidé mi PIN" desde el login). Es el path canonico; `/entry` queda retirado (F-T36):
 //   la guarda de `app_router.dart` redirige el legacy `/entry`.
 // - F-T37 (SCR-005 d5): la guarda depende solo de
 //   `SessionIdentityStore.userRef` (+ sesion); no hay store de bienvenida.

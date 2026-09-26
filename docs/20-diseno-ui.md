@@ -187,11 +187,11 @@ Cargando, vacio, error y contenido. Toda pantalla debe verse bien en los cuatro.
 
 | Campo | Ubicacion | Contenido |
 |---|---|---|
-| Flutter | `frontend/lib/theme/app_colors.dart` | Tokens de color. |
-| Flutter | `frontend/lib/theme/app_typography.dart` | Escala `TextTheme` (Inter). |
-| Flutter | `frontend/lib/theme/app_spacing.dart` | Espaciado y radios. |
-| Flutter | `frontend/lib/theme/app_theme.dart` | `ThemeData` (Material 3, `ColorScheme`). |
-| Flutter | `frontend/lib/components/` | Componentes reutilizables. |
+| Flutter | `frontend/lib/core/theme/app_colors.dart` | Tokens de color. |
+| Flutter | `frontend/lib/core/theme/app_typography.dart` | Escala `TextTheme` (Inter). |
+| Flutter | `frontend/lib/core/theme/app_spacing.dart` | Espaciado y radios. |
+| Flutter | `frontend/lib/core/theme/app_theme.dart` | `ThemeData` (Material 3, `ColorScheme`). |
+| Flutter | `frontend/lib/core/widgets/` | Componentes reutilizables (`app_button.dart`, `app_card.dart`, `app_text_field.dart`, `app_bottom_nav.dart`, ...). |
 | Panel web | `admin-web/` | Mismo token set (CSS variables / Tailwind). |
 
 ### 9.1 Mapeo token -> `ColorScheme` (Flutter)

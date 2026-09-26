@@ -45,7 +45,9 @@ para evitar bloquear operaciones legitimas sin revision.
 - `E6-T10` Generacion de ROS y bandeja del oficial de cumplimiento. *Backend/Frontend.*
 - `E6-T11` Pruebas: coincidencia exacta, difusa, falso positivo, registro de auditoria. *QA.*
 
-## HU22 - Notificaciones de Seguridad Multicanal (Should, 3 SP, Sprint 4)
+## HU22 - Notificaciones de Seguridad Multicanal (Should, 3 SP, Sprint 3)
+
+> Nota de alineacion (2026-09-25): el sprint canonico es el de `docs/14` (Sprint 3, rebalanceo).
 
 **Logica**
 1. Cada transaccion o login biometrico dispara una alerta push inmediata.

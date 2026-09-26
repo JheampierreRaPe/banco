@@ -51,8 +51,16 @@ eventos (`outbox`/`inbox`).
   `credentials.biometric_enabled` del `user_id` del JWT (idempotente;
   `401 NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; auditoria
   `auth.biometric_consent` sin PII) y `POST /auth/login/pin` devuelve
-  `biometric_enabled` vigente en su `data` para sincronizar el boton
+   `biometric_enabled` vigente en su `data` para sincronizar el boton
   biometrico del cliente (el facial sigue intacto).
+- **Rebind de clave en login con PIN (E1-T42, HU03/HU04):** `POST
+  /auth/login/pin` con `device_id` + `device_public_key` reescribe el
+  `public_key` del binding existente con la clave vigente (una sola fila,
+  `last_used_at` refrescado, `status` preservado: un `REVOKED` no se reactiva
+  por PIN; el alta sigue `ACTIVE`), best-effort en savepoint con auditoria
+  `auth.device_binding` (`registered`/`touched`/`failed`); la clave se persiste
+  tal cual (`hmac:`/PEM); sin cambio de request/response (el facial posterior
+  verifica contra la clave vigente con el unico `400 INVALID_LOGIN` generico).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
@@ -101,6 +109,36 @@ eventos (`outbox`/`inbox`).
   `auth.recovery_verify_max_requests` (60/10) —migracion `0019`, lectura
   best-effort con fallback a las constantes—; rigen `pin_login` (lockout),
   `otp_service` (reenvio/intentos) y `recovery`/`pin-reset` (rate-limits).
+- **Login en dispositivo nuevo, paso 1 (E1-T45, HU03/HU04):** `POST
+  /auth/login/device/request {email, doc_type: DNI|RUC, document_number}` (pre-sesion,
+  sin `userRef` local) verifica que email y documento son de la MISMA cuenta
+  `ACTIVE` (hash HMAC + `hmac.compare_digest`, sin cruzar `users.doc_type`) y
+  emite OTP proposito `LOGIN` solo por email (`otp_code_email`, best-effort;
+  cooldown reutiliza el `PENDING`); siempre 200 identico (anti-enumeracion),
+  `429 RATE_LIMITED` por `email+IP` ANTES de la existencia reutilizando la
+  ventana `auth.recovery_verify_*` con scope `"device_login"` (sin claves
+  nuevas); auditoria `auth.device_login_requested` sin PII; el paso 2 es
+   `E1-T46`; sin migracion (el proposito `LOGIN` ya existe).
+- **Login en dispositivo nuevo, paso 2 (E1-T46, HU03/HU04):** `POST
+  /auth/login/device/complete {email, doc_type: DNI|RUC, document_number, code,
+  pin, device_id, device_public_key[, platform, biometric_type]}` (pre-sesion)
+  valida OTP `LOGIN` + PIN en la MISMA transaccion (**PIN primero**: un OTP
+  valido con PIN erroneo no se consume; el fallo solo mueve el lockout del PIN,
+  5 fallos -> `423 ACCOUNT_LOCKED`), registra/actualiza el binding best-effort
+  en savepoint (alta `ACTIVE`; existente preserva `status`: un `REVOKED` no
+  revive pero la sesion abre igual, decision del dueno) y abre sesion
+  (`{access_token, refresh_token, session_id, user_ref, biometric_enabled}`);
+  unico `401 INVALID_LOGIN` generico (sin enumeracion), `429 RATE_LIMITED`
+  compartido con el paso 1 (ventana `auth.recovery_verify_*`, scope
+  `"device_login"`); PIN `4-6` digitos (patron `pin_reset`, `422` sin oraculo);
+  auditoria `auth.device_login` + `auth.device_binding` sin PII; evento
+  `auth.login_succeeded` via outbox; sin migracion.
+- **Perfil minimo para saludo/avatar (E1-T44, HU01/HU02):** `GET /api/v1/me`
+  (Bearer) devuelve solo el nombre del titular del token (`first_name`,
+  `last_name`, `business_name`/razon social; RUC juridica = nombres `""` +
+  razon social, el resto `business_name` `NULL`); jamas documento, correo,
+  telefono ni hashes (`401 NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; solo
+  lectura, sin migracion; el cliente solo presenta).
 - **Puede llamar a:** adaptador `KycProvider`, `notifications`, `audit`.
 - **Prohibido:** tocar cuentas, ledger o transacciones.
 
@@ -110,6 +148,12 @@ eventos (`outbox`/`inbox`).
 - **Dueno de:** `accounts`, `account_balances`, `beneficiaries`, `movements_view`,
   `daily_balance_snapshots`.
 - **Expone:** `/accounts*`, `/beneficiaries*`; eventos `account.created`, `beneficiary.saved`.
+- **Total consolidado (E1-T43, HU05):** `GET /api/v1/accounts/totals` (Bearer)
+  devuelve el total contable consolidado por moneda calculado en el servidor
+  desde la proyeccion `account_balances` (`total_minor = Σ(available + held)`
+  por moneda, misma fuente que `GET /accounts`; `primary_currency = "PEN"`,
+  `as_of = max(updated_at)`/`now(UTC)`); el cliente solo muestra el monto
+  (cliente delgado). Solo lectura, sin migracion.
 - **Consume:** `ledger.entry.posted` (para proyectar movimientos), `kyc.completed`.
 - **Puede llamar a:** `ledger` (crear subcuentas), `audit`.
 - **Prohibido:** escribir asientos; calcular saldos por fuera del ledger.
@@ -207,14 +251,17 @@ eventos (`outbox`/`inbox`).
 
 ## `admin`
 
-- **Responsabilidad:** gestion de usuarios internos, roles, permisos y parametros.
-- **Dueno de:** `parameters` (schema `config`), `role_permissions`.
-- **Expone:** `/admin/*`.
+- **Responsabilidad:** gestion de usuarios internos, roles y permisos; administra parametros via fachada (sin ser dueno del esquema).
+- **Dueno de:** `role_permissions` (el esquema y ciclo de vida de `config.parameters` es de `shared`/`config`; ver abajo).
+- **Expone:** `/admin/*` (incluye `GET/PUT /admin/parameters` como fachada de lectura/escritura auditada).
 - **Prohibido:** cambiar reglas sin dejar auditoria.
 
 ## `shared` / `config` (infraestructura)
 
 - **Responsabilidad:** `outbox`, `processed_events` (inbox), `idempotency_keys`, `parameters`.
+  **Decision (2026-09-25):** `shared`/`config` es la UNICA fuente duena del esquema y ciclo de
+  vida de `config.parameters` (definicion, migraciones, lectura best-effort con fallback);
+  `admin` solo lo expone via `/admin/parameters` con auditoria.
 - **Uso:** cualquier modulo publica por `outbox`; consume registrando en `processed_events`;
   el middleware de dinero usa `idempotency_keys`.
 - **Prohibido:** guardar logica de negocio aqui.

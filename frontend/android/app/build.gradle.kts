@@ -4,6 +4,23 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Firma release (scaffold, sin keystore en el repo):
+// - Si existe `frontend/android/key.properties` se usa para firmar release.
+// - Si no existe, release cae a la firma debug para no romper builds locales.
+// Como crear el keystore (local, nunca versionar):
+//   keytool -genkey -v -keystore frontend/android/app/upload-keystore.jks \
+//     -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+// Y crear `frontend/android/key.properties` con:
+//   storePassword=<password>
+//   keyPassword=<password>
+//   keyAlias=upload
+//   storeFile=app/upload-keystore.jks  (relativo a frontend/android/)
+val keystoreProperties = java.util.Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    java.io.FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
+}
+
 android {
     namespace = "com.bancaonline.banca_online"
     compileSdk = flutter.compileSdkVersion
@@ -29,6 +46,17 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         // Q-T11 (rama refactorizacion-ui): el APK debug convive con el APK de
         // otra rama instalado por el dueno. Solo debug lleva sufijo, por lo que
@@ -39,9 +67,13 @@ android {
             applicationIdSuffix = ".refactorui"
         }
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Con key.properties -> firma release real; sin el archivo ->
+            // firma debug para no romper `flutter run --release` en local.
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

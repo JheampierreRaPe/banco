@@ -104,10 +104,16 @@ class SecureSessionRepository extends ChangeNotifier
   }
 
   @override
-  Future<void> clearOnInvalidRefresh() async {
+  Future<void> clearOnInvalidRefresh({bool rotateDeviceKey = false}) async {
     await _storage.delete(accessTokenKey);
     await _storage.delete(refreshTokenKey);
-    await _storage.delete(deviceSecretKey);
+    // F-T53: la clave solo rota ante robo real (REFRESH_REUSED, con
+    // rotateDeviceKey: true). En fallos benignos (SESSION_INACTIVE,
+    // REFRESH_EXPIRED, INVALID_REFRESH, sin error.code o red/timeout) se
+    // conserva como en clearOnLogout para no desincronizar el binding.
+    if (rotateDeviceKey) {
+      await _storage.delete(deviceSecretKey);
+    }
     _accessToken = null;
     notifyListeners();
   }

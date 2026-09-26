@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +43,23 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _reject_default_jwt_secret_outside_local(self) -> "Settings":
+        """Rechaza el arranque si `jwt_secret` es vacio o el default fuera de `local`.
+
+        Solo compara contra el valor por defecto (`change-me`); nunca registra
+        ni expone el valor configurado. En `local` se permite el default para
+        no romper tests/desarrollo.
+        """
+        if str(self.app_env).lower() != "local" and (
+            not self.jwt_secret or self.jwt_secret.strip() == "" or self.jwt_secret == "change-me"
+        ):
+            raise ValueError(
+                "JWT_SECRET debe ser un secreto aleatorio/fuerte "
+                "cuando APP_ENV no es 'local' (el valor por defecto no es valido)."
+            )
+        return self
 
 
 @lru_cache

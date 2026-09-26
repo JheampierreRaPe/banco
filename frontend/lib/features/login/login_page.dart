@@ -204,7 +204,10 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
                 const SizedBox(height: AppSpacing.stackMd),
-                // Estado vacío: sin `userRef` no hay cuenta que abrir.
+                // Estado vacío: sin `userRef` no hay cuenta que abrir
+                // (F-T57): copy vigente + CTA a `/login/device`; el
+                // restablecimiento de PIN sigue como opción secundaria
+                // ("Olvidé mi PIN" -> `/pin-reset`).
                 if (widget.userRef.isEmpty)
                   Container(
                     key: const Key('login-empty'),
@@ -215,11 +218,19 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     child: Text(
                       'Falta identificar tu cuenta. Crea tu cuenta o '
-                      'recupera tu acceso para continuar.',
+                      'inicia sesión en este dispositivo para continuar.',
                       style: AppTypography.bodyMd.copyWith(
                         color: AppColors.onWarningContainer,
                       ),
                     ),
+                  ),
+                if (widget.userRef.isEmpty)
+                  const SizedBox(height: AppSpacing.stackSm),
+                if (widget.userRef.isEmpty)
+                  AppSecondaryButton(
+                    key: const Key('login-device-start'),
+                    label: 'Iniciar sesión en este dispositivo',
+                    onPressed: () => context.go('/login/device'),
                   ),
                 if (widget.userRef.isEmpty)
                   const SizedBox(height: AppSpacing.stackMd),
@@ -358,11 +369,12 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ],
                 const SizedBox(height: AppSpacing.stackSm),
-                // Enlace aditivo de restablecimiento de PIN (F-T43): navega
-                // a `/pin-reset` sin tocar la lógica de biometría/PIN.
+                // Enlace aditivo de restablecimiento de PIN (F-T43, relabel
+                // F-T57 "Olvidé mi PIN"): navega a `/pin-reset` sin tocar la
+                // lógica de biometría/PIN.
                 AppGhostButton(
                   key: const Key('login-pin-reset-link'),
-                  label: 'Restablecer PIN',
+                  label: 'Olvidé mi PIN',
                   onPressed: () => context.go('/pin-reset'),
                 ),
                 AppGhostButton(

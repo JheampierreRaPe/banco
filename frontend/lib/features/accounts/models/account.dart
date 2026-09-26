@@ -160,6 +160,82 @@ class MovementsPage {
   }
 }
 
+/// Consolidado por moneda del servidor (E1-T43, `GET /accounts/totals`).
+///
+/// `total_minor` (contable) = `available_minor + held_minor` de las cuentas
+/// del usuario en esa moneda. Dinero entero en centimos; nunca `float`.
+/// El cliente solo muestra estos valores, jamas los calcula (docs/19 §4).
+class CurrencyTotal {
+  const CurrencyTotal({
+    required this.currency,
+    required this.availableMinor,
+    required this.heldMinor,
+    required this.totalMinor,
+  });
+
+  final String currency;
+  final int availableMinor;
+  final int heldMinor;
+  final int totalMinor;
+
+  factory CurrencyTotal.fromJson(Map<String, dynamic> json) {
+    int minorOf(Object? value) {
+      if (value is int) return value;
+      if (value is num) return value.toInt();
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    return CurrencyTotal(
+      currency: json['currency']?.toString() ?? 'PEN',
+      availableMinor: minorOf(json['available_minor']),
+      heldMinor: minorOf(json['held_minor']),
+      totalMinor: minorOf(json['total_minor']),
+    );
+  }
+}
+
+/// Total contable consolidado por moneda (E1-T43, `GET /accounts/totals`).
+///
+/// Shape que viaja en `data`: `as_of` (ISO-8601), `primary_currency`
+/// (`"PEN"`) y `primary_total_minor` (consolidado PEN; 0 sin cuentas PEN).
+/// `asOf` se conserva como texto del servidor; la UI solo deriva `HH:MM`
+/// para el subtexto (presentacion, no calculo).
+class AccountsTotals {
+  const AccountsTotals({
+    required this.asOf,
+    required this.primaryCurrency,
+    required this.primaryTotalMinor,
+    required this.totals,
+  });
+
+  final String asOf;
+  final String primaryCurrency;
+  final int primaryTotalMinor;
+  final List<CurrencyTotal> totals;
+
+  factory AccountsTotals.fromJson(Map<String, dynamic> json) {
+    int minorOf(Object? value) {
+      if (value is int) return value;
+      if (value is num) return value.toInt();
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    final raw = json['totals'];
+    final totals = raw is List
+        ? raw
+            .whereType<Map>()
+            .map((e) => CurrencyTotal.fromJson(Map<String, dynamic>.from(e)))
+            .toList()
+        : <CurrencyTotal>[];
+    return AccountsTotals(
+      asOf: json['as_of']?.toString() ?? '',
+      primaryCurrency: json['primary_currency']?.toString() ?? 'PEN',
+      primaryTotalMinor: minorOf(json['primary_total_minor']),
+      totals: totals,
+    );
+  }
+}
+
 /// Resultado de exportar movimientos (HU05 CA-04).
 ///
 /// Contiene los bytes crudos + el nombre de archivo sugerido (de la cabecera

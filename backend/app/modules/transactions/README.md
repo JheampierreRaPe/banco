@@ -46,3 +46,23 @@ Contrato y fronteras: ver `docs/modules/README.md#transactions`.
   servicio).
 - Migracion: `migrations/versions/0002_transactions_persistence.py`.
 - Sin endpoints (capa de datos). Sin acceso a `ledger` ni `accounts`.
+
+## E5-T03 - Caso de uso central del motor (HU17)
+
+- `service/execute_transfer` atomico (solo `flush`, nunca `commit`): valida entrada pura,
+  crea `INITIATED` -> `VALIDATED` -> `AUTHORIZED`, bloquea saldos en orden estable via
+  `BalancePort`, retiene (`create_hold` + asiento `TRANSFER_HOLD` `2000-S -> 2100-S` por
+  fachada `ledger`), avanza a `FUNDS_HELD` -> `POSTED` y, si `settle=True`, liquida
+  (`TRANSFER_SETTLE` `2100-S -> 2000-D` + fee a `4000`) a `SETTLED`; sin fondos -> `REJECTED`.
+  Fallo tecnico: holds a `RELEASED` + `FAILED` best-effort y re-lanza (rollback total).
+
+## E5-T04 - Holds e idempotencia (HU17)
+
+- Holds `ACTIVE` -> `CAPTURED`/`RELEASED`/`EXPIRED` (`expire_due_holds`); idempotencia por
+  `idempotency_key` (`get_by_idempotency_key`: clave repetida retorna la operacion original).
+  Eventos solo por `outbox` (`funds.held`/`transfer.settled`/`funds.released`, import perezoso).
+
+## E5-T06 - Reverso autorizado (HU17)
+
+- Reverso como asiento compensatorio nuevo (nunca borra el original); transiciones
+  `POSTED`/`SETTLED`/`CONCILIATED` -> `REVERSED` con actor `SYSTEM`/`ANALYST` (ver E5-T01).

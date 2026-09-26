@@ -62,13 +62,19 @@ abstract class SessionRepository implements Listenable {
   Future<String> getOrCreateDeviceBindingKey() async =>
       deviceBindingKeyFromSecret(await getOrCreateDeviceSecret());
 
-  /// Limpieza local al cerrar sesion: borra tokens, CONSERVA el secreto de
-  /// dispositivo (identifica al dispositivo, no a la sesion: dispositivo
-  /// confiable HU04 y nonce F-T03 sin re-enrolar).
+  /// Limpieza local al cerrar sesion: borra tokens (access + refresh) y
+  /// notifica, CONSERVA el secreto de dispositivo (identifica al
+  /// dispositivo, no a la sesion: dispositivo confiable HU04 y nonce F-T03
+  /// sin re-enrolar). Equivale a `clearOnInvalidRefresh()` sin rotacion.
   Future<void> clearOnLogout();
 
-  /// Limpieza total al detectar refresh invalido/revocado (posible robo,
-  /// coherente con el backend que revoca toda la cadena ante reuso):
-  /// borra tokens Y el secreto de dispositivo (se regenera bajo demanda).
-  Future<void> clearOnInvalidRefresh();
+  /// Limpieza al fallar el refresh: borra SIEMPRE tokens (access + refresh)
+  /// y notifica (go_router redirige a `/login`); borra `device.secret`
+  /// (rotacion: se regenera bajo demanda) SOLO con `rotateDeviceKey: true`.
+  /// El default `false` es conservador/benigno: un fallo no confirmado como
+  /// robo (SESSION_INACTIVE, REFRESH_EXPIRED, INVALID_REFRESH, sin
+  /// `error.code` o fallo de red/timeout) nunca invalida el binding del
+  /// dispositivo. Solo `REFRESH_REUSED` (posible robo, el backend revoca
+  /// toda la cadena) justifica `rotateDeviceKey: true`.
+  Future<void> clearOnInvalidRefresh({bool rotateDeviceKey = false});
 }

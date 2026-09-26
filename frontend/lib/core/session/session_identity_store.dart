@@ -84,7 +84,7 @@ class SecureSessionIdentityStore extends ChangeNotifier
   late final SecureKeyValueStorage _storage;
   late final Uuid _uuid;
 
-  /// Claves en secure storage (ver docs/tasks/F-T20.md, modelo de datos).
+  /// Claves en secure storage (ver docs/tasks/archive/F-T20.md, modelo de datos).
   @visibleForTesting
   static const userRefKey = 'user.ref';
   @visibleForTesting

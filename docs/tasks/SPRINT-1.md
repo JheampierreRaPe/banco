@@ -1,5 +1,9 @@
 # Sprint 1 - Indice de briefs (fundacion)
 
+> Nota de archivo (2026-09-25): los briefs de este indice con `Estado: Hecho`
+> fueron verificados y movidos a `docs/tasks/archive/` (se citan aqui por ID,
+> sin cambios). En `docs/tasks/` quedan solo los no-`Hecho`.
+
 Objetivo del sprint: registro + KYC + activacion + login, cuentas y saldos, y el motor
 transaccional con ledger. Ver `docs/14-plan-sprints-y-ejecucion.md`.
 

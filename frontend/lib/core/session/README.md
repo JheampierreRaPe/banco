@@ -36,5 +36,9 @@ Keychain) se introduce cuando el backend la exija; por ahora no hay libs
 nativas pesadas.
 
 Ciclo de vida: el secreto se CONSERVA en `clearOnLogout` (identifica al
-dispositivo, no a la sesión) y se ROTA en `clearOnInvalidRefresh` (posible
-robo, coherente con el backend que revoca toda la cadena ante reuso).
+dispositivo, no a la sesión) y en `clearOnInvalidRefresh()` por defecto
+(fallos benignos: `SESSION_INACTIVE`, `REFRESH_EXPIRED`, `INVALID_REFRESH`,
+sin `error.code` o red/timeout). SOLO rota con
+`clearOnInvalidRefresh(rotateDeviceKey: true)`, que el `auth_interceptor`
+usa únicamente ante `REFRESH_REUSED` (posible robo, coherente con el backend
+que revoca toda la cadena ante reuso).

@@ -6,6 +6,7 @@ import '../../features/accounts/data/accounts_service.dart';
 import '../../features/activation/activation_routes.dart';
 import '../../features/activation/activation_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
+import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
 import '../../features/kyc/camera_frame_source.dart';
 import '../../features/kyc/kyc_dependencies.dart';
@@ -15,6 +16,7 @@ import '../../features/login/login_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
+import '../../features/profile/profile_routes.dart';
 import '../../features/splash/splash_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../http/api_client.dart';
@@ -29,11 +31,11 @@ import '../session/session_repository.dart';
 ///   flag local de bienvenida se eliminó (F-T37): ya no se lee ni se
 ///   escribe ninguna clave de primera vez.
 /// - Sin sesión con `userRef`: rutas públicas pre-login permitidas
-///   (`/splash`, `/welcome`, `/login`, `/kyc*`, `/activate`, `/pin-setup*`,
-///   `/registration-success`, `/pin-reset*`);
+///   (`/splash`, `/welcome`, `/login`, `/login/device`, `/kyc*`, `/activate`,
+///   `/pin-setup*`, `/registration-success`, `/pin-reset*`);
 ///   cualquier ruta privada -> `/login`.
-/// - Con sesión: `/home`; visitar `/splash`, `/welcome`, `/login` o el legacy
-///   `/entry` redirige a `/home`.
+/// - Con sesión: `/home`; visitar `/splash`, `/welcome`, `/login`,
+///   `/login/device` o el legacy `/entry` redirige a `/home`.
 /// - El legacy `/entry` (retirado en F-T36) redirige a `/welcome` sin sesión.
 /// - Cada feature expone `List<GoRoute> <feature>Routes`; este archivo es el
 ///   ÚNICO que las agrega al router (ningún feature toca el router global).
@@ -46,9 +48,14 @@ import '../session/session_repository.dart';
 ///   sesión + identidad para que guardar el `userRef` (paso success del
 ///   registro, F-T39) reevalúe la guarda sin navegación manual.
 bool _isPublicLocation(String location) {
-  return location == '/splash' ||
+  return       location == '/splash' ||
       location == '/welcome' ||
       location == '/login' ||
+      // Entrada "iniciar sesion en este dispositivo" (F-T57, plomeria):
+      // publica pre-login sin `userRef` (igual que `/pin-reset*`); la
+      // pantalla del flujo de 3 pasos la monta F-T56 sobre esta ruta.
+      location == '/login/device' ||
+      location.startsWith('/login/device/') ||
       location == '/activate' ||
       // Cierre del registro F-T39 (PIN -> OTP -> success): todas las
       // sub-rutas de `/pin-setup` + el paso success son publicas pre-login.
@@ -67,7 +74,10 @@ bool _isPublicLocation(String location) {
 }
 
 bool _isEntryLocation(String location) {
-  return location == '/welcome' || location == '/login';
+  return location == '/welcome' ||
+      location == '/login' ||
+      location == '/login/device' ||
+      location.startsWith('/login/');
 }
 
 GoRouter buildRouter(
@@ -96,6 +106,9 @@ GoRouter buildRouter(
   // compartido, asi que cablea aqui la fabrica que resuelven `homeRoutes`
   // y `accountsRoutes`. Solo cableado: la guarda F-T37 no se toca.
   accountsServiceFactory = () => AccountsService(api: client);
+  // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
+  // cableado; la guarda F-T37 no se toca.
+  homeProfileServiceFactory = () => HttpProfileService(api: client);
   loginRouteDepsFactory = () => LoginRouteDeps(
         api: client,
         session: session,
@@ -107,6 +120,25 @@ GoRouter buildRouter(
         api: client,
         session: session,
         identity: identityStore,
+      );
+  // Login en este dispositivo (F-T56, flujo email+DNI -> OTP -> PIN sobre
+  // `/login/device`, plomeria publica F-T57): mismo `ApiClient` compartido +
+  // sesion + identidad. Solo cableado: la guarda F-T37/F-T57 no se toca.
+  deviceLoginRouteDepsFactory = () => DeviceLoginRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+      );
+  // Perfil / opciones de usuario (F-T52): ruta privada con el `ApiClient`
+  // compartido (Bearer para `POST /auth/biometric/consent`), la sesion
+  // (logout via `SessionService`), la identidad (`biometricEnabled`, F-T49)
+  // y el lector biometrico del SO. Solo cableado: la guarda F-T37 no se
+  // toca (`/profile` no es publica, exige sesion).
+  profileRouteDepsFactory = () => ProfileRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+        reader: SystemBiometricReader(),
       );
   return GoRouter(
     initialLocation: initialLocation,
@@ -143,6 +175,7 @@ GoRouter buildRouter(
       ...pinResetRoutes,
       ...accountsRoutes,
       ...homeRoutes,
+      ...profileRoutes,
     ],
   );
 }

@@ -4,7 +4,7 @@ Revision ID: 0018_users_email_not_null
 Revises: 0017_identity_access_recovery
 Create Date: 2026-09-22
 
-Fuente: `docs/tasks/E1-T34.md` (decision del dueno SCR-005, `docs/18#4`:
+Fuente: `docs/tasks/archive/E1-T34.md` (decision del dueno SCR-005, `docs/18#4`:
 "OTP solo email"). `identity.users.email` hoy es nullable (migracion
 `0012_identity_core` y modelo `User.email`); tras este cambio el modelo ORM
 es `nullable=False` (sin drift: `alembic check` limpio).

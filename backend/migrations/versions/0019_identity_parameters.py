@@ -4,7 +4,7 @@ Revision ID: 0019_identity_parameters
 Revises: 0018_users_email_not_null
 Create Date: 2026-09-22
 
-Fuente: `docs/tasks/E1-T34.md#modelo-de-datos` (regla de oro 6: toda regla
+Fuente: `docs/tasks/archive/E1-T34.md#modelo-de-datos` (regla de oro 6: toda regla
 variable va en `config.parameters`). Valores = constantes actuales del
 codigo, para migrar sin sorpresas (el comportamiento no cambia al aplicar):
 

@@ -34,8 +34,11 @@ import '../../core/widgets/error_view.dart';
 import '../biometrics/biometric_reader.dart';
 import '../biometrics/biometric_service.dart';
 import '../biometrics/login_controller.dart' as bio;
+import 'device_login_controller.dart';
+import 'device_login_service.dart';
 import 'login_controller.dart';
 import 'login_page.dart';
+import 'presentation/device_login_page.dart';
 
 /// Dependencias que el arranque inyecta a la ruta `/login`.
 class LoginRouteDeps {
@@ -83,9 +86,40 @@ LoginRouteDepsFactory? loginRouteDepsFactory;
 @visibleForTesting
 bool debugDisableLoginAutoTick = false;
 
+/// Dependencias que el arranque inyecta a la ruta `/login/device` (F-T56).
+class DeviceLoginRouteDeps {
+  DeviceLoginRouteDeps({
+    required this.api,
+    required this.session,
+    this.identity,
+    this.platform,
+    this.biometricType,
+  });
+
+  final ApiClient api;
+  final SessionRepository session;
+
+  /// Store F-T20 (`userRef`/`device_id`). Si es `null` se usa
+  /// [sessionIdentityStoreFactory] (o se omite el guardado best-effort).
+  final SessionIdentityStore? identity;
+
+  /// `android`/`ios`; `null` = resolver del SO en el controlador.
+  final String? platform;
+
+  /// `FACE`/`FINGERPRINT` si se conoce; `null` = omitir.
+  final String? biometricType;
+}
+
+/// Fabrica de dependencias de `/login/device` (en tests se asigna un fake).
+typedef DeviceLoginRouteDepsFactory = DeviceLoginRouteDeps Function();
+
+DeviceLoginRouteDepsFactory? deviceLoginRouteDepsFactory;
+
 /// Rutas del feature `login` (ver convencion en `features/README.md`).
 ///
 /// - `/login?userRef=<id>&deviceId=<id>`: pantalla de login biometrico + PIN.
+/// - `/login/device`: flujo "iniciar sesion en este dispositivo" (F-T56:
+///   email+DNI -> OTP -> PIN); publico pre-login sin `userRef` (F-T57).
 final List<GoRoute> loginRoutes = [
   GoRoute(
     path: '/login',
@@ -122,6 +156,34 @@ final List<GoRoute> loginRoutes = [
         deviceId: state.uri.queryParameters['deviceId'] ?? deps.deviceId,
         autoTick: !debugDisableLoginAutoTick,
       );
+    },
+  ),
+  GoRoute(
+    // Flujo F-T56 (email+DNI -> OTP -> PIN): pagina/controlador reales;
+    // publico pre-login sin `userRef` (F-T57), cliente delgado, sin PII en
+    // logs ni en la ruta.
+    path: '/login/device',
+    builder: (context, state) {
+      final factory = deviceLoginRouteDepsFactory;
+      if (factory == null) {
+        return Scaffold(
+          appBar:
+              AppBar(title: const Text('Inicia sesión en este dispositivo')),
+          body: const ErrorView(
+            message: 'El inicio de sesión en este dispositivo no está '
+                'disponible en este momento. Inténtalo más tarde.',
+          ),
+        );
+      }
+      final deps = factory();
+      final controller = DeviceLoginController(
+        service: HttpDeviceLoginService(api: deps.api),
+        session: deps.session,
+        identity: deps.identity ?? sessionIdentityStoreFactory?.call(),
+        platform: deps.platform,
+        biometricType: deps.biometricType,
+      );
+      return DeviceLoginPage(controller: controller);
     },
   ),
 ];

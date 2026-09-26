@@ -137,9 +137,19 @@ class _Harness {
           ),
         ),
         GoRoute(
+          path: '/login/device',
+          builder: (context, state) =>
+              const Scaffold(body: Text('device-ok')),
+        ),
+        GoRoute(
           path: '/home',
           builder: (context, state) =>
               const Scaffold(body: Text('home-ok')),
+        ),
+        GoRoute(
+          path: '/pin-reset',
+          builder: (context, state) =>
+              const Scaffold(body: Text('pin-reset-ok')),
         ),
       ],
     );
@@ -251,7 +261,7 @@ void main() {
     expect(h.session.isAuthenticated, isFalse);
   });
 
-  testWidgets('sin userRef muestra el estado vacio', (tester) async {
+  testWidgets('sin userRef muestra el estado vacio (F-T57)', (tester) async {
     final h = _Harness(
       reader: FakeBiometricReader(available: false),
       userRef: '',
@@ -259,6 +269,32 @@ void main() {
     await _pump(tester, h);
 
     expect(find.byKey(const Key('login-empty')), findsOneWidget);
+    // Copy obsoleto retirado (F-T51) y CTA vigente a `/login/device`.
+    expect(find.textContaining('recupera tu acceso'), findsNothing);
+    expect(
+      find.textContaining('inicia sesión en este dispositivo'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('login-device-start')), findsOneWidget);
+    expect(
+      find.text('Iniciar sesión en este dispositivo'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('F-T57: el CTA del estado vacio navega a /login/device',
+      (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      userRef: '',
+    );
+    await _pump(tester, h);
+
+    await tester.ensureVisible(find.byKey(const Key('login-device-start')));
+    await tester.tap(find.byKey(const Key('login-device-start')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('device-ok'), findsOneWidget);
   });
 
   testWidgets('inactividad expira la sesion (timeout corto inyectado)',
@@ -287,7 +323,7 @@ void main() {
     expect(h.session.isAuthenticated, isFalse);
   });
 
-  testWidgets('F-T51: sin enlace de recovery; conserva restablecer PIN',
+  testWidgets('F-T51/F-T57: sin enlace de recovery; "Olvidé mi PIN" a /pin-reset',
       (tester) async {
     final h = _Harness(reader: FakeBiometricReader(available: false));
     await _pump(tester, h);
@@ -295,9 +331,15 @@ void main() {
     // El feature `recovery` fue retirado: ya no hay `login-recovery-link`.
     expect(find.byKey(const Key('login-recovery-link')), findsNothing);
     expect(find.text('Recuperar acceso'), findsNothing);
-    // El restablecimiento de PIN sigue siendo el camino vigente.
+    expect(find.textContaining('recupera tu acceso'), findsNothing);
+    // El restablecimiento de PIN sigue siendo la opción secundaria vigente.
     expect(find.byKey(const Key('login-pin-reset-link')), findsOneWidget);
-    expect(find.text('Restablecer PIN'), findsOneWidget);
+    expect(find.text('Olvidé mi PIN'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const Key('login-pin-reset-link')));
+    await tester.tap(find.byKey(const Key('login-pin-reset-link')));
+    await tester.pumpAndSettle();
+    expect(find.text('pin-reset-ok'), findsOneWidget);
   });
 
   testWidgets('F-T49: con consentimiento muestra el boton biometrico',

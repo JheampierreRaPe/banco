@@ -30,7 +30,7 @@
 | Modulo | Pantallas |
 |---|---|
 | Onboarding | Bienvenida, captura de documento, guia de liveness por pasos, confirmacion de datos, OTP, creacion de PIN. |
-| Sesion | Login biometrico, login PIN, restablecer PIN (flujo `/pin-reset`), cuenta bloqueada, cerrar sesion (recuperar acceso `/recovery` retirado en F-T51). |
+| Sesion | Login biometrico, login PIN, entrada "iniciar sesión en este dispositivo" (ruta pública `/login/device`, F-T57; flujo de 3 pasos F-T56), restablecer PIN como opción secundaria "Olvidé mi PIN" (flujo `/pin-reset`), cuenta bloqueada, cerrar sesion (recuperar acceso `/recovery` retirado en F-T51). |
 | Inicio | Dashboard de cuentas, detalle de cuenta, movimientos, filtros, exportar. |
 | Transferencias | Seleccion de origen/destino, monto/concepto, agenda de beneficiarios, confirmacion, autorizacion biometrica, comprobante. |
 | Creditos | Simulador, solicitud/consentimiento, estado del expediente, contrato, firma biometrica, cronograma, pago de cuota. |

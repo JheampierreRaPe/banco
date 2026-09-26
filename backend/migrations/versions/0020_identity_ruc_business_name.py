@@ -4,7 +4,7 @@ Revision ID: 0020_identity_ruc_business_name
 Revises: 0019_identity_parameters
 Create Date: 2026-09-24
 
-Fuente: `docs/tasks/E1-T36.md` (decision del dueno: RUC = opcion B = soporte
+Fuente: `docs/tasks/archive/E1-T36.md` (decision del dueno: RUC = opcion B = soporte
 REAL de persona juridica, no solo-consulta). Cambios:
 
 - Nueva columna `identity.users.business_name VARCHAR(150) NULL` (razon

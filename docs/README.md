@@ -27,7 +27,7 @@ tarea, entender que debe hacer, por que, con que reglas y como verificar que que
 | Frontend interno | **Panel web admin** (operaciones, fraude, cumplimiento, auditoria, creditos) |
 | Arquitectura | **Monolito modular**, con cada modulo disenado para poder extraerse y publicarse como microservicio reutilizable en otro repositorio. |
 | KYC | Se consume el microservicio existente por HTTP; no se reimplementa. |
-| Plan de sprints | **4 sprints / 12 semanas** (se unifica la documentacion dispersa). |
+| Plan de sprints | **4 sprints / 18 semanas totales** (canon `docs/14`: 12 de desarrollo + preparacion/estabilizacion/cierre). |
 | Dinero | Simulado, en **enteros (centimos)**, jamas decimal flotante. |
 | Versionado visible de la app | Fuente unica `kAppVersion` (Dart + `--dart-define=APP_VERSION`, default `1.1.010`) mostrada en entry/login/crear cuenta. Esquema: arranca en `1.1.010`; `+0.0.001` por build mientras se corrige la camara KYC; al pasar a otros apartados del Sprint 1 en Flutter -> `0.1.0`; al acabar el sprint -> `1.0.0`. Detalle en `18` (§8). |
 | Entrega | Esta carpeta `docs/`. |

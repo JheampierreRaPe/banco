@@ -13,9 +13,10 @@ import '../../core/widgets/app_version_label.dart';
 /// indicador de pagina y dos acciones:
 ///
 /// - Primaria "Crear mi cuenta" -> `/kyc`.
-/// - Secundaria "Ya tengo cuenta · Restablecer PIN" -> `/pin-reset` (única
-///   vía de autoservicio vigente para una cuenta existente sin `userRef`;
-///   el flujo "recupera mi acceso" (`/recovery`) fue retirado en F-T51).
+/// - Secundaria "Ya tengo cuenta · Iniciar sesión" -> `/login/device`
+///   (entrada al flujo "iniciar sesión en este dispositivo", F-T57/F-T56;
+///   el restablecimiento de PIN sigue como opción secundaria "Olvidé mi
+///   PIN" -> `/pin-reset` desde el login).
 ///
 /// Cliente delgado: solo presenta y navega; sin logica de negocio, red,
 /// estado ni persistencia. Estilos solo con tokens/componentes de F-T34
@@ -191,8 +192,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
               const SizedBox(height: AppSpacing.stackSm),
               AppSecondaryButton(
                 key: const Key('onboarding-cta-secondary'),
-                label: 'Ya tengo cuenta · Restablecer PIN',
-                onPressed: () => context.go('/pin-reset'),
+                label: 'Ya tengo cuenta · Iniciar sesión',
+                onPressed: () => context.go('/login/device'),
               ),
               const SizedBox(height: AppSpacing.stackMd),
               // Version visible del build (F-T30): discreta, al pie.

@@ -1,7 +1,7 @@
 # frontend — Banca Online (Flutter, F-T01)
 
 App cliente de banca (Android/iOS) y vistas de comercio. Base creada en `F-T01`
-(`docs/tasks/F-T01.md`): tema Material 3, `go_router` con guarda de sesion,
+(`docs/tasks/archive/F-T01.md`): tema Material 3, `go_router` con guarda de sesion,
 `dio` con interceptores y manejo estandar de errores. Sin logica de negocio.
 
 - Stack: Flutter/Dart, `go_router`, `dio`, `uuid`.

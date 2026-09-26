@@ -72,6 +72,41 @@ void main() {
     expect(accounts[1].accountNumberMasked, '****5678');
   });
 
+  test('getAccountsTotals parsea el total del servidor (E1-T43, F-T54)',
+      () async {
+    final api = _Stub(
+      (o) => Response(
+        requestOptions: o,
+        statusCode: 200,
+        data: {
+          'data': {
+            'as_of': '2026-08-24T14:32:00Z',
+            'primary_currency': 'PEN',
+            'primary_total_minor': 170000,
+            'totals': [
+              {
+                'currency': 'PEN',
+                'available_minor': 162000,
+                'held_minor': 8000,
+                'total_minor': 170000,
+              },
+            ],
+          },
+          'meta': {'total': 1, 'request_id': 'req-t'},
+        },
+      ),
+    ).client();
+
+    final totals = await AccountsService(api: api).getAccountsTotals();
+
+    // El monto viene del servidor tal cual (el cliente no suma nada).
+    expect(totals.primaryCurrency, 'PEN');
+    expect(totals.primaryTotalMinor, 170000);
+    expect(totals.asOf, '2026-08-24T14:32:00Z');
+    expect(totals.totals, hasLength(1));
+    expect(totals.totals.single.totalMinor, 170000);
+  });
+
   test('getAccountDetail muestra disponible/retenido/contable + estado',
       () async {
     final api = _Stub(

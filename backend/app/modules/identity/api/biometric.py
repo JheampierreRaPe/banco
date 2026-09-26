@@ -28,6 +28,7 @@ FastAPI (`response_model`).
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import jwt
@@ -44,6 +45,8 @@ from app.modules.identity.schemas.biometric_consent import (
 from app.modules.identity.service import biometric_consent as biometric_consent_service
 
 router = APIRouter(tags=["identity"])
+
+logger = logging.getLogger(__name__)
 
 
 def get_current_user_id(authorization: str | None = Header(default=None)) -> uuid.UUID:
@@ -63,11 +66,11 @@ def get_current_user_id(authorization: str | None = Header(default=None)) -> uui
     try:
         payload = decode_token(token)
     except jwt.PyJWTError as exc:
+        logger.debug("rechazo JWT biometric: %s", type(exc).__name__)
         raise AppError(
             code="NOT_AUTHENTICATED",
             message="Token invalido o expirado",
             status_code=401,
-            details={"reason": str(exc)},
         ) from exc
     try:
         return uuid.UUID(str(payload.get("sub")))

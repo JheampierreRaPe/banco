@@ -73,28 +73,63 @@ void main() {
     expect(first, isNot(contains(secret)));
   });
 
-  test('binding key rota si clearOnInvalidRefresh borra el device secret',
+  test('binding key se conserva por defecto en clearOnInvalidRefresh',
       () async {
     final repo = SecureSessionRepository(storage: InMemorySecureStorage());
     final before = await repo.getOrCreateDeviceBindingKey();
 
+    // F-T53: el default es benigno (rotateDeviceKey: false) y conserva.
     await repo.clearOnInvalidRefresh();
+
+    final after = await repo.getOrCreateDeviceBindingKey();
+    expect(after, before);
+    expect(after, matches(RegExp(r'^hmac:[0-9a-f]{64}$')));
+  });
+
+  test('binding key rota solo con rotateDeviceKey: true', () async {
+    final repo = SecureSessionRepository(storage: InMemorySecureStorage());
+    final before = await repo.getOrCreateDeviceBindingKey();
+
+    await repo.clearOnInvalidRefresh(rotateDeviceKey: true);
 
     final after = await repo.getOrCreateDeviceBindingKey();
     expect(after, isNot(before));
     expect(after, matches(RegExp(r'^hmac:[0-9a-f]{64}$')));
   });
 
-  test('clearOnInvalidRefresh borra todo y rota el device secret', () async {
+  test('clearOnInvalidRefresh por defecto conserva el device secret', () async {
     final storage = InMemorySecureStorage();
     final repo = SecureSessionRepository(storage: storage);
 
     final before = await repo.getOrCreateDeviceSecret();
     await repo.saveSession(accessToken: 'a', refreshToken: 'r');
+    var notified = 0;
+    repo.addListener(() => notified++);
     await repo.clearOnInvalidRefresh();
 
     expect(repo.isAuthenticated, isFalse);
     expect(await repo.readRefreshToken(), isNull);
+    expect(notified, 1);
+    // Fallo benigno: la clave se conserva (mismo secreto).
+    expect(
+        storage.debugValues[SecureSessionRepository.deviceSecretKey], before);
+    expect(await repo.getOrCreateDeviceSecret(), before);
+  });
+
+  test('clearOnInvalidRefresh con rotateDeviceKey: true rota el secret',
+      () async {
+    final storage = InMemorySecureStorage();
+    final repo = SecureSessionRepository(storage: storage);
+
+    final before = await repo.getOrCreateDeviceSecret();
+    await repo.saveSession(accessToken: 'a', refreshToken: 'r');
+    var notified = 0;
+    repo.addListener(() => notified++);
+    await repo.clearOnInvalidRefresh(rotateDeviceKey: true);
+
+    expect(repo.isAuthenticated, isFalse);
+    expect(await repo.readRefreshToken(), isNull);
+    expect(notified, 1);
     expect(
         storage.debugValues.containsKey(
             SecureSessionRepository.deviceSecretKey),

@@ -56,10 +56,17 @@ Error (estilo problem+json):
 }
 ```
 
-Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`,
-`LIMIT_EXCEEDED`, `DUPLICATE_REQUEST`, `ACCOUNT_BLOCKED`, `BENEFICIARY_NOT_FOUND`,
-`KYC_REQUIRED`, `BIOMETRIC_REQUIRED`, `BIOMETRIC_FAILED`, `QR_EXPIRED`, `QR_TAMPERED`,
-`RATE_EXPIRED`, `RISK_BLOCKED`, `SCREENING_HIT`, `NOT_AUTHORIZED`, `NOT_FOUND`.
+Codigos de error reales (verificados en codigo, 2026-09-25):
+`ACCOUNT_LOCKED`, `DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_DOCUMENT`,
+`DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`, `EXPORT_FORMAT_NOT_SUPPORTED` (501),
+`INVALID_CREDENTIALS`, `INVALID_LOGIN`, `INVALID_OTP`, `INVALID_PIN_FORMAT`,
+`INVALID_PIN_RESET`, `INVALID_REFRESH`, `INVALID_SETUP_CODE`, `KYC_UNAVAILABLE`,
+`NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`, `PIN_ALREADY_SET`, `PIN_REQUIRED`,
+`RATE_LIMITED`, `REFRESH_EXPIRED`, `REFRESH_REUSED`, `RESEND_LIMIT`, `SESSION_INACTIVE`,
+`VALIDATION_ERROR`.
+Fuentes: `backend/app/modules/identity/api/*` (+ `service/`), `backend/app/modules/accounts/api/__init__.py`
+(`EXPORT_FORMAT_NOT_SUPPORTED`, `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`,
+`VALIDATION_ERROR`). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
 
 ## 5. Codigos HTTP
 
@@ -96,10 +103,11 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 | POST | `/auth/biometric/consent` | Fija `credentials.biometric_enabled` del usuario del JWT (E1-T39, Bearer). |
 | POST | `/auth/refresh` | Renueva tokens. |
 | POST | `/auth/logout` | Revoca la sesion. |
-| POST | `/auth/recover` | Recuperacion con dispositivo confiable + OTP (HU04). |
 | POST | `/auth/recovery/request` | Solicita OTP de recuperacion por email, siempre 200 sin enumerar (E1-T31; el OTP emitido lo consume `POST /auth/pin-reset`). |
 | POST | `/auth/pin-reset` | Fija el PIN con `email + documento (DNI\|RUC) + OTP` y devuelve `{user_ref, pin_set: true}` sin abrir sesion (E1-T34/SCR-005; E1-T40: `doc_type` con default `DNI`; consumen `F-T34`..`F-T43`). |
-| GET | `/me` | Perfil y productos del usuario. |
+| POST | `/auth/login/device/request` | Paso 1 del login en dispositivo nuevo: `email + documento (DNI\|RUC)` -> OTP `LOGIN` solo por email, siempre 200 sin enumerar (E1-T45; lo consume `POST /auth/login/device/complete` en E1-T46; consumen `F-T56`/`F-T57`). |
+| POST | `/auth/login/device/complete` | Paso 2 del login en dispositivo nuevo: OTP `LOGIN` + PIN de la misma cuenta -> binding + sesion (`{access_token, refresh_token, session_id, user_ref, biometric_enabled}`; E1-T46; consumen `F-T56`/`F-T57`). Errores: unico `401 INVALID_LOGIN` generico (cuenta/documento/OTP/PIN invalidos, sin enumeracion), `423 ACCOUNT_LOCKED`, `429 RATE_LIMITED` (ventana por `email+IP` compartida con el paso 1), `422` de formato. |
+| GET | `/me` | Nombre del titular autenticado para saludo/avatar (E1-T44, Bearer; ver decision abajo). |
 
 > Decision E1-T41 (retiro de `verify`, item 4 del dueno): `POST
 > /auth/recovery/verify` fue ELIMINADO (la UI "recupera mi acceso" no tenia
@@ -112,8 +120,13 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > `verify`); `RATE_LIMITED` de `request` y la ventana compartida de
 > verificacion (que ahora rige a `/auth/pin-reset`) se conservan.
 >
+> Nota de alineacion (2026-09-25): `POST /auth/recover` queda ELIMINADO del catalogo
+> (diferido, sin implementar). El flujo vigente de recuperacion es `POST
+> /auth/recovery/request` + `POST /auth/pin-reset`; el antiguo `verify` se retiro en
+> SCR-005/E1-T41.
+>
 > Decision E1-T31: el `/auth/recover` canonico de HU04 (dispositivo confiable +
-> `nonce` firmado + cambio de credencial) queda como esta. El endpoint nuevo
+> `nonce` firmado + cambio de credencial) queda diferido (sin implementar). El endpoint nuevo
 > es pre-sesion para el caso "sin `user_ref` local" (reinstalar/borrar datos):
 > `request {email}` -> `data: {accepted: true, ttl_seconds, resend_wait_seconds}`
 > (constantes globales, identico exista o no el email; `429 RATE_LIMITED` por
@@ -185,6 +198,60 @@ Codigos de error de negocio (ejemplos): `VALIDATION_ERROR`, `INSUFFICIENT_FUNDS`
 > `expires_in` y errores intactos) para que el cliente sincronice el boton
 > biometrico. `POST /auth/login/facial` no cambia su contrato: el flag solo
 > lo habilita/revoca.
+>
+> Decision E1-T42: `POST /auth/login/pin` con `device_id` +
+> `device_public_key` reescribe el `public_key` del binding existente con la
+> clave vigente (rebind best-effort en savepoint; una sola fila por
+> `user_id`+`device_id`, `last_used_at` refrescado, `status` preservado: un
+> `REVOKED` no se reactiva; el alta sigue `ACTIVE`; auditoria
+> `auth.device_binding` con `registered`/`touched`/`failed`). La clave se
+> persiste tal cual (`hmac:`/PEM, sin validar formato). Sin cambio de
+> request/response: el `POST /auth/login/facial` posterior verifica la firma
+> contra la clave vigente (cualquier desajuste sigue `400 INVALID_LOGIN`
+> generico).
+>
+> Decision E1-T46: `POST /auth/login/device/complete` cierra el login sin
+> `userRef` (paso 2 de E1-T45): request `{email, doc_type: DNI|RUC,
+> document_number, code: 6 digitos, pin: 4-6 digitos, device_id,
+> device_public_key[, platform, biometric_type]}` -> `200 {access_token,
+> refresh_token, session_id, user_ref, biometric_enabled}` (el cliente persiste
+> el `userRef`; la sesion lleva el `device_id`). Atomico PIN-primero: el PIN se
+> verifica antes de consumir el OTP (un OTP valido con PIN erroneo NO se quema;
+> el fallo solo mueve el lockout del PIN, 5 fallos -> `423 ACCOUNT_LOCKED`).
+> Binding best-effort en savepoint (alta `ACTIVE`; existente preserva `status`:
+> un `REVOKED` no revive pero la sesion abre igual). Unico `401 INVALID_LOGIN`
+> generico (sin enumeracion); `429 RATE_LIMITED` compartido con el paso 1
+> (ventana `auth.recovery_verify_*`, scope `"device_login"`); `422` de formato
+> (PIN `4-6` digitos, patron `pin_reset`, sin oraculo). Sin migracion.
+>
+> Decision E1-T44: `GET /me` (Bearer) devuelve el minimo para el saludo/avatar
+> del dashboard: `200 {"data": {"first_name": <str>, "last_name": <str>,
+> "business_name": <str|null>}, "meta": {"request_id": ...}}` con los valores
+> reales de `identity.users` del `user_id` del JWT (`sub` via
+> `core.security.decode_token`, 05#2; nunca `user_id` por query/path).
+> RUC de persona juridica: nombres `""` + razon social en `business_name`
+> (E1-T36); el resto: `business_name` `null`. No expone documento, correo,
+> telefono, estado, roles ni hashes. Errores: `401 NOT_AUTHENTICATED` (sin
+> cabecera/`Bearer` invalido/`sub` no UUID), `404 NOT_FOUND` neutro (usuario
+> inexistente); sin body (sin 422). Solo lectura, sin migracion.
+>
+> Decision E1-T45: `POST /auth/login/device/request` (pre-sesion, paso 1 del
+> login en dispositivo nuevo, sin `userRef` local) separa LOGIN de RESTABLECER
+> PIN: request `{email, doc_type: DNI|RUC (default DNI), document_number}` ->
+> `200 {"data": {"accepted": true, "ttl_seconds", "resend_wait_seconds"},
+> "meta": {"request_id": ...}}` (constantes globales, identico exista o no la
+> cuenta, coincida o no el documento o sea o no `ACTIVE`; `422` estandar de
+> FastAPI para email/documento malformados). Solo si `email` y documento
+> pertenecen a la MISMA cuenta `ACTIVE` (email normalizado + hash HMAC
+> `hash_document_number` comparado con `hmac.compare_digest`, sin cruzar
+> `users.doc_type`) emite OTP proposito `LOGIN` (ya existe en el enum, sin
+> migracion) entregado SOLO por email (`otp_code_email`, best-effort); en
+> cooldown reutiliza el `PENDING` vigente sin duplicar ni re-notificar.
+> Rate-limit por `email+IP` ANTES de resolver existencia (`429 RATE_LIMITED`):
+> REUTILIZA la ventana `auth.recovery_verify_*` con scope propio
+> `"device_login"` (sin claves nuevas en `config.parameters`, regla de oro 6).
+> Auditoria `auth.device_login_requested` sin PII. El OTP lo consume el paso 2
+> (`POST /auth/login/device/complete`, E1-T46); `pin-reset` no es base.
 
 Detalle del flujo KYC (`identity`, E1-T29):
 
@@ -248,10 +315,26 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | Metodo | Ruta | Proposito |
 |---|---|---|
 | GET | `/accounts` | Consolidado de cuentas y saldos. |
+| GET | `/accounts/totals` | Total contable consolidado por moneda (E1-T43, HU05; Bearer). |
 | GET | `/accounts/{id}` | Detalle con disponible/retenido/contable. |
-| GET | `/accounts/{id}/movements` | Movimientos paginados. |
-| GET | `/accounts/{id}/movements/export` | Export PDF/Excel. |
+| GET | `/accounts/{id}/movements` | Movimientos paginados de `movements_view` (filtros: `date_from`/`date_to` fecha valor ISO y `direction` `DEBIT`/`CREDIT`, opcionales). |
+| GET | `/accounts/{id}/movements/export` | Export de movimientos (MVP: CSV; `xlsx`/`pdf` solo si hay backend disponible, si no `501 EXPORT_FORMAT_NOT_SUPPORTED`). Filtros: `date_from`/`date_to` (fecha valor ISO; obligatorios en export) y `direction` (`DEBIT`/`CREDIT`, opcional). |
 | GET/POST/PUT/DELETE | `/beneficiaries` | Gestion de beneficiarios frecuentes. |
+
+> Contrato E1-T43 `GET /accounts/totals` (Bearer; HU05, hero `SALDO TOTAL` del
+> dashboard): `200 {"data": {"as_of": "<ISO-8601>", "primary_currency": "PEN",
+> "primary_total_minor": <int>, "totals": [{"currency": "PEN",
+> "available_minor": <int>, "held_minor": <int>, "total_minor": <int>}, ...]},
+> "meta": {"total": <n_monedas>}}`. Total contable consolidado por moneda
+> calculado EN EL SERVIDOR desde la proyeccion `accounts.account_balances`
+> (`total_minor = Σ(available_minor + held_minor)` por moneda; misma fuente que
+> `GET /accounts`, para que cuadre con la lista); el cliente solo muestra el
+> monto (cliente delgado, sin sumar). `primary_total_minor` es el consolidado
+> PEN (0 si no hay cuentas PEN); `as_of` = `max(updated_at)` de las filas
+> consideradas (`now(UTC)` si no hay filas); `meta.total` = numero de monedas.
+> Sin 404 (usuario sin cuentas -> `200` con `totals: []`); errores `401
+> NOT_AUTHENTICATED` (sin cabecera / `Bearer` invalido / `sub` no UUID).
+> Solo lectura (sin `Idempotency-Key`, sin eventos). Dinero entero en centimos.
 
 ### 6.3 Transacciones (`transactions`) - HU06, HU08, HU15, HU17
 

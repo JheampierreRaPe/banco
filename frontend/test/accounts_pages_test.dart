@@ -40,6 +40,22 @@ class FakeAccountsService implements AccountsServiceBase {
     ),
   ];
 
+  /// Total del servidor (E1-T43/F-T54): el dashboard de `/accounts` no lo
+  /// consume, pero el seam `AccountsServiceBase` lo exige.
+  static const totals = AccountsTotals(
+    asOf: '2026-08-24T14:32:00Z',
+    primaryCurrency: 'PEN',
+    primaryTotalMinor: 170000,
+    totals: [
+      CurrencyTotal(
+        currency: 'PEN',
+        availableMinor: 162000,
+        heldMinor: 8000,
+        totalMinor: 170000,
+      ),
+    ],
+  );
+
   static const allMovements = [
     Movement(
       journalEntryId: 'j1',
@@ -59,6 +75,9 @@ class FakeAccountsService implements AccountsServiceBase {
 
   @override
   Future<List<Account>> getAccounts() async => accounts;
+
+  @override
+  Future<AccountsTotals> getAccountsTotals() async => totals;
 
   @override
   Future<Account> getAccountDetail(String accountId) async => detail;
@@ -295,6 +314,10 @@ class _HangingFake implements AccountsServiceBase {
   Future<List<Account>> getAccounts() => _completer.future;
 
   @override
+  Future<AccountsTotals> getAccountsTotals() =>
+      _completer.future.then((_) => FakeAccountsService.totals);
+
+  @override
   Future<Account> getAccountDetail(String accountId) =>
       _completer.future.then((_) => FakeAccountsService.detail);
 
@@ -324,6 +347,10 @@ class _EmptyFake implements AccountsServiceBase {
 
   @override
   Future<List<Account>> getAccounts() async => const [];
+
+  @override
+  Future<AccountsTotals> getAccountsTotals() =>
+      _delegate.getAccountsTotals();
 
   @override
   Future<Account> getAccountDetail(String accountId) =>
@@ -383,6 +410,10 @@ class _FlakyDetailFake implements AccountsServiceBase {
   Future<List<Account>> getAccounts() => _delegate.getAccounts();
 
   @override
+  Future<AccountsTotals> getAccountsTotals() =>
+      _delegate.getAccountsTotals();
+
+  @override
   Future<Account> getAccountDetail(String accountId) async {
     calls++;
     if (calls == 1) {
@@ -429,6 +460,10 @@ class _NoMovesFake implements AccountsServiceBase {
 
   @override
   Future<List<Account>> getAccounts() => _delegate.getAccounts();
+
+  @override
+  Future<AccountsTotals> getAccountsTotals() =>
+      _delegate.getAccountsTotals();
 
   @override
   Future<Account> getAccountDetail(String accountId) =>

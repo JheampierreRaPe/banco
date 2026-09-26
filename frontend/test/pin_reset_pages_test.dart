@@ -328,7 +328,7 @@ void main() {
       }
     });
 
-    testWidgets('el enlace "Restablecer PIN" del login abre /pin-reset',
+    testWidgets('el enlace "Olvidé mi PIN" del login abre /pin-reset',
         (tester) async {
       debugDisableLoginAutoTick = true;
       addTearDown(() => debugDisableLoginAutoTick = false);
@@ -346,6 +346,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.byKey(const Key('login-pin-reset-link')), findsOneWidget);
+      expect(find.text('Olvidé mi PIN'), findsOneWidget);
       await tester.ensureVisible(find.byKey(const Key('login-pin-reset-link')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('login-pin-reset-link')));

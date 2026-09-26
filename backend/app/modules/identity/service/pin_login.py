@@ -20,10 +20,12 @@ Flujo (`POST /auth/login/pin {user_ref[, device_id/device_info/ip], pin}`):
    `MAX_FAILED_ATTEMPTS` fija `locked_until` y notifica `login_alert`
    best-effort (import perezoso como `otp_service`, sin PII en logs).
 5. El PIN jamas se guarda en claro ni sale en logs; solo su hash PBKDF2.
-6. E1-T27 (best-effort): si el login exitoso trae `device_public_key` y
-   `device_id`, se registra el `device_binding` (`register_binding`) o se
-   refresca su `last_used_at` (`touch_binding`) segun exista o no, y se
-   audita el alta/uso via fachada. Un fallo al persistir el binding NO
+6. E1-T27 (best-effort) + E1-T42 (rebind): si el login exitoso trae
+   `device_public_key` y `device_id`, se registra el `device_binding`
+   (`register_binding`, `ACTIVE`) o se reescribe su `public_key` con la clave
+   vigente + se refresca su `last_used_at` (una sola fila, `status`
+   preservado: un `REVOKED` no se reactiva) segun exista o no, y se audita
+   el alta/uso via fachada. Un fallo al persistir el binding NO
    revierte la sesion ni los tokens (la sesion ya quedo con `flush`) y el
    `device_public_key` jamas aparece en logs ni en la respuesta.
 
@@ -404,16 +406,19 @@ def _bind_device_best_effort(
     biometric_type: str | None,
     moment: datetime,
 ) -> str | None:
-    """Registra o refresca el binding tras un login con PIN exitoso (E1-T27).
+    """Registra o reescribe el binding tras un login con PIN exitoso (E1-T27, E1-T42).
 
     Solo actua si llegan `device_id` y `device_public_key` (sin clave el login
     sigue igual: compatibilidad hacia atras). Si ya existe binding para
-    (`user_id`, `device_id`) hace `touch_binding` (una sola fila, no pisa la
-    `public_key`); si no, `register_binding` y fija `last_used_at` en el mismo
-    momento del login. `platform`/`biometric_type` invalidos se ignoran
-    (`None`). Todo va en un savepoint (`begin_nested`): un fallo de
-    persistencia se revierte SOLO aqui y la sesion/los tokens del login
-    sobreviven (best-effort); se audita el resultado.
+    (`user_id`, `device_id`) reescribe `public_key` con la clave vigente
+    (rebind) y refresca `last_used_at`, PRESERVANDO `status` (un `REVOKED` no
+    se reactiva por un login con PIN); si no, `register_binding` (`ACTIVE`) y
+    fija `last_used_at` en el mismo momento del login. La clave se persiste
+    tal cual (compatibilidad `hmac:`/PEM sin validar formato: `verify_signature`
+    autodetecta). `platform`/`biometric_type` invalidos se ignoran (`None`).
+    Todo va en un savepoint (`begin_nested`): un fallo de persistencia se
+    revierte SOLO aqui y la sesion/los tokens del login sobreviven
+    (best-effort); se audita el resultado.
 
     Retorna `"registered"`, `"touched"`, `"failed"` o `None` si no habia
     intento (sin `device_id`/`device_public_key`).
@@ -430,6 +435,17 @@ def _bind_device_best_effort(
         with session.begin_nested():
             existing = identity_repo.get_binding(session, user_id, device_id)
             if existing is not None:
+                # E1-T42 rebind: la clave vigente del dispositivo pisa la
+                # obsoleta para que el facial posterior verifique contra ella.
+                # Se preserva `status` a proposito: un `REVOKED` no se
+                # reactiva por un login con PIN (decision del dueno; no se
+                # usa `register_binding` aqui porque fuerza `ACTIVE`).
+                existing.public_key = key
+                if safe_platform is not None:
+                    existing.platform = safe_platform
+                if safe_biometric is not None:
+                    existing.biometric_type = safe_biometric
+                session.flush()
                 identity_repo.touch_binding(session, existing, moment)
                 result = "touched"
             else:

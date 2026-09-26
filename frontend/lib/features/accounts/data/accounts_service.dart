@@ -34,6 +34,7 @@ class MovementFilters {
 /// Contrato del servicio de cuentas (seam para tests de widgets con mock).
 abstract class AccountsServiceBase {
   Future<List<Account>> getAccounts();
+  Future<AccountsTotals> getAccountsTotals();
   Future<Account> getAccountDetail(String accountId);
   Future<MovementsPage> getMovements(
     String accountId, {
@@ -53,6 +54,8 @@ abstract class AccountsServiceBase {
 ///
 /// Endpoints (base `/api/v1` ya incluida en el cliente):
 /// - `GET /accounts`
+/// - `GET /accounts/totals` (E1-T43: total contable por moneda, el hero
+///   `SALDO TOTAL` muestra `primary_total_minor` tal cual, sin sumar)
 /// - `GET /accounts/{id}`
 /// - `GET /accounts/{id}/movements?page&page_size&date_from&date_to&direction`
 /// - `GET /accounts/{id}/movements/export?format&date_from&date_to`
@@ -90,6 +93,18 @@ class AccountsService implements AccountsServiceBase {
   Future<List<Account>> getAccounts() async {
     final resp = await api.get('/accounts');
     return _parseAccountList(resp.data);
+  }
+
+  @override
+  Future<AccountsTotals> getAccountsTotals() async {
+    final resp = await api.get('/accounts/totals');
+    final data = resp.data;
+    if (data is Map<String, dynamic> && data['data'] is Map) {
+      return AccountsTotals.fromJson(
+        Map<String, dynamic>.from(data['data'] as Map),
+      );
+    }
+    throw const FormatException('Respuesta de totales invalida');
   }
 
   @override

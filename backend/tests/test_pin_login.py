@@ -16,9 +16,10 @@
   correcto) -> `ACCOUNT_LOCKED`; bloqueo vencido -> exito (desbloqueo por
   tiempo); inexistente vs mal PIN: cuerpo IDENTICO y costo similar (rama
   ciega con hash ficticio); errores sin `locked_until`/contadores.
-- E1-T27: primer login con `device_public_key` -> crea `device_bindings`
+- E1-T27 + E1-T42: primer login con `device_public_key` -> crea `device_bindings`
   (`ACTIVE`, `last_used_at` coherente, sin duplicar fila); segundo login ->
-  `touch_binding` (una sola fila, no pisa la `public_key`); sin clave -> no
+  rebind (una sola fila, reescribe la `public_key` vigente + refresca
+  `last_used_at`, `status` preservado: un `REVOKED` no se reactiva); sin clave -> no
   binding; fallo de persistencia -> tokens igual (best-effort); `platform`/
   `biometric_type` invalidos se ignoran sin romper el login; `device_public_key`
   jamas en logs y auditoria de binding via fachada.
@@ -480,16 +481,93 @@ def test_second_pin_login_touches_binding_single_row(pin_client: TestClient, pin
     rows[0].last_used_at = old
     pin_session.commit()
 
+    new_key = _new_device_key()
+    assert new_key != key
     second = pin_client.post(
-        "/api/v1/auth/login/pin", json={**payload, "device_public_key": _new_device_key()}
+        "/api/v1/auth/login/pin", json={**payload, "device_public_key": new_key}
     )
     assert second.status_code == 200, second.text
+    assert new_key not in second.text, "la clave publica no se refleja"
 
     rows = _bindings(pin_session, user.id)
     assert len(rows) == 1, "el segundo login no duplica la fila"
-    assert rows[0].public_key == key, "touch no pisa la public_key registrada"
+    assert rows[0].public_key == new_key, "E1-T42 rebind: pisa la public_key vigente"
+    assert rows[0].status == "ACTIVE", "el rebind preserva el status vigente"
     used_at = _aware(rows[0].last_used_at)
     assert used_at is not None and used_at > old, "touch refresca last_used_at"
+
+
+def test_pin_login_rebind_updates_hmac_and_pem_keys(pin_client: TestClient, pin_session: Session):
+    """E1-T42: el rebind persiste la ultima clave tal cual (`hmac:` o PEM)."""
+    user = _make_pin_user(pin_session)
+    old_key = _new_device_key()
+    payload = {
+        "user_ref": str(user.id),
+        "pin": PIN,
+        "device_id": "device-1",
+        "device_public_key": old_key,
+        "platform": "android",
+        "biometric_type": "FACE",
+    }
+    assert pin_client.post("/api/v1/auth/login/pin", json=payload).status_code == 200
+
+    new_hmac = _new_device_key()
+    resp = pin_client.post(
+        "/api/v1/auth/login/pin", json={**payload, "device_public_key": new_hmac}
+    )
+    assert resp.status_code == 200, resp.text
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1
+    assert rows[0].public_key == new_hmac, "rebind hmac: persiste la clave vigente"
+
+    pem_key = (
+        "-----BEGIN PUBLIC KEY-----\n"
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAq3T55yQ7vG8mJvQ2k9mZ8mJvQ2k9m\n"
+        "Z8mJvQ2k9mZ8mJvQ2k9mZ8mJvQ2k9mZ8mJvQ2k9mZw==\n"
+        "-----END PUBLIC KEY-----"
+    )
+    resp = pin_client.post("/api/v1/auth/login/pin", json={**payload, "device_public_key": pem_key})
+    assert resp.status_code == 200, resp.text
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1
+    assert rows[0].public_key == pem_key, "rebind PEM: persiste la clave tal cual"
+
+
+def test_pin_login_rebind_preserves_revoked_status(pin_client: TestClient, pin_session: Session):
+    """E1-T42 (decision del dueno): el rebind NO reactiva un `REVOKED`."""
+    from app.modules.identity import repository as identity_repo
+
+    user = _make_pin_user(pin_session)
+    old_key = _new_device_key()
+    payload = {
+        "user_ref": str(user.id),
+        "pin": PIN,
+        "device_id": "device-1",
+        "device_public_key": old_key,
+        "platform": "android",
+        "biometric_type": "FACE",
+    }
+    assert pin_client.post("/api/v1/auth/login/pin", json=payload).status_code == 200
+
+    pin_session.expire_all()
+    row = identity_repo.get_binding(pin_session, user.id, "device-1")
+    assert row is not None
+    row.status = "REVOKED"
+    pin_session.commit()
+
+    new_key = _new_device_key()
+    resp = pin_client.post("/api/v1/auth/login/pin", json={**payload, "device_public_key": new_key})
+    assert resp.status_code == 200, resp.text
+
+    rows = _bindings(pin_session, user.id)
+    assert len(rows) == 1
+    assert rows[0].public_key == new_key, "el rebind actualiza la clave vigente"
+    assert rows[0].status == "REVOKED", "un REVOKED no se reactiva por login con PIN"
+
+    audits = _audit_rows(pin_session, "auth.device_binding")
+    assert any(
+        (row.after_json or {}).get("result") == "touched" for row in audits
+    ), "el rebind se audita como touched"
 
 
 def test_pin_login_without_device_key_does_not_bind(pin_client: TestClient, pin_session: Session):

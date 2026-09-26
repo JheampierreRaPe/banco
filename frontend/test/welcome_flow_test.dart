@@ -54,7 +54,7 @@ void main() {
     );
     expect(find.text('Crear mi cuenta'), findsOneWidget);
     expect(
-      find.text('Ya tengo cuenta · Restablecer PIN'),
+      find.text('Ya tengo cuenta · Iniciar sesión'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('app-version')), findsOneWidget);
@@ -119,7 +119,8 @@ void main() {
     expect(find.text('Crear cuenta'), findsOneWidget);
   });
 
-  testWidgets('Ya tengo cuenta va a /pin-reset (F-T51)', (tester) async {
+  testWidgets('Ya tengo cuenta va a /login/device (F-T57/F-T56)',
+      (tester) async {
     final session = InMemorySessionRepository();
     final identity = InMemorySessionIdentityStore();
     addTearDown(identity.dispose);
@@ -128,10 +129,16 @@ void main() {
     await tester.pumpWidget(_harnessWith(router));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Ya tengo cuenta · Restablecer PIN'));
+    await tester.tap(find.text('Ya tengo cuenta · Iniciar sesión'));
     await tester.pumpAndSettle();
 
-    expect(router.state.matchedLocation, '/pin-reset');
+    expect(router.state.matchedLocation, '/login/device');
+    // F-T56 reemplazo el placeholder de F-T57 por el flujo real de 3 pasos
+    // (email+DNI -> OTP -> PIN): la entrada muestra el paso 1.
+    expect(
+      find.byKey(const Key('device-login-email')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('sin sesion y sin userRef en /home resuelve el onboarding',
@@ -146,7 +153,7 @@ void main() {
 
     expect(find.text('Crear mi cuenta'), findsOneWidget);
     expect(
-      find.text('Ya tengo cuenta · Restablecer PIN'),
+      find.text('Ya tengo cuenta · Iniciar sesión'),
       findsOneWidget,
     );
   });
@@ -206,7 +213,7 @@ void main() {
 
     expect(router.state.matchedLocation, '/kyc');
     expect(find.text('Crear cuenta'), findsOneWidget);
-    expect(find.text('Ya tengo cuenta · Restablecer PIN'), findsNothing);
+    expect(find.text('Ya tengo cuenta · Iniciar sesión'), findsNothing);
   });
 
   testWidgets('/activate sigue publica sin sesion ni userRef', (tester) async {

@@ -72,10 +72,14 @@ class InMemorySessionRepository extends ChangeNotifier
   }
 
   @override
-  Future<void> clearOnInvalidRefresh() async {
+  Future<void> clearOnInvalidRefresh({bool rotateDeviceKey = false}) async {
     _accessToken = null;
     _refreshToken = null;
-    _deviceSecret = null; // posible robo: se regenera bajo demanda.
+    // F-T53: solo rota ante robo real (REFRESH_REUSED). Por defecto se
+    // conserva como en clearOnLogout.
+    if (rotateDeviceKey) {
+      _deviceSecret = null; // posible robo: se regenera bajo demanda.
+    }
     notifyListeners();
   }
 

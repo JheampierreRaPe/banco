@@ -81,11 +81,49 @@ class MovementsListResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class CurrencyTotal(BaseModel):
+    """Consolidado por moneda (E1-T43, HU05).
+
+    `total_minor` (contable) = `available_minor + held_minor` de las cuentas
+    del usuario en esa moneda. Dinero entero en centimos; nunca `float`.
+    """
+
+    currency: str
+    available_minor: int = Field(..., ge=0)
+    held_minor: int = Field(..., ge=0)
+    total_minor: int = Field(..., ge=0, description="Contable = disponible + retenido")
+
+
+class AccountTotals(BaseModel):
+    """Total contable consolidado por moneda (E1-T43, `GET /accounts/totals`).
+
+    Shape que viaja en `data`: `as_of` (max `updated_at` de las filas de
+    `account_balances` consideradas; `now(UTC)` si no hay filas),
+    `primary_currency` (constante del modulo, `"PEN"`) y `primary_total_minor`
+    (consolidado PEN; 0 si no hay cuentas PEN).
+    """
+
+    as_of: datetime
+    primary_currency: str
+    primary_total_minor: int = Field(..., ge=0)
+    totals: list[CurrencyTotal] = Field(default_factory=list)
+
+
+class AccountTotalsResponse(BaseModel):
+    """Envoltorio de totales segun 05#4 (`data` + `meta`)."""
+
+    data: AccountTotals
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
     "AccountDetail",
     "AccountDetailResponse",
     "AccountSummary",
+    "AccountTotals",
+    "AccountTotalsResponse",
     "AccountsListResponse",
+    "CurrencyTotal",
     "Movement",
     "MovementsListResponse",
 ]

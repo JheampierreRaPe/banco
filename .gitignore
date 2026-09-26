@@ -40,3 +40,15 @@ kyc-service/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Notas de trabajo locales (no versionar)
+*.txt
+!docs/design/figma-sprint1-creacionCuenta.txt
+!frontend/assets/fonts/Inter-OFL.txt
+!**/CMakeLists.txt
+
+# Temporales de Office
+~$*
+
+# Firma release Android (keystore y passwords solo locales, no versionar)
+frontend/android/key.properties

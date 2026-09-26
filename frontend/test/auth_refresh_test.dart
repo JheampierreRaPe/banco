@@ -62,8 +62,16 @@ class FakeBackendAdapter implements HttpClientAdapter {
 
 /// Servidor de refresh simulado con el shape real de `POST /auth/refresh`
 /// (`{"refresh_token"}` → `{data: {access_token, refresh_token, ...}}`;
-/// refresh desconocido → 401 `INVALID_REFRESH`).
+/// refresh desconocido → 401 `INVALID_REFRESH`). F-T53: cada valor de
+/// refresh presentado mapea a un codigo para probar la rotacion selectiva
+/// (solo `REFRESH_REUSED` rota `device.secret`).
 class FakeRefreshAdapter implements HttpClientAdapter {
+  static const _codeByRefresh = {
+    'inactive-refresh': 'SESSION_INACTIVE',
+    'expired-refresh': 'REFRESH_EXPIRED',
+    'reused-refresh': 'REFRESH_REUSED',
+  };
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -84,8 +92,9 @@ class FakeRefreshAdapter implements HttpClientAdapter {
           'meta': {'request_id': 'req-1'},
         }, 200);
       }
+      final code = _codeByRefresh[presented?.toString()] ?? 'INVALID_REFRESH';
       return _json({
-        'error': {'code': 'INVALID_REFRESH', 'message': 'Refresh inválido'}
+        'error': {'code': code, 'message': 'Refresh rechazado'}
       }, 401);
     }
     return _json({
@@ -153,6 +162,125 @@ void main() {
     expect(session.isAuthenticated, isFalse);
     expect(await session.readRefreshToken(), isNull);
     expect(expiredCalls, 1);
+  });
+
+  test('SESSION_INACTIVE conserva device.secret y avisa expiración',
+      () async {
+    final session = InMemorySessionRepository();
+    await session.saveSession(
+      accessToken: 'expired-access',
+      refreshToken: 'inactive-refresh',
+    );
+    final before = await session.getOrCreateDeviceBindingKey();
+
+    var expiredCalls = 0;
+    final client = ApiClient.create(
+      session: session,
+      baseUrl: 'http://localhost',
+      dioOverride: _dioWith(FakeBackendAdapter()),
+      refreshDioOverride: _refreshDio(),
+      onSessionExpired: () async => expiredCalls++,
+    );
+
+    await expectLater(
+      client.get<dynamic>('/accounts'),
+      throwsA(isA<ApiException>()),
+    );
+    expect(session.isAuthenticated, isFalse);
+    expect(await session.readRefreshToken(), isNull);
+    expect(expiredCalls, 1);
+    // F-T53 CA-01: fallo benigno conserva el binding.
+    expect(await session.getOrCreateDeviceBindingKey(), before);
+  });
+
+  test('REFRESH_EXPIRED e INVALID_REFRESH conservan device.secret', () async {
+    for (final refresh in ['expired-refresh', 'revoked-refresh']) {
+      final session = InMemorySessionRepository();
+      await session.saveSession(
+        accessToken: 'expired-access',
+        refreshToken: refresh,
+      );
+      final before = await session.getOrCreateDeviceBindingKey();
+
+      var expiredCalls = 0;
+      final client = ApiClient.create(
+        session: session,
+        baseUrl: 'http://localhost',
+        dioOverride: _dioWith(FakeBackendAdapter()),
+        refreshDioOverride: _refreshDio(),
+        onSessionExpired: () async => expiredCalls++,
+      );
+
+      await expectLater(
+        client.get<dynamic>('/accounts'),
+        throwsA(isA<ApiException>()),
+      );
+      expect(session.isAuthenticated, isFalse,
+          reason: 'refresh=$refresh limpia tokens');
+      expect(await session.readRefreshToken(), isNull);
+      expect(expiredCalls, 1);
+      expect(await session.getOrCreateDeviceBindingKey(), before,
+          reason: 'refresh=$refresh conserva la clave');
+    }
+  });
+
+  test('REFRESH_REUSED rota device.secret (robo real)', () async {
+    final session = InMemorySessionRepository();
+    await session.saveSession(
+      accessToken: 'expired-access',
+      refreshToken: 'reused-refresh',
+    );
+    final before = await session.getOrCreateDeviceBindingKey();
+
+    var expiredCalls = 0;
+    final client = ApiClient.create(
+      session: session,
+      baseUrl: 'http://localhost',
+      dioOverride: _dioWith(FakeBackendAdapter()),
+      refreshDioOverride: _refreshDio(),
+      onSessionExpired: () async => expiredCalls++,
+    );
+
+    await expectLater(
+      client.get<dynamic>('/accounts'),
+      throwsA(isA<ApiException>()),
+    );
+    expect(session.isAuthenticated, isFalse);
+    expect(await session.readRefreshToken(), isNull);
+    expect(expiredCalls, 1);
+    // F-T53 CA-03: solo el robo rota la clave.
+    final after = await session.getOrCreateDeviceBindingKey();
+    expect(after, isNot(before));
+    expect(after, matches(RegExp(r'^hmac:[0-9a-f]{64}$')));
+  });
+
+  test('fallo de red del refresh conserva device.secret (benigno)', () async {
+    final session = InMemorySessionRepository();
+    await session.saveSession(
+      accessToken: 'expired-access',
+      refreshToken: 'valid-refresh',
+    );
+    final before = await session.getOrCreateDeviceBindingKey();
+
+    final failingRefresh = Dio(BaseOptions(baseUrl: 'http://localhost'))
+      ..httpClientAdapter = _FailingAdapter();
+    var expiredCalls = 0;
+    final client = ApiClient.create(
+      session: session,
+      baseUrl: 'http://localhost',
+      dioOverride: _dioWith(FakeBackendAdapter()),
+      refreshDioOverride: failingRefresh,
+      onSessionExpired: () async => expiredCalls++,
+    );
+
+    await expectLater(
+      client.get<dynamic>('/accounts'),
+      throwsA(isA<ApiException>()),
+    );
+    expect(session.isAuthenticated, isFalse);
+    expect(await session.readRefreshToken(), isNull);
+    expect(expiredCalls, 1);
+    expect(await session.getOrCreateDeviceBindingKey(), before);
   });
 
   test('401 sin refresh guardado -> limpia y avisa sin renovar', () async {

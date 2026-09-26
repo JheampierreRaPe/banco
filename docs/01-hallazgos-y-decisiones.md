@@ -40,25 +40,25 @@ duda, se resuelve aqui; si no esta, se registra en `17-riesgos-y-decisiones-abie
 | HU01 | 1 | Registro y KYC Biometrico | Cliente | Must | 8 | Si | 1 |
 | HU02 | 1 | Verificacion y Activacion (OTP) | Cliente | Must | 3 | Si | 1 |
 | HU03 | 1 | Autenticacion BioFacial | Cliente | Must | 5 | Si | 1 |
-| HU04 | 1 | Recuperacion de Cuenta | Cliente | Should | 5 | Si | 1 |
+| HU04 | 1 | Recuperacion de Cuenta | Cliente | Should | 5 | Si | 2 |
 | HU05 | 2 | Consolidado de Cuentas y Saldos | Cliente | Must | 5 | Si | 1 |
 | HU06 | 2 | Transferencias Propias e Interbancarias | Cliente | Must | 8 | Si | 2 |
 | HU07 | 2 | Beneficiarios Frecuentes | Cliente | Should | 3 | Si | 2 |
 | HU08 | 2 | Autorizacion Biometrica de Pagos | Cliente | Must | 8 | Si | 2 |
 | HU09 | 3 | Simulador de Creditos | Cliente | Should | 5 | Si | 2 |
-| HU10 | 3 | Solicitud y Evaluacion Crediticia | Cliente | Must | 8 | Si | 3 |
+| HU10 | 3 | Solicitud y Evaluacion Crediticia | Cliente | Must | 8 | Si | 2 |
 | HU11 | 3 | Firma Digital de Contrato | Cliente | Must | 8 | Si | 3 |
 | HU12 | 3 | Desembolso y Cuotas | Cliente | Must | 5 | Si | 3 |
 | HU13 | 4 | Billetera Digital | Cliente | Must | 8 | Si | 3 |
 | HU14 | 4 | Generacion y Cobro QR | Comercio | Must | 5 | Si | 3 |
 | HU15 | 4 | Lectura y Pago QR | Cliente | Must | 5 | Si | 3 |
-| HU16 | 4 | Pago de Servicios y Recargas | Cliente | Should | 5 | Si | 4 |
+| HU16 | 4 | Pago de Servicios y Recargas | Cliente | Should | 5 | Si | 3 |
 | HU17 | 5 | Motor Transaccional | Sistema | Must | 13 | Si | 1 |
 | HU18 | 5 | Ledger de Partida Doble | Sistema | Must | 13 | Si | 1 |
 | HU19 | 5 | Conciliacion Bancaria | Analista de operaciones | Must | 8 | Si | 4 |
 | HU20 | 6 | Motor Antifraude | Analista de fraude | Must | 8 | Si | 4 |
 | HU21 | 6 | Cumplimiento PLDFT / AML | Oficial de cumplimiento | Must | 8 | Si | 4 |
-| HU22 | 6 | Notificaciones de Seguridad | Cliente | Should | 3 | Si | 4 |
+| HU22 | 6 | Notificaciones de Seguridad | Cliente | Should | 3 | Si | 3 |
 | HU23 | 6 | Bitacora de Auditoria | Auditor | Could | 5 | **No** | 4 |
 | HU24 | 7 | Multidivisa y Meta de Ahorro | Cliente | Should | 5 | Si | 4 |
 | HU25 | 7 | Cambio de Divisas | Cliente | Should | 8 | Si | 4 |
@@ -68,6 +68,10 @@ Totales: **26 HU, 17 Must, 7 Should, 2 Could, 173 SP, 160 SP en MVP.**
 
 > El sprint base es una primera aproximacion; el rebalanceo final por dependencia y capacidad
 > esta en `14-plan-sprints-y-ejecucion.md`.
+>
+> Nota de alineacion (2026-09-25): `docs/14` es el cronograma canonico (rebalanceo por
+> capacidad ~40 SP/sprint). Se corrigen HU04->Sprint 2, HU10->Sprint 2, HU16->Sprint 3 y
+> HU22->Sprint 3 para igualar a `14#3/#4`.
 
 ## 4. Actores del sistema
 

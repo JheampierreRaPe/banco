@@ -17,11 +17,16 @@ import '../session/session_repository.dart';
 ///    rutas `/auth/refresh` ni `/auth/logout`): pide el par nuevo con el
 ///    refresh, lo guarda con `saveSession` y reintenta la petición original
 ///    UNA vez con el token nuevo.
-/// 3. Si no hay refresh o la renovación falla, limpia todo con
+/// 3. Si no hay refresh o la renovación falla, borra los tokens con
 ///    `clearOnInvalidRefresh` y avisa vía [onSessionExpired]; `go_router`
-///    (`refreshListenable`) redirige a `/login` al notificar.
+///    (`refreshListenable`) redirige a `/login` al notificar. La clave del
+///    dispositivo (`device.secret`) se CONSERVA salvo robo real: solo rota
+///    cuando el refresh responde `401 {error: {code: REFRESH_REUSED}}`.
+///    `SESSION_INACTIVE`, `REFRESH_EXPIRED`, `INVALID_REFRESH`, ausencia de
+///    `error.code` o fallo de red/timeout son benignos (F-T53).
 ///
-/// Nunca loguea tokens (docs/16 reglas 7 y 10).
+/// Nunca loguea tokens, la clave ni el codigo con datos asociados
+/// (docs/16 reglas 7 y 10).
 class AuthInterceptor extends Interceptor {
   AuthInterceptor(
     this._session, {
@@ -73,6 +78,14 @@ class AuthInterceptor extends Interceptor {
         ..extra[_retryKey] = true;
       final response = await (retryDio ?? _isolatedDio(request)).fetch(request);
       return handler.resolve(response);
+    } on DioException catch (refreshError) {
+      // F-T53: solo REFRESH_REUSED (robo real) rota device.secret; cualquier
+      // otro codigo, respuesta sin error.code o fallo de red/timeout la
+      // conserva. No se loguea el codigo con datos asociados.
+      await _expireSession(
+        rotateDeviceKey: _isRefreshReuse(refreshError),
+      );
+      return handler.next(err);
     } catch (_) {
       await _expireSession();
       return handler.next(err);
@@ -120,8 +133,22 @@ class AuthInterceptor extends Interceptor {
         ),
       );
 
-  Future<void> _expireSession() async {
-    await _session.clearOnInvalidRefresh();
+  Future<void> _expireSession({bool rotateDeviceKey = false}) async {
+    await _session.clearOnInvalidRefresh(rotateDeviceKey: rotateDeviceKey);
     await _onSessionExpired?.call();
+  }
+
+  /// `true` solo ante reuso de refresh revocado (posible robo). Lee
+  /// `response.data['error']['code']` sin loguearlo; red/timeout
+  /// (sin respuesta) o shape inesperado son benignos (`false`).
+  bool _isRefreshReuse(DioException refreshError) {
+    final data = refreshError.response?.data;
+    if (data is Map<String, dynamic>) {
+      final error = data['error'];
+      if (error is Map<String, dynamic>) {
+        return error['code']?.toString() == 'REFRESH_REUSED';
+      }
+    }
+    return false;
   }
 }

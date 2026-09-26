@@ -208,6 +208,65 @@ void main() {
     expect(find.text('Inicia sesión'), findsNothing);
   });
 
+  testWidgets('F-T56: sin sesion y sin userRef en /login/device monta el flujo',
+      (tester) async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore();
+    addTearDown(identity.dispose);
+    await tester.pumpWidget(
+      _harness(session, identity, initial: '/login/device'),
+    );
+    await tester.pumpAndSettle();
+
+    // F-T56: `/login/device` monta el flujo de 3 pasos (email+DNI -> OTP
+    // -> PIN); el placeholder de F-T57 quedo reemplazado.
+    expect(
+      find.byKey(const Key('device-login-email')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('device-login-request-submit')),
+      findsOneWidget,
+    );
+    expect(find.text('Tu banco, sin colas ni papeles'), findsNothing);
+  });
+
+  testWidgets('F-T56: sin sesion y con userRef en /login/device monta el flujo',
+      (tester) async {
+    final session = InMemorySessionRepository();
+    final identity = InMemorySessionIdentityStore(userRef: 'u-1');
+    addTearDown(identity.dispose);
+    await tester.pumpWidget(
+      _harness(session, identity, initial: '/login/device'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('device-login-email')),
+      findsOneWidget,
+    );
+    expect(find.text('Inicia sesión'), findsNothing);
+  });
+
+  testWidgets('F-T56: con sesion navegando a /login/device redirige a /home',
+      (tester) async {
+    final session = InMemorySessionRepository(
+      initialAccessToken: 'token-de-prueba',
+    );
+    final identity = InMemorySessionIdentityStore();
+    addTearDown(identity.dispose);
+    await tester.pumpWidget(
+      _harness(session, identity, initial: '/login/device'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Hola'), findsOneWidget);
+    expect(
+      find.byKey(const Key('device-login-email')),
+      findsNothing,
+    );
+  });
+
   testWidgets('F-T51: /recovery retirada redirige al onboarding',
       (tester) async {
     final session = InMemorySessionRepository();

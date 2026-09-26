@@ -155,6 +155,12 @@ eventos (`outbox`/`inbox`).
   `as_of = max(updated_at)`/`now(UTC)`); el cliente solo muestra el monto
   (cliente delgado). Solo lectura, sin migracion.
 - **Consume:** `ledger.entry.posted` (para proyectar movimientos), `kyc.completed`.
+- **Fachada de lectura para el motor (E2-T07, D-01):** `get_account(session,
+  account_id) -> {account_id, user_id, status, currency, account_number} | None`
+  (solo lectura; `None` si no existe, `ValueError` si el id no es UUID). La usan
+  `transfer_own`/`transfer_third_party` para validar propiedad/estado/moneda sin
+  importar modelos de `accounts`. El `account_number` en claro es interno (jamas en
+  logs ni respuestas; la API solo expone UUIDs).
 - **Cableado E2-T23:** `accounts.events.on_ledger_entry_posted(entry)` (sesion/`commit`
   propios, `event_id = entry.id`) suscrito al bus via
   `app.composition.subscribe_accounts_movements`; alimenta solo `movements_view`
@@ -170,6 +176,15 @@ eventos (`outbox`/`inbox`).
 - **Dueno de:** `transactions`, `transaction_status_history`, `holds`.
 - **Expone:** `/transfers/*`, `/payments/*`, `/transactions/*`; eventos `transaction.initiated`,
   `funds.held`, `funds.released`, `transfer.settled`.
+- **Transferencias (E2-T07, HU06):** `transfer_own` (ruta atomica SIN hold:
+  un asiento `OWN_TRANSFER` `2000-S -> 2000-D`, sin comision, `AUTHORIZED ->
+  POSTED -> SETTLED`) y `transfer_third_party` (hold + liquidacion; comision a
+  **`4100-Ingresos por comisiones`**, default desde `config.parameters`
+  `transfer.third_party_fee_minor`, fallback `0`). Endpoints
+  `POST /transfers/own` y `POST /transfers/third-party` (`Idempotency-Key`
+  obligatoria; insuficiente -> `201` con `status=REJECTED` +
+  `failure_code=INSUFFICIENT_FUNDS`, sin tocar saldos). Validacion de cuentas
+  solo por la fachada `accounts.service.get_account` (D-01).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.

@@ -59,6 +59,8 @@ Error (estilo problem+json):
 Codigos de error reales (verificados en codigo, 2026-09-25):
 `ACCOUNT_LOCKED`, `DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_DOCUMENT`,
 `DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`, `EXPORT_FORMAT_NOT_SUPPORTED` (501),
+`INSUFFICIENT_FUNDS` (solo como `data.failure_code` con `data.status=REJECTED` en
+`POST /transfers/*`, E2-T07; el HTTP sigue `201` para no romper la idempotencia),
 `INVALID_CREDENTIALS`, `INVALID_LOGIN`, `INVALID_OTP`, `INVALID_PIN_FORMAT`,
 `INVALID_PIN_RESET`, `INVALID_REFRESH`, `INVALID_SETUP_CODE`, `KYC_UNAVAILABLE`,
 `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`, `PIN_ALREADY_SET`, `PIN_REQUIRED`,
@@ -349,6 +351,23 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | GET | `/transactions` | Historial filtrable. |
 | GET | `/transactions/{id}/receipt` | Comprobante. |
 | POST | `/transactions/{id}/reverse` | Reverso autorizado (operaciones). |
+
+> Contrato E2-T07 `POST /transfers/own` y `POST /transfers/third-party` (Bearer, HU06):
+> request `{source_account_id, target_account_id, amount_minor (> 0), currency (ISO-4217),
+> [fee_minor (>= 0, solo tercero; `None` = `transfer.third_party_fee_minor` de
+> `config.parameters`, default `0`)], [external_ref], [metadata]}` con cabecera
+> `Idempotency-Key` obligatoria -> `201 {"data": {"transaction_id", "type"
+> (`OWN_TRANSFER`/`THIRD_PARTY_TRANSFER`), "status" (`SETTLED`/`REJECTED`),
+> "source_account_id", "target_account_id", "amount_minor", "currency", "fee_minor",
+> "failure_code" (`INSUFFICIENT_FUNDS` solo si `REJECTED`)}, "meta": {"request_id",
+> "replayed"}}`. La propia es atomica sin hold (un asiento `2000-S -> 2000-D`, sin
+> comision); la de tercero es hold+settle con la comision a `4100`. Errores:
+> `401 NOT_AUTHENTICATED`, `422` (falta `Idempotency-Key` o esquema invalido),
+> `400 VALIDATION_ERROR` (misma cuenta, moneda incoherente, monto invalido),
+> `404 NOT_FOUND` (cuenta inexistente), `403 NOT_AUTHORIZED` (origen ajeno o
+> cuenta no `ACTIVE`), `409 CONFLICT` (misma clave + cuerpo distinto). Saldo
+> insuficiente = `201` con `status=REJECTED` (sin tocar saldos; reintentable con la
+> misma clave). Solo UUIDs en respuestas (regla de oro 9).
 
 ### 6.4 Creditos (`credits`) - HU09-HU12
 

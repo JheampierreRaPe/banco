@@ -405,6 +405,11 @@ Indices: `(account_id, created_at DESC)`.
 | is_system | BOOLEAN | No | false | | Cuenta del catalogo. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 
+> Nota de alineacion (E2-T07, cierra G05): la cuenta canonica de comisiones es
+> **`4100-Ingresos por comisiones`** (catalogo semilla: `4000` = "Ingresos por
+> intereses"). La comision de transferencias (`transactions.fee_minor`) se acredita
+> a `4100`, nunca a `4000` (`docs/04#72/#73`).
+
 ### 7.2 `journal_entries`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |

@@ -72,6 +72,34 @@ class AccountForbiddenError(PermissionError):
     """La cuenta no pertenece al usuario (el router lo traduce a 403 NOT_AUTHORIZED)."""
 
 
+def get_account(session: Session, account_id: uuid.UUID | str) -> dict | None:
+    """Lectura por fachada para el motor de transferencias (E2-T07, HU06).
+
+    Retorna `{account_id, user_id, status, currency, account_number}` de la
+    cuenta, o `None` si no existe. Solo lectura (sin `flush`/`commit`).
+
+    Frontera (D-01 del brief E2-T07): `transactions` valida propiedad,
+    estado (`ACTIVE`), moneda y titular por esta fachada, sin importar
+    modelos ni repositorios de `accounts`. El `account_number` en claro es
+    de uso interno del motor (el llamante jamas lo registra en logs ni lo
+    expone en respuestas: regla de oro 7/9; la API solo devuelve UUIDs).
+    Lanza `ValueError` si `account_id` no es UUID; retorna `None` si la
+    cuenta no existe.
+    """
+    account = accounts_repo.get_account(session, account_id)
+    if account is None:
+        return None
+    balance = accounts_repo.get_balance(session, account.id)
+    currency = balance.currency if balance is not None else account.currency
+    return {
+        "account_id": account.id,
+        "user_id": account.user_id,
+        "status": account.status,
+        "currency": currency,
+        "account_number": account.account_number,
+    }
+
+
 def mask_account_number(account_number: str) -> str:
     """Enmascara: solo ultimos 4 visibles, resto `*` (formato `****1234`).
 
@@ -581,6 +609,7 @@ __all__ = [
     "AccountNotFoundError",
     "CurrencyTotal",
     "ExportFormatUnavailableError",
+    "get_account",
     "get_account_detail",
     "get_accounts_totals",
     "get_export_movements",

@@ -11,9 +11,9 @@ Contrato y fronteras: ver `docs/modules/README.md#transactions`.
   `AUTHORIZED`, `FUNDS_HELD`, `POSTED`, `SETTLED`, `CONCILIATED`, `REJECTED`,
   `FAILED`, `REVERSED`.
 - Transiciones validas: `INITIATED` -> `VALIDATED`/`REJECTED`; `VALIDATED` ->
-  `PENDING_AUTHORIZATION`/`AUTHORIZED`/`REJECTED`; `PENDING_AUTHORIZATION` ->
-  `AUTHORIZED`/`REJECTED`; `AUTHORIZED` -> `FUNDS_HELD`/`REJECTED`;
-  `FUNDS_HELD` -> `POSTED`/`FAILED`; `POSTED` ->
+   `PENDING_AUTHORIZATION`/`AUTHORIZED`/`REJECTED`; `PENDING_AUTHORIZATION` ->
+   `AUTHORIZED`/`REJECTED`; `AUTHORIZED` -> `FUNDS_HELD`/`POSTED` (atomica propia
+   E2-T07)/`REJECTED`; `FUNDS_HELD` -> `POSTED`/`FAILED`; `POSTED` ->
   `SETTLED`/`FAILED`/`REVERSED`; `SETTLED` -> `CONCILIATED`/`REVERSED`;
   `CONCILIATED` -> `REVERSED`. Toda transicion no listada lanza
   `InvalidTransitionError` (incluye reintentos/doble procesamiento).
@@ -53,7 +53,7 @@ Contrato y fronteras: ver `docs/modules/README.md#transactions`.
   crea `INITIATED` -> `VALIDATED` -> `AUTHORIZED`, bloquea saldos en orden estable via
   `BalancePort`, retiene (`create_hold` + asiento `TRANSFER_HOLD` `2000-S -> 2100-S` por
   fachada `ledger`), avanza a `FUNDS_HELD` -> `POSTED` y, si `settle=True`, liquida
-  (`TRANSFER_SETTLE` `2100-S -> 2000-D` + fee a `4000`) a `SETTLED`; sin fondos -> `REJECTED`.
+  (`TRANSFER_SETTLE` `2100-S -> 2000-D` + fee a `4100`, E2-T07) a `SETTLED`; sin fondos -> `REJECTED`.
   Fallo tecnico: holds a `RELEASED` + `FAILED` best-effort y re-lanza (rollback total).
 
 ## E5-T04 - Holds e idempotencia (HU17)
@@ -66,3 +66,25 @@ Contrato y fronteras: ver `docs/modules/README.md#transactions`.
 
 - Reverso como asiento compensatorio nuevo (nunca borra el original); transiciones
   `POSTED`/`SETTLED`/`CONCILIATED` -> `REVERSED` con actor `SYSTEM`/`ANALYST` (ver E5-T01).
+
+## E2-T07 - Transferencias propia y a tercero (HU06)
+
+- Casos de uso (`service/transfer_own`, `service/transfer_third_party`): validan
+  origen/destino por la fachada `accounts.service.get_account` (D-01: existen,
+  `ACTIVE`, moneda coherente, origen del titular; `NOT_FOUND`/`NOT_AUTHORIZED`/
+  `VALIDATION_ERROR`) y delegan en `execute_transfer`.
+- `OWN_TRANSFER` = ruta atomica SIN hold (`atomic=True`, `04#7.1`): un solo asiento
+  `OWN_TRANSFER` `2000-S -> 2000-D` sin comision (`fee` distinto de 0 se rechaza),
+  sin fila en `holds`, `AUTHORIZED -> POSTED -> SETTLED` (nueva transicion
+  `AUTHORIZED -> POSTED` en la maquina de E5-T01, actor `SYSTEM`) y outbox
+  `transaction.initiated` + `transfer.settled` (nunca `funds.held`).
+- `THIRD_PARTY_TRANSFER` = camino hold + liquidacion (`04#7.2`); la comision se
+  acredita a **`4100-Ingresos por comisiones`** (`FEE_ACCOUNT_CODE`, cierra G05;
+  antes `4000`). `fee_minor` explicita o `transfer.third_party_fee_minor` de
+  `config.parameters` (best-effort con fallback `0`; sin regla cableada).
+- Endpoints (`api/`, esquemas en `schemas/`): `POST /transfers/own` y
+  `POST /transfers/third-party` (`Idempotency-Key` obligatoria; validacion de
+  fachada antes del reclamo para no consumir la clave; insuficiente -> `201` con
+  `status=REJECTED` + `failure_code=INSUFFICIENT_FUNDS`, sin tocar saldos).
+- Pruebas: `tests/test_e2_t07_transfers.py` (propia sin hold, tercero con fee a
+  `4100`, insuficiente, errores, idempotencia, concurrencia sin sobregiro, HTTP).

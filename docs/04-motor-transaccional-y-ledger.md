@@ -121,7 +121,7 @@ Igual que 7.1 (origen -> destino). Puede llevar comision:
 Debe  2000-A          100
 Debe  2000-A          2      (comision)
 Haber 2000-B          100
-Haber 4000-Comisiones 2
+Haber 4100-Ingresos por comisiones 2
 ```
 
 ### 7.3 Transferencia interbancaria saliente (100 + 2 de comision)
@@ -132,7 +132,7 @@ Haber 4000-Comisiones 2
    Haber 2100-A          100
 2) Comision:
    Debe  2000-A          2
-   Haber 4000-Comisiones 2
+   Haber 4100-Ingresos por comisiones 2
 3) Al confirmar envio:
    Debe  2100-A          100
    Haber 2200-Transito   100

@@ -106,8 +106,23 @@ def get_transaction(session: Session, tx_id: uuid.UUID) -> Transaction | None:
     return session.get(Transaction, tx_id)
 
 
-def get_by_idempotency_key(session: Session, key: str) -> Transaction | None:
+def get_by_idempotency_key(
+    session: Session,
+    key: str,
+    initiator_user_id: uuid.UUID | None = None,
+) -> Transaction | None:
+    """Busca por clave de idempotencia acotada al titular.
+
+    La clave NO es global: el replay solo aplica al mismo
+    `initiator_user_id` (NULL coincide solo con NULL). Sin este acote,
+    un segundo usuario reutilizando la clave recibiria la transaccion
+    ajena (fuga entre titulares).
+    """
     stmt = sa.select(Transaction).where(Transaction.idempotency_key == key)
+    if initiator_user_id is None:
+        stmt = stmt.where(Transaction.initiator_user_id.is_(None))
+    else:
+        stmt = stmt.where(Transaction.initiator_user_id == initiator_user_id)
     return session.scalars(stmt).first()
 
 

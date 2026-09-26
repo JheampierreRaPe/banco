@@ -430,6 +430,7 @@ def test_inactivity_unit_boundary():
             doc_number_hash="hash-" + uuid.uuid4().hex,
             first_name="Ada",
             last_name="Lovelace",
+            email=f"ada.{uuid.uuid4().hex[:8]}@example.com",
         )
         refresh = secrets.token_urlsafe(32)
         moment = _utcnow()

@@ -135,6 +135,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks compara before^..after del push; con un clon superficial
+          # (depth=1) el commit base no existe y falla con "ambiguous argument".
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}

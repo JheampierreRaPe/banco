@@ -18,6 +18,11 @@ Desviacion documentada de `03b#4.1`: `email` se define como `VARCHAR(320)`
 en vez de `CITEXT` porque el repo aun no habilita la extension `citext`
 de Postgres (sin precedente en `migrations/`). Unicidad (UQ) y nulabilidad
 se mantienen; la comparacion case-insensitive queda para E1-T14 (auth).
+
+E1-T34/SCR-005: `email` pasa a **NOT NULL** (migracion
+`0018_users_email_not_null`; coherente con "OTP solo email": sin
+email no hay activacion ni recuperacion). Todo usuario nace con email
+(el KYC lo exige); `phone` sigue nulable.
 """
 
 from __future__ import annotations
@@ -34,7 +39,10 @@ SCHEMA = "identity"
 
 USER_STATUSES = ("PENDING_ACTIVATION", "ACTIVE", "BLOCKED", "CLOSED")
 KYC_STATUSES = ("PENDING", "VERIFIED", "REJECTED", "MANUAL_REVIEW")
-DOC_TYPES = ("DNI", "CE", "PASSPORT")
+#: Tipos de documento aceptados (E1-T36: RUC = persona juridica con razon
+#: social en `business_name`; espejos en `schemas/kyc.py::KYC_DOC_TYPES` y
+#: `service/kyc_proxy.py::DOC_TYPES`, sin divergencias).
+DOC_TYPES = ("DNI", "CE", "PASSPORT", "RUC")
 #: Propositos de OTP (`docs/03b#1` enum `otp_purpose`).
 OTP_PURPOSES = ("ACTIVATION", "RECOVERY", "PAYMENT", "LOGIN")
 #: Estados de OTP (`docs/03b#4.5`: `PENDING`/`USED`/`EXPIRED`; `USED` es el
@@ -50,6 +58,10 @@ class User(Base):
     es unico: evita clientes duplicados por documento. Solo se guarda el
     hash y la version enmascarada, nunca el numero en claro en otra
     columna ni PII biometrica.
+
+    E1-T36: `doc_type` acepta `RUC` (persona juridica) con la razon social
+    en `business_name` (`VARCHAR(150)` nulable); para RUC juridica
+    `first_name`/`last_name` se persisten `""` (siguen `NOT NULL`).
     """
 
     __tablename__ = "users"
@@ -57,7 +69,7 @@ class User(Base):
         sa.UniqueConstraint("doc_number_hash", name="uq_users_doc_number_hash"),
         sa.UniqueConstraint("email", name="uq_users_email"),
         sa.CheckConstraint(
-            "doc_type IN ('DNI', 'CE', 'PASSPORT')",
+            "doc_type IN ('DNI', 'CE', 'PASSPORT', 'RUC')",
             name="ck_users_doc_type",
         ),
         sa.CheckConstraint(
@@ -76,8 +88,12 @@ class User(Base):
     doc_number_masked: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     first_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    #: Razon social (E1-T36, HU01): solo RUC de persona juridica (con
+    #: `first_name`/`last_name` en `""` porque siguen `NOT NULL`); RUC de
+    #: persona natural y `DNI`/`CE`/`PASSPORT` la dejan `NULL`.
+    business_name: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(sa.Date(), nullable=True)
-    email: Mapped[str | None] = mapped_column(sa.String(320), nullable=True)
+    email: Mapped[str] = mapped_column(sa.String(320), nullable=False)
     phone: Mapped[str | None] = mapped_column(sa.String(20), nullable=True)
     status: Mapped[str] = mapped_column(
         sa.String(20),
@@ -419,8 +435,64 @@ DEVICE_PLATFORMS = ("android", "ios")
 #: Tipos de biometria del dispositivo (`03b#4.3`: `FACE`/`FINGERPRINT`).
 BIOMETRIC_TYPES = ("FACE", "FINGERPRINT")
 
+#: Metodos de recuperacion de acceso (`03b#4.8`: `DEVICE_BIOMETRIC`/`OTP`).
+ACCESS_RECOVERY_METHODS = ("DEVICE_BIOMETRIC", "OTP")
+
+
+class AccessRecovery(Base):
+    """Recuperacion de acceso concedida (`03b#4.8`, E1-T31, HU04).
+
+    Columnas exactas de `03b#4.8` (`user_id`, `method`,
+    `verification_result`, `device_id`, `new_credential_set`,
+    `notified_channels`, `created_at`). `user_id` es FK contenida en
+    `identity.users` (mismo schema, regla de oro 4).
+
+    Sin PII ni secretos en `verification_result`: solo el resultado
+    (`{"result": "ok", "at": ...}`); jamas el email, el OTP ni su hash
+    (el hash vive en `otp_codes.code_hash`, el email en `users.email`).
+    E1-T31 inserta `method='OTP'`, `new_credential_set=false` (aqui no
+    hay cambio de credencial, a diferencia de la HU04 canonica).
+
+    NOTA esquema: la tabla la crea la migracion
+    `0017_identity_access_recovery` (columnas, `CHECK` de `method`, FK e
+    indice identicos a este modelo; `JSONB` en Postgres equiparado a
+    `sa.JSON` por `migrations/env.py::compare_type`, sin drift).
+    """
+
+    __tablename__ = "access_recovery"
+    __table_args__ = (
+        sa.CheckConstraint(
+            "method IN ('DEVICE_BIOMETRIC', 'OTP')",
+            name="ck_access_recovery_method",
+        ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            [f"{SCHEMA}.users.id"],
+            name="fk_access_recovery_user",
+        ),
+        sa.Index("ix_access_recovery_user", "user_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    method: Mapped[str] = mapped_column(sa.String(30), nullable=False)
+    verification_result: Mapped[dict | None] = mapped_column(sa.JSON(), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
+    new_credential_set: Mapped[bool] = mapped_column(
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    notified_channels: Mapped[list | None] = mapped_column(sa.JSON(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+
 
 __all__ = [
+    "ACCESS_RECOVERY_METHODS",
     "BIOMETRIC_TYPES",
     "DEVICE_BINDING_STATUSES",
     "DEVICE_PLATFORMS",
@@ -430,6 +502,7 @@ __all__ = [
     "OTP_STATUSES",
     "SCHEMA",
     "USER_STATUSES",
+    "AccessRecovery",
     "Credential",
     "DeviceBinding",
     "KycVerification",

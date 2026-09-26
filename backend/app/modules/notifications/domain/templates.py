@@ -21,6 +21,12 @@ BASE_TEMPLATES: dict[str, dict] = {
         "subject": None,
         "body_template": "Tu codigo de verificacion es {code}. Vence en {ttl_minutes} minutos.",
     },
+    "otp_code_email": {
+        "code": "otp_code_email",
+        "channel": "email",
+        "subject": "Tu codigo de verificacion",
+        "body_template": "Tu codigo de verificacion es {code}. Vence en {ttl_minutes} minutos.",
+    },
     "account_activated": {
         "code": "account_activated",
         "channel": "email",

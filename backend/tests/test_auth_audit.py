@@ -133,6 +133,11 @@ def _make_hmac_user(session: Session, *, device_id: str = "pixel-8-pro"):
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
     )
+    # E1-T38: el login facial exige consentimiento en BD; se concede para
+    # conservar el camino feliz (sin borrar ni alterar los casos).
+    credential = identity_repo.create_credential(session, user.id)
+    credential.biometric_enabled = True
+    session.flush()
     secret_hex = secrets.token_hex(24)
     identity_repo.register_binding(
         session,

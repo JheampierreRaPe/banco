@@ -29,13 +29,10 @@ Frontera (reglas de oro 1/3/4/8):
   Lectura puntual del codigo `4000` via `ledger.repository.get_by_code`
   (solo lectura; TODO: exponer catalogo por fachada).
 - Eventos solo por `outbox` con import perezoso (regla 8); si el modulo
-  no existe (E5-T05 en curso) se continua sin publicar.
-- Saldos solo por el puerto `BalancePort` (E2-T01 pendiente).
-
-TODO(E5-T05): cuando exista `app.core.outbox`, los `_publish_outbox`
-ya lo usan sin cambios (misma firma).
-TODO(E2-T01): proveer el adaptador real de `BalancePort` sobre
-`accounts.account_balances` con `SELECT ... FOR UPDATE`.
+  no existe se continua sin publicar (E5-T05 ya implementado en
+  `app.core.outbox`).
+- Saldos solo por el puerto `BalancePort` (adaptador real E2-T01 via
+  `app.composition.resolve_balance_port`, con fallback a puerto por defecto).
 """
 
 from __future__ import annotations
@@ -66,7 +63,7 @@ class BalanceView(Protocol):
 
 
 class BalancePort(Protocol):
-    """Puerto minimo de saldos (adaptador real: E2-T01 pendiente)."""
+    """Puerto minimo de saldos (adaptador real E2-T01 en `app.composition`)."""
 
     def lock_and_get(self, session: Session, account_id: uuid.UUID) -> BalanceView:
         """Bloquea (pesimista) y retorna el saldo de la cuenta."""
@@ -80,7 +77,7 @@ class BalancePort(Protocol):
 
 
 class _DefaultBalancePort:
-    """Implementacion por defecto: siempre pendiente (E2-T01)."""
+    """Implementacion por defecto (fallback cuando no hay adaptador cableado)."""
 
     def lock_and_get(self, session: Session, account_id: uuid.UUID) -> BalanceView:
         raise NotImplementedError("E2-T01 pendiente: adaptador de saldos no provisto")
@@ -97,11 +94,11 @@ DEFAULT_BALANCE_PORT = _DefaultBalancePort()
 def _publish_outbox(
     session: Session, *, event_type: str, tx: Transaction, payload: dict[str, Any]
 ) -> bool:
-    """Publica en outbox con import perezoso; `False` si E5-T05 pendiente."""
+    """Publica en outbox con import perezoso; `False` si el modulo no existe."""
     try:
         from app.core.outbox import record as outbox_record
     except ImportError:
-        # TODO(E5-T05): modulo outbox aun en curso; se continua sin publicar.
+        # Sin outbox cableado se continua sin publicar (E5-T05 ya existe en `app.core.outbox`).
         return False
     outbox_record(
         session,

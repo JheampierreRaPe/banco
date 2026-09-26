@@ -12,6 +12,12 @@ de `ledger`).
 
 Endpoints (E2-T02, Hecho): `GET /api/v1/accounts` (consolidado) y
 `GET /api/v1/accounts/{id}` (detalle con disponible/retenido/contable).
+Total consolidado (E1-T43, Hecho): `GET /api/v1/accounts/totals` (Bearer,
+declarado ANTES de `/accounts/{account_id}` para evitar 422) devuelve el
+total contable por moneda calculado en el servidor (`sum_totals_by_currency`
+pura + `get_accounts_totals` sobre la misma fuente que `GET /accounts`;
+`PRIMARY_CURRENCY = "PEN"`, `as_of = max(updated_at)`/`now(UTC)`,
+`meta.total` = numero de monedas; `200` con `totals: []` si no hay cuentas).
 Esquemas en `schemas/` (Pydantic, envoltorio `{"data", "meta"}` segun
 05#4); casos de uso en `service/` (lee la proyeccion `account_balances`,
 `contable = disponible + retenido`, enmascarado `****1234`, RBAC por

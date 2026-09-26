@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import Literal
@@ -31,10 +32,13 @@ from app.modules.accounts import service as accounts_service
 from app.modules.accounts.schemas import (
     AccountDetailResponse,
     AccountsListResponse,
+    AccountTotalsResponse,
     MovementsListResponse,
 )
 
 router = APIRouter(tags=["accounts"])
+
+logger = logging.getLogger(__name__)
 
 
 def get_current_user_id(authorization: str | None = Header(default=None)) -> uuid.UUID:
@@ -53,11 +57,11 @@ def get_current_user_id(authorization: str | None = Header(default=None)) -> uui
     try:
         payload = decode_token(token)
     except jwt.PyJWTError as exc:
+        logger.debug("rechazo JWT accounts: %s", type(exc).__name__)
         raise AppError(
             code="NOT_AUTHENTICATED",
             message="Token invalido o expirado",
             status_code=401,
-            details={"reason": str(exc)},
         ) from exc
     try:
         return uuid.UUID(str(payload.get("sub")))
@@ -79,6 +83,31 @@ def list_my_accounts(
     return {
         "data": [item.model_dump(mode="json") for item in items],
         "meta": {"total": len(items)},
+    }
+
+
+@router.get(
+    "/accounts/totals",
+    response_model=AccountTotalsResponse,
+    summary="Total contable consolidado por moneda",
+)
+def get_my_totals(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Total contable consolidado por moneda (E1-T43, HU05).
+
+    Calculado en el servidor desde la proyeccion `account_balances`
+    (misma fuente que `GET /accounts`); el cliente solo muestra el monto
+    (cliente delgado). `meta.total` = numero de monedas, no de cuentas.
+    Se declara ANTES de `/accounts/{account_id}` para que `totals` no sea
+    capturado por el path param (evita 422). 200 con `totals: []` si el
+    usuario no tiene cuentas (sin 404). Solo lectura.
+    """
+    totals = accounts_service.get_accounts_totals(db, user_id)
+    return {
+        "data": totals.model_dump(mode="json"),
+        "meta": {"total": len(totals.totals)},
     }
 
 

@@ -2,8 +2,7 @@
 
 Contrato y fronteras: ver `docs/modules/README.md#ledger`.
 
-Estado: catalogo contable (E5-T09) implementado; asientos y balances en tareas
-posteriores del sprint.
+Estado: implementado E5-T09 (catalogo), E5-T10 (asientos `journal_entries`+`postings` con cuadre por moneda y hash encadenado) y E5-T11 (validador `validate_balanced`); la emision de `ledger.entry.posted` queda para outbox/E5-T05 (ver limitacion en `docs/17`).
 
 ## E5-T09 - Catalogo y subcuentas por cliente
 

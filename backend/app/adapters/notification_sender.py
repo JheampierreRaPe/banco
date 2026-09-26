@@ -16,18 +16,46 @@ Reglas (docs/16):
 from __future__ import annotations
 
 import logging
+import re
+import smtplib
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from email.message import EmailMessage
+from email.utils import make_msgid
 from typing import Protocol
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
 # Canales soportados (`docs/03b-diccionario-de-datos.md#13`).
 CHANNELS = ("push", "email", "sms")
 
+# Timeout unico del POST a Twilio (el reintento vive en la fachada, aqui no).
+TWILIO_TIMEOUT_SECONDS = 10.0
+
+# Timeout de conexion/lectura SMTP (el reintento vive en la fachada).
+GMAIL_TIMEOUT_SECONDS = 10.0
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 587
+
+# Validacion de destinatario previa a tocar la red (no se expone en errores).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 class NotificationProviderError(RuntimeError):
     """Fallo del proveedor (caida transitoria o permanente de un canal)."""
+
+
+class NotificationValidationError(ValueError):
+    """Dato rechazado por el proveedor (no reintentable).
+
+    Subclase de `ValueError` a proposito: la fachada
+    (`app.modules.notifications.service`) deja pasar `ValueError` sin
+    reintentar, asi un 4xx de Twilio falla rapido en lugar de reenviar un
+    mensaje que el proveedor nunca va a aceptar.
+    """
 
 
 @dataclass(frozen=True)
@@ -114,3 +142,273 @@ class MockNotificationSender:
     def _validate_channel(channel: str) -> None:
         if channel not in CHANNELS:
             raise ValueError(f"channel debe ser uno de {CHANNELS}, recibido: {channel!r}")
+
+
+class TwilioNotificationSender:
+    """Proveedor SMS real via API REST de Twilio (aditivo, E1-T09).
+
+    Implementa el MISMO `NotificationSender` Protocol que el mock: un unico
+    intento por `send`, sin dormir ni reintentar (el backoff es
+    responsabilidad de la fachada). Solo transporta el `body` ya renderizado
+    por la fachada; no persiste nada en BD.
+
+    - `recipient`: telefono destino en formato E.164 con prefijo `+`
+      (ej. `+51999999999`); sin `+` (o sin digitos validos) se rechaza con
+      `NotificationValidationError` antes de cualquier llamada HTTP.
+    - Solo atiende el canal `sms`; otro canal -> `NotificationValidationError`.
+    - POST `https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json`
+      con `From`/`To`/`Body` y Basic Auth `(api_key_sid, auth_token)`,
+      timeout 10 s.
+    - Esquema de credenciales separado (diagnostico: Twilio exige el Account
+      SID real `AC...` en el path; con la API Key `SK...` en el path responde
+      404/20404):
+      `account_sid` (path, debe empezar con `AC`) + `api_key_sid` (usuario del
+      Basic Auth, default = `account_sid` para compatibilidad con auth clasica
+      `AC`+token) + `auth_token` (password: API Key secret o Auth Token).
+    - 201 -> `SendResult(ok=True, provider_ref=SID)`.
+    - 4xx -> `NotificationValidationError` (no reintentable; el mensaje de
+      Twilio NO se propaga porque puede ecoar el numero: solo se informa el
+      HTTP status + codigo numerico de Twilio).
+    - Timeout, caida de red o 5xx -> `NotificationProviderError`
+      (reintentable por la fachada).
+    - Logs: solo canal + `provider_ref`; nunca destinatario, cuerpo ni secreto.
+    """
+
+    BASE_URL = "https://api.twilio.com/2010-04-01"
+
+    def __init__(
+        self,
+        *,
+        account_sid: str,
+        auth_token: str,
+        from_number: str,
+        api_key_sid: str | None = None,
+        client: httpx.Client | None = None,
+        timeout: float = TWILIO_TIMEOUT_SECONDS,
+    ) -> None:
+        sid = str(account_sid or "").strip()
+        token = str(auth_token or "").strip()
+        sender = str(from_number or "").strip()
+        if not sid:
+            raise ValueError("account_sid es obligatorio (env TWILIO_ACCOUNT_SID)")
+        if not sid.startswith("AC"):
+            raise ValueError(
+                "account_sid debe ser el Account SID real (prefijo 'AC...') "
+                "para el path /Accounts/{AC}/Messages.json; no uses la API Key "
+                "(SK...) en el path (Twilio responde 404/20404). Configura "
+                "TWILIO_ACCOUNT_SID con el AC... y la API Key en TWILIO_API_KEY_SID."
+            )
+        if not token:
+            raise ValueError("auth_token es obligatorio (env TWILIO_AUTH_TOKEN)")
+        if not sender:
+            raise ValueError("from_number es obligatorio (env TWILIO_FROM_NUMBER)")
+        # `api_key_sid` es el usuario del Basic Auth: API Key SID (SK...) cuando
+        # se autentica con API Key, o el mismo Account SID (AC...) con auth
+        # clasica. Default = `account_sid` (firma anterior sigue funcionando).
+        key_sid = str(api_key_sid or "").strip() or sid
+        if not key_sid:
+            raise ValueError("api_key_sid es obligatorio (env TWILIO_API_KEY_SID)")
+        self._account_sid = sid
+        self._api_key_sid = key_sid
+        self._auth_token = token
+        self._from_number = sender
+        self._timeout = timeout
+        self._client = client or httpx.Client(timeout=timeout)
+
+    # -- contrato ---------------------------------------------------------
+    def send(self, *, channel: str, recipient: str, subject: str | None, body: str) -> SendResult:
+        if channel != "sms":
+            raise NotificationValidationError(
+                f"TwilioNotificationSender solo atiende canal 'sms', recibido: {channel!r}"
+            )
+        to = self._validate_recipient(recipient)
+        text = str(body or "")
+        if not text.strip():
+            raise NotificationValidationError("body es obligatorio")
+        url = f"{self.BASE_URL}/Accounts/{self._account_sid}/Messages.json"
+        try:
+            response = self._client.post(
+                url,
+                data={"From": self._from_number, "To": to, "Body": text},
+                auth=(self._api_key_sid, self._auth_token),
+                timeout=self._timeout,
+            )
+        except httpx.TimeoutException as exc:
+            logger.warning("notifications.twilio.timeout channel=%s", channel)
+            raise NotificationProviderError(f"twilio timeout: {type(exc).__name__}") from exc
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "notifications.twilio.network channel=%s error=%s",
+                channel,
+                type(exc).__name__,
+            )
+            raise NotificationProviderError(
+                f"twilio red no disponible: {type(exc).__name__}"
+            ) from exc
+        if response.status_code == 201:
+            sid = self._extract_sid(response)
+            logger.info("notifications.twilio.sent channel=%s provider_ref=%s", channel, sid)
+            return SendResult(ok=True, provider_ref=sid)
+        if 400 <= response.status_code < 500:
+            code = self._extract_twilio_code(response)
+            logger.warning(
+                "notifications.twilio.rejected channel=%s http=%s code=%s",
+                channel,
+                response.status_code,
+                code,
+            )
+            raise NotificationValidationError(
+                f"twilio rechazo el sms: http={response.status_code} code={code}"
+            )
+        logger.warning(
+            "notifications.twilio.unavailable channel=%s http=%s",
+            channel,
+            response.status_code,
+        )
+        raise NotificationProviderError(f"twilio no disponible: http={response.status_code}")
+
+    def close(self) -> None:
+        """Libera el cliente HTTP propio (no llamar si se inyecto uno externo)."""
+        self._client.close()
+
+    @staticmethod
+    def _validate_recipient(recipient: str) -> str:
+        to = str(recipient or "").strip()
+        digits = to[1:] if to.startswith("+") else ""
+        if not to.startswith("+") or not digits.isdigit() or len(digits) < 7:
+            raise NotificationValidationError(
+                "recipient debe ser un telefono E.164 con prefijo '+' (ej. '+51999999999')"
+            )
+        return to
+
+    @staticmethod
+    def _extract_sid(response: httpx.Response) -> str:
+        try:
+            sid = (response.json() or {}).get("sid")
+        except ValueError:
+            sid = None
+        # 201 significa aceptado: si faltara el SID se usa ref local antes que
+        # fallar (fallar provocaria un reintento que duplicaria el SMS).
+        return str(sid) if sid else f"twilio-sin-sid-{uuid.uuid4().hex[:12]}"
+
+    @staticmethod
+    def _extract_twilio_code(response: httpx.Response) -> str:
+        try:
+            code = (response.json() or {}).get("code")
+        except ValueError:
+            code = None
+        return str(code) if code is not None else "sin-codigo"
+
+
+class GmailNotificationSender:
+    """Proveedor de email real via SMTP de Gmail (E1-T25, HU02 P-S2-01).
+
+    Implementa el MISMO `NotificationSender` Protocol que el mock: un unico
+    intento por `send`, sin dormir ni reintentar (el backoff es
+    responsabilidad de la fachada). Solo transporta el `body` ya renderizado
+    por la fachada; no persiste nada en BD.
+
+    - Solo atiende el canal `email`; otro canal -> `NotificationValidationError`.
+    - `recipient` debe ser un email valido (validado ANTES de la red); el
+      destinatario nunca se incluye en los mensajes de error.
+    - Conexion `smtp.gmail.com:587` con STARTTLS obligatorio y timeout acotado.
+    - Credenciales SOLO por parametro/env (`GMAIL_USER`/`GMAIL_APP_PASSWORD`);
+      jamas se loguean.
+    - Autenticacion fallida o respuesta SMTP 5xx -> `NotificationValidationError`
+      (no reintentable; no quema credenciales ni duplica envios).
+    - Respuesta SMTP 4xx -> `NotificationProviderError` (reintentable).
+    - Timeout o caida de red -> `NotificationProviderError` (reintentable).
+    - Logs: solo canal + `provider_ref`; nunca destinatario, asunto, cuerpo ni
+      secreto.
+    """
+
+    SMTP_HOST = GMAIL_SMTP_HOST
+    SMTP_PORT = GMAIL_SMTP_PORT
+
+    def __init__(
+        self,
+        *,
+        gmail_user: str,
+        app_password: str,
+        timeout: float = GMAIL_TIMEOUT_SECONDS,
+        smtp_factory: Callable[..., smtplib.SMTP] | None = None,
+    ) -> None:
+        user = str(gmail_user or "").strip()
+        secret = str(app_password or "").strip()
+        if not user:
+            raise ValueError("gmail_user es obligatorio (env GMAIL_USER)")
+        if not secret:
+            raise ValueError("app_password es obligatorio (env GMAIL_APP_PASSWORD)")
+        self._gmail_user = user
+        self._app_password = secret
+        self._timeout = timeout
+        self._smtp_factory = smtp_factory or smtplib.SMTP
+
+    # -- contrato ---------------------------------------------------------
+    def send(self, *, channel: str, recipient: str, subject: str | None, body: str) -> SendResult:
+        if channel != "email":
+            raise NotificationValidationError(
+                f"GmailNotificationSender solo atiende canal 'email', recibido: {channel!r}"
+            )
+        to = self._validate_recipient(recipient)
+        text = str(body or "")
+        if not text.strip():
+            raise NotificationValidationError("body es obligatorio")
+        message = EmailMessage()
+        message["From"] = self._gmail_user
+        message["To"] = to
+        message["Subject"] = str(subject) if subject else "Notificacion"
+        message_id = make_msgid()
+        message["Message-ID"] = message_id
+        message.set_content(text)
+
+        smtp = None
+        try:
+            smtp = self._smtp_factory(self.SMTP_HOST, self.SMTP_PORT, timeout=self._timeout)
+            smtp.starttls()
+            smtp.login(self._gmail_user, self._app_password)
+            smtp.send_message(message)
+        except smtplib.SMTPAuthenticationError as exc:
+            logger.warning("notifications.gmail.auth_failed channel=%s", channel)
+            raise NotificationValidationError(
+                "gmail rechazo las credenciales (no reintentable)"
+            ) from exc
+        except smtplib.SMTPResponseException as exc:
+            code = getattr(exc, "smtp_code", None)
+            if isinstance(code, int) and 400 <= code < 500:
+                logger.warning("notifications.gmail.temporary channel=%s code=%s", channel, code)
+                raise NotificationProviderError(f"gmail temporal: code={code}") from exc
+            logger.warning("notifications.gmail.rejected channel=%s code=%s", channel, code)
+            raise NotificationValidationError(f"gmail rechazo el correo: code={code}") from exc
+        except (TimeoutError, OSError, smtplib.SMTPException) as exc:
+            logger.warning(
+                "notifications.gmail.network channel=%s error=%s",
+                channel,
+                type(exc).__name__,
+            )
+            raise NotificationProviderError(f"gmail no disponible: {type(exc).__name__}") from exc
+        finally:
+            self._close(smtp)
+        logger.info("notifications.gmail.sent channel=%s provider_ref=%s", channel, message_id)
+        return SendResult(ok=True, provider_ref=message_id)
+
+    @staticmethod
+    def _close(smtp: smtplib.SMTP | None) -> None:
+        if smtp is None:
+            return
+        try:
+            smtp.quit()
+        except Exception:  # noqa: BLE001 - cierre best-effort tras el envio
+            try:
+                smtp.close()
+            except Exception:  # noqa: BLE001, S110 - cierre best-effort
+                pass
+
+    @staticmethod
+    def _validate_recipient(recipient: str) -> str:
+        to = str(recipient or "").strip()
+        if not to or len(to) > 254 or not _EMAIL_RE.match(to):
+            raise NotificationValidationError(
+                "recipient debe ser un email valido (ej. 'usuario@dominio.com')"
+            )
+        return to

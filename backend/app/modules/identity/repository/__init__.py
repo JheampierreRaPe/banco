@@ -89,6 +89,34 @@ def _require_text(value: str, field: str, max_len: int) -> str:
     return text
 
 
+def _optional_name(value: str | None, field: str, max_len: int) -> str:
+    """Nombre que puede venir vacio (solo RUC juridica, E1-T36).
+
+    Acepta `""` (se persiste tal cual porque la columna sigue `NOT NULL`);
+    solo valida tipo y longitud. Sin eco de valores en el mensaje.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError(f"{field} debe ser texto")
+    text = value.strip()
+    if len(text) > max_len:
+        raise ValueError(f"{field} supera {max_len} caracteres")
+    return text
+
+
+def _optional_business_name(value: str | None) -> str | None:
+    """Razon social normalizada (`None` si ausente/vacia; E1-T36)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("business_name debe ser texto")
+    text = value.strip()
+    if len(text) > 150:
+        raise ValueError("business_name supera 150 caracteres")
+    return text or None
+
+
 def create_user(
     session: Session,
     *,
@@ -96,6 +124,7 @@ def create_user(
     doc_number_hash: str,
     first_name: str,
     last_name: str,
+    business_name: str | None = None,
     doc_number_masked: str | None = None,
     birth_date: date | None = None,
     email: str | None = None,
@@ -108,15 +137,30 @@ def create_user(
 
     Valida antes de insertar (nada a medias): `doc_type` del enum,
     `doc_number_hash` obligatorio y unico (duplicado lanza
-    `DuplicateDocumentError`), nombres obligatorios, `status`/`kyc_status`
+    `DuplicateDocumentError`), nombres segun tipo, `status`/`kyc_status`
     de sus enums. El UQ de BD (`uq_users_doc_number_hash`) queda como
     respaldo ante carreras.
+
+    Reglas por tipo (E1-T36): para `RUC`, `business_name` es obligatorio
+    salvo RUC de persona natural (nombres completos, `business_name`
+    queda `NULL`); `first_name`/`last_name` pueden venir vacios y se
+    persisten como `""` (las columnas siguen `NOT NULL`). Para
+    `DNI`/`CE`/`PASSPORT` los nombres siguen obligatorios y
+    `business_name` se ignora (se persiste `NULL`).
     """
     if doc_type not in DOC_TYPES:
         raise ValueError(f"doc_type debe ser uno de {DOC_TYPES}, recibido: {doc_type!r}")
     doc_hash = _require_text(doc_number_hash, "doc_number_hash", 128)
-    first = _require_text(first_name, "first_name", 100)
-    last = _require_text(last_name, "last_name", 100)
+    if doc_type == "RUC":
+        business = _optional_business_name(business_name)
+        first = _optional_name(first_name, "first_name", 100)
+        last = _optional_name(last_name, "last_name", 100)
+        if business is None and not (first and last):
+            raise ValueError("business_name es obligatorio para RUC de persona juridica")
+    else:
+        first = _require_text(first_name, "first_name", 100)
+        last = _require_text(last_name, "last_name", 100)
+        business = None
     if status not in USER_STATUSES:
         raise ValueError(f"status debe ser uno de {USER_STATUSES}, recibido: {status!r}")
     if kyc_status not in KYC_STATUSES:
@@ -143,6 +187,7 @@ def create_user(
         doc_number_masked=doc_number_masked,
         first_name=first,
         last_name=last,
+        business_name=business,
         birth_date=birth_date,
         email=email,
         phone=phone,

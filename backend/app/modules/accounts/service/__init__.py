@@ -18,14 +18,25 @@ from __future__ import annotations
 import csv
 import io
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
 from app.modules.accounts import repository as accounts_repo
-from app.modules.accounts.schemas import AccountDetail, AccountSummary, Movement
+from app.modules.accounts.schemas import (
+    AccountDetail,
+    AccountSummary,
+    AccountTotals,
+    CurrencyTotal,
+    Movement,
+)
 
 MASK_PREFIX = "****"
+
+#: Moneda principal del MVP (E1-T43, HU05): el hero `SALDO TOTAL` del
+#: dashboard muestra su consolidado. Constante del modulo (regla de oro 6:
+#: no va en `config.parameters`).
+PRIMARY_CURRENCY = "PEN"
 
 #: Paginacion de movimientos (E2-T03): defaults y tope (05#4 usa 20 de ejemplo).
 MOVEMENTS_DEFAULT_PAGE = 1
@@ -143,6 +154,76 @@ def get_account_detail(
         held_minor=int(balance.held_minor),
     )
     return AccountDetail(**summary.model_dump(), status=account.status)
+
+
+# ------------------------------------------------- Totales (E1-T43)
+
+
+def sum_totals_by_currency(items: list[AccountSummary]) -> list[CurrencyTotal]:
+    """Agrega saldos por moneda (puro, sin BD; E1-T43, HU05).
+
+    Agrupa por `currency`, suma `available_minor`/`held_minor` y deriva
+    `total_minor = available + held` (contable). Rechaza negativos.
+    Orden determinista por moneda.
+    """
+    grouped: dict[str, dict[str, int]] = {}
+    for item in items:
+        available = int(item.available_minor)
+        held = int(item.held_minor)
+        if available < 0 or held < 0:
+            raise ValueError("saldos no pueden ser negativos")
+        bucket = grouped.setdefault(item.currency, {"available": 0, "held": 0})
+        bucket["available"] += available
+        bucket["held"] += held
+    totals = [
+        CurrencyTotal(
+            currency=currency,
+            available_minor=sums["available"],
+            held_minor=sums["held"],
+            total_minor=sums["available"] + sums["held"],
+        )
+        for currency, sums in sorted(grouped.items())
+    ]
+    return totals
+
+
+def get_accounts_totals(session: Session, user_id: uuid.UUID | str) -> AccountTotals:
+    """Total contable consolidado por moneda del usuario (E1-T43, HU05).
+
+    Reutiliza `list_accounts` (misma fuente que `GET /accounts`, para que el
+    total cuadre con la lista) y agrupa con `sum_totals_by_currency`.
+    `primary_total_minor` es el consolidado `PEN` (0 si no hay cuentas PEN).
+    `as_of` = `max(updated_at)` de las filas `account_balances` del usuario;
+    fallback a `now(UTC)` si no hay filas. Solo lectura (sin `flush`/`commit`).
+    """
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    items = list_accounts(session, uid)
+    totals = sum_totals_by_currency(items)
+    primary_total = 0
+    for entry in totals:
+        if entry.currency == PRIMARY_CURRENCY:
+            primary_total = int(entry.total_minor)
+            break
+    latest: datetime | None = None
+    for account in accounts_repo.list_by_user(session, uid):
+        balance = accounts_repo.get_balance(session, account.id)
+        if balance is None or balance.updated_at is None:
+            continue
+        stamp = balance.updated_at
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        if latest is None or stamp > latest:
+            latest = stamp
+    as_of = latest if latest is not None else datetime.now(UTC)
+    return AccountTotals(
+        as_of=as_of,
+        primary_currency=PRIMARY_CURRENCY,
+        primary_total_minor=primary_total,
+        totals=totals,
+    )
 
 
 # ------------------------------------------------- Movimientos (E2-T03)
@@ -495,10 +576,13 @@ __all__ = [
     "MOVEMENTS_FETCH_LIMIT",
     "MOVEMENTS_MAX_PAGE_SIZE",
     "MOVEMENT_DIRECTIONS",
+    "PRIMARY_CURRENCY",
     "AccountForbiddenError",
     "AccountNotFoundError",
+    "CurrencyTotal",
     "ExportFormatUnavailableError",
     "get_account_detail",
+    "get_accounts_totals",
     "get_export_movements",
     "list_account_movements",
     "list_accounts",
@@ -508,6 +592,7 @@ __all__ = [
     "movements_to_xlsx",
     "openpyxl_available",
     "pdf_available",
+    "sum_totals_by_currency",
     "to_movement",
     "to_summary",
 ]

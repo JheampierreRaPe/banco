@@ -31,7 +31,7 @@
 |---|---|
 | `user_status` | `PENDING_ACTIVATION`, `ACTIVE`, `BLOCKED`, `CLOSED` |
 | `kyc_status` | `PENDING`, `VERIFIED`, `REJECTED`, `MANUAL_REVIEW` |
-| `doc_type` | `DNI`, `CE`, `PASSPORT` |
+| `doc_type` | `DNI`, `CE`, `PASSPORT`, `RUC` |
 | `credential_type` | `PIN`, `PASSWORD` |
 | `otp_purpose` | `ACTIVATION`, `RECOVERY`, `PAYMENT`, `LOGIN` |
 | `account_type` | `AHORRO`, `CORRIENTE`, `WALLET`, `POCKET`, `MULTICURRENCY` |
@@ -39,7 +39,7 @@
 | `transaction_type` | `OWN_TRANSFER`, `THIRD_PARTY_TRANSFER`, `INTERBANK_TRANSFER`, `QR_PAYMENT`, `SERVICE_PAYMENT`, `TOPUP`, `LOAN_DISBURSEMENT`, `LOAN_INSTALLMENT`, `FX_EXCHANGE`, `POCKET_TRANSFER`, `SALARY_DISTRIBUTION`, `REVERSAL` |
 | `transaction_status` | `INITIATED`, `VALIDATED`, `PENDING_AUTHORIZATION`, `AUTHORIZED`, `FUNDS_HELD`, `POSTED`, `SETTLED`, `CONCILIATED`, `REJECTED`, `FAILED`, `REVERSED` |
 | `hold_status` | `ACTIVE`, `RELEASED`, `CAPTURED`, `EXPIRED` |
-| `ledger_account_type` | `ASSET`, `LIABILITY`, `EQUITY`, `INCOME`, `EXPENSE` |
+| `ledger_account_type` | `asset`, `liability`, `equity`, `income`, `expense` |
 | `posting_direction` | `DEBIT`, `CREDIT` |
 | `journal_status` | `POSTED`, `REVERSED` |
 | `loan_application_status` | `DRAFT`, `SUBMITTED`, `IN_EVALUATION`, `APPROVED`, `REJECTED`, `IN_REVIEW`, `EXPIRED` |
@@ -59,9 +59,16 @@
 | `clearing_item_status` | `PENDING`, `MATCHED`, `EXCEPTION` |
 | `exception_type` | `MISSING_INTERNAL`, `MISSING_EXTERNAL`, `AMOUNT_MISMATCH`, `DATE_MISMATCH`, `DUPLICATE` |
 | `claim_status` | `OPEN`, `IN_REVIEW`, `RESOLVED`, `REJECTED` |
-| `notification_channel` | `PUSH`, `EMAIL`, `SMS` |
-| `notification_status` | `QUEUED`, `SENT`, `FAILED`, `READ` |
+| `notification_channel` | `push`, `email`, `sms` |
+| `notification_status` | `QUEUED`, `SENT`, `FAILED` |
 | `outbox_status` | `PENDING`, `PUBLISHED`, `FAILED` |
+
+> Nota de alineacion (2026-09-25): los enums reflejan el codigo vigente (minusculas donde el
+> codigo las usa). `ledger_account_type` es `asset|liability|equity|income|expense`
+> (`ledger/models/__init__.py:25`, `ledger/domain/chart.py:36`); `notification_channel` es
+> `push|email|sms` (`notifications/models/__init__.py:29`). `notification_status` es
+> `QUEUED|SENT|FAILED` (`notifications/models/__init__.py:30`); no existe `READ` como estado:
+> la lectura se registra con `notifications.read_at` (§13).
 
 ## 2. Schema `shared` (transversal)
 
@@ -134,10 +141,11 @@
 | doc_type | VARCHAR(10) | No | - | CK `doc_type` | Tipo de documento. |
 | doc_number_hash | VARCHAR(128) | No | - | UQ | Hash del numero (no claro). |
 | doc_number_masked | VARCHAR(20) | Si | - | | Version enmascarada. |
-| first_name | VARCHAR(100) | No | - | | - |
-| last_name | VARCHAR(100) | No | - | | - |
+| first_name | VARCHAR(100) | No | - | | Nombres; `""` si RUC de persona juridica (la razon social va en `business_name`). |
+| last_name | VARCHAR(100) | No | - | | Apellidos; `""` si RUC de persona juridica. |
+| business_name | VARCHAR(150) | Si | - | | Razon social (E1-T36); solo RUC de persona juridica, el resto `NULL`. |
 | birth_date | DATE | Si | - | | - |
-| email | CITEXT | Si | - | UQ | - |
+| email | CITEXT | No | - | UQ | - |
 | phone | VARCHAR(20) | Si | - | IDX | - |
 | status | VARCHAR(20) | No | 'PENDING_ACTIVATION' | IDX, CK | `user_status`. |
 | kyc_status | VARCHAR(20) | No | 'PENDING' | IDX | `kyc_status`. |
@@ -234,6 +242,9 @@
 **Roles semilla:** `CLIENT`, `MERCHANT`, `OPS_ANALYST`, `FRAUD_ANALYST`, `CREDIT_ANALYST`,
 `COMPLIANCE_OFFICER`, `SECURITY_ADMIN`, `AUDITOR`, `TRANSACTION_SERVICE`.
 
+> Nota de alineacion (2026-09-25): `roles`/`user_roles` DIFERIDOS (fuera de alcance, sin
+> implementar en el MVP).
+
 ### 4.8 `access_recovery`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
@@ -294,7 +305,7 @@
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
 
-### 5.4 `movements_view` (vista materializada)
+### 5.4 `movements_view` (tabla + proyeccion; no vista materializada)
 
 | Columna | Tipo | Descripcion |
 |---|---|---|
@@ -309,6 +320,11 @@
 | created_at | TIMESTAMPTZ | - |
 
 Indices: `(account_id, created_at DESC)`.
+
+> Nota de alineacion (2026-09-25): desviacion documentada — en el codigo es tabla
+> (`accounts.repository.movements.MovementView`, `__tablename__ = "movements_view"`) poblada
+> por proyeccion desde los postings (`record_posting`/`apply_ledger_posting`, consumidor
+> `ledger.entry.posted` en `movements.py:266`), no una vista materializada de Postgres.
 
 ### 5.5 `daily_balance_snapshots`
 
@@ -855,6 +871,9 @@ Indices: `(account_id, created_at DESC)`.
 | user_channel_preferences | sms | BOOLEAN | No | false | |
 | user_channel_preferences | updated_at | TIMESTAMPTZ | No | now() | |
 
+> Nota de alineacion (2026-09-25): `user_channel_preferences` DIFERIDA (fuera de alcance, sin
+> implementar en el MVP).
+
 ## 14. Schema `audit`
 
 ### 14.1 `audit_log` (append-only)
@@ -887,6 +906,9 @@ Indices: `(account_id, created_at DESC)`.
 | to_seq | BIGINT | No | - | | Rango fin. |
 | valid | BOOLEAN | No | - | | Cadena integra. |
 | details | JSONB | Si | - | | - |
+
+> Nota de alineacion (2026-09-25): `audit_verifications` DIFERIDA (fuera del MVP, HU23 `Could`;
+> la auditoria basica `audit_log` si esta implementada).
 
 ## 15. Indices recomendados (resumen)
 

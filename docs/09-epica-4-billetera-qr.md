@@ -64,7 +64,9 @@ diario).
 - `E4-T14` Manejo de errores de QR. *Frontend.*
 - `E4-T15` Pruebas de seguridad del QR y concurrencia de pago. *QA.*
 
-## HU16 - Pago de Servicios y Recargas Express (Should, 5 SP, Sprint 4)
+## HU16 - Pago de Servicios y Recargas Express (Should, 5 SP, Sprint 3)
+
+> Nota de alineacion (2026-09-25): el sprint canonico es el de `docs/14` (Sprint 3, rebalanceo).
 
 **Logica**
 1. El cliente busca una empresa de servicios por nombre o numero de suministro.

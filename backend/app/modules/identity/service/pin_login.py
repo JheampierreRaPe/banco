@@ -20,6 +20,23 @@ Flujo (`POST /auth/login/pin {user_ref[, device_id/device_info/ip], pin}`):
    `MAX_FAILED_ATTEMPTS` fija `locked_until` y notifica `login_alert`
    best-effort (import perezoso como `otp_service`, sin PII en logs).
 5. El PIN jamas se guarda en claro ni sale en logs; solo su hash PBKDF2.
+6. E1-T27 (best-effort) + E1-T42 (rebind): si el login exitoso trae
+   `device_public_key` y `device_id`, se registra el `device_binding`
+   (`register_binding`, `ACTIVE`) o se reescribe su `public_key` con la clave
+   vigente + se refresca su `last_used_at` (una sola fila, `status`
+   preservado: un `REVOKED` no se reactiva) segun exista o no, y se audita
+   el alta/uso via fachada. Un fallo al persistir el binding NO
+   revierte la sesion ni los tokens (la sesion ya quedo con `flush`) y el
+   `device_public_key` jamas aparece en logs ni en la respuesta.
+
+E1-T27 (decision de metadatos): `platform`/`biometric_type` invalidos se
+normalizan a `None` al registrar (se ignoran) en vez de rechazar el login:
+un 422 de esquema antes de verificar el PIN podria delatar el estado del PIN
+(o ser usado como oraculo) y rompe la regla de aceptacion "no rompen el
+login". El `device_public_key` no se valida en el esquema (solo no vacio):
+`register_binding` lo persiste y `device_login.verify_signature` lo valida
+cuando toque firmar; un formato basura solo hara fallar el login facial
+posterior, no el PIN.
 
 DECISION CRIPTOGRAFICA (documentada, verificada en el `.venv`):
 
@@ -37,11 +54,15 @@ DECISION CRIPTOGRAFICA (documentada, verificada en el `.venv`):
   autodetecta por prefijo; formatos desconocidos -> `False` generico).
 
 REGLAS CONFIGURABLES (regla de oro 6): `MAX_FAILED_ATTEMPTS = 5` y
-`LOCKOUT_SECONDS = 900` (15 min) son candidatas a `config.parameters`
-(`auth.max_failed_attempts`, `auth.lockout_seconds`, claves ya previstas en
-`docs/03b#config.parameters`); aun no existe infraestructura de parametros
-en el repo (mismo patron que `device_login.REFRESH_TTL_SECONDS` y
-`domain/nonce.py`: constante documentada + misma clave).
+`LOCKOUT_SECONDS = 900` (15 min) se leen de `config.parameters`
+(`auth.max_failed_attempts`, `auth.lockout_seconds`, claves previstas en
+`docs/03b#config.parameters` y sembradas por las migraciones `0001`/`0019`)
+con lectura best-effort (`_resolve_max_attempts`/`_resolve_lockout_seconds`:
+SQL directo a `config.parameters` en SAVEPOINT via
+`otp_service.read_int_parameter`, fallback a la constante; se lee el global
+en cada llamada para que los tests puedan fijarlo). Sin acceso o valor
+invalido rigen las constantes (comportamiento identico); nunca se rompe la
+transaccion del llamante.
 
 NO FILTRACION (decisiones):
 
@@ -79,13 +100,19 @@ from app.modules.identity.service import device_login as device_login_service
 
 logger = logging.getLogger(__name__)
 
-#: Fallos consecutivos que disparan el bloqueo (candidato a
-#: `config.parameters: auth.max_failed_attempts`, ya previsto en `03b`).
+#: Fallos consecutivos que disparan el bloqueo (`config.parameters`:
+#: `auth.max_failed_attempts`, semilla `5`; sin acceso rige esta constante).
 MAX_FAILED_ATTEMPTS = 5
 
-#: Duracion del bloqueo temporal en segundos (candidato a
-#: `config.parameters: auth.lockout_seconds`).
+#: Duracion del bloqueo temporal en segundos (`config.parameters`:
+#: `auth.lockout_seconds`, semilla `900`; sin acceso rige esta constante).
 LOCKOUT_SECONDS = 900
+
+#: Clave del umbral de intentos en `config.parameters` (E1-T34/SCR-005).
+_PARAM_MAX_ATTEMPTS_KEY = "auth.max_failed_attempts"
+
+#: Clave de la duracion del bloqueo en `config.parameters` (E1-T34/SCR-005).
+_PARAM_LOCKOUT_SECONDS_KEY = "auth.lockout_seconds"
 
 #: Iteraciones PBKDF2-HMAC-SHA256 para el hash del PIN.
 PBKDF2_ITERATIONS = 210_000
@@ -102,6 +129,9 @@ LOCKED_MESSAGE = "Cuenta bloqueada temporalmente por intentos fallidos"
 #: Acciones de auditoria E1-T17 (exito reutiliza el evento de device_login).
 AUDIT_LOGIN_SUCCEEDED = device_login_service.LOGIN_SUCCEEDED_EVENT
 AUDIT_FAILED_ATTEMPT = "auth.failed_attempt"
+
+#: Accion de auditoria del alta/uso del binding de dispositivo (E1-T27).
+AUDIT_DEVICE_BINDING = "auth.device_binding"
 
 #: Plantilla de la notificacion de bloqueo (canal `push`, la unica de login).
 LOCK_TEMPLATE_CODE = "login_alert"
@@ -136,6 +166,31 @@ def _coerce_user_id(user_ref: object) -> uuid.UUID | None:
         return uuid.UUID(str(user_ref).strip())
     except (ValueError, AttributeError, TypeError):
         return None
+
+
+def _resolve_max_attempts(session: Session) -> int:
+    """Umbral de intentos: `auth.max_failed_attempts` > `MAX_FAILED_ATTEMPTS`.
+
+    E1-T34/SCR-005 (regla de oro 6): lectura best-effort via
+    `otp_service.read_int_parameter` (import perezoso: este modulo no puede
+    importar `otp_service` a nivel top por el contrato de `test_pin_login`).
+    Sin acceso o valor invalido rige la constante; se lee el global en cada
+    llamada para que los tests puedan fijarlo (`monkeypatch`).
+    """
+    from app.modules.identity.service import otp_service as _otp_service
+
+    return _otp_service.read_int_parameter(session, _PARAM_MAX_ATTEMPTS_KEY, MAX_FAILED_ATTEMPTS)
+
+
+def _resolve_lockout_seconds(session: Session) -> int:
+    """Duracion del bloqueo: `auth.lockout_seconds` > `LOCKOUT_SECONDS`.
+
+    E1-T34/SCR-005 (regla de oro 6): misma lectura best-effort que
+    `_resolve_max_attempts`; sin acceso o valor invalido rige la constante.
+    """
+    from app.modules.identity.service import otp_service as _otp_service
+
+    return _otp_service.read_int_parameter(session, _PARAM_LOCKOUT_SECONDS_KEY, LOCKOUT_SECONDS)
 
 
 def hash_pin(pin: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -299,6 +354,125 @@ def _audit_auth_event(
         logger.warning("pin_login audit no registrado error=%s", type(exc).__name__)
 
 
+def _audit_binding_event(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    device_id: str,
+    moment: datetime,
+    result: str,
+    platform: str | None,
+    biometric_type: str | None,
+) -> None:
+    """Audita el alta/uso del binding (E1-T27, best-effort).
+
+    Sin PII sensible ni secretos: solo IDs (`user_id`, `device_id`, `at`) y
+    metadatos del resultado (`registered`/`touched`/`failed`, `platform`,
+    `biometric_type`); jamas el `device_public_key`. Si la auditoria falla se
+    loguea y el login igual se retorna (el binding ya quedo con `flush`).
+    """
+    try:
+        from app.modules.audit.service import record as audit_record
+    except ImportError:  # pragma: no cover - el modulo existe en el repo
+        logger.warning("pin_login audit no disponible")
+        return
+    try:
+        metadata: dict = {"result": result, "at": moment.isoformat()}
+        if platform is not None:
+            metadata["platform"] = platform
+        if biometric_type is not None:
+            metadata["biometric_type"] = biometric_type
+        audit_record(
+            session,
+            actor=user_id,
+            action=AUDIT_DEVICE_BINDING,
+            entity=device_login_service.USER_AGGREGATE_TYPE,
+            entity_id=user_id,
+            metadata=metadata,
+            device_id=device_id,
+        )
+        session.flush()
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado E1-T27
+        logger.warning("pin_login binding audit no registrado error=%s", type(exc).__name__)
+
+
+def _bind_device_best_effort(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    device_id: str | None,
+    device_public_key: str | None,
+    platform: str | None,
+    biometric_type: str | None,
+    moment: datetime,
+) -> str | None:
+    """Registra o reescribe el binding tras un login con PIN exitoso (E1-T27, E1-T42).
+
+    Solo actua si llegan `device_id` y `device_public_key` (sin clave el login
+    sigue igual: compatibilidad hacia atras). Si ya existe binding para
+    (`user_id`, `device_id`) reescribe `public_key` con la clave vigente
+    (rebind) y refresca `last_used_at`, PRESERVANDO `status` (un `REVOKED` no
+    se reactiva por un login con PIN); si no, `register_binding` (`ACTIVE`) y
+    fija `last_used_at` en el mismo momento del login. La clave se persiste
+    tal cual (compatibilidad `hmac:`/PEM sin validar formato: `verify_signature`
+    autodetecta). `platform`/`biometric_type` invalidos se ignoran (`None`).
+    Todo va en un savepoint (`begin_nested`): un fallo de persistencia se
+    revierte SOLO aqui y la sesion/los tokens del login sobreviven
+    (best-effort); se audita el resultado.
+
+    Retorna `"registered"`, `"touched"`, `"failed"` o `None` si no habia
+    intento (sin `device_id`/`device_public_key`).
+    """
+    if not device_id or not device_public_key:
+        return None
+    key = device_public_key.strip() if isinstance(device_public_key, str) else ""
+    if not key:
+        return None
+    safe_platform = platform if platform in identity_repo.DEVICE_PLATFORMS else None
+    safe_biometric = biometric_type if biometric_type in identity_repo.BIOMETRIC_TYPES else None
+    result = "failed"
+    try:
+        with session.begin_nested():
+            existing = identity_repo.get_binding(session, user_id, device_id)
+            if existing is not None:
+                # E1-T42 rebind: la clave vigente del dispositivo pisa la
+                # obsoleta para que el facial posterior verifique contra ella.
+                # Se preserva `status` a proposito: un `REVOKED` no se
+                # reactiva por un login con PIN (decision del dueno; no se
+                # usa `register_binding` aqui porque fuerza `ACTIVE`).
+                existing.public_key = key
+                if safe_platform is not None:
+                    existing.platform = safe_platform
+                if safe_biometric is not None:
+                    existing.biometric_type = safe_biometric
+                session.flush()
+                identity_repo.touch_binding(session, existing, moment)
+                result = "touched"
+            else:
+                row = identity_repo.register_binding(
+                    session,
+                    user_id,
+                    device_id,
+                    key,
+                    platform=safe_platform,
+                    biometric_type=safe_biometric,
+                )
+                identity_repo.touch_binding(session, row, moment)
+                result = "registered"
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado E1-T27
+        logger.warning("pin_login device_binding %s error=%s", result, type(exc).__name__)
+    _audit_binding_event(
+        session,
+        user_id=user_id,
+        device_id=device_id,
+        moment=moment,
+        result=result,
+        platform=safe_platform,
+        biometric_type=safe_biometric,
+    )
+    return result
+
+
 def login_with_pin(
     session: Session,
     *,
@@ -307,6 +481,9 @@ def login_with_pin(
     device_id: str | None = None,
     device_info: dict | None = None,
     ip: str | None = None,
+    device_public_key: str | None = None,
+    platform: str | None = None,
+    biometric_type: str | None = None,
     now: datetime | None = None,
     notify_sender=None,
 ) -> dict:
@@ -320,6 +497,10 @@ def login_with_pin(
     notifica `login_alert` best-effort y responde `PinLockedError` (el 5to
     fallo ya es bloqueo). Un bloqueo vencido se limpia solo antes de
     verificar (desbloqueo automatico por tiempo).
+
+    E1-T27: con `device_public_key` + `device_id` se registra/refresca el
+    `device_binding` despues del exito, best-effort y auditado (un fallo no
+    revierte la sesion ni los tokens).
     """
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
 
@@ -388,6 +569,15 @@ def login_with_pin(
             action=AUDIT_LOGIN_SUCCEEDED,
             session_id=row.id,
         )
+        _bind_device_best_effort(
+            session,
+            user_id=user.id,
+            device_id=device_id,
+            device_public_key=device_public_key,
+            platform=platform,
+            biometric_type=biometric_type,
+            moment=moment,
+        )
         logger.info("pin_login ok")
         try:
             aware_exp = _as_aware(row.expires_at)
@@ -400,12 +590,15 @@ def login_with_pin(
             "token_type": "Bearer",
             "session_id": str(row.id),
             "expires_in": refresh_in,
+            # E1-T39: consentimiento vigente (la credencial ya se obtuvo
+            # arriba; solo en la rama de exito, donde no es `None`).
+            "biometric_enabled": credential.biometric_enabled is True,
         }
 
     attempts = int(credential.failed_attempts or 0) + 1
     credential.failed_attempts = attempts
-    if attempts >= MAX_FAILED_ATTEMPTS:
-        credential.locked_until = moment + timedelta(seconds=LOCKOUT_SECONDS)
+    if attempts >= _resolve_max_attempts(session):
+        credential.locked_until = moment + timedelta(seconds=_resolve_lockout_seconds(session))
         session.flush()
         recipient = None
         if user is not None:
@@ -443,6 +636,7 @@ def login_with_pin(
 
 
 __all__ = [
+    "AUDIT_DEVICE_BINDING",
     "AUDIT_FAILED_ATTEMPT",
     "AUDIT_LOGIN_SUCCEEDED",
     "INVALID_MESSAGE",

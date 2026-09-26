@@ -5,9 +5,13 @@
   `tests/test_kyc_proxy.py` (TestClient) + `tests/test_identity_otp.py`
   (SQLite ATTACH).
 - Casos: activacion exitosa (`ACTIVE` + 1x `user.activated` en outbox, sin
-  duplicar, codigo fuera de la respuesta); codigo invalido/expirado
-  (`INVALID_OTP`/`EXPIRED_OTP`, mismo cuerpo que usuario inexistente);
-  reenvio OK (nuevo codigo + notificacion registrada via `notifications`);
+   duplicar, codigo fuera de la respuesta); codigo invalido/expirado
+   (`INVALID_OTP`/`EXPIRED_OTP`, mismo cuerpo que usuario inexistente);
+   reenvio OK (nuevo codigo + notificacion registrada via `notifications`
+   solo por email); email-only (sin email no hay entrega, nunca SMS);
+   deprecacion de `/auth/activate` (cabecera `Deprecation` + OpenAPI
+   `deprecated`, sin romper compatibilidad); limite de reenvios
+   (`RESEND_LIMIT` 429); rate limit (`RATE_LIMITED` 429);
   limite de reenvios (`RESEND_LIMIT` 429); rate limit (`RATE_LIMITED` 429);
   no filtracion de existencia (cuerpos identicos); OpenAPI expone ambas
   rutas; reglas estaticas (servicio sin `commit`, sin codigo en logs, sin
@@ -109,10 +113,18 @@ def activation_client(activation_session: Session, monkeypatch):
         activation_service.reset_activation_rate_limits()
 
 
-def _make_pending_user(session: Session, *, destination: str | None = "+51999888777"):
-    """Usuario `PENDING_ACTIVATION` + OTP `ACTIVATION` vigente (retorna `(user, plain)`)."""
+def _make_pending_user(
+    session: Session, *, destination: str | None = "+51999888777", with_pin: bool = True
+):
+    """Usuario `PENDING_ACTIVATION` + OTP `ACTIVATION` vigente (retorna `(user, plain)`).
+
+    Con `with_pin=True` (default) la credencial trae `pin_hash`: la invariante
+    E1-T24..T28 exige PIN para pasar a `ACTIVE`. `with_pin=False` prueba el
+    camino `PIN_REQUIRED`.
+    """
     from app.modules.identity import repository as identity_repo
     from app.modules.identity.service import otp_service
+    from app.modules.identity.service import pin_login as pin_login_service
 
     suffix = uuid.uuid4().hex[:8]
     user = identity_repo.create_user(
@@ -123,6 +135,11 @@ def _make_pending_user(session: Session, *, destination: str | None = "+51999888
         last_name="Lovelace",
         email=f"ada.{suffix}@example.com",
         phone="+51999888777",
+    )
+    identity_repo.create_credential(
+        session,
+        user.id,
+        pin_hash=pin_login_service.hash_pin("4829") if with_pin else None,
     )
     _, plain = otp_service.generate_otp(
         session, user_id=user.id, purpose="ACTIVATION", destination=destination
@@ -220,6 +237,28 @@ def test_activate_is_idempotent_without_duplicate_event(
     assert len(_outbox_activated(activation_session, user.id)) == 1
 
 
+def test_activate_without_pin_returns_pin_required_and_stays_pending(
+    activation_client: TestClient, activation_session: Session
+):
+    """Sin `pin_hash` no hay `ACTIVE`: 409 `PIN_REQUIRED` y estado intacto (E1-T28)."""
+    from app.modules.identity import repository as identity_repo
+
+    user, plain = _make_pending_user(activation_session, with_pin=False)
+
+    resp = activation_client.post(
+        "/api/v1/auth/activate", json={"user_ref": str(user.id), "code": plain}
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "PIN_REQUIRED"
+    assert plain not in resp.text
+
+    activation_session.expire_all()
+    assert identity_repo.get_user(activation_session, user.id).status == "PENDING_ACTIVATION"
+    pending = identity_repo.get_active_otp(activation_session, user.id, "ACTIVATION")
+    assert pending is not None and pending.status == "PENDING", "el OTP no se consume al revertir"
+    assert _outbox_activated(activation_session, user.id) == []
+
+
 # ---------------------------------------------------------------- Invalidos / expirados / no filtracion
 def test_invalid_code_matches_unknown_user_body(
     activation_client: TestClient, activation_session: Session
@@ -268,6 +307,7 @@ def test_expired_code_returns_expired_otp(
         doc_number_hash="hash-" + uuid.uuid4().hex,
         first_name="Ada",
         last_name="Lovelace",
+        email=f"ada.{uuid.uuid4().hex[:8]}@example.com",
     )
     past = _utcnow() - timedelta(seconds=otp_service.OTP_TTL_SECONDS + 60)
     _, plain = otp_service.generate_otp(
@@ -299,8 +339,10 @@ def test_resend_ok_registers_notification(
 
     rows = _notifications_for(activation_session, user.id)
     assert len(rows) == 1, "reenvio registra la notificacion de entrega"
-    assert rows[0].template_code == "otp_code"
+    assert rows[0].channel == "email"
+    assert rows[0].template_code == "otp_code_email"
     assert rows[0].status == "SENT"
+    assert rows[0].payload_json["recipient"] == user.email
 
     # El anterior quedo invalidado: ya no activa.
     stale = activation_client.post(
@@ -308,6 +350,135 @@ def test_resend_ok_registers_notification(
     )
     assert stale.status_code == 400
     assert stale.json()["error"]["code"] == "INVALID_OTP"
+
+
+def test_resolve_activation_delivery_is_email_only():
+    """Routing email-only (E1-T32/SCR-005): con email -> email; sin email -> None.
+
+    `phone` y `channel='sms'` se ignoran de forma explicita (sin error) y
+    jamas producen SMS (CA-01).
+    """
+    from app.modules.identity.service import activation as activation_service
+
+    route = activation_service.resolve_activation_delivery(
+        email="ada@example.com", phone="+51999888777"
+    )
+    assert route == ("email", "otp_code_email", "ada@example.com")
+
+    sms_ignored = activation_service.resolve_activation_delivery(
+        email="ada@example.com", phone="+51999888777", channel="sms"
+    )
+    assert sms_ignored == ("email", "otp_code_email", "ada@example.com")
+
+    assert activation_service.resolve_activation_delivery(email=None, phone="+51999888777") is None
+    assert (
+        activation_service.resolve_activation_delivery(
+            email=None, phone="+51999888777", channel="sms"
+        )
+        is None
+    )
+    assert activation_service.resolve_activation_delivery(email="   ", phone="+51999888777") is None
+
+
+def test_resend_email_not_null_contract(activation_session: Session):
+    """`users.email` NOT NULL (E1-T34/SCR-005, OTP solo email): crear un
+    usuario sin email falla a nivel BD (E1-T32 permitia el alta sin email;
+    desde E1-T34 el email es obligatorio y el reenvio siempre resuelve
+    destino por email)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.modules.identity import repository as identity_repo
+
+    with pytest.raises(IntegrityError):
+        identity_repo.create_user(
+            activation_session,
+            doc_type="DNI",
+            doc_number_hash="hash-" + uuid.uuid4().hex,
+            first_name="Ada",
+            last_name="Lovelace",
+        )
+    activation_session.rollback()
+
+
+def test_resend_with_sms_channel_still_delivers_email(
+    activation_client: TestClient, activation_session: Session
+):
+    """`channel='sms'` se ignora: con email se notifica por email (E1-T32)."""
+    user, _ = _make_pending_user(activation_session)
+
+    resp = activation_client.post(
+        "/api/v1/auth/otp/resend", json={"user_ref": str(user.id), "channel": "sms"}
+    )
+    assert resp.status_code == 200
+
+    rows = _notifications_for(activation_session, user.id)
+    assert len(rows) == 1
+    assert rows[0].channel == "email"
+    assert rows[0].template_code == "otp_code_email"
+    assert rows[0].payload_json["recipient"] == user.email
+
+
+def test_activate_deprecated_header_on_success(
+    activation_client: TestClient, activation_session: Session
+):
+    """`/auth/activate` deprecado pero vivo: exito con `Deprecation` (CA-02)."""
+    user, plain = _make_pending_user(activation_session)
+
+    resp = activation_client.post(
+        "/api/v1/auth/activate", json={"user_ref": str(user.id), "code": plain}
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("Deprecation") == "true"
+    assert resp.json()["data"] == {"user_id": str(user.id), "status": "ACTIVE"}
+
+
+def test_activate_deprecated_header_on_business_error(
+    activation_client: TestClient, activation_session: Session
+):
+    """`/auth/activate` con error de negocio conserva cuerpo + `Deprecation` (CA-02)."""
+    user, plain = _make_pending_user(activation_session)
+    wrong = "000000" if plain != "000000" else "111111"
+
+    resp = activation_client.post(
+        "/api/v1/auth/activate", json={"user_ref": str(user.id), "code": wrong}
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_OTP"
+    assert resp.headers.get("Deprecation") == "true"
+
+
+def test_activate_openapi_marks_deprecated(activation_client: TestClient):
+    """OpenAPI marca `POST /auth/activate` como `deprecated: true` (CA-02)."""
+    spec = activation_client.get("/openapi.json").json()
+    operation = spec["paths"]["/api/v1/auth/activate"]["post"]
+    assert operation.get("deprecated") is True
+
+
+def test_resend_best_effort_when_provider_fails(
+    activation_client: TestClient,
+    activation_session: Session,
+    monkeypatch,
+    caplog,
+):
+    """Fallo del proveedor: el reenvio se completa igual y sin PII en logs (E1-T26)."""
+    import logging
+
+    from app.modules.notifications import service as notifications_service
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("proveedor caido")
+
+    monkeypatch.setattr(notifications_service, "send", _boom)
+    user, _ = _make_pending_user(activation_session)
+    email, phone = user.email, user.phone
+
+    with caplog.at_level(logging.WARNING):
+        resp = activation_client.post("/api/v1/auth/otp/resend", json={"user_ref": str(user.id)})
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["resend_count"] == 1
+    assert email not in caplog.text
+    assert phone not in caplog.text
 
 
 def test_resend_limit_after_max_resends(activation_client: TestClient, activation_session: Session):
@@ -334,6 +505,7 @@ def test_resend_unknown_user_matches_user_without_pending_otp(
         doc_number_hash="hash-" + uuid.uuid4().hex,
         first_name="Ada",
         last_name="Lovelace",
+        email=f"ada.{uuid.uuid4().hex[:8]}@example.com",
     )
     activation_session.commit()
 

@@ -10,9 +10,10 @@ docs/
   tasks/
     README.md            # este archivo (protocolo)
     _PLANTILLA.md        # plantilla para crear un brief
-    E1-T01.md            # briefs reales por ID de tarea
+    E1-T01.md            # briefs reales por ID de tarea (solo no-`Hecho`)
     E5-T01.md
     ...
+    archive/             # briefs verificados `Hecho` (historial; no asignar)
   modules/
     README.md            # contrato de cada modulo (fronteras y responsabilidades)
 ```

@@ -261,6 +261,7 @@ def _make_user(sqlite_session: Session) -> uuid.UUID:
         doc_number_hash="hash-" + uuid.uuid4().hex,
         first_name="Ada",
         last_name="Lovelace",
+        email=f"ada.{uuid.uuid4().hex[:8]}@example.com",
     )
     sqlite_session.add(user)
     sqlite_session.flush()
@@ -417,6 +418,7 @@ def test_integration_postgres_otp_cycle(db_session: Session):
         doc_number_hash="hash-" + uuid.uuid4().hex,
         first_name="Ada",
         last_name="Lovelace",
+        email=f"ada.{uuid.uuid4().hex[:8]}@example.com",
     )
     db_session.add(user)
     db_session.flush()

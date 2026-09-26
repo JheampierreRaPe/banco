@@ -7,7 +7,9 @@ Flujo (D07: biometria local, sin liveness del servidor aqui):
    solo uso con TTL corto (`domain/nonce.py`, `NONCE_TTL_SECONDS = 120`).
 2. La app exige Face ID/huella del telefono y firma el `nonce` con la clave
    guardada en almacenamiento seguro.
-3. `POST /auth/login/facial {nonce, device_id, signature}` -> verifica la
+3. `POST /auth/login/facial {nonce, device_id, signature}` -> exige
+   consentimiento `credentials.biometric_enabled is True` (E1-T38; sin el
+   responde generico sin sesion ni tocar el binding), verifica la
    firma contra `device_bindings.public_key`, abre `sessions` y devuelve
    JWT corto (`create_access_token`, reutilizado: no se inventan tokens) +
    refresh opaco (solo su hash SHA-256 se persiste).
@@ -333,6 +335,8 @@ def login_with_device(
     JWT corto (reutiliza `create_access_token`) + refresh opaco (solo su
     hash se persiste). Todo fallo de verificacion responde generico
     (`LoginInvalidError`); solo el TTL agotado distingue (`LoginExpiredError`).
+    Sin consentimiento (`credential.biometric_enabled is not True`) ->
+    `LoginInvalidError` generico, sin sesion ni tocar el binding (E1-T38).
     """
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
 
@@ -391,6 +395,20 @@ def login_with_device(
                 reason="invalid",
             )
             raise LoginInvalidError(INVALID_MESSAGE)
+
+    credential = identity_repo.get_credential(session, user.id)
+    if credential is None or credential.biometric_enabled is not True:
+        _audit_auth_event(
+            session,
+            user_id=user.id,
+            device_id=device_id,
+            ip=ip,
+            moment=moment,
+            action=AUDIT_FAILED_ATTEMPT,
+            method="facial",
+            reason="no_consent",
+        )
+        raise LoginInvalidError(INVALID_MESSAGE)
 
     try:
         binding = identity_repo.get_binding(session, user.id, device_id)

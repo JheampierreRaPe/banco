@@ -2,7 +2,8 @@
 
 > Nota de archivo (2026-09-26): los briefs de Sprint 1 con `Estado: Hecho` viven en
 > `docs/tasks/archive/` y se citan aqui por ID, sin cambios. En `docs/tasks/` solo
-> estan los briefs no-`Hecho`, incluidos los 31 de este indice (`Estado: Pendiente`).
+> estan los briefs no-`Hecho`, incluidos los 30 de este indice aun pendientes; `E2-T07`
+> ya esta `Hecho` (archivado en `docs/tasks/archive/E2-T07.md`).
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -13,7 +14,7 @@ ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KY
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
 Total: **31 briefs** (20 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`).
+creditos `E3-T01`..`E3-T11`): **30 pendientes + `E2-T07` `Hecho`** (archivado).
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y
@@ -21,7 +22,8 @@ creditos `E3-T01`..`E3-T11`).
 > `hold + settle` se conserva para terceros e interbancaria.
 
 ## HU06 - Transferencias propias e interbancarias (Must, 8 SP) - `transactions`
-`E2-T07` Casos de uso de transferencia propia y a tercero - `E2-T08` Validacion de titular/CCI
+`E2-T07` Casos de uso de transferencia propia y a tercero (**`Hecho`**, archivado
+`docs/tasks/archive/E2-T07.md`) - `E2-T08` Validacion de titular/CCI
 (adaptador mock) - `E2-T09` Saga interbancaria (estados, timeout, polling, compensacion) -
 `E2-T10` Comprobante PDF con numero de operacion unico - `E2-T11` Pantallas Flutter de
 transferencia - `E2-T12` QA (feliz, insuficiente, duplicada, timeout, reverso).
@@ -80,7 +82,7 @@ bus/outbox en produccion (`docs/17#6`). Depende de `E2-T04` y `E5-T05`.
 
 1. `E2-T23` (cableado de la proyeccion: deja `movements_view` viva en produccion; prerequisito de
    evidencia contable para todo el sprint).
-2. `E2-T07` (casos de uso base sobre el motor) y `E2-T08` (adaptador titular/CCI).
+2. `E2-T07` (casos de uso base sobre el motor; **`Hecho`**) y `E2-T08` (adaptador titular/CCI).
 3. `E2-T09` (saga interbancaria) y `E2-T10` (comprobante).
 4. `E2-T13` (beneficiarios) y `E2-T18` (parametros/perfiles) en paralelo.
 5. `E2-T17` (integracion biometrica; incluye bloqueo `CA-02` y limite diario `CA-03`),

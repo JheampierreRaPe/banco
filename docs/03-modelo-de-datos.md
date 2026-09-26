@@ -77,8 +77,8 @@ Invariantes:
 | `2100 Fondos retenidos` | Liability | Holds. |
 | `2200 Cuentas de transito` | Liability | Operaciones interbancarias en curso. |
 | `3000 Patrimonio` | Equity | Aportes. |
-| `4000 Ingresos por comisiones` | Income | Fees. |
-| `4100 Ingresos por intereses` | Income | Credito. |
+| `4000 Ingresos por intereses` | Income | Credito. |
+| `4100 Ingresos por comisiones` | Income | Fees. |
 | `5000 Cartera de prestamos` | Asset | Capital colocado. |
 | `6000 Gastos` | Expense | Costos. |
 

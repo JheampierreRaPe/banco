@@ -362,8 +362,9 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > "failure_code" (`INSUFFICIENT_FUNDS` solo si `REJECTED`)}, "meta": {"request_id",
 > "replayed"}}`. La propia es atomica sin hold (un asiento `2000-S -> 2000-D`, sin
 > comision); la de tercero es hold+settle con la comision a `4100`. Errores:
-> `401 NOT_AUTHENTICATED`, `422` (falta `Idempotency-Key` o esquema invalido),
-> `400 VALIDATION_ERROR` (misma cuenta, moneda incoherente, monto invalido),
+> `401 NOT_AUTHENTICATED`, `422` (falta `Idempotency-Key`, esquema invalido o
+> `amount_minor <= 0` / `fee_minor < 0`, que el esquema rechaza con `ge=1`/`ge=0`),
+> `400 VALIDATION_ERROR` (misma cuenta, moneda incoherente),
 > `404 NOT_FOUND` (cuenta inexistente), `403 NOT_AUTHORIZED` (origen ajeno o
 > cuenta no `ACTIVE`), `409 CONFLICT` (misma clave + cuerpo distinto). Saldo
 > insuficiente = `201` con `status=REJECTED` (sin tocar saldos; reintentable con la

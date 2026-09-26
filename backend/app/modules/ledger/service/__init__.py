@@ -1,8 +1,14 @@
-"""Fachada interna del `ledger` (E5-T09 + E5-T10 + E5-T14).
+"""Fachada interna del `ledger` (E5-T09 + E5-T10 + E5-T14 + E2-T23).
 
 Contrato (`docs/modules/README.md#ledger`): los asientos solo entran por la
 fachada; otros modulos no tocan `ledger_accounts`, `journal_entries` ni
-`postings` directamente. No publica eventos (regla de oro 8).
+`postings` directamente.
+
+Emision (E2-T23, HU05): `post_entry`/`reverse_entry` registran
+`ledger.entry.posted` en `shared.outbox` en la MISMA transaccion del asiento
+(`flush`, sin `commit`, sin publicar: regla de oro 8). El worker del outbox
+(`shared.jobs.publisher.publish_pending`) lo publica DESPUES y el consumidor
+`accounts` proyecta `movements_view` por evento (sin leer tablas `ledger`).
 
 Verificacion (E5-T14, HU18 CA-02): `verify_chain` recorre la cadena de
 hashes de `journal_entries` y detecta alteracion/reorden/borrado. Solo
@@ -49,8 +55,12 @@ def post_entry(
     description: str | None = None,
     value_date: date | None = None,
 ) -> JournalEntry:
-    """Fachada: crea un asiento cuadrado con hash encadenado (E5-T10)."""
-    return _post_entry(
+    """Fachada: crea un asiento cuadrado con hash encadenado (E5-T10).
+
+    Emite `ledger.entry.posted` al outbox en la misma transaccion
+    (E2-T23; `flush` sin `commit`).
+    """
+    entry = _post_entry(
         session,
         entry_type=entry_type,
         postings=postings,
@@ -58,6 +68,8 @@ def post_entry(
         description=description,
         value_date=value_date,
     )
+    _emit_entry_posted(session, entry)
+    return entry
 
 
 def reverse_entry(
@@ -69,8 +81,11 @@ def reverse_entry(
     value_date: date | None = None,
     transaction_id: uuid.UUID | str | None = None,
 ) -> JournalEntry:
-    """Fachada: revierte un asiento con un compensatorio nuevo (E5-T10)."""
-    return _reverse_entry(
+    """Fachada: revierte un asiento con un compensatorio nuevo (E5-T10).
+
+    El compensatorio tambien emite `ledger.entry.posted` (E2-T23).
+    """
+    entry = _reverse_entry(
         session,
         entry_id,
         entry_type=entry_type,
@@ -78,6 +93,51 @@ def reverse_entry(
         value_date=value_date,
         transaction_id=transaction_id,
     )
+    _emit_entry_posted(session, entry)
+    return entry
+
+
+def _emit_entry_posted(session: Session, entry: JournalEntry) -> bool:
+    """Registra `ledger.entry.posted` en el outbox (E2-T23).
+
+    Misma sesion/transaccion del asiento (`flush`, sin `commit`, sin
+    publicar: regla de oro 8). Payload exacto que consume
+    `accounts.repository.movements.handle_movement_event`: `entry_id`,
+    `transaction_id`, `description`, `value_date` (ISO) y `postings`
+    `[{ledger_account_id, direction, amount_minor, currency, account_ref}]`
+    (UUIDs como texto, JSON-serializable). `True` si se registro;
+    `False` si el outbox no esta cableado (best-effort, como el motor).
+    """
+    try:
+        from app.core import events as domain_events
+        from app.core.outbox import record as outbox_record
+    except ImportError:
+        return False
+    rows = _list_postings(session, entry.id)
+    payload = {
+        "entry_id": str(entry.id),
+        "transaction_id": str(entry.transaction_id) if entry.transaction_id is not None else None,
+        "description": entry.description,
+        "value_date": entry.value_date.isoformat() if entry.value_date is not None else None,
+        "postings": [
+            {
+                "ledger_account_id": str(p.ledger_account_id),
+                "direction": p.direction,
+                "amount_minor": int(p.amount_minor),
+                "currency": p.currency,
+                "account_ref": str(p.account_ref) if p.account_ref is not None else None,
+            }
+            for p in rows
+        ],
+    }
+    outbox_record(
+        session,
+        aggregate_type="journal_entry",
+        aggregate_id=entry.id,
+        event_type=domain_events.LEDGER_ENTRY_POSTED,
+        payload=payload,
+    )
+    return True
 
 
 def get_entry(session: Session, entry_id: uuid.UUID | str) -> JournalEntry | None:

@@ -155,6 +155,12 @@ eventos (`outbox`/`inbox`).
   `as_of = max(updated_at)`/`now(UTC)`); el cliente solo muestra el monto
   (cliente delgado). Solo lectura, sin migracion.
 - **Consume:** `ledger.entry.posted` (para proyectar movimientos), `kyc.completed`.
+- **Cableado E2-T23:** `accounts.events.on_ledger_entry_posted(entry)` (sesion/`commit`
+  propios, `event_id = entry.id`) suscrito al bus via
+  `app.composition.subscribe_accounts_movements`; alimenta solo `movements_view`
+  (lectura). `handle_ledger_entry_posted` (retenidos) NO se suscribe al bus:
+  `held` lo sincroniza `AccountsLedgerProjectionAdapter` en la transaccion del
+  asiento y suscribirlo sin reconciliar duplicaria el efecto.
 - **Puede llamar a:** `ledger` (crear subcuentas), `audit`.
 - **Prohibido:** escribir asientos; calcular saldos por fuera del ledger.
 
@@ -175,6 +181,9 @@ eventos (`outbox`/`inbox`).
 - **Dueno de:** `ledger_accounts`, `journal_entries`, `postings`, `ledger_balances`, `daily_closings`.
 - **Expone (fachada interna):** `post_entry(...)`, `reverse_entry(...)`, `run_daily_closing()`;
   eventos `ledger.entry.posted`.
+- **Emision E2-T23:** `post_entry`/`reverse_entry` registran `ledger.entry.posted`
+  en `shared.outbox` en la misma transaccion del asiento (`flush`, sin `commit`;
+  payload `entry_id`, `transaction_id`, `description`, `value_date`, `postings`).
 - **Consume:** nada (es el registro final).
 - **Puede llamar a:** `audit`.
 - **Prohibido:** llamar a modulos de negocio; los asientos solo entran por su fachada.
@@ -264,4 +273,8 @@ eventos (`outbox`/`inbox`).
   `admin` solo lo expone via `/admin/parameters` con auditoria.
 - **Uso:** cualquier modulo publica por `outbox`; consume registrando en `processed_events`;
   el middleware de dinero usa `idempotency_keys`.
+- **Worker E2-T23:** `run_outbox_once` (una pasada con sesion/`commit` propios) y
+  `start_outbox_worker` (hilo daemon periodico, no bloquea) en `app.composition`,
+  arrancados en `app.main.lifespan`; intervalo por `OUTBOX_POLL_INTERVAL_SECONDS`,
+  desactivable con `OUTBOX_WORKER_ENABLED=0`.
 - **Prohibido:** guardar logica de negocio aqui.

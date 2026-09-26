@@ -17,7 +17,9 @@ from sqlalchemy.engine.url import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
-DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://banca:banca@localhost:5432/banca_test"
+DEFAULT_TEST_DATABASE_URL = (
+    "postgresql+psycopg://banca:banca@127.0.0.1:5432/banca_test?connect_timeout=5"
+)
 MAINTENANCE_DB = "postgres"
 
 # Deben coincidir con migrations/versions/0001_init_schemas.py (solo lectura).

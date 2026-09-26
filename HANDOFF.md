@@ -63,6 +63,7 @@ Lee esto antes de continuar. Estado real del proyecto al cerrar la sesión. Reem
 - Notas del dueño (`.txt`) ya están en `.gitignore`; **no commitearlas**.
 - `.opencode/agent/diseno-frontend.md` queda untracked a propósito (excluido de commits).
 - Subagentes del proyecto: `planificador` (briefs), `worker` (una tarea), `fixer` (solo defectos indicados), `validador` (solo lectura, dictamen con severidad), `diseno-frontend` (figma `pantallas.fig` + Flutter), `explore`/`general` (investigación).
+- **Fix de agentes (2026-09-26):** `planificador` y `validador` fijaban `model: opencode-go/deepseek-v4.1-flash`, que fallaba al instanciarse como subagente (`Bad Request`) — se **quitó la línea `model:`** para que hereden el modelo por defecto (que sí funciona, como `general`). Requiere **reiniciar opencode** para tomar efecto (la config no se recarga en caliente). `worker`/`fixer`/`diseno-frontend` usan `opencode-go/muse-spark-1.3-contributor` y funcionan.
 - Archivo de tareas resueltas: `docs/tasks/archive/` (113 briefs `Hecho`). `docs/tasks/` solo tiene `README.md`, `SPRINT-1.md`, `_PLANTILLA.md`.
 
 ## 7. Comandos de verificación rápida
@@ -100,13 +101,13 @@ curl http://localhost:8000/health                    # {"status":"ok"}
 El dueño usa dos palabras clave. **Todo lo de esta sección lo ejecuta un subagente delegado (`worker`); el orquestador no lo hace directamente.**
 
 - **Cuando el dueño escriba `hola`:** significa que cerró la sesión anterior y hay que arrancar. **Lo primero** (delegado a un `worker`):
-  1. **Levantar los contenedores** (`docker compose up -d`) y esperar a `healthy` (`docker compose ps`; backend `:8000`, admin-web `:8080`, postgres/redis, worker).
+  1. **Levantar los contenedores** (`docker compose start` si ya existen —un `adios` solo los detiene—; o `docker compose up -d` para crearlos) y esperar a `healthy` (`docker compose ps`; backend `:8000`, admin-web `:8080`, postgres/redis, worker).
   2. **Warmup del microservicio de KYC** (contenedor `kyc-facial-service-8001` en `:8001`): conectarlo a la red si hace falta (`docker network connect banca-demo_default kyc-facial-service-8001`) y golpear su health/endpoint de listo hasta que responda.
   3. **Verificar que el device esté conectado por adb** (`adb devices -l`; serial TLS tipo `adb-...._adb-tls-connect._tcp`). Si no aparece, reconectar (`adb connect <ip:puerto>` o parear) y reportar.
   - Antes de continuar con cualquier tarea, reportar al dueño el estado de (1) contenedores, (2) warmup KYC y (3) device.
 
 - **Cuando el dueño escriba `adios`:** cerrar la sesión. Delegado a un `worker`, en este orden:
-  1. **Dar de baja los contenedores** (`docker compose down`; conservar volúmenes salvo indicación del dueño).
+  1. **Detener los contenedores** con `docker compose stop` (**NO** usar `docker compose down`: "baja" = detener, no eliminar; se conservan contenedores y volúmenes). Un `adios` posterior se reanuda con `docker compose start`.
   2. **Preguntar si se desea commitear** antes de irse y, solo si autoriza, hacerlo (por bloque temático; excluir `.opencode/` y los `.txt`).
   3. **Generar un documento con todo lo avanzado en la sesión actual** (tareas, commits, suites, pendientes y riesgos) — p. ej. `docs/sesiones/<fecha>.md` o el destino que indique el dueño.
   - Cerrar con el mensaje exacto: **"Descansa bello"**.

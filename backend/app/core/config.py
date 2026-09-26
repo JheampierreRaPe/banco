@@ -40,6 +40,21 @@ class Settings(BaseSettings):
     doc_lookup_breaker_failures: int = 3
     doc_lookup_breaker_cooldown_seconds: float = 30.0
 
+    # Validacion de titular/CCI para transferencias (E2-T08, HU06):
+    # adaptador `HolderLookup` con mock determinista por defecto; el
+    # proveedor real (simulador interbancario D01) se cablea despues sin
+    # tocar el dominio. Sin PII en logs (solo hash del CCI).
+    holder_lookup_provider: str = "mock"
+    holder_lookup_mock_mode: str = "success"
+    holder_lookup_base_url: str = "http://localhost:8000"
+    holder_lookup_api_key: str = ""
+    holder_lookup_timeout_seconds: float = 5.0
+    holder_lookup_max_retries: int = 2
+    holder_lookup_backoff_base_seconds: float = 0.1
+    holder_lookup_breaker_failures: int = 3
+    holder_lookup_breaker_cooldown_seconds: float = 30.0
+    holder_lookup_cache_ttl_seconds: float = 300.0
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

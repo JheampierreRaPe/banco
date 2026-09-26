@@ -58,12 +58,27 @@ Frontera (reglas de oro 1/3/4/8):
 from __future__ import annotations
 
 import logging
+import threading
+import time
 import uuid
 from typing import Any, Protocol
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from app.adapters.holder_lookup import (
+    HolderLookupProvider,
+    HolderLookupTimeoutError,
+    HolderLookupUnavailableError,
+    HolderNotFoundError,
+    create_holder_lookup_provider,
+    hash_cci,
+    mask_holder_name,
+    normalize_name,
+    resolve_cache_ttl_seconds,
+    validate_bank_code,
+    validate_cci_format,
+)
 from app.core import events as domain_events
 from app.modules.ledger import service as ledger_service
 from app.modules.transactions import repository as tx_repository
@@ -776,6 +791,97 @@ def transfer_third_party(
     return tx
 
 
+#: Cache en memoria de validaciones de titular (E2-T08, opcional, sin ORM).
+#: Clave = hash del CCI + titular normalizado + bank + huella del proveedor;
+#: valor = (expira_en_monotonic, resultado). Solo guarda el booleano y el
+#: titular enmascarado; nunca el CCI en claro ni el titular.
+_HOLDER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_HOLDER_CACHE_LOCK = threading.Lock()
+
+
+def _holder_cache_ttl() -> float:
+    """TTL del cache desde `Settings` (fuera del codigo, regla de oro 6)."""
+    return resolve_cache_ttl_seconds()
+
+
+def _holder_cache_key(
+    *, cci_hash: str, holder_normalized: str, bank_code: str, provider: HolderLookupProvider
+) -> str:
+    fingerprint = f"{type(provider).__name__}:{getattr(provider, 'mode', '')}"
+    return f"{cci_hash}|{holder_normalized}|{bank_code}|{fingerprint}"
+
+
+def clear_holder_cache() -> None:
+    """Vacia el cache de validaciones (principalmente para pruebas)."""
+    with _HOLDER_CACHE_LOCK:
+        _HOLDER_CACHE.clear()
+
+
+def validate_holder(
+    cci: object,
+    holder_name: object = None,
+    bank_code: object = None,
+    provider: HolderLookupProvider | None = None,
+) -> dict[str, Any]:
+    """Fachada interna de validacion de titular/CCI (E2-T08, sin endpoint).
+
+    La consumen `E2-T07`/`E2-T09` ANTES de mover dinero: valida el formato
+    del CCI (20 digitos, `422` neutro sin llamar al proveedor), consulta el
+    titular canonico por el adaptador y, si se indico `holder_name`, exige
+    coincidencia normalizada (sin tildes, mayusculas). Retorna
+    `{"valid": True, "holder_name_masked": "J*** P***"}`.
+
+    Anti-enumeracion: "titular no coincide" y "CCI inexistente" lanzan el
+    MISMO `HolderNotFoundError` neutro (404); el `timeout` se colapsa a
+    `HolderLookupUnavailableError` (503) para no distinguir fallas de red.
+    Ningun mensaje incluye el CCI ni el titular; los logs solo llevan el
+    hash del CCI. Determinista: el mismo CCI produce el mismo resultado.
+    """
+    digits = validate_cci_format(cci)
+    code = validate_bank_code(bank_code)
+    wanted = normalize_name(holder_name) if holder_name is not None else ""
+    if holder_name is not None and not wanted:
+        raise HolderNotFoundError()
+    active = provider if provider is not None else create_holder_lookup_provider()
+    cci_hash = hash_cci(digits)
+    logger.info("holder_validate start cci_hash=%s has_bank=%s", cci_hash, bool(code))
+
+    cache_key = _holder_cache_key(
+        cci_hash=cci_hash, holder_normalized=wanted, bank_code=code, provider=active
+    )
+    ttl = _holder_cache_ttl()
+    if ttl > 0:
+        with _HOLDER_CACHE_LOCK:
+            cached = _HOLDER_CACHE.get(cache_key)
+            if cached is not None and cached[0] > time.monotonic():
+                logger.info("holder_validate cache_hit cci_hash=%s", cci_hash)
+                return dict(cached[1])
+            if cached is not None:
+                _HOLDER_CACHE.pop(cache_key, None)
+
+    try:
+        record = active.lookup_holder(cci=digits, bank_code=code)
+    except HolderLookupTimeoutError as exc:
+        # Transporte indistinguible de "no disponible" (anti-enumeracion y
+        # determinismo ante fallas: mismo error siempre).
+        logger.warning("holder_validate timeout cci_hash=%s", cci_hash)
+        raise HolderLookupUnavailableError() from exc
+    canonical = normalize_name(record.holder_name)
+    if not canonical:
+        logger.info("holder_validate empty cci_hash=%s", cci_hash)
+        raise HolderNotFoundError()
+    if wanted and wanted != canonical:
+        # Mismo error que CCI inexistente: sin oraculo de existencia.
+        logger.info("holder_validate mismatch cci_hash=%s", cci_hash)
+        raise HolderNotFoundError()
+    result = {"valid": True, "holder_name_masked": mask_holder_name(record.holder_name)}
+    logger.info("holder_validate ok cci_hash=%s", cci_hash)
+    if ttl > 0:
+        with _HOLDER_CACHE_LOCK:
+            _HOLDER_CACHE[cache_key] = (time.monotonic() + ttl, dict(result))
+    return result
+
+
 __all__ = [
     "DEFAULT_BALANCE_PORT",
     "FEE_ACCOUNT_CODE",
@@ -790,10 +896,17 @@ __all__ = [
     "BalancePort",
     "BalanceView",
     "CurrencyMismatchError",
+    "HolderLookupProvider",
+    "HolderLookupTimeoutError",
+    "HolderLookupUnavailableError",
+    "HolderNotFoundError",
     "TransferError",
+    "clear_holder_cache",
+    "create_holder_lookup_provider",
     "execute_transfer",
     "resolve_third_party_fee",
     "transfer_own",
     "transfer_third_party",
+    "validate_holder",
     "validate_transfer_parties",
 ]

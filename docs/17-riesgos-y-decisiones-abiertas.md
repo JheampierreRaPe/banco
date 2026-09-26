@@ -8,7 +8,7 @@
 | D02 | Stack del panel web | React+TS / Flutter Web | Medio | React+TS por grillas y tableros. |
 | D03 | Proveedor de notificaciones | Real (free tier) / mock | Bajo | Mock desacoplado + un canal real si hay tiempo. |
 | D04 | API de tipo de cambio | Proveedor real / tasa semilla | Medio | Adaptador con fallback a semilla. |
-| D05 | Responsable DevOps (rol 6) | **Pendiente** (se validara con otro modelo o se obvia hasta el final) | Medio | Asignar provisional o postergar tareas de infra a la fase final. |
+| D05 | Responsable DevOps (rol 6) | **Riesgo aceptado para el MVP/demo (2026-09-26)**: sin titular formal; los artefactos CI/Docker existen y estan healthy; el titular formal queda para produccion | Medio | Aceptar para el MVP/demo; designar titular formal antes de produccion. |
 | D06 | Estandar de QR interoperable | EMVCo-like / formato propio firmado | Medio | Formato propio firmado + adaptador de estandar. |
 | D07 | Biometria | **Resuelto**: liveness solo en HU01; login/recuperacion/pagos/firma con biometria del dispositivo | Medio | Nonce firmado por dispositivo + `device_bindings`. |
 | D08 | Naming y estrategia de repos | Monorepo + publicaciones / un repo por modulo | Bajo | Monorepo y extraccion a repo propio por modulo cuando madure. |
@@ -21,7 +21,7 @@
 | ID | Riesgo | P | I | Nivel | Mitigacion | Contingencia | Responsable |
 |---|---|---|---|---|---|---|---|
 | R01 | Falla al integrar KYC en semanas tempranas | 3 | 3 | Critico | Probar con el microservicio desde Semana 1. | Registro temporal con OTP y biometria despues. | Backend/Seguridad |
-| R02 | Rol DevOps sin titular | 3 | 2 | Alto | Responsable provisional y tareas repartidas. | Despliegues manuales asistidos. | Scrum Master |
+| R02 | Rol DevOps sin titular | 3 | 2 | Alto | Aceptado para el MVP/demo (2026-09-26): artefactos CI/Docker existentes y healthy; tareas repartidas; titular formal pendiente para produccion. | Despliegues manuales asistidos. | Scrum Master |
 | R03 | Inconsistencia de saldos/partida doble | 2 | 3 | Alto | Suite del motor y revision cruzada. | Pausar y depurar la traza contable. | Datos |
 | R04 | Fallo en la matriz de accesos (ver datos de otro) | 2 | 3 | Alto | Pruebas de roles y enmascaramiento por sprint. | Bloquear modulo y control manual. | Seguridad |
 | R05 | Sobrecarga en Sprints 1-2 | 2 | 2 | Medio | Dailies y regla de recorte de `Should`. | Enfocar solo `Must` del MVP. | Scrum Master |
@@ -73,7 +73,7 @@
 
 ## 5. Preguntas que conviene cerrar antes del Sprint 1
 1. ?Cual es el contrato interbancario y quien lo define?
-2. ?Quien asume DevOps y con que herramientas de despliegue?
+2. ~~?Quien asume DevOps y con que herramientas de despliegue?~~ **Resuelta/aceptada para el MVP/demo (2026-09-26):** sin titular formal (riesgo aceptado, ver `D05`/`R02`); titular formal pendiente para produccion.
 3. ?Se aprueba la estrategia de QR propio firmado como base?
 4. ?Se acepta el login con nonce firmado por dispositivo?
 5. ?Cual es el orden de recorte de `Should` si el equipo se atrasa?

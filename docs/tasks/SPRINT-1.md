@@ -68,3 +68,9 @@ esquemas base.
 - `E5-T05` (outbox) antes de notificaciones/auditoria/fraude.
 - `E1-T03` depende de `E2-T01` y `E5-T09`.
 - `E1-T13` es prerequisito de `E1-T14`/`E1-T15`.
+
+> **Nota de cierre del Sprint 1 (2026-09-26):** `E2-T04` / `movements_view` (proyeccion
+> alimentada por `ledger.entry.posted`) queda **diferida a Sprint 2** (ver
+> `docs/17-riesgos-y-decisiones-abiertas.md:113` — limitacion conocida: el consumidor no
+> esta cableado en produccion). En consecuencia, **HU05 no se da por 100% completa en
+> produccion**. Esta nota no modifica la lista de tareas de este indice.

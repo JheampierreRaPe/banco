@@ -161,7 +161,9 @@ def _publish_outbox(
     try:
         from app.core.outbox import record as outbox_record
     except ImportError:
-        # TODO(E5-T05): modulo outbox aun en curso; se continua sin publicar.
+        # E5-T05 aplicado: `app.core.outbox` ya existe y el import perezoso
+        # publica; este `except` solo cubre entornos sin el modulo/tabla
+        # (best-effort: se continua sin publicar).
         return False
     try:
         outbox_record(

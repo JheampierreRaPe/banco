@@ -94,3 +94,19 @@ curl http://localhost:8000/health                    # {"status":"ok"}
 - **No commitear ni pushear sin autorización explícita** del dueño. Commits por bloque temático; excluir `.opencode/` y `.txt`.
 - No tocar `kyc-service/`. Sin PII/secretos en logs. Cliente delgado. No borrar pruebas para pasar.
 - Antes de avanzar un campo: revisar si lo construido estaba especificado (o es alternativa de reemplazo) y resolver.
+
+## 9. Protocolo de sesión del orquestador (hola / adiós)
+
+El dueño usa dos palabras clave. **Todo lo de esta sección lo ejecuta un subagente delegado (`worker`); el orquestador no lo hace directamente.**
+
+- **Cuando el dueño escriba `hola`:** significa que cerró la sesión anterior y hay que arrancar. **Lo primero** (delegado a un `worker`):
+  1. **Levantar los contenedores** (`docker compose up -d`) y esperar a `healthy` (`docker compose ps`; backend `:8000`, admin-web `:8080`, postgres/redis, worker).
+  2. **Warmup del microservicio de KYC** (contenedor `kyc-facial-service-8001` en `:8001`): conectarlo a la red si hace falta (`docker network connect banca-demo_default kyc-facial-service-8001`) y golpear su health/endpoint de listo hasta que responda.
+  3. **Verificar que el device esté conectado por adb** (`adb devices -l`; serial TLS tipo `adb-...._adb-tls-connect._tcp`). Si no aparece, reconectar (`adb connect <ip:puerto>` o parear) y reportar.
+  - Antes de continuar con cualquier tarea, reportar al dueño el estado de (1) contenedores, (2) warmup KYC y (3) device.
+
+- **Cuando el dueño escriba `adios`:** cerrar la sesión. Delegado a un `worker`, en este orden:
+  1. **Dar de baja los contenedores** (`docker compose down`; conservar volúmenes salvo indicación del dueño).
+  2. **Preguntar si se desea commitear** antes de irse y, solo si autoriza, hacerlo (por bloque temático; excluir `.opencode/` y los `.txt`).
+  3. **Generar un documento con todo lo avanzado en la sesión actual** (tareas, commits, suites, pendientes y riesgos) — p. ej. `docs/sesiones/<fecha>.md` o el destino que indique el dueño.
+  - Cerrar con el mensaje exacto: **"Descansa bello"**.

@@ -113,6 +113,94 @@ def run_migrations(database_url: str, timeout_s: int = 180) -> None:
         )
 
 
+def _make_alembic_config(database_url: str):
+    """Config de Alembic in-process (sin subproceso ni `cwd`).
+
+    `script_location` absoluto desde `BACKEND_DIR` y `config_file_name=None`
+    para que `migrations/env.py` no reconfigure `logging` en cada llamada.
+    """
+    from alembic.config import Config
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("path_separator", "os")
+    if database_url:
+        cfg.set_main_option("sqlalchemy.url", database_url)
+    cfg.config_file_name = None
+    return cfg
+
+
+def _run_alembic_command(database_url: str, operation: str, target: str) -> None:
+    """Ejecuta `alembic upgrade/downgrade <target>` en este proceso.
+
+    Equivale al subproceso `python -m alembic <op> <target>` con
+    `DATABASE_URL=<database_url>`, sin heredar el entorno al proceso actual
+    (restaura `DATABASE_URL` y la caché de settings al salir).
+    """
+    if operation not in ("upgrade", "downgrade"):
+        raise ValueError(f"operacion alembic no soportada: {operation!r}")
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = database_url
+    try:
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            cfg = _make_alembic_config(database_url)
+            from alembic import command
+
+            if operation == "upgrade":
+                command.upgrade(cfg, target)
+            else:
+                command.downgrade(cfg, target)
+        finally:
+            get_settings.cache_clear()
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+
+
+def run_migrations_in_process(database_url: str, target: str = "head") -> None:
+    """Aplica `alembic upgrade <target>` en este proceso (sin subproceso)."""
+    _run_alembic_command(database_url, "upgrade", target)
+
+
+def downgrade_in_process(database_url: str, target: str) -> None:
+    """Aplica `alembic downgrade <target>` en este proceso (sin subproceso)."""
+    _run_alembic_command(database_url, "downgrade", target)
+
+
+def run_alembic_in_process(database_url: str, *args: str) -> None:
+    """Compat 1:1 con el `_alembic(*args)` historico de los tests.
+
+    Solo `("upgrade", <rev>)` y `("downgrade", <rev>)`; misma cobertura,
+    mismo DDL real, sin arranque de subproceso.
+    """
+    if len(args) != 2 or args[0] not in ("upgrade", "downgrade"):
+        raise ValueError(
+            f"args alembic no soportados: {args!r} (usa 'upgrade <rev>' o 'downgrade <rev>')"
+        )
+    _run_alembic_command(database_url, args[0], args[1])
+
+
+def get_head_revisions() -> tuple[str, ...]:
+    """Revisiones `head` de la cadena (normalmente una sola)."""
+    from alembic.script import ScriptDirectory
+
+    return tuple(ScriptDirectory.from_config(_make_alembic_config("")).get_heads())
+
+
+def get_current_revision(engine: Engine) -> str | None:
+    """Version aplicada (`alembic_version`); `None` si no hay tabla/fila."""
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:  # noqa: BLE001 - BD fresca sin versionar -> migrar
+        return None
+
+
 def make_test_engine(database_url: str) -> Engine:
     return create_engine(database_url, pool_pre_ping=True, future=True)
 

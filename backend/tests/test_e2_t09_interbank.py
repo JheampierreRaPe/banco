@@ -508,7 +508,12 @@ def test_insufficient_rejected_without_touching_balances(svc_session):
     a1 = svc_session["a1"]
     gw = MockInterbankGateway(default_send="confirm")
 
-    tx = _transfer(session, a1, gw, amount_minor=10_000_000)
+    # E2-T17: el gate de limite diario (CA-03, default 500_000 sin tabla
+    # `config`) rechaza 10_000_000 como `DAILY_LIMIT_EXCEEDED` antes de
+    # llegar a fondos (cubierto en `test_e2_t17_biometric.py`); para ejercer
+    # la via de fondos insuficientes se usa un monto sobre el disponible
+    # (100_000) pero bajo el limite diario y el umbral biometrico.
+    tx = _transfer(session, a1, gw, amount_minor=200_000)
     assert tx.status == "REJECTED"
     from app.modules.transactions.service import interbank as saga
 
@@ -886,8 +891,10 @@ def test_http_holder_and_account_errors(http_client, svc_session, monkeypatch):
         http_client.post("/api/v1/transfers/interbank", json=other, headers=headers).status_code
         == 409
     )
-    # Insuficiente -> 202 REJECTED.
-    short = _post({**base, "amount_minor": 50_000_000})
+    # Insuficiente -> 202 REJECTED (E2-T17: monto sobre el disponible
+    # pero bajo el limite diario default, para no caer en
+    # `DAILY_LIMIT_EXCEEDED`).
+    short = _post({**base, "amount_minor": 200_000})
     assert short.status_code == 202
     assert short.json()["data"]["status"] == "REJECTED"
     assert short.json()["data"]["failure_code"] == "INSUFFICIENT_FUNDS"

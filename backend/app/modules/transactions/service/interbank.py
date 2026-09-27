@@ -84,6 +84,7 @@ from app.modules.transactions.domain.state_machine import (
     validate_currency,
 )
 from app.modules.transactions.models import HoldStatus, Transaction
+from app.modules.transactions.service import biometric as biometric_service
 
 logger = logging.getLogger(__name__)
 
@@ -1112,6 +1113,285 @@ def _bump_attempts(session: Session, tx: Transaction, block: dict[str, Any]) -> 
     return _bump_attempts_merged(session, tx.id)
 
 
+def _send_after_hold(
+    session: Session,
+    tx: Transaction,
+    *,
+    amount_minor: int,
+    currency: str,
+    source: uuid.UUID,
+    balance_port=None,
+    gw: InterbankGateway,
+) -> Transaction:
+    """Envia por la pasarela y encamina el resultado (E2-T09, `04#7.3`).
+
+    Tramo extraido de `transfer_interbank` para reutilizarlo en la
+    continuacion tras biometria (`resume_after_authorization`, E2-T17):
+    `CONFIRMED` liquida, `ACCEPTED` reclama `POSTED` (solo el ganador
+    postea `send_entry`), timeout/caida mantiene `FUNDS_HELD`
+    (reintentable) y rechazo compensa a `FAILED`.     Solo `flush`.
+    """
+    snap_block = _interbank_meta(tx)
+    try:
+        result: SendResult = gw.send_transfer(
+            reference=tx.external_ref,
+            amount_minor=amount_minor,
+            currency=currency,
+            bank_code=str(snap_block.get("bank_code") or ""),
+            cci_hash=str(snap_block.get("cci_hash") or ""),
+        )
+    except (GatewayTimeoutError, GatewayUnavailableError):
+        logger.warning("interbank send pending ref_hash=%s", hash_reference(tx.external_ref or ""))
+        return tx_repository.get_transaction(session, tx.id)
+
+    # Bajo exclusion: fusiona `gateway_ref` sobre fresco con CAS + merge
+    # (nunca pisa `entries`; variante menor `gateway_ref` antes del claim).
+    def _apply_gw(block: dict[str, Any]) -> None:
+        if result.gateway_ref and not block.get("gateway_ref"):
+            block["gateway_ref"] = result.gateway_ref
+
+    try:
+        _save_block_merging(session, tx.id, _apply_gw)
+    except (ConcurrencyError, OperationalError, KeyError):
+        pass
+
+    if result.status == "REJECTED":
+        return _compensate(
+            session,
+            tx,
+            target="FAILED",
+            reason="contraparte rechazo el envio",
+            failure_code=FAILURE_GATEWAY_REJECTED,
+            balance_port=balance_port,
+        )
+    if result.status == "CONFIRMED":
+        return _settle_confirmed(session, tx)
+    # ACCEPTED: reclama POSTED primero y luego publica el envio bajo
+    # exclusion (el perdedor ante carrera retorna sin asentar; SAVEPOINT +
+    # reintento ante CAS perdedor).
+    with _tx_exclusive(tx.id):
+        for _ in range(5):
+            try:
+                with session.begin_nested():
+                    fresh = _locked_get(session, tx.id)
+                    if fresh is None:  # pragma: no cover - defensivo
+                        break
+                    if fresh.status != "FUNDS_HELD":
+                        break
+                    if not _claim_transition(session, fresh, "POSTED", reason="envio aceptado"):
+                        break
+                    posted = _locked_get(session, tx.id)
+                    if posted is None:  # pragma: no cover - defensivo
+                        break
+                    entries = dict(_interbank_meta(posted).get("entries") or {})
+                    if "send_entry" not in entries:
+                        entries["send_entry"] = _post_send_entry(
+                            session,
+                            posted,
+                            amount_minor=amount_minor,
+                            currency=currency,
+                            source_ref=source,
+                        )
+                        block = _interbank_meta(posted)
+                        block["entries"] = entries
+                        _save_interbank_meta(session, posted, block)
+                break
+            except ConcurrencyError:
+                _backoff(0)
+                continue
+            except OperationalError as _op_exc:
+                if not _is_lock_contention(_op_exc):
+                    raise
+                _backoff(1)
+                continue
+    return tx_repository.get_transaction(session, tx.id)
+
+
+def _pend_interbank_for_biometry(
+    session: Session,
+    tx: Transaction,
+    *,
+    source: uuid.UUID,
+    amount_minor: int,
+    currency: str,
+    fee_minor: int,
+    total_minor: int,
+    digits: str,
+    bank_code: str,
+    holder_masked: str,
+    attempts_limit: int,
+    ttl_seconds: int,
+    port,
+    device_id: str | None,
+    request_metadata: dict[str, Any] | None,
+) -> Transaction:
+    """Retiene una interbancaria en `PENDING_AUTHORIZATION` (E2-T17, HU08).
+
+    Comprueba fondos (sin fondos -> `REJECTED`, sin movimientos); retiene
+    el total (hold `ACTIVE` SIN `expires_at` + delta + asiento `2000-A ->
+    2100-A` + `funds.held`), deja `external_ref` y el bloque `meta`
+    (`cci_hash`/mascara, jamas el CCI en claro) listos para el envio,
+    emite el `nonce` a firmar y avanza `VALIDATED -> PENDING_AUTHORIZATION`
+    (sin enviar por la pasarela). Solo `flush`.
+    """
+    ordered = sorted({source}, key=str)
+    locked = {aid: port.lock_and_get(session, aid) for aid in ordered}
+    src_balance = locked[source]
+    if src_balance.currency != currency or src_balance.available_minor < total_minor:
+        tx = tx_repository.transition_transaction(
+            session, tx.id, "REJECTED", reason="fondos insuficientes"
+        )
+        tx = tx_repository.get_transaction(session, tx.id)
+        _publish_outbox(
+            session,
+            event_type=domain_events.TRANSACTION_INITIATED,
+            tx=tx,
+            payload={
+                "transaction_id": str(tx.id),
+                "type": INTERBANK_TX_TYPE,
+                "source_account_id": str(source),
+                "amount_minor": amount_minor,
+                "fee_minor": fee_minor,
+                "currency": currency,
+                "status": tx.status,
+            },
+        )
+        return tx
+
+    src_avail, _src_hold = ledger_service.ensure_customer_accounts(session, source, currency)
+    tx_repository.create_hold(
+        session,
+        transaction_id=tx.id,
+        account_id=source,
+        amount_minor=total_minor,
+        currency=currency,
+        expires_at=None,  # el timeout lo posee esta saga (meta.expires_at)
+    )
+    port.apply_delta(session, source, -total_minor, currency)
+    entries = _post_hold_entries(
+        session,
+        tx,
+        src_avail_id=src_avail.id,
+        src_hold_id=_src_hold.id,
+        total_minor=total_minor,
+        currency=currency,
+        source_ref=source,
+    )
+    _publish_outbox(
+        session,
+        event_type=domain_events.FUNDS_HELD,
+        tx=tx,
+        payload={
+            "transaction_id": str(tx.id),
+            "account_id": str(source),
+            "amount_minor": total_minor,
+            "currency": currency,
+            "status": "FUNDS_HELD",
+        },
+    )
+
+    tx = tx_repository.get_transaction(session, tx.id)
+    if tx.external_ref is None:
+        tx.external_ref = f"IB-{tx.id.hex[:12].upper()}"
+        session.add(tx)
+        session.flush()
+    block: dict[str, Any] = {
+        "cci_hash": hash_cci(digits),
+        "bank_code": bank_code,
+        "holder_name_masked": holder_masked,
+        "gateway_ref": "",
+        "attempts": 0,
+        "max_attempts": attempts_limit,
+        "expires_at": (_utcnow().timestamp() + ttl_seconds),
+        "entries": entries,
+    }
+    block["expires_at"] = datetime.fromtimestamp(block["expires_at"], UTC).isoformat()
+    _save_interbank_meta(session, tx, block)
+
+    hint = device_id
+    if hint is None and isinstance(request_metadata, dict):
+        candidate = request_metadata.get("device_id")
+        if isinstance(candidate, str) and candidate.strip():
+            hint = candidate
+    challenge, _nonce, _expires = biometric_service.new_challenge_block(hint)
+    biometric_service.save_block(session, tx, challenge)
+    tx = tx_repository.transition_transaction(
+        session, tx.id, "PENDING_AUTHORIZATION", reason=biometric_service.REQUIRED_REASON
+    )
+    _publish_outbox(
+        session,
+        event_type=domain_events.TRANSACTION_INITIATED,
+        tx=tx,
+        payload={
+            "transaction_id": str(tx.id),
+            "type": INTERBANK_TX_TYPE,
+            "source_account_id": str(source),
+            "amount_minor": amount_minor,
+            "fee_minor": fee_minor,
+            "currency": currency,
+            "status": tx.status,
+        },
+    )
+    return tx_repository.get_transaction(session, tx.id)
+
+
+def resume_after_authorization(
+    session: Session,
+    tx_id: uuid.UUID | str,
+    *,
+    balance_port=None,
+    gateway: InterbankGateway | None = None,
+) -> Transaction:
+    """Reanuda una interbancaria tras biometria superada (E2-T17, HU08).
+
+    La llama `biometric.authorize_transaction` con la operacion ya en
+    `AUTHORIZED`: exige el hold `ACTIVE` creado en `PENDING_AUTHORIZATION`
+    (sin duplicarlo), avanza a `FUNDS_HELD` y ejecuta el envio por la
+    pasarela (`_send_after_hold`: confirma, acepta o compensa, sin
+    reenviar de mas). Solo `flush`.
+    """
+    try:
+        wanted = tx_id if isinstance(tx_id, uuid.UUID) else uuid.UUID(str(tx_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise biometric_service.BiometricStateError(
+            "la operacion no espera autorizacion biometrica"
+        ) from exc
+    tx = tx_repository.get_transaction(session, wanted)
+    if tx is None or tx.type != INTERBANK_TX_TYPE or tx.status != "AUTHORIZED":
+        raise biometric_service.BiometricStateError(
+            "la operacion no espera autorizacion biometrica"
+        )
+    total = int(tx.amount_minor) + int(tx.fee_minor or 0)
+    held = False
+    for candidate in tx_repository.list_holds_by_transaction(session, tx.id):
+        if (
+            candidate.status == HoldStatus.ACTIVE.value
+            and int(candidate.amount_minor) == total
+            and candidate.currency == tx.currency
+        ):
+            held = True
+            break
+    if not held:
+        raise biometric_service.BiometricStateError("la operacion no conserva la retencion")
+    block = _interbank_meta(tx)
+    if not isinstance((block.get("entries") or {}).get("hold_entry"), str):
+        raise biometric_service.BiometricStateError("la operacion no conserva la retencion")
+    tx = tx_repository.transition_transaction(
+        session, tx.id, "FUNDS_HELD", reason="fondos retenidos"
+    )
+    tx = tx_repository.get_transaction(session, tx.id)
+    gw = resolve_gateway(gateway)
+    return _send_after_hold(
+        session,
+        tx,
+        amount_minor=int(tx.amount_minor),
+        currency=tx.currency,
+        source=tx.source_account_id,
+        balance_port=balance_port,
+        gw=gw,
+    )
+
+
 def transfer_interbank(
     session: Session,
     *,
@@ -1131,13 +1411,21 @@ def transfer_interbank(
     timeout_seconds: float | None = None,
     max_attempts: int | None = None,
     balance_port=None,
+    risk_profile: str | None = None,
+    device_id: str | None = None,
+    threshold_reader=None,
+    daily_limit_reader=None,
 ) -> Transaction:
     """Caso de uso `INTERBANK_TRANSFER` (E2-T09, HU06, `04#7.3`).
 
     1. Valida entrada pura + titular/CCI (fachada E2-T08) + cuenta origen
        (fachada `accounts`): todo ANTES de mover dinero.
     2. Crea `INITIATED -> VALIDATED -> AUTHORIZED`; sin fondos ->
-       `REJECTED` (negocio, sin movimientos).
+       `REJECTED` (negocio, sin movimientos). Gate biometrico (E2-T17,
+       HU08): sobre el limite diario del perfil -> `REJECTED`
+       (`DAILY_LIMIT_EXCEEDED`, sin hold); sobre el umbral de biometria ->
+       `PENDING_AUTHORIZATION` con hold hasta `authorize_transaction`
+       (E2-T19; la continuacion reanuda el envio sin duplicar).
     3. Retiene el total (`2000-A -> 2100-A`, hold `ACTIVE` SIN `expires_at`:
        el timeout lo posee esta saga via `meta`, no el job generico de
        vencimiento) y avanza a `FUNDS_HELD`. La comision se carga recien
@@ -1206,6 +1494,58 @@ def transfer_interbank(
         metadata=metadata,
     )
     tx_repository.transition_transaction(session, tx.id, "VALIDATED", reason="entrada valida")
+
+    # Gate biometrico + limite diario por perfil (E2-T17, HU08 CA-01/CA-03).
+    gate = biometric_service.evaluate_gate(
+        session,
+        user_id=initiator,
+        amount_minor=amount_minor,
+        fee_minor=resolved_fee,
+        exclude_tx_id=tx.id,
+        risk_profile=risk_profile,
+        threshold_reader=threshold_reader,
+        daily_limit_reader=daily_limit_reader,
+    )
+    if gate.limit_exceeded:
+        biometric_service.mark_rejected(session, tx, biometric_service.DAILY_LIMIT_EXCEEDED)
+        tx = tx_repository.transition_transaction(
+            session, tx.id, "REJECTED", reason=biometric_service.DAILY_LIMIT_REASON
+        )
+        _set_failure(session, tx, biometric_service.DAILY_LIMIT_EXCEEDED)
+        tx = tx_repository.get_transaction(session, tx.id)
+        _publish_outbox(
+            session,
+            event_type=domain_events.TRANSACTION_INITIATED,
+            tx=tx,
+            payload={
+                "transaction_id": str(tx.id),
+                "type": INTERBANK_TX_TYPE,
+                "source_account_id": str(source),
+                "amount_minor": amount_minor,
+                "fee_minor": resolved_fee,
+                "currency": currency,
+                "status": tx.status,
+            },
+        )
+        return tx
+    if gate.requires_biometry:
+        return _pend_interbank_for_biometry(
+            session,
+            tx,
+            source=source,
+            amount_minor=amount_minor,
+            currency=currency,
+            fee_minor=resolved_fee,
+            total_minor=total_minor,
+            digits=digits,
+            bank_code=code,
+            holder_masked=masked,
+            attempts_limit=attempts_limit,
+            ttl_seconds=ttl_seconds,
+            port=port,
+            device_id=device_id,
+            request_metadata=metadata,
+        )
     tx_repository.transition_transaction(session, tx.id, "AUTHORIZED", reason="autorizada")
     _publish_outbox(
         session,
@@ -1282,79 +1622,15 @@ def transfer_interbank(
     block["expires_at"] = datetime.fromtimestamp(block["expires_at"], UTC).isoformat()
     _save_interbank_meta(session, tx, block)
 
-    try:
-        result: SendResult = gw.send_transfer(
-            reference=tx.external_ref,
-            amount_minor=amount_minor,
-            currency=currency,
-            bank_code=code,
-            cci_hash=hash_cci(digits),
-        )
-    except (GatewayTimeoutError, GatewayUnavailableError):
-        logger.warning("interbank send pending ref_hash=%s", hash_reference(tx.external_ref or ""))
-        return tx_repository.get_transaction(session, tx.id)
-
-    # Bajo exclusion: fusiona `gateway_ref` sobre fresco con CAS + merge
-    # (nunca pisa `entries`; variante menor `gateway_ref` antes del claim).
-    def _apply_gw(block: dict[str, Any]) -> None:
-        if result.gateway_ref and not block.get("gateway_ref"):
-            block["gateway_ref"] = result.gateway_ref
-
-    try:
-        _save_block_merging(session, tx.id, _apply_gw)
-    except (ConcurrencyError, OperationalError, KeyError):
-        pass
-
-    if result.status == "REJECTED":
-        return _compensate(
-            session,
-            tx,
-            target="FAILED",
-            reason="contraparte rechazo el envio",
-            failure_code=FAILURE_GATEWAY_REJECTED,
-            balance_port=balance_port,
-        )
-    if result.status == "CONFIRMED":
-        return _settle_confirmed(session, tx)
-    # ACCEPTED: reclama POSTED primero y luego publica el envio bajo
-    # exclusion (el perdedor ante carrera retorna sin asentar; SAVEPOINT +
-    # reintento ante CAS perdedor).
-    with _tx_exclusive(tx.id):
-        for _ in range(5):
-            try:
-                with session.begin_nested():
-                    fresh = _locked_get(session, tx.id)
-                    if fresh is None:  # pragma: no cover - defensivo
-                        break
-                    if fresh.status != "FUNDS_HELD":
-                        break
-                    if not _claim_transition(session, fresh, "POSTED", reason="envio aceptado"):
-                        break
-                    posted = _locked_get(session, tx.id)
-                    if posted is None:  # pragma: no cover - defensivo
-                        break
-                    entries = dict(_interbank_meta(posted).get("entries") or {})
-                    if "send_entry" not in entries:
-                        entries["send_entry"] = _post_send_entry(
-                            session,
-                            posted,
-                            amount_minor=amount_minor,
-                            currency=currency,
-                            source_ref=source,
-                        )
-                        block = _interbank_meta(posted)
-                        block["entries"] = entries
-                        _save_interbank_meta(session, posted, block)
-                break
-            except ConcurrencyError:
-                _backoff(0)
-                continue
-            except OperationalError as _op_exc:
-                if not _is_lock_contention(_op_exc):
-                    raise
-                _backoff(1)
-                continue
-    return tx_repository.get_transaction(session, tx.id)
+    return _send_after_hold(
+        session,
+        tx,
+        amount_minor=amount_minor,
+        currency=currency,
+        source=source,
+        balance_port=balance_port,
+        gw=gw,
+    )
 
 
 def poll_interbank(
@@ -1668,6 +1944,7 @@ __all__ = [
     "resolve_interbank_fee",
     "resolve_max_attempts",
     "resolve_timeout_seconds",
+    "resume_after_authorization",
     "reverse_interbank",
     "tracking_of",
     "transfer_interbank",

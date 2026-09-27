@@ -817,12 +817,17 @@ def test_http_third_party_fee_and_insufficient(http_client, svc_session):
     )
 
     before = (_avail(session, a1), _avail(session, b1))
+    # E2-T17: el gate de limite diario (CA-03, default 500_000 sin tabla
+    # `config`) rechaza 1_000_000 como `DAILY_LIMIT_EXCEEDED` antes de
+    # llegar a fondos (cubierto en `test_e2_t17_biometric.py`); para ejercer
+    # la via de fondos insuficientes se usa un monto sobre el disponible
+    # pero bajo el limite diario y el umbral biometrico.
     short = http_client.post(
         "/api/v1/transfers/third-party",
         json={
             "source_account_id": str(a1),
             "target_account_id": str(b1),
-            "amount_minor": 1_000_000,
+            "amount_minor": 50_000,
             "currency": "PEN",
         },
         headers={"Idempotency-Key": f"e2t07-short-{uuid.uuid4()}"},

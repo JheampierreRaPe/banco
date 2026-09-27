@@ -61,7 +61,8 @@ class TransferData(BaseModel):
     fee_minor: int = 0
     failure_code: str | None = Field(
         default=None,
-        description="`INSUFFICIENT_FUNDS` cuando `status` es `REJECTED`",
+        description="`INSUFFICIENT_FUNDS`/`DAILY_LIMIT_EXCEEDED`/"
+        "`BIOMETRIC_PREVENTIVE_BLOCK` cuando `status` es `REJECTED`",
     )
 
 

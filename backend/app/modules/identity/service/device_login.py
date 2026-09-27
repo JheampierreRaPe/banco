@@ -494,6 +494,31 @@ def login_with_device(
     }
 
 
+def get_device_binding(session: Session, user_id: uuid.UUID | str, device_id: str) -> dict | None:
+    """Lectura del binding por fachada (E2-T17, D-03).
+
+    La consume el motor transaccional (`transactions`) para verificar la
+    firma del `nonce` de autorizacion de pagos sin importar modelos de
+    `identity`: retorna `{"device_id", "public_key", "status"}` o `None`
+    si no existe (el llamante responde generico, sin filtrar existencia
+    ni estado). Solo lectura (`sin flush`/`commit` propios mas alla de
+    los que haga el repositorio); el `public_key` se trata como material
+    secreto (R26: jamas en logs).
+    """
+    try:
+        binding = identity_repo.get_binding(session, user_id, device_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if binding is None:
+        return None
+    logger.debug("device binding leido por fachada")
+    return {
+        "device_id": binding.device_id,
+        "public_key": binding.public_key,
+        "status": binding.status,
+    }
+
+
 __all__ = [
     "AUDIT_FAILED_ATTEMPT",
     "AUDIT_LOGIN_SUCCEEDED",
@@ -504,6 +529,7 @@ __all__ = [
     "USER_AGGREGATE_TYPE",
     "LoginExpiredError",
     "LoginInvalidError",
+    "get_device_binding",
     "login_with_device",
     "request_challenge",
     "verify_signature",

@@ -87,6 +87,7 @@ from app.modules.transactions.domain.state_machine import (
     validate_currency,
 )
 from app.modules.transactions.models import HoldStatus, Transaction
+from app.modules.transactions.service import biometric as biometric_service
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,401 @@ def _own_settle_postings(
     ]
 
 
+def _cleanup_technical_failure(session: Session, tx: Transaction | None) -> None:
+    """Limpieza best-effort ante fallo tecnico (holds + `FAILED`, sin ocultar).
+
+    Libera holds `ACTIVE` y marca `FAILED` si ya se habia retenido; nunca
+    lanza (el llamante re-lanza la excepcion original para revertir).
+    """
+    try:
+        if tx is not None and tx.id is not None:
+            try:
+                for active in tx_repository.list_holds_by_transaction(session, tx.id):
+                    if active.status == HoldStatus.ACTIVE.value:
+                        try:
+                            tx_repository.update_hold_status(
+                                session, active.id, HoldStatus.RELEASED.value
+                            )
+                        except Exception:  # noqa: BLE001, S110 - best-effort cleanup
+                            pass
+            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
+                pass
+            try:
+                if tx.status in ("FUNDS_HELD", "POSTED"):
+                    tx_repository.transition_transaction(
+                        session, tx.id, "FAILED", reason="fallo tecnico"
+                    )
+            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
+                pass
+            try:
+                _publish_outbox(
+                    session,
+                    event_type=domain_events.FUNDS_RELEASED,
+                    tx=tx,
+                    payload={
+                        "transaction_id": str(tx.id),
+                        "status": "FAILED",
+                    },
+                )
+            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
+                pass
+    except Exception:  # noqa: BLE001, S110 - best-effort cleanup
+        pass
+
+
+def _retain_hold_phase(
+    session: Session,
+    tx: Transaction,
+    *,
+    source: uuid.UUID,
+    total_minor: int,
+    currency: str,
+    port: BalancePort,
+):
+    """Retencion con hold: subcuentas + fila + delta + asiento + `funds.held`.
+
+    Sin transiciones de estado (el llamante avanza a `FUNDS_HELD`/`POSTED`
+    o a `PENDING_AUTHORIZATION` segun la ruta). Solo `flush`.
+    """
+    src_avail, src_hold = ledger_service.ensure_customer_accounts(session, source, currency)
+    hold = tx_repository.create_hold(
+        session,
+        transaction_id=tx.id,
+        account_id=source,
+        amount_minor=total_minor,
+        currency=currency,
+    )
+    port.apply_delta(session, source, -total_minor, currency)
+    ledger_service.post_entry(
+        session,
+        entry_type=HOLD_ENTRY_TYPE,
+        postings=[
+            {
+                "ledger_account_id": src_avail.id,
+                "direction": "DEBIT",
+                "amount_minor": total_minor,
+                "currency": currency,
+                "account_ref": source,
+            },
+            {
+                "ledger_account_id": src_hold.id,
+                "direction": "CREDIT",
+                "amount_minor": total_minor,
+                "currency": currency,
+                "account_ref": source,
+            },
+        ],
+        transaction_id=tx.id,
+        description=f"hold {tx.id}",
+    )
+    _publish_outbox(
+        session,
+        event_type=domain_events.FUNDS_HELD,
+        tx=tx,
+        payload={
+            "transaction_id": str(tx.id),
+            "account_id": str(source),
+            "amount_minor": total_minor,
+            "currency": currency,
+            "status": "FUNDS_HELD",
+        },
+    )
+    return hold, src_hold.id
+
+
+def _settle_held_phase(
+    session: Session,
+    tx: Transaction,
+    *,
+    hold,
+    src_hold_id: uuid.UUID,
+    source: uuid.UUID,
+    target: uuid.UUID,
+    amount_minor: int,
+    fee_minor: int,
+    currency: str,
+    port: BalancePort,
+    settle: bool,
+) -> Transaction:
+    """Liquidacion de un hold ya en `POSTED` (`2100-S -> 2000-D` + fee a `4100`).
+
+    Con `settle=False` (diferida, `04#7.3`) se detiene en `POSTED` con el
+    hold `ACTIVE`. Solo `flush`.
+    """
+    if not settle:
+        return tx
+    dst_avail, _dst_hold = ledger_service.ensure_customer_accounts(session, target, currency)
+    fee_account_id: uuid.UUID | None = None
+    if fee_minor > 0:
+        # Solo lectura del catalogo semilla (creado por
+        # ensure_customer_accounts); TODO: exponer por fachada.
+        from app.modules.ledger.repository import get_by_code
+
+        fee_account = get_by_code(session, FEE_ACCOUNT_CODE)
+        if fee_account is None:  # pragma: no cover - defensivo
+            raise RuntimeError(f"cuenta de comision {FEE_ACCOUNT_CODE} inexistente")
+        fee_account_id = fee_account.id
+    ledger_service.post_entry(
+        session,
+        entry_type=SETTLE_ENTRY_TYPE,
+        postings=_settle_postings(
+            src_hold_id,
+            dst_avail.id,
+            fee_account_id,
+            source,
+            target,
+            amount_minor,
+            fee_minor,
+            currency,
+        ),
+        transaction_id=tx.id,
+        description=f"settle {tx.id}",
+    )
+    port.apply_delta(session, target, amount_minor, currency)
+    tx_repository.update_hold_status(session, hold.id, HoldStatus.CAPTURED.value)
+    tx = tx_repository.transition_transaction(
+        session, tx.id, "SETTLED", reason="transferencia liquidada"
+    )
+    _publish_outbox(
+        session,
+        event_type=domain_events.TRANSFER_SETTLED,
+        tx=tx,
+        payload={
+            "transaction_id": str(tx.id),
+            "source_account_id": str(source),
+            "target_account_id": str(target),
+            "amount_minor": amount_minor,
+            "fee_minor": fee_minor,
+            "currency": currency,
+            "status": "SETTLED",
+        },
+    )
+    return tx
+
+
+def _pend_for_biometry(
+    session: Session,
+    tx: Transaction,
+    *,
+    source: uuid.UUID,
+    target: uuid.UUID,
+    amount_minor: int,
+    currency: str,
+    fee_minor: int,
+    total_minor: int,
+    atomic: bool,
+    settle: bool,
+    port: BalancePort,
+    device_id: str | None,
+    request_metadata: dict[str, Any] | None,
+) -> Transaction:
+    """Retiene en `PENDING_AUTHORIZATION` con reto biometrico (E2-T17, HU08).
+
+    Comprueba fondos (sin fondos -> `REJECTED`, sin movimientos); en rutas
+    con hold crea la retencion real (fila + delta + asiento + `funds.held`)
+    y en la ruta atomica propia no retiene nada (preserva `04#7.1`: nada
+    se mueve hasta `AUTHORIZED`). Emite el `nonce` a firmar y avanza
+    `VALIDATED -> PENDING_AUTHORIZATION`. Solo `flush`.
+    """
+    ordered = sorted({source, target}, key=str)
+    locked = {aid: port.lock_and_get(session, aid) for aid in ordered}
+    src_balance = locked[source]
+    if src_balance.currency != currency or src_balance.available_minor < total_minor:
+        tx_repository.transition_transaction(
+            session, tx.id, "REJECTED", reason="fondos insuficientes"
+        )
+        return tx_repository.get_transaction(session, tx.id)
+    if not atomic:
+        _retain_hold_phase(
+            session, tx, source=source, total_minor=total_minor, currency=currency, port=port
+        )
+    hint = device_id
+    if hint is None and isinstance(request_metadata, dict):
+        candidate = request_metadata.get("device_id")
+        if isinstance(candidate, str) and candidate.strip():
+            hint = candidate
+    block, _nonce, _expires = biometric_service.new_challenge_block(hint)
+    block["resume"] = {"settle": bool(settle), "atomic": bool(atomic)}
+    biometric_service.save_block(session, tx, block)
+    tx = tx_repository.transition_transaction(
+        session, tx.id, "PENDING_AUTHORIZATION", reason=biometric_service.REQUIRED_REASON
+    )
+    return tx
+
+
+def continue_from_authorized(
+    session: Session,
+    tx: Transaction,
+    *,
+    source: uuid.UUID | str,
+    target: uuid.UUID | str,
+    amount_minor: int,
+    currency: str,
+    fee_minor: int,
+    total_minor: int,
+    tx_type: str,
+    settle: bool = True,
+    atomic: bool = False,
+    port: BalancePort | None = None,
+    balance_port: BalancePort | None = None,
+    reuse_hold: bool = False,
+) -> Transaction:
+    """Continua una operacion `AUTHORIZED` (motor o `authorize` biometrico).
+
+    - `reuse_hold=False` (ruta inmediata): comprueba fondos y retiene
+      (hold + asiento) o liquida atomico, como E5-T03/E2-T07.
+    - `reuse_hold=True` (tras biometria superada en ruta con hold):
+      exige el hold `ACTIVE` creado en `PENDING_AUTHORIZATION` y lo
+      reutiliza sin duplicar fila, delta ni asiento (`E2-T17`); si falta,
+      falla cerrado (`BiometricStateError`, sin mover dinero).
+    Fallo tecnico: libera holds + `FAILED` best-effort y re-lanza (el
+    llamante revierte). Solo `flush`.
+    """
+    source = _coerce_account(source, "source_account_id")
+    target = _coerce_account(target, "target_account_id")
+    active_port: BalancePort = port if port is not None else balance_port  # type: ignore[assignment]
+    if active_port is None:
+        try:
+            from app.composition import resolve_balance_port as _resolve_bp
+        except ImportError:  # pragma: no cover - red de seguridad
+            active_port = DEFAULT_BALANCE_PORT
+        else:
+            active_port = _resolve_bp(None, fallback=DEFAULT_BALANCE_PORT)
+    fresh = tx_repository.get_transaction(session, tx.id)
+    if fresh is None:  # pragma: no cover - defensivo
+        raise KeyError(f"transaccion no encontrada: {tx.id}")
+    tx = fresh
+    try:
+        if reuse_hold:
+            hold = None
+            for candidate in tx_repository.list_holds_by_transaction(session, tx.id):
+                if (
+                    candidate.status == HoldStatus.ACTIVE.value
+                    and int(candidate.amount_minor) == int(total_minor)
+                    and candidate.currency == currency
+                ):
+                    hold = candidate
+                    break
+            if hold is None:
+                raise biometric_service.BiometricStateError("la operacion no conserva la retencion")
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "FUNDS_HELD", reason="fondos retenidos"
+            )
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "POSTED", reason="asiento de hold registrado"
+            )
+            resume = (biometric_service.get_block(tx) or {}).get("resume") or {}
+            resume_settle = resume.get("settle", settle)
+            tx = _settle_held_phase(
+                session,
+                tx,
+                hold=hold,
+                src_hold_id=hold_src_hold_id(session, source, currency),
+                source=source,
+                target=target,
+                amount_minor=amount_minor,
+                fee_minor=fee_minor,
+                currency=currency,
+                port=active_port,
+                settle=settle if resume_settle is None else bool(resume_settle),
+            )
+            return tx
+
+        # 4. Bloqueo en orden estable + comprobacion de fondos.
+        ordered = sorted({source, target}, key=str)
+        locked = {aid: active_port.lock_and_get(session, aid) for aid in ordered}
+        src_balance = locked[source]
+        if src_balance.currency != currency or src_balance.available_minor < total_minor:
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "REJECTED", reason="fondos insuficientes"
+            )
+            return tx
+
+        # 5'. Ruta atomica propia (E2-T07, 04#7.1): sin hold ni FUNDS_HELD.
+        if atomic:
+            src_avail, _src_hold = ledger_service.ensure_customer_accounts(
+                session, source, currency
+            )
+            dst_avail, _dst_hold = ledger_service.ensure_customer_accounts(
+                session, target, currency
+            )
+            ledger_service.post_entry(
+                session,
+                entry_type=OWN_SETTLE_ENTRY_TYPE,
+                postings=_own_settle_postings(
+                    src_avail.id, dst_avail.id, source, target, amount_minor, currency
+                ),
+                transaction_id=tx.id,
+                description=f"own settle {tx.id}",
+            )
+            active_port.apply_delta(session, source, -total_minor, currency)
+            active_port.apply_delta(session, target, amount_minor, currency)
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "POSTED", reason="asiento propio registrado"
+            )
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "SETTLED", reason="transferencia propia liquidada"
+            )
+            _publish_outbox(
+                session,
+                event_type=domain_events.TRANSFER_SETTLED,
+                tx=tx,
+                payload={
+                    "transaction_id": str(tx.id),
+                    "source_account_id": str(source),
+                    "target_account_id": str(target),
+                    "amount_minor": amount_minor,
+                    "fee_minor": 0,
+                    "currency": currency,
+                    "status": "SETTLED",
+                },
+            )
+            return tx
+
+        # 5. Retencion + 6. asiento de hold + 7. liquidacion (E5-T03).
+        hold, src_hold_id = _retain_hold_phase(
+            session,
+            tx,
+            source=source,
+            total_minor=total_minor,
+            currency=currency,
+            port=active_port,
+        )
+        tx = tx_repository.transition_transaction(
+            session, tx.id, "FUNDS_HELD", reason="fondos retenidos"
+        )
+        tx = tx_repository.transition_transaction(
+            session, tx.id, "POSTED", reason="asiento de hold registrado"
+        )
+        tx = _settle_held_phase(
+            session,
+            tx,
+            hold=hold,
+            src_hold_id=src_hold_id,
+            source=source,
+            target=target,
+            amount_minor=amount_minor,
+            fee_minor=fee_minor,
+            currency=currency,
+            port=active_port,
+            settle=settle,
+        )
+        return tx
+    except Exception:  # noqa: BLE001 - cleanup best-effort y re-lanza (finally: raise)
+        # Fallo tecnico: libera holds + FAILED best-effort y re-lanza
+        # (no se oculta el rollback: el llamador revierte la sesion).
+        try:
+            _cleanup_technical_failure(session, tx)
+        finally:
+            raise
+
+
+def hold_src_hold_id(session: Session, source: uuid.UUID, currency: str) -> uuid.UUID:
+    """Subcuenta `2100` del origen (para liquidar un hold reutilizado)."""
+    _, src_hold = ledger_service.ensure_customer_accounts(session, source, currency)
+    return src_hold.id
+
+
 def execute_transfer(
     session: Session,
     *,
@@ -404,6 +800,10 @@ def execute_transfer(
     settle: bool = True,
     atomic: bool = False,
     balance_port: BalancePort | None = None,
+    risk_profile: str | None = None,
+    device_id: str | None = None,
+    threshold_reader=None,
+    daily_limit_reader=None,
 ) -> Transaction:
     """Ejecuta una transferencia atomica (hold + asiento + estados).
 
@@ -414,6 +814,14 @@ def execute_transfer(
       `2000-S -> 2000-D` sin hold ni `FUNDS_HELD`
       (`AUTHORIZED -> POSTED -> SETTLED`); exige `fee_minor == 0` y
       `settle=True`; retorna en `SETTLED` o en `REJECTED` si no hay fondos.
+    - Gate biometrico (E2-T17, HU08): si el acumulado del dia supera el
+      umbral (`transfer.biometric_threshold_minor`), retorna en
+      `PENDING_AUTHORIZATION` con hold (rutas con hold) y `nonce` a firmar;
+      la continuacion llega por `biometric.authorize_transaction`
+      (E2-T19). Si supera el limite diario del perfil, retorna `REJECTED`
+      (`DAILY_LIMIT_EXCEEDED`) sin hold. `risk_profile` lo aporta el
+      llamante (por defecto rige el generico/`STANDARD`); `device_id`
+      anticipa el dispositivo del reto (si falta se adopta al autorizar).
     Ante fallo tecnico re-lanza tras marcar FAILED/RELEASED best-effort
     (el llamador revierte: rollback total).
     """
@@ -468,198 +876,61 @@ def execute_transfer(
             metadata=metadata,
         )
         tx_repository.transition_transaction(session, tx.id, "VALIDATED", reason="entrada valida")
+
+        # 3b. Gate biometrico + limite diario por perfil (E2-T17, HU08).
+        gate = biometric_service.evaluate_gate(
+            session,
+            user_id=_coerce_optional_user(initiator_user_id),
+            amount_minor=amount_minor,
+            fee_minor=fee_minor,
+            exclude_tx_id=tx.id,
+            risk_profile=risk_profile,
+            threshold_reader=threshold_reader,
+            daily_limit_reader=daily_limit_reader,
+        )
+        if gate.limit_exceeded:
+            biometric_service.mark_rejected(session, tx, biometric_service.DAILY_LIMIT_EXCEEDED)
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "REJECTED", reason=biometric_service.DAILY_LIMIT_REASON
+            )
+            return tx
+        if gate.requires_biometry:
+            return _pend_for_biometry(
+                session,
+                tx,
+                source=source,
+                target=target,
+                amount_minor=amount_minor,
+                currency=currency,
+                fee_minor=fee_minor,
+                total_minor=total_minor,
+                atomic=atomic,
+                settle=settle,
+                port=port,
+                device_id=device_id,
+                request_metadata=metadata,
+            )
         tx_repository.transition_transaction(session, tx.id, "AUTHORIZED", reason="autorizada")
-
-        # 4. Bloqueo en orden estable + comprobacion de fondos.
-        ordered = sorted({source, target}, key=str)
-        locked = {aid: port.lock_and_get(session, aid) for aid in ordered}
-        src_balance = locked[source]
-        if src_balance.currency != currency or src_balance.available_minor < total_minor:
-            tx_repository.transition_transaction(
-                session, tx.id, "REJECTED", reason="fondos insuficientes"
-            )
-            return tx
-
-        # 5'. Ruta atomica propia (E2-T07, 04#7.1): sin hold ni FUNDS_HELD.
-        if atomic:
-            src_avail, _src_hold = ledger_service.ensure_customer_accounts(
-                session, source, currency
-            )
-            dst_avail, _dst_hold = ledger_service.ensure_customer_accounts(
-                session, target, currency
-            )
-            ledger_service.post_entry(
-                session,
-                entry_type=OWN_SETTLE_ENTRY_TYPE,
-                postings=_own_settle_postings(
-                    src_avail.id, dst_avail.id, source, target, amount_minor, currency
-                ),
-                transaction_id=tx.id,
-                description=f"own settle {tx.id}",
-            )
-            port.apply_delta(session, source, -total_minor, currency)
-            port.apply_delta(session, target, amount_minor, currency)
-            tx_repository.transition_transaction(
-                session, tx.id, "POSTED", reason="asiento propio registrado"
-            )
-            tx_repository.transition_transaction(
-                session, tx.id, "SETTLED", reason="transferencia propia liquidada"
-            )
-            _publish_outbox(
-                session,
-                event_type=domain_events.TRANSFER_SETTLED,
-                tx=tx,
-                payload={
-                    "transaction_id": str(tx.id),
-                    "source_account_id": str(source),
-                    "target_account_id": str(target),
-                    "amount_minor": amount_minor,
-                    "fee_minor": 0,
-                    "currency": currency,
-                    "status": "SETTLED",
-                },
-            )
-            return tx
-
-        # 5. Retencion: subcuentas via fachada, hold ACTIVE, delta, estado.
-        src_avail, src_hold = ledger_service.ensure_customer_accounts(session, source, currency)
-        hold = tx_repository.create_hold(
+        return continue_from_authorized(
             session,
-            transaction_id=tx.id,
-            account_id=source,
-            amount_minor=total_minor,
+            tx,
+            source=source,
+            target=target,
+            amount_minor=amount_minor,
             currency=currency,
+            fee_minor=fee_minor,
+            total_minor=total_minor,
+            tx_type=tx_type,
+            settle=settle,
+            atomic=atomic,
+            port=port,
         )
-        port.apply_delta(session, source, -total_minor, currency)
-        tx_repository.transition_transaction(
-            session, tx.id, "FUNDS_HELD", reason="fondos retenidos"
-        )
-        _publish_outbox(
-            session,
-            event_type=domain_events.FUNDS_HELD,
-            tx=tx,
-            payload={
-                "transaction_id": str(tx.id),
-                "account_id": str(source),
-                "amount_minor": total_minor,
-                "currency": currency,
-                "status": "FUNDS_HELD",
-            },
-        )
-
-        # 6. Asiento de hold 2000-S -> 2100-S (total invariante, 04#2.1).
-        ledger_service.post_entry(
-            session,
-            entry_type=HOLD_ENTRY_TYPE,
-            postings=[
-                {
-                    "ledger_account_id": src_avail.id,
-                    "direction": "DEBIT",
-                    "amount_minor": total_minor,
-                    "currency": currency,
-                    "account_ref": source,
-                },
-                {
-                    "ledger_account_id": src_hold.id,
-                    "direction": "CREDIT",
-                    "amount_minor": total_minor,
-                    "currency": currency,
-                    "account_ref": source,
-                },
-            ],
-            transaction_id=tx.id,
-            description=f"hold {tx.id}",
-        )
-        tx_repository.transition_transaction(
-            session, tx.id, "POSTED", reason="asiento de hold registrado"
-        )
-
-        # 7. Liquidacion inmediata (o stop en POSTED si diferida).
-        if settle:
-            dst_avail, _dst_hold = ledger_service.ensure_customer_accounts(
-                session, target, currency
-            )
-            fee_account_id: uuid.UUID | None = None
-            if fee_minor > 0:
-                # Solo lectura del catalogo semilla (creado por
-                # ensure_customer_accounts); TODO: exponer por fachada.
-                from app.modules.ledger.repository import get_by_code
-
-                fee_account = get_by_code(session, FEE_ACCOUNT_CODE)
-                if fee_account is None:  # pragma: no cover - defensivo
-                    raise RuntimeError(f"cuenta de comision {FEE_ACCOUNT_CODE} inexistente")
-                fee_account_id = fee_account.id
-            ledger_service.post_entry(
-                session,
-                entry_type=SETTLE_ENTRY_TYPE,
-                postings=_settle_postings(
-                    src_hold.id,
-                    dst_avail.id,
-                    fee_account_id,
-                    source,
-                    target,
-                    amount_minor,
-                    fee_minor,
-                    currency,
-                ),
-                transaction_id=tx.id,
-                description=f"settle {tx.id}",
-            )
-            port.apply_delta(session, target, amount_minor, currency)
-            tx_repository.update_hold_status(session, hold.id, HoldStatus.CAPTURED.value)
-            tx_repository.transition_transaction(
-                session, tx.id, "SETTLED", reason="transferencia liquidada"
-            )
-            _publish_outbox(
-                session,
-                event_type=domain_events.TRANSFER_SETTLED,
-                tx=tx,
-                payload={
-                    "transaction_id": str(tx.id),
-                    "source_account_id": str(source),
-                    "target_account_id": str(target),
-                    "amount_minor": amount_minor,
-                    "fee_minor": fee_minor,
-                    "currency": currency,
-                    "status": "SETTLED",
-                },
-            )
-        return tx
     except Exception:  # noqa: BLE001 - cleanup best-effort y re-lanza (finally: raise)
-        # Fallo tecnico: libera holds + FAILED best-effort y re-lanza
-        # (no se oculta el rollback: el llamador revierte la sesion).
+        # Fallo tecnico en el prefijo (creacion, gate o retencion en
+        # PENDING): libera holds + FAILED best-effort y re-lanza (el
+        # llamante revierte la sesion; rollback total, sin residual).
         try:
-            if tx is not None and tx.id is not None:
-                try:
-                    for active in tx_repository.list_holds_by_transaction(session, tx.id):
-                        if active.status == HoldStatus.ACTIVE.value:
-                            try:
-                                tx_repository.update_hold_status(
-                                    session, active.id, HoldStatus.RELEASED.value
-                                )
-                            except Exception:  # noqa: BLE001, S110 - best-effort cleanup
-                                pass
-                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
-                    pass
-                try:
-                    if tx.status in ("FUNDS_HELD", "POSTED"):
-                        tx_repository.transition_transaction(
-                            session, tx.id, "FAILED", reason="fallo tecnico"
-                        )
-                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
-                    pass
-                try:
-                    _publish_outbox(
-                        session,
-                        event_type=domain_events.FUNDS_RELEASED,
-                        tx=tx,
-                        payload={
-                            "transaction_id": str(tx.id),
-                            "status": "FAILED",
-                        },
-                    )
-                except Exception:  # noqa: BLE001, S110 - best-effort cleanup
-                    pass
+            _cleanup_technical_failure(session, tx)
         finally:
             raise
 
@@ -695,15 +966,22 @@ def transfer_own(
     external_ref: str | None = None,
     metadata: dict[str, Any] | None = None,
     balance_port: BalancePort | None = None,
+    risk_profile: str | None = None,
+    device_id: str | None = None,
+    threshold_reader=None,
+    daily_limit_reader=None,
 ) -> Transaction:
     """Caso de uso `OWN_TRANSFER` (E2-T07, HU06 CA-01, `04#7.1`).
 
     Valida las cuentas por fachada (ambas del titular, `ACTIVE`, moneda
     coherente) y ejecuta la ruta atomica SIN hold (`atomic=True`): un solo
     asiento `2000-S -> 2000-D`, sin comision. Saldo insuficiente ->
-    `REJECTED` sin tocar saldos (`04#10`). Solo `flush` (el llamante decide
-    la transaccion); eventos por `outbox` (`transaction.initiated` aqui,
-    `transfer.settled` en el motor).
+    `REJECTED` sin tocar saldos (`04#10`). Gate biometrico (E2-T17, HU08):
+    sobre el umbral queda en `PENDING_AUTHORIZATION` sin retener (la ruta
+    atomica no crea hold) hasta `authorize_transaction` (E2-T19); sobre el
+    limite diario del perfil queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`).
+    Solo `flush` (el llamante decide la transaccion); eventos por `outbox`
+    (`transaction.initiated` aqui, `transfer.settled` en el motor).
     """
     validate_amount_minor(amount_minor)
     validate_currency(currency)
@@ -730,6 +1008,10 @@ def transfer_own(
         settle=True,
         atomic=True,
         balance_port=balance_port,
+        risk_profile=risk_profile,
+        device_id=device_id,
+        threshold_reader=threshold_reader,
+        daily_limit_reader=daily_limit_reader,
     )
     _emit_initiated(session, tx, tx_type="OWN_TRANSFER", fee_minor=0)
     return tx
@@ -749,6 +1031,10 @@ def transfer_third_party(
     metadata: dict[str, Any] | None = None,
     settle: bool = True,
     balance_port: BalancePort | None = None,
+    risk_profile: str | None = None,
+    device_id: str | None = None,
+    threshold_reader=None,
+    daily_limit_reader=None,
 ) -> Transaction:
     """Caso de uso `THIRD_PARTY_TRANSFER` (E2-T07, HU06, `04#7.2`).
 
@@ -756,9 +1042,12 @@ def transfer_third_party(
     `ACTIVE`, moneda coherente) y ejecuta el camino hold + liquidacion. La
     comision (`fee_minor` explicita o `transfer.third_party_fee_minor` de
     `config.parameters`, default `0`) se acredita a `4100`. Saldo
-    insuficiente -> `REJECTED` sin tocar saldos. Solo `flush`; eventos por
-    `outbox` (`transaction.initiated` aqui, `funds.held`/`transfer.settled`
-    en el motor).
+    insuficiente -> `REJECTED` sin tocar saldos. Gate biometrico (E2-T17,
+    HU08): sobre el umbral queda en `PENDING_AUTHORIZATION` con hold hasta
+    `authorize_transaction` (E2-T19); sobre el limite diario del perfil
+    queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`) sin hold. Solo `flush`;
+    eventos por `outbox` (`transaction.initiated` aqui,
+    `funds.held`/`transfer.settled` en el motor).
     """
     validate_amount_minor(amount_minor)
     validate_currency(currency)
@@ -786,6 +1075,10 @@ def transfer_third_party(
         settle=settle,
         atomic=False,
         balance_port=balance_port,
+        risk_profile=risk_profile,
+        device_id=device_id,
+        threshold_reader=threshold_reader,
+        daily_limit_reader=daily_limit_reader,
     )
     _emit_initiated(session, tx, tx_type="THIRD_PARTY_TRANSFER", fee_minor=resolved_fee)
     return tx
@@ -901,9 +1194,12 @@ __all__ = [
     "HolderLookupUnavailableError",
     "HolderNotFoundError",
     "TransferError",
+    "biometric",
     "clear_holder_cache",
+    "continue_from_authorized",
     "create_holder_lookup_provider",
     "execute_transfer",
+    "hold_src_hold_id",
     "resolve_third_party_fee",
     "transfer_interbank",
     "transfer_own",

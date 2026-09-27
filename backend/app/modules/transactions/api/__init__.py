@@ -95,6 +95,28 @@ def get_current_user_id(authorization: str | None = Header(default=None)) -> uui
         ) from exc
 
 
+def _rejected_failure_code(tx) -> str | None:
+    """Codigo de rechazo de negocio para `TransferResponse` (E2-T17).
+
+    `DAILY_LIMIT_EXCEEDED` (CA-03) y `BIOMETRIC_PREVENTIVE_BLOCK` (CA-02)
+    viajan en `failure_reason`/`meta.failure_code`; cualquier otro
+    `REJECTED` (fondos) es `INSUFFICIENT_FUNDS`. Fuera de `REJECTED` es
+    `None`. Sin PII: solo el codigo.
+    """
+    if tx.status != "REJECTED":
+        return None
+    known = {"DAILY_LIMIT_EXCEEDED", "BIOMETRIC_PREVENTIVE_BLOCK"}
+    reason = getattr(tx, "failure_reason", None)
+    if isinstance(reason, str) and reason in known:
+        return reason
+    meta = getattr(tx, "meta", None)
+    if isinstance(meta, dict):
+        code = meta.get("failure_code")
+        if isinstance(code, str) and code in known:
+            return code
+    return "INSUFFICIENT_FUNDS"
+
+
 def _request_id(request: Request) -> str:
     return request.headers.get("x-request-id") or uuid.uuid4().hex
 
@@ -104,8 +126,11 @@ def _transfer_data(tx) -> dict:
 
     Todo en texto/enteros JSON-serializables: el snapshot de idempotencia
     exige `json.dumps` y `response_model` vuelve a coaccionar a UUID.
+    `REJECTED` por negocio mapea `failure_code` desde `failure_reason` /
+    `meta.failure_code` (`DAILY_LIMIT_EXCEEDED`,
+    `BIOMETRIC_PREVENTIVE_BLOCK`); por defecto `INSUFFICIENT_FUNDS`.
     """
-    failure_code = "INSUFFICIENT_FUNDS" if tx.status == "REJECTED" else None
+    failure_code = _rejected_failure_code(tx)
     return {
         "transaction_id": str(tx.id),
         "type": tx.type,

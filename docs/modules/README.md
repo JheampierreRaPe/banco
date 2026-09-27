@@ -185,6 +185,17 @@ eventos (`outbox`/`inbox`).
   obligatoria; insuficiente -> `201` con `status=REJECTED` +
   `failure_code=INSUFFICIENT_FUNDS`, sin tocar saldos). Validacion de cuentas
   solo por la fachada `accounts.service.get_account` (D-01).
+- **Saga interbancaria (E2-T09, HU06):** `POST /transfers/interbank` (`202` +
+  `tracking`) y `GET /transactions/{id}` (detalle + `tracking` + `history`);
+  maquina `FUNDS_HELD -> POSTED -> SETTLED` con compensacion a `FAILED`
+  (timeout/rechazo) o `REVERSED` (asiento inverso + `INTERBANK_RETURN`). El
+  adaptador `InterbankGateway` (mock determinista, simulador `D01`) envia/consulta
+  y el job `interbank_poll` (`poll_interbank_once`) avanza el lote. Un hold por
+  transaccion SIN `expires_at` (el vencimiento lo gobierna la saga via
+  `meta.expires_at`, no `release_expired_holds`); la comision se carga a
+  **`4100` solo al liquidar** y `2200-Transito` cuadra a cero. El titular/CCI se
+  valida por la fachada `validate_holder` (adaptador `HolderLookup`, E2-T08) antes
+  de mover dinero.
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.

@@ -143,6 +143,15 @@ Haber 4100-Ingresos por comisiones 2
 Si el tercero no confirma en el plazo: liberar el hold (`2100-A` -> `2000-A`) y marcar `FAILED`
 o `REVERSED`.
 
+> **Comision cargada en el settle (precedente E2-T07/E2-T09):** el paso 2 puede
+> ejecutarse al **liquidar**, cargando la comision desde la subcuenta retenida
+> `2100-A` hacia `4100-Ingresos por comisiones` en lugar del `2000-A` literal (el
+> total retenido cubre monto + comision). Asi una operacion fallida, expirada o
+> rechazada **nunca cobra** comision, y el reverso la anula con el asiento inverso
+> (`INTERBANK_RETURN` para devolver lo capturado al disponible). La partida doble se
+> mantiene (`sum(debitos) = sum(creditos)`); es el comportamiento vigente en
+> `transactions` (`FEE_ACCOUNT_CODE="4100"`).
+
 ### 7.4 Pago QR (50)
 
 ```

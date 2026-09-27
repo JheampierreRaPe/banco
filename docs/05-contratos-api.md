@@ -369,6 +369,35 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > cuenta no `ACTIVE`), `409 CONFLICT` (misma clave + cuerpo distinto). Saldo
 > insuficiente = `201` con `status=REJECTED` (sin tocar saldos; reintentable con la
 > misma clave). Solo UUIDs en respuestas (regla de oro 9).
+>
+> Contrato E2-T09 saga interbancaria `POST /api/v1/transfers/interbank` y
+> `GET /api/v1/transactions/{id}` (Bearer, HU06): request
+> `{source_account_id, amount_minor (> 0), currency (ISO-4217), cci (20 digitos),
+> [holder_name (max 150)], [bank_code (max 6)], [fee_minor (>= 0; `None` =
+> `transfer.interbank_fee_minor` de `config.parameters`, default `0`)],
+> [external_ref (max 80; unica)], [metadata]}` con cabecera `Idempotency-Key`
+> obligatoria. Respuesta `202 {"data": {"transaction_id", "type"
+> (`INTERBANK_TRANSFER`), "status" (`FUNDS_HELD`/`POSTED`/`SETTLED`/`FAILED`/
+> `REVERSED`/`REJECTED`), "source_account_id", "amount_minor", "currency",
+> "fee_minor", "external_ref", "tracking": {"poll_url", "status", "external_ref",
+> "gateway_ref", "attempts", "expires_at", "holder_name_masked"}, "failure_code"
+> (`INSUFFICIENT_FUNDS`/`TRANSFER_TIMEOUT`/`INTERBANK_REJECTED`)}, "meta":
+> {"request_id", "replayed"}}`. La saga valida el titular/CCI (E2-T08) y la cuenta
+> origen antes de mover dinero; retiene el total, envia por la pasarela simulada y
+> sigue por polling (`GET /transactions/{id}`). `GET /api/v1/transactions/{id}`
+> devuelve `200 {"data": {..., "external_ref", "tracking" (solo si
+> `type=INTERBANK_TRANSFER`; `{}` en otro caso), "failure_code", "history":
+> [{"from_status", "to_status", "reason", "actor_type", "created_at"}]}, "meta":
+> {"request_id"}}`. Errores: `401 NOT_AUTHENTICATED`; `422 VALIDATION_ERROR` (falta
+> `Idempotency-Key`, esquema invalido o CCI con formato distinto de 20 digitos);
+> `404 HOLDER_NOT_FOUND` (titular no coincide o CCI inexistente, mismo error
+> neutro) y `404 NOT_FOUND` (cuenta/transaccion inexistente o id malformado);
+> `403 NOT_AUTHORIZED` (cuenta/transaccion de otro titular o cuenta no `ACTIVE`);
+> `429 RATE_LIMITED`; `503 HOLDER_LOOKUP_UNAVAILABLE` (timeout/caida del lookup);
+> `409 CONFLICT` (misma clave + cuerpo distinto, o `external_ref` ya usada).
+> Saldo insuficiente = `202` con `status=REJECTED` + `failure_code=INSUFFICIENT_FUNDS`
+> (sin tocar saldos). El detalle es solo del titular. Solo UUIDs en respuestas
+> (regla de oro 9); sin PII (CCI/titular solo como hash/mascara).
 
 ### 6.4 Creditos (`credits`) - HU09-HU12
 

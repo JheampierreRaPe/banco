@@ -27,7 +27,7 @@ import logging
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy.orm import Session
 
 from app.adapters.holder_lookup import HolderLookupError
@@ -50,6 +50,7 @@ from app.modules.transactions.schemas import (
     TransferResponse,
     TransferThirdPartyRequest,
 )
+from app.modules.transactions.service import receipt as receipt_service
 from app.modules.transactions.service.interbank import (
     ExternalRefConflictError,
     InterbankError,
@@ -469,6 +470,68 @@ def get_transaction_detail(
         "history": history,
     }
     return {"data": data, "meta": {"request_id": _request_id(request)}}
+
+
+@router.get(
+    "/transactions/{transaction_id}/receipt",
+    status_code=200,
+    summary="Comprobante PDF de una transferencia (numero de operacion unico)",
+    responses={
+        200: {"description": "PDF del comprobante (`application/pdf`)"},
+        404: {"description": "`NOT_FOUND` (inexistente)"},
+        403: {"description": "`NOT_AUTHORIZED` (ajena)"},
+        409: {"description": "`VALIDATION_ERROR` (no emitible)"},
+        501: {"description": "`RECEIPT_FORMAT_NOT_SUPPORTED` (sin backend PDF)"},
+    },
+)
+def get_transaction_receipt(
+    transaction_id: str,
+    request: Request,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Comprobante en PDF con fecha, montos, cuentas enmascaradas y nº de operacion (E2-T10, HU06 CA-04).
+
+    Solo lectura (sin `Idempotency-Key`: no mueve dinero; repetir la
+    consulta devuelve el mismo nº de operacion sin crear filas).
+    `404 NOT_FOUND` si no existe o el id no es UUID (neutro);
+    `403 NOT_AUTHORIZED` si es de otro titular; `409 VALIDATION_ERROR`
+    si no esta en estado emitible (`POSTED`/`SETTLED`/`CONCILIATED`);
+    `501 RECEIPT_FORMAT_NOT_SUPPORTED` si no hay backend PDF.
+    """
+    try:
+        wanted = uuid.UUID(str(transaction_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AppError(
+            code="NOT_FOUND", message="transaccion inexistente", status_code=404
+        ) from exc
+    tx = tx_repository.get_transaction(db, wanted)
+    if tx is None:
+        raise AppError(code="NOT_FOUND", message="transaccion inexistente", status_code=404)
+    if tx.initiator_user_id is not None and tx.initiator_user_id != user_id:
+        raise AppError(
+            code="NOT_AUTHORIZED",
+            message="la transaccion no pertenece al titular",
+            status_code=403,
+        )
+    try:
+        data, pdf = receipt_service.get_receipt_pdf(db, tx)
+    except receipt_service.ReceiptNotIssuableError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=409) from exc
+    except receipt_service.ReceiptFormatUnavailableError as exc:
+        raise AppError(
+            code="RECEIPT_FORMAT_NOT_SUPPORTED", message=str(exc), status_code=501
+        ) from exc
+    logger.info("receipt served transaction_id=%s status=%s", tx.id, tx.status)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="comprobante-{data["operation_number"]}.pdf"'
+            )
+        },
+    )
 
 
 __all__ = ["get_current_user_id", "router"]

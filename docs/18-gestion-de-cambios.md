@@ -129,8 +129,10 @@ Reglas de implementacion:
 
 > Registro de supuestos/gaps levantados al generar los briefs `E2-T07`..`E2-T23` y ampliado en la
 > revision de auditoria a `E2-T07`..`E2-T26` (2026-09-26), al 2o lote de creditos
-> `E3-T01`..`E3-T11` (2026-09-26) y al cierre de `E2-T10`/`E2-T13`/`E2-T18` (2026-09-26,
-> archivados). Cada fila indica el brief que lo
+> `E3-T01`..`E3-T11` (2026-09-26), al cierre de `E2-T10`/`E2-T13`/`E2-T18` (2026-09-26) y a la
+> validacion de `E2-T17` (**2026-09-27, `Hecho`**, con observaciones abiertas **OBS-1..OBS-4**; cada
+> fila indica su severidad; no se resuelven aqui, se atienden en `E2-T19`/integracion/endurecimiento).
+> Cada fila indica el brief que lo
 > resuelve o el doc a corregir. Si un
 > supuesto contradice `01-hallazgos-y-decisiones.md`, manda `01` y se corrige el brief
 > (`docs/tasks/README.md#7`).
@@ -171,6 +173,10 @@ Reglas de implementacion:
 | G32 | **Registro de codigos nuevos (E2-T10/E2-T13 `Hecho`, 2026-09-26):** `RECEIPT_FORMAT_NOT_SUPPORTED` (501, comprobante sin backend PDF) y `DUPLICATE_BENEFICIARY` (409, alias/CCI `ACTIVE` duplicado del titular); tambien `IDEMPOTENCY_CONFLICT` (409, alta de beneficiario con `Idempotency-Key` y cuerpo distinto). Documentados en `docs/05#4` y `docs/05#6.2`/`#6.3`. | `E2-T10`, `E2-T13` (`Hecho`) | `docs/05#4`, `docs/05#6.2`, `docs/05#6.3` |
 | G33 | **Decision: NO se emite `parameter.updated` (E2-T18 `Hecho`, 2026-09-26).** Se decidio no introducir el evento de cambio de parametro; la trazabilidad la dan `updated_at`/`updated_by`. **Coordinacion D-16 con HU20** (`E6-T03`/`E6-T04`, Sprint 4): `E2-T18` crea solo el minimo de `risk.risk_profiles` (`03b#112`, migracion `0023`), sin tocar `alerts`/`risk_rules`. Cierra parte de G12. | `E2-T18` (`Hecho`); `E6-T03`/`E6-T04` | `docs/modules/README.md#shared--config-infraestructura`, `docs/modules/README.md#risk`, `docs/02#7` |
 | G34 | **Dependencia `cryptography` declarada + fail-fast de claves (E2-T13 `Hecho`, 2026-09-26):** `cryptography>=41` en `backend/pyproject.toml` (AES-256-GCM); fuera de `local` el arranque exige `cryptography` + `BENEFICIARY_CRYPTO_KEY`/`BENEFICIARY_INDEX_PEPPER` (`core/config` y `beneficiaries_crypto.assert_production_ready`); placeholders en `backend/.env.example`. Cierra G11. | `E2-T13` (`Hecho`) | `backend/pyproject.toml`, `backend/.env.example`, `docs/modules/README.md#accounts` |
+| OBS-1 | **(media-alta) Observacion abierta (E2-T17 `Hecho`, validacion 2026-09-27):** CA-03 "por perfil" **no llega al runtime** — ningun llamante productivo pasa `risk_profile` al motor (`transactions/api/__init__.py` no lo aporta; `execute_transfer`/`transfer_own`/`transfer_third_party`/`transfer_interbank` lo dejan en `None`), asi que solo se aplica el limite **generico** (`transfer.daily_limit_minor`), no el del perfil; el docstring que dice que "la capa API lo resuelve por fachada de `identity`" es **incorrecto**. Debe cubrirse resolviendo el `risk_profile` del titular y pasandolo al motor. | `E2-T19` / integracion | `docs/modules/README.md#transactions`, `backend/app/modules/transactions/service/biometric.py` |
+| OBS-2 | **(media) Observacion abierta - coherencia de config (E2-T17 `Hecho`, validacion 2026-09-27):** con las semillas por defecto el gate biometrico es **inalcanzable**: `transfer.biometric_threshold_minor`=`1_000_000` > `transfer.daily_limit_*`=`500_000`, y `evaluate_gate` prioriza `limit_exceeded` (rechaza) sobre `requires_biometry`, por lo que CA-01 no se dispara sin cambiar config. Ajustar umbral vs limite. | `E2-T18` (semilla) / `E2-T19` | `migrations/versions/0023_risk_profiles_params.py`, `docs/03b#31` |
+| OBS-3 | **(media) Observacion abierta - persistencia de CA-02 (E2-T17 `Hecho`, validacion 2026-09-27):** `biometric.save_block` persiste el conteo de fallos con `flush` sin `commit` (depende de que el llamante commitee el fallo) y **sin CAS por `version`**, de modo que dos fallos concurrentes pueden subcontar `failed_attempts`. | `E2-T19` / endurecimiento | `docs/modules/README.md#transactions` |
+| OBS-4 | **(baja) Observacion abierta (E2-T17 `Hecho`, validacion 2026-09-27):** el `nonce` solo se marca usado (`used=true`) en el exito, por lo que es **reintentable** tras un fallo mientras no venza (no es estrictamente de un solo uso); el test de concurrencia de doble `authorize` va serializado por lock (evidencia debil). | `E2-T19` / endurecimiento | `backend/tests/test_e2_t17_biometric.py`, `docs/modules/README.md#transactions` |
 
 > **Nota (E2-T07 `Hecho`, 2026-09-26):** en la validacion (APTO) se detecto un defecto **ALTA**:
 > la idempotencia del motor buscaba `idempotency_key` de forma global, de modo que un segundo

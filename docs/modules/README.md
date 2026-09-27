@@ -61,6 +61,12 @@ eventos (`outbox`/`inbox`).
   `auth.device_binding` (`registered`/`touched`/`failed`); la clave se persiste
   tal cual (`hmac:`/PEM); sin cambio de request/response (el facial posterior
   verifica contra la clave vigente con el unico `400 INVALID_LOGIN` generico).
+- **Fachada de firma/binding para el motor (E2-T17, D-03):** `identity.service.device_login`
+  expone `verify_signature(nonce, signature, public_key) -> bool` (ya existia para el login
+  facial) y `get_device_binding(session, user_id, device_id) -> {device_id, public_key,
+  status} | None` (lectura nueva, solo lectura). Las consume `transactions` para autorizar
+  pagos sensibles **sin importar modelos de `identity`**; el `public_key` se trata como
+  material secreto (R26) y cualquier ausencia/desajuste se responde generico (sin oraculo).
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
@@ -219,6 +225,24 @@ eventos (`outbox`/`inbox`).
   moneda y cuentas enmascaradas (`****1234`; interbancaria sin CCI en claro). Solo emitible en
   `POSTED`/`SETTLED`/`CONCILIATED` (otro estado -> `409 VALIDATION_ERROR`); sin `reportlab` ->
   `501 RECEIPT_FORMAT_NOT_SUPPORTED` (patron `E2-T03`). No crea asientos ni filas.
+- **Autorizacion biometrica de pagos sensibles (E2-T17, HU08):** gate en el motor
+  (no endpoint propio; habilita `POST /transactions/{id}/authorize`, `E2-T19`). Si el
+  **acumulado del dia** del titular (`amount_minor + fee_minor` de estados no
+  `REJECTED`/`FAILED`, mas la operacion en curso) supera
+  `transfer.biometric_threshold_minor` (fachada `shared.config`, E2-T18), la operacion
+  queda en **`PENDING_AUTHORIZATION`** con un `nonce` de un solo uso (TTL 120 s) en
+  `transactions.metadata` (nunca material biometrico) a firmar con el dispositivo; en
+  rutas con hold se crea la retencion antes de debitar y la ruta atomica propia
+  (`04#7.1`) no retiene nada. La firma/binding se verifican por **fachada de `identity`**
+  (D-03: `device_login.verify_signature` + `device_login.get_device_binding`); con firma
+  valida avanza `AUTHORIZED` y continua (`FUNDS_HELD -> POSTED -> SETTLED`) reutilizando el
+  hold sin duplicar asiento (replay por digest de firma). **CA-02** bloqueo preventivo:
+  tras `auth.max_failed_attempts` fallos libera el hold, deja `REJECTED` con
+  `BIOMETRIC_PREVENTIVE_BLOCK` y emite `auth.failed_attempt` (`blocked:true`) para
+  `risk`/`E2-T20`. **CA-03** limite diario por perfil: `acumulado + amount + fee > limite`
+  -> `REJECTED` con `DAILY_LIMIT_EXCEEDED` sin hold. Todo intento fallido emite
+  `auth.failed_attempt` (CA-04), sin filtrar el motivo (sin oraculo). El `risk_profile` del
+  titular lo aporta el llamante (por defecto rige el generico/`STANDARD`).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.

@@ -446,3 +446,43 @@ __all__ += [
     "rebuild_entry_movements",
     "resolve_movement_account_id",
 ]
+
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.repository.beneficiaries import (
+    SEARCH_LIMIT as BENEFICIARIES_SEARCH_LIMIT,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    create_beneficiary,
+    find_active_duplicate_account,
+    find_active_duplicate_alias,
+    get_beneficiary,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    get_active as get_active_beneficiary,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    list_active as list_active_beneficiaries,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    search_active as search_active_beneficiaries,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    soft_delete as soft_delete_beneficiary,
+)
+from app.modules.accounts.repository.beneficiaries import (
+    sync_tokens as sync_beneficiary_tokens,
+)
+
+__all__ += [
+    "BENEFICIARIES_SEARCH_LIMIT",
+    "create_beneficiary",
+    "find_active_duplicate_account",
+    "find_active_duplicate_alias",
+    "get_active_beneficiary",
+    "get_beneficiary",
+    "list_active_beneficiaries",
+    "search_active_beneficiaries",
+    "soft_delete_beneficiary",
+    "sync_beneficiary_tokens",
+]

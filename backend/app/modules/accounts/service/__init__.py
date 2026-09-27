@@ -625,3 +625,9 @@ __all__ = [
     "to_movement",
     "to_summary",
 ]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.service import beneficiaries as beneficiaries_service
+from app.modules.accounts.service import beneficiaries_crypto as beneficiaries_crypto
+
+__all__ += ["beneficiaries_crypto", "beneficiaries_service"]

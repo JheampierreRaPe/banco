@@ -259,3 +259,8 @@ def export_my_movements(
 
 
 __all__ = ["get_current_user_id", "router"]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.api.beneficiaries import router as beneficiaries_router
+
+router.include_router(beneficiaries_router)

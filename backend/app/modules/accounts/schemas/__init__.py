@@ -127,3 +127,20 @@ __all__ = [
     "Movement",
     "MovementsListResponse",
 ]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.schemas.beneficiaries import (
+    BeneficiariesListResponse,
+    BeneficiaryCreate,
+    BeneficiaryOut,
+    BeneficiaryResponse,
+    BeneficiaryUpdate,
+)
+
+__all__ += [
+    "BeneficiariesListResponse",
+    "BeneficiaryCreate",
+    "BeneficiaryOut",
+    "BeneficiaryResponse",
+    "BeneficiaryUpdate",
+]

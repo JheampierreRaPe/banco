@@ -153,3 +153,16 @@ __all__ = [
     "AccountBalance",
     "DailyBalanceSnapshot",
 ]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.models.beneficiaries import (
+    BENEFICIARY_STATUSES,
+    Beneficiary,
+    BeneficiarySearchToken,
+)
+
+__all__ += [
+    "BENEFICIARY_STATUSES",
+    "Beneficiary",
+    "BeneficiarySearchToken",
+]

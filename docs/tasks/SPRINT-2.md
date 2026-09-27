@@ -2,9 +2,11 @@
 
 > Nota de archivo (2026-09-26): los briefs de Sprint 1 con `Estado: Hecho` viven en
 > `docs/tasks/archive/` y se citan aqui por ID, sin cambios. En `docs/tasks/` solo
-> estan los briefs no-`Hecho`, incluidos los 28 de este indice aun pendientes; `E2-T07`,
-> `E2-T08` y `E2-T09` ya estan `Hecho` (archivados en `docs/tasks/archive/E2-T07.md`,
-> `docs/tasks/archive/E2-T08.md` y `docs/tasks/archive/E2-T09.md`).
+> estan los briefs no-`Hecho`, incluidos los 25 de este indice aun pendientes; `E2-T07`,
+> `E2-T08`, `E2-T09`, `E2-T10`, `E2-T13` y `E2-T18` ya estan `Hecho` (archivados en
+> `docs/tasks/archive/E2-T07.md`, `docs/tasks/archive/E2-T08.md`,
+> `docs/tasks/archive/E2-T09.md`, `docs/tasks/archive/E2-T10.md`,
+> `docs/tasks/archive/E2-T13.md` y `docs/tasks/archive/E2-T18.md`).
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -15,8 +17,8 @@ ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KY
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
 Total: **31 briefs** (20 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`): **28 pendientes + `E2-T07`/`E2-T08`/`E2-T09` `Hecho`**
-(archivados).
+creditos `E3-T01`..`E3-T11`): **25 pendientes + `E2-T07`/`E2-T08`/`E2-T09`/`E2-T10`/`E2-T13`/
+`E2-T18` `Hecho`** (archivados).
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y
@@ -28,19 +30,20 @@ creditos `E3-T01`..`E3-T11`): **28 pendientes + `E2-T07`/`E2-T08`/`E2-T09` `Hech
 `docs/tasks/archive/E2-T07.md`) - `E2-T08` Validacion de titular/CCI (adaptador mock;
 **`Hecho`**, archivado `docs/tasks/archive/E2-T08.md`) - `E2-T09` Saga interbancaria
 (estados, timeout, polling, compensacion; **`Hecho`**, archivado
-`docs/tasks/archive/E2-T09.md`) - `E2-T10` Comprobante PDF con numero de operacion unico -
-`E2-T11` Pantallas Flutter de transferencia - `E2-T12` QA (feliz, insuficiente, duplicada,
-timeout, reverso).
+`docs/tasks/archive/E2-T09.md`) - `E2-T10` Comprobante PDF con numero de operacion unico
+(**`Hecho`**, archivado `docs/tasks/archive/E2-T10.md`) - `E2-T11` Pantallas Flutter de
+transferencia - `E2-T12` QA (feliz, insuficiente, duplicada, timeout, reverso).
 
 ## HU07 - Gestion de beneficiarios frecuentes (Should, 3 SP) - `accounts`
-`E2-T13` CRUD de beneficiarios con cifrado y busqueda indexada - `E2-T14` Tope pre-aprobado
-integrado al motor - `E2-T15` Pantalla de agenda Flutter (busqueda/agrupacion) - `E2-T16` QA
-(busqueda, tope, edicion).
+`E2-T13` CRUD de beneficiarios con cifrado y busqueda indexada (**`Hecho`**, archivado
+`docs/tasks/archive/E2-T13.md`) - `E2-T14` Tope pre-aprobado integrado al motor - `E2-T15`
+Pantalla de agenda Flutter (busqueda/agrupacion) - `E2-T16` QA (busqueda, tope, edicion).
 
 ## HU08 - Autorizacion biometrico-facial de pagos sensibles (Must, 8 SP) - `transactions`/`risk`
 `E2-T17` Integracion motor <-> autorizacion biometrica del dispositivo (`nonce` firmado; dueno de
 la regla de bloqueo preventivo `CA-02` y del limite diario por perfil `CA-03`) - `E2-T18` Umbral y
-perfiles de riesgo configurables sin despliegue (datos/config) - `E2-T19`
+perfiles de riesgo configurables sin despliegue (datos/config; **`Hecho`**, archivado
+`docs/tasks/archive/E2-T18.md`) - `E2-T19`
 `POST /transactions/{id}/authorize` - `E2-T20` Evento a `risk` + notificacion ante fallo (consumo
 de la alerta de bloqueo) - `E2-T21` UI reto biometrico en el flujo de pago - `E2-T22` QA (umbral,
 limite diario, bloqueo).
@@ -88,8 +91,9 @@ bus/outbox en produccion (`docs/17#6`). Depende de `E2-T04` y `E5-T05`.
    evidencia contable para todo el sprint).
 2. `E2-T07` (casos de uso base sobre el motor; **`Hecho`**) y `E2-T08` (adaptador
    titular/CCI; **`Hecho`**).
-3. `E2-T09` (saga interbancaria; **`Hecho`**) y `E2-T10` (comprobante).
-4. `E2-T13` (beneficiarios) y `E2-T18` (parametros/perfiles) en paralelo.
+3. `E2-T09` (saga interbancaria; **`Hecho`**) y `E2-T10` (comprobante; **`Hecho`**).
+4. `E2-T13` (beneficiarios; **`Hecho`**) y `E2-T18` (parametros/perfiles; **`Hecho`**) en
+   paralelo.
 5. `E2-T17` (integracion biometrica; incluye bloqueo `CA-02` y limite diario `CA-03`),
    `E2-T19` (endpoint authorize), `E2-T14` (tope pre-aprobado), `E2-T20` (evento a `risk` +
    notificacion).
@@ -109,14 +113,16 @@ bus/outbox en produccion (`docs/17#6`). Depende de `E2-T04` y `E5-T05`.
 ## Dependencias criticas
 
 - `E5-T03`/`E5-T04`/`E5-T05` (`Hecho`) antes de cualquier endpoint de dinero (`E2-T07`).
-- `E2-T07` antes de `E2-T09` (saga) y de `E2-T10` (comprobante). `E2-T09` **`Hecho`**.
+- `E2-T07` antes de `E2-T09` (saga) y de `E2-T10` (comprobante). `E2-T09` y `E2-T10`
+  **`Hecho`**.
 - `E2-T08` antes de `E2-T09` (validar CCI/titular antes de enviar). `E2-T08` **`Hecho`**.
-- `E2-T13` antes de `E2-T14` (tope) y de `E2-T15` (agenda).
-- `E2-T18` antes de `E2-T17`/`E2-T19`/`E2-T14` (umbral/límites configurables).
+- `E2-T13` antes de `E2-T14` (tope) y de `E2-T15` (agenda). `E2-T13` **`Hecho`**.
+- `E2-T18` antes de `E2-T17`/`E2-T19`/`E2-T14` (umbral/límites configurables). `E2-T18`
+  **`Hecho`**.
 - `E2-T17` antes de `E2-T19`; `E2-T19` antes de `E2-T20` y `E2-T21`.
 - `E2-T07` antes de `E2-T24` (listado) y de `E2-T25` (reverso).
-- `E2-T18` antes de `E2-T26` (parametros admin); `E2-T26` es la fachada de exposicion, no el
-  dueno del esquema (`shared/config`).
+- `E2-T18` (archivado) antes de `E2-T26` (parametros admin); `E2-T26` es la fachada de exposicion,
+  no el dueno del esquema (`shared/config`).
 - `E2-T04` + `E5-T05` antes de `E2-T23` (proyeccion en produccion).
 - `ledger` y `transactions` no se paralelizan entre si: van juntos y primero
   (`docs/16#9`).

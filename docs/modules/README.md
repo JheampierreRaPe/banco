@@ -161,6 +161,22 @@ eventos (`outbox`/`inbox`).
   `transfer_own`/`transfer_third_party` para validar propiedad/estado/moneda sin
   importar modelos de `accounts`. El `account_number` en claro es interno (jamas en
   logs ni respuestas; la API solo expone UUIDs).
+- **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
+  busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
+  `PUT /{id}` (edicion parcial incl. `preapproved_limit_minor`) y `DELETE /{id}?confirm=true`
+  (soft-delete `status=DELETED`, exige confirmacion). Cifrado en reposo AES-256-GCM
+  (`alias_enc`/`account_enc`/`holder_name_enc`; sobres versionados `B1`, fallback stdlib `B0`
+  solo en `local`/tests) y `holder_doc_hash` como HMAC; la cuenta/CCI jamas viaja en claro (la
+  API expone `account_masked`, `****1234`). Busqueda por indice ciego
+  (`alias_search_hash`/`name_search_hash`/`account_hash` + invertido
+  `beneficiary_search_tokens` por palabra/prefijos, AND) sin descifrar filas. Aislamiento por
+  `owner_user_id` (del JWT, sin FK fisica); unicidad de duplicados `ACTIVE` por UNIQUE parciales
+  `WHERE status='ACTIVE'` (migraciones `0021`/`0022`); evento `beneficiary.saved` por `outbox`
+  (payload sin PII). Errores `DUPLICATE_BENEFICIARY` (409), `IDEMPOTENCY_CONFLICT` (409),
+  `VALIDATION_ERROR` (400) / `NOT_FOUND` (404) / `NOT_AUTHORIZED` (403). Fachada interna
+  `get_for_operation` entrega el claro **solo** al motor (`E2-T14`), nunca la API. Fuera de
+  `local` el arranque exige `cryptography` + `BENEFICIARY_CRYPTO_KEY`/`BENEFICIARY_INDEX_PEPPER`
+  (fail-fast).
 - **Cableado E2-T23:** `accounts.events.on_ledger_entry_posted(entry)` (sesion/`commit`
   propios, `event_id = entry.id`) suscrito al bus via
   `app.composition.subscribe_accounts_movements`; alimenta solo `movements_view`
@@ -196,6 +212,13 @@ eventos (`outbox`/`inbox`).
   **`4100` solo al liquidar** y `2200-Transito` cuadra a cero. El titular/CCI se
   valida por la fachada `validate_holder` (adaptador `HolderLookup`, E2-T08) antes
   de mover dinero.
+- **Comprobante (E2-T10, HU06 CA-04):** `GET /transactions/{id}/receipt` (Bearer, solo
+  lectura) devuelve `application/pdf` con numero de operacion unico derivado determinista del
+  `transaction_id` (`OP-` + 12 hex de `sha256(str(id))`; estable entre reintentos, no
+  secuencial/adivinable, no persistido), fecha/hora UTC, tipo, estado, montos en centimos,
+  moneda y cuentas enmascaradas (`****1234`; interbancaria sin CCI en claro). Solo emitible en
+  `POSTED`/`SETTLED`/`CONCILIATED` (otro estado -> `409 VALIDATION_ERROR`); sin `reportlab` ->
+  `501 RECEIPT_FORMAT_NOT_SUPPORTED` (patron `E2-T03`). No crea asientos ni filas.
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -250,6 +273,12 @@ eventos (`outbox`/`inbox`).
 - **Responsabilidad:** reglas antifraude, perfiles, alertas, listas, ROS.
 - **Dueno de:** `risk_rules`, `risk_profiles`, `alerts`, `screening_results`, `ros_reports`,
   `blocked_entities`.
+- **Perfil minimo (E2-T18, HU08; frontera HU20 D-16):** `risk.risk_profiles` (columnas
+  `docs/03b#112`: `user_id` PK, `avg_amount_minor`, `usual_countries`, `usual_hours`,
+  `last_device_id`, `score`, `updated_at`) con repositorio/servicio
+  `get_or_create`/`update_behavior` idempotentes por PK (migracion `0023`); lo consulta el motor
+  (`E2-T17`). El motor antifraude completo (`alerts`/`risk_rules` y la ampliacion del perfil) es
+  HU20 (`E6-T03`/`E6-T04`, Sprint 4): aqui no se crean ni se pisan esas tablas.
 - **Expone:** `/risk/*`, `/compliance/*`; eventos `fraud.alert.raised`, `screening.hit`,
   `ros.filed`.
 - **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
@@ -299,6 +328,17 @@ eventos (`outbox`/`inbox`).
   `admin` solo lo expone via `/admin/parameters` con auditoria.
 - **Uso:** cualquier modulo publica por `outbox`; consume registrando en `processed_events`;
   el middleware de dinero usa `idempotency_keys`.
+- **Fachada de parametros (E2-T18, HU08):** `shared.config.parameters`
+  (`get_parameter`/`get_int_parameter`, `get_biometric_threshold_minor`,
+  `get_daily_limit_minor`, `get_max_failed_attempts`, `set_parameter`) es la **unica** via de
+  lectura/escritura de `config.parameters`; lectura best-effort por llamada, **sin cache en
+  proceso** (un cambio se refleja de inmediato; fallback a las constantes sembradas; nunca
+  lanza), escritura transaccional (`flush`), idempotente por `key` UQ y auditada
+  (`updated_at`/`updated_by`, sin PII). Claves: `transfer.biometric_threshold_minor`
+  (1000000), `transfer.daily_limit_minor` (500000), `transfer.daily_limit_{PERFIL}_minor`
+  (`STANDARD` sembrado en `0023`) y `auth.max_failed_attempts` (5). **No emite
+  `parameter.updated`** (decision E2-T18; la trazabilidad la dan las columnas). `admin` solo lo
+  expone via `/admin/parameters` (`E2-T26`); `transactions`/`risk` la consumen.
 - **Worker E2-T23:** `run_outbox_once` (una pasada con sesion/`commit` propios) y
   `start_outbox_worker` (hilo daemon periodico, no bloquea) en `app.composition`,
   arrancados en `app.main.lifespan`; intervalo por `OUTBOX_POLL_INTERVAL_SECONDS`,

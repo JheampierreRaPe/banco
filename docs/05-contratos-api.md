@@ -56,19 +56,23 @@ Error (estilo problem+json):
 }
 ```
 
-Codigos de error reales (verificados en codigo, 2026-09-25):
-`ACCOUNT_LOCKED`, `DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_DOCUMENT`,
-`DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`, `EXPORT_FORMAT_NOT_SUPPORTED` (501),
+Codigos de error reales (verificados en codigo, 2026-09-25; `DUPLICATE_BENEFICIARY`,
+`IDEMPOTENCY_CONFLICT` y `RECEIPT_FORMAT_NOT_SUPPORTED` anadidos 2026-09-26, E2-T10/E2-T13):
+`ACCOUNT_LOCKED`, `DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_BENEFICIARY` (409),
+`DUPLICATE_DOCUMENT`, `DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`,
+`EXPORT_FORMAT_NOT_SUPPORTED` (501), `IDEMPOTENCY_CONFLICT` (409),
 `INSUFFICIENT_FUNDS` (solo como `data.failure_code` con `data.status=REJECTED` en
 `POST /transfers/*`, E2-T07; el HTTP sigue `201` para no romper la idempotencia),
 `INVALID_CREDENTIALS`, `INVALID_LOGIN`, `INVALID_OTP`, `INVALID_PIN_FORMAT`,
 `INVALID_PIN_RESET`, `INVALID_REFRESH`, `INVALID_SETUP_CODE`, `KYC_UNAVAILABLE`,
 `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`, `PIN_ALREADY_SET`, `PIN_REQUIRED`,
-`RATE_LIMITED`, `REFRESH_EXPIRED`, `REFRESH_REUSED`, `RESEND_LIMIT`, `SESSION_INACTIVE`,
-`VALIDATION_ERROR`.
+`RATE_LIMITED`, `RECEIPT_FORMAT_NOT_SUPPORTED` (501), `REFRESH_EXPIRED`, `REFRESH_REUSED`,
+`RESEND_LIMIT`, `SESSION_INACTIVE`, `VALIDATION_ERROR`.
 Fuentes: `backend/app/modules/identity/api/*` (+ `service/`), `backend/app/modules/accounts/api/__init__.py`
 (`EXPORT_FORMAT_NOT_SUPPORTED`, `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`,
-`VALIDATION_ERROR`). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
+`VALIDATION_ERROR`), `backend/app/modules/accounts/api/beneficiaries.py`
+(`DUPLICATE_BENEFICIARY`, `IDEMPOTENCY_CONFLICT`), `backend/app/modules/transactions/api/__init__.py`
+(`RECEIPT_FORMAT_NOT_SUPPORTED`). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
 
 ## 5. Codigos HTTP
 
@@ -338,6 +342,28 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > NOT_AUTHENTICATED` (sin cabecera / `Bearer` invalido / `sub` no UUID).
 > Solo lectura (sin `Idempotency-Key`, sin eventos). Dinero entero en centimos.
 
+> Contrato E2-T13 beneficiarios `GET/POST/PUT/DELETE /api/v1/beneficiaries` (Bearer, HU07,
+> `05#6.2`/G02): `GET /beneficiaries?q=<texto>` lista los beneficiarios `ACTIVE` del titular
+> (hasta 100) o busca por alias/nombre en tiempo real `< 1 s` mediante indice ciego (`q`
+> ausente/vacio = lista) -> `200 {"data": [Beneficiary], "meta": {"total", "q"}}`.
+> `POST /beneficiaries` (alta) acepta `{alias, account_or_cci, [photo_url], [bank_code],
+> [holder_name], [holder_doc], [preapproved_limit_minor], [currency]}` con `Idempotency-Key`
+> opcional (recomendada; misma clave + mismo cuerpo = replay sin duplicar) -> `201 {"data":
+> Beneficiary, "meta": {"replayed"}}`. `PUT /beneficiaries/{id}` (edicion parcial, incl.
+> `preapproved_limit_minor`) y `DELETE /beneficiaries/{id}?confirm=true` (soft-delete, exige
+> `confirm=true`) -> `200 {"data": Beneficiary, "meta": {}}`. `Beneficiary` expone `id`, `alias`,
+> `photo_url`, `bank_code`, `account_masked` (`****` + ultimos 4), `holder_name`,
+> `preapproved_limit_minor`, `currency`, `status` (`ACTIVE`/`DELETED`), `created_at`/`updated_at`;
+> **nunca** devuelve la cuenta/CCI en claro ni el documento (solo hash en BD). El
+> `owner_user_id` sale del JWT, nunca del cuerpo. Errores: `401 NOT_AUTHENTICATED`; `404
+> NOT_FOUND` (inexistente/baja, id malformado o beneficiario ajeno no listado); `403
+> NOT_AUTHORIZED` (beneficiario de otro titular en `PUT`/`DELETE`); `409 DUPLICATE_BENEFICIARY`
+> (mismo alias o misma cuenta/CCI `ACTIVE` del titular); `409 IDEMPOTENCY_CONFLICT` (misma
+> `Idempotency-Key` con cuerpo distinto); `400 VALIDATION_ERROR` (alias vacio, CCI con formato
+> distinto de 8-20 digitos, moneda desconocida, `preapproved_limit_minor < 0`, o falta
+> `confirm=true`). Dinero entero en centimos; datos sensibles cifrados en reposo (AES-256-GCM)
+> e indexados para busqueda sin descifrar.
+
 ### 6.3 Transacciones (`transactions`) - HU06, HU08, HU15, HU17
 
 | Metodo | Ruta | Proposito |
@@ -398,6 +424,20 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > Saldo insuficiente = `202` con `status=REJECTED` + `failure_code=INSUFFICIENT_FUNDS`
 > (sin tocar saldos). El detalle es solo del titular. Solo UUIDs en respuestas
 > (regla de oro 9); sin PII (CCI/titular solo como hash/mascara).
+>
+> Contrato E2-T10 comprobante `GET /api/v1/transactions/{id}/receipt` (Bearer, HU06 CA-04,
+> `05#6.3`/G01/G15): solo lectura (sin `Idempotency-Key`; no mueve dinero) -> `200` con cuerpo
+> PDF (`Content-Type: application/pdf`, `Content-Disposition: attachment;
+> filename="comprobante-<OP-...>.pdf"`). El numero de operacion es **derivado determinista** del
+> `transaction_id` (`OP-` + 12 hex de `sha256`, mayusculas): unico por transaccion, estable
+> entre reintentos y no secuencial/adivinable; no se persiste ni crea asientos/filas. El
+> comprobante incluye fecha/hora UTC, tipo, estado, montos en centimos (`amount_minor`/
+> `fee_minor`/`total_minor`), moneda, cuentas **enmascaradas** (`****1234`; interbancaria:
+> `CCI **** (banco <code>)` + titular enmascarado) y `external_ref`; jamas documento, CCI
+> completo ni titular en claro. Errores: `404 NOT_FOUND` (transaccion inexistente o id
+> malformado, neutro), `403 NOT_AUTHORIZED` (ajena), `409 VALIDATION_ERROR` (estado no
+> emitible: solo `POSTED`/`SETTLED`/`CONCILIATED`) y `501 RECEIPT_FORMAT_NOT_SUPPORTED` (no hay
+> backend PDF disponible, patron `E2-T03`).
 
 ### 6.4 Creditos (`credits`) - HU09-HU12
 

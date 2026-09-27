@@ -42,6 +42,7 @@ REQUIRED_SCHEMAS = (
 EXPECTED_PARAMETER_KEYS = (
     "transfer.biometric_threshold_minor",
     "transfer.daily_limit_minor",
+    "transfer.daily_limit_STANDARD_minor",
     "qr.express_limit_minor",
     "otp.ttl_seconds",
     "otp.max_resends",

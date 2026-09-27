@@ -37,8 +37,9 @@ def test_baseline_esquemas_y_parametros(test_engine) -> None:
     assert report["schemas_ok"], f"Esquemas faltantes: {report['missing_schemas']}"
     assert report["parameters_ok"], f"Parametros faltantes: {report['missing_keys']}"
     # 13 semillas de `0001_init_schemas` + 7 de `0019_identity_parameters`
-    # (E1-T34; `auth.max_failed_attempts` ya estaba en las 13).
-    assert report["parameter_count"] == 20
+    # (E1-T34; `auth.max_failed_attempts` ya estaba en las 13) + 1 de
+    # `0023_risk_profiles_params` (E2-T18; `transfer.daily_limit_STANDARD_minor`).
+    assert report["parameter_count"] == 21
 
 
 def test_carga_semilla_idempotente_y_roundtrip(test_engine, seed_dataset: dict) -> None:

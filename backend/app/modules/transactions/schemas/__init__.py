@@ -72,7 +72,98 @@ class TransferResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class InterbankTransferRequest(BaseModel):
+    """`POST /transfers/interbank`: salida a otro banco (E2-T09, HU06).
+
+    El titular NO se confia del cliente: `cci` + `holder_name` se validan
+    contra la fachada `validate_holder` (E2-T08) antes de mover dinero.
+    """
+
+    source_account_id: uuid.UUID
+    amount_minor: int = Field(..., ge=1, description="Monto en centimos (> 0)")
+    currency: str = Field(..., pattern=CURRENCY_PATTERN, description="ISO-4217")
+    cci: str = Field(..., min_length=20, max_length=24, description="CCI destino (20 digitos)")
+    holder_name: str | None = Field(
+        default=None, max_length=150, description="Titular esperado (debe coincidir)"
+    )
+    bank_code: str | None = Field(default=None, max_length=6, description="Banco destino")
+    fee_minor: int | None = Field(
+        default=None,
+        ge=0,
+        description="Comision en centimos; None = `transfer.interbank_fee_minor`",
+    )
+    external_ref: str | None = Field(
+        default=None, max_length=80, description="Referencia externa unica (se genera si falta)"
+    )
+    metadata: dict | None = None
+
+
+class InterbankTransferData(BaseModel):
+    """Detalle de la saga (`202` + seguimiento por `GET /transactions/{id}`)."""
+
+    transaction_id: uuid.UUID
+    type: str
+    status: str
+    source_account_id: uuid.UUID | None = None
+    amount_minor: int
+    currency: str
+    fee_minor: int = 0
+    external_ref: str | None = None
+    tracking: dict = Field(default_factory=dict)
+    failure_code: str | None = Field(
+        default=None,
+        description="`INSUFFICIENT_FUNDS`/`TRANSFER_TIMEOUT`/`INTERBANK_REJECTED`",
+    )
+
+
+class InterbankTransferResponse(BaseModel):
+    """Envoltorio `05#4` (`data` + `meta` con `request_id` y `replayed`)."""
+
+    data: InterbankTransferData
+    meta: dict = Field(default_factory=dict)
+
+
+class TransactionHistoryItem(BaseModel):
+    """Un cambio de estado del historial (`transaction_status_history`)."""
+
+    from_status: str | None = None
+    to_status: str
+    reason: str | None = None
+    actor_type: str | None = None
+    created_at: str | None = None
+
+
+class TransactionDetailData(BaseModel):
+    """Detalle y seguimiento de una transaccion (`GET /transactions/{id}`)."""
+
+    transaction_id: uuid.UUID
+    type: str
+    status: str
+    source_account_id: uuid.UUID | None = None
+    target_account_id: uuid.UUID | None = None
+    amount_minor: int
+    currency: str
+    fee_minor: int = 0
+    external_ref: str | None = None
+    tracking: dict = Field(default_factory=dict)
+    failure_code: str | None = None
+    history: list[TransactionHistoryItem] = Field(default_factory=list)
+
+
+class TransactionDetailResponse(BaseModel):
+    """Envoltorio `05#4` para el detalle (`data` + `meta`)."""
+
+    data: TransactionDetailData
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
+    "InterbankTransferData",
+    "InterbankTransferRequest",
+    "InterbankTransferResponse",
+    "TransactionDetailData",
+    "TransactionDetailResponse",
+    "TransactionHistoryItem",
     "TransferData",
     "TransferOwnRequest",
     "TransferResponse",

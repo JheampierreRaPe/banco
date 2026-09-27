@@ -138,27 +138,56 @@ def transition_transaction(
 ) -> Transaction:
     """Avanza de estado validando con la maquina de E5-T01 + historial.
 
+    Compare-and-swap atomico en BD: `UPDATE ... WHERE id=:id AND
+    version=:esperada` y se verifica `rowcount`. El perdedor recibe
+    `ConcurrencyError` y no inserta historial ni cambia estado.
+
     Lanza `InvalidTransitionError`/`UnauthorizedActorError` del dominio y
-    `ConcurrencyError` si `expected_version` no coincide (doble procesamiento).
+    `ConcurrencyError` si `expected_version` no coincide o si otro proceso
+    ya avanzo la fila (doble procesamiento).
     """
     tx = session.get(Transaction, tx_id)
     if tx is None:
         raise KeyError(f"transaccion no encontrada: {tx_id}")
-    if expected_version is not None and tx.version != expected_version:
+    if expected_version is not None and int(tx.version) != int(expected_version):
         raise ConcurrencyError(
             f"version obsoleta: esperada {expected_version}, actual {tx.version} "
             "(posible doble procesamiento)"
         )
     from_status = tx.status
     new_status = transition(from_status, target, actor)
-    tx.status = new_status.value
-    tx.version = tx.version + 1
-    tx.updated_at = _utcnow()
+    current_version = int(tx.version)
+    now = _utcnow()
+    values: dict[str, Any] = {
+        "status": new_status.value,
+        "version": current_version + 1,
+        "updated_at": now,
+    }
     if new_status is TransactionStatus.SETTLED:
-        tx.settled_at = _utcnow()
+        values["settled_at"] = now
+    result = session.execute(
+        sa.update(Transaction)
+        .where(Transaction.id == tx_id, Transaction.version == current_version)
+        .values(**values)
+    )
+    if (result.rowcount or 0) != 1:
+        try:
+            session.expire(tx)
+        except Exception:  # noqa: BLE001, S110 - best-effort: el get siguiente recarga
+            pass
+        raise ConcurrencyError(
+            f"version obsoleta: CAS perdedor para {tx_id} " "(posible doble procesamiento)"
+        )
+    try:
+        session.expire(tx)
+    except Exception:  # noqa: BLE001, S110 - best-effort
+        pass
+    refreshed = session.get(Transaction, tx_id)
+    if refreshed is None:  # pragma: no cover - defensivo
+        raise KeyError(f"transaccion no encontrada: {tx_id}")
     session.add(
         TransactionStatusHistory(
-            transaction_id=tx.id,
+            transaction_id=refreshed.id,
             from_status=from_status,
             to_status=new_status.value,
             reason=reason,
@@ -167,7 +196,7 @@ def transition_transaction(
         )
     )
     session.flush()
-    return tx
+    return refreshed
 
 
 def list_history(session: Session, tx_id: uuid.UUID) -> Sequence[TransactionStatusHistory]:

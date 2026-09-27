@@ -30,9 +30,11 @@ import jwt
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
+from app.adapters.holder_lookup import HolderLookupError
 from app.core.db import get_db
 from app.core.errors import AppError
 from app.core.security import decode_token
+from app.modules.transactions import repository as tx_repository
 from app.modules.transactions import service as transfers_service
 from app.modules.transactions.api.idempotency import (
     IdempotencyConflictError,
@@ -41,9 +43,18 @@ from app.modules.transactions.api.idempotency import (
     require_idempotency_key,
 )
 from app.modules.transactions.schemas import (
+    InterbankTransferRequest,
+    InterbankTransferResponse,
+    TransactionDetailResponse,
     TransferOwnRequest,
     TransferResponse,
     TransferThirdPartyRequest,
+)
+from app.modules.transactions.service.interbank import (
+    ExternalRefConflictError,
+    InterbankError,
+    failure_code_of,
+    tracking_of,
 )
 
 router = APIRouter(tags=["transactions"])
@@ -266,6 +277,198 @@ def transfer_third_party(
     db.commit()
     data = dict(response.get("data", {}))
     return {"data": data, "meta": {"request_id": _request_id(request), "replayed": replayed}}
+
+
+def _map_holder_error(exc: Exception) -> AppError:
+    """Traduce errores de `validate_holder` (E2-T08) a codigos neutros.
+
+    Sin filtrar existencia: "titular no coincide" y "CCI inexistente" son
+    el mismo `404 HOLDER_NOT_FOUND`; timeout/caida son `503` (sin
+    distinguir la falla de red); formato es `422`; rate limit es `429`.
+    """
+    from app.adapters.holder_lookup import (
+        HolderLookupTimeoutError,
+        HolderLookupUnavailableError,
+        HolderNotFoundError,
+        HolderRateLimitedError,
+        HolderValidationError,
+    )
+
+    if isinstance(exc, HolderNotFoundError):
+        return AppError(code="HOLDER_NOT_FOUND", message=str(exc), status_code=404)
+    if isinstance(exc, HolderValidationError):
+        return AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422)
+    if isinstance(exc, HolderRateLimitedError):
+        return AppError(code="RATE_LIMITED", message=str(exc), status_code=429)
+    if isinstance(exc, (HolderLookupTimeoutError, HolderLookupUnavailableError)):
+        return AppError(code="HOLDER_LOOKUP_UNAVAILABLE", message=str(exc), status_code=503)
+    return AppError(code="VALIDATION_ERROR", message=str(exc), status_code=400)
+
+
+def _interbank_data(tx) -> dict:
+    """Serializa la saga al `data` de `InterbankTransferResponse` (JSON-serializable)."""
+    return {
+        "transaction_id": str(tx.id),
+        "type": tx.type,
+        "status": tx.status,
+        "source_account_id": str(tx.source_account_id) if tx.source_account_id else None,
+        "amount_minor": int(tx.amount_minor),
+        "currency": tx.currency,
+        "fee_minor": int(tx.fee_minor or 0),
+        "external_ref": tx.external_ref,
+        "tracking": tracking_of(tx),
+        "failure_code": failure_code_of(tx),
+    }
+
+
+@router.post(
+    "/transfers/interbank",
+    response_model=InterbankTransferResponse,
+    status_code=202,
+    summary="Transferencia interbancaria saliente (saga con polling)",
+)
+def transfer_interbank(
+    body: InterbankTransferRequest,
+    request: Request,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Retencion + envio por pasarela con seguimiento (`04#7.3`, HU06 CA-02).
+
+    `202 Accepted` siempre (incluye `REJECTED` por fondos y `FAILED` tras
+    compensacion): el `status` + `tracking.poll_url`
+    (`GET /transactions/{id}`) dicen como seguir. `Idempotency-Key`
+    obligatoria; misma clave + mismo cuerpo = replay sin doble debito.
+    El titular/CCI se valida ANTES de reclamar la clave (un 404/422/403
+    no la consume).
+    """
+    from app.modules.transactions.service.interbank import resolve_gateway
+
+    endpoint = "/transfers/interbank"
+    key = _require_key(request, endpoint)
+    payload = body.model_dump(mode="json")
+    try:
+        # Solo lectura (no consume la clave si el titular/cuenta falla).
+        transfers_service.validate_interbank_parties(
+            db,
+            initiator_user_id=user_id,
+            source_account_id=body.source_account_id,
+            currency=body.currency,
+            cci=body.cci,
+            holder_name=body.holder_name,
+            bank_code=body.bank_code,
+        )
+
+        def _run():
+            tx = transfers_service.transfer_interbank(
+                db,
+                initiator_user_id=user_id,
+                source_account_id=body.source_account_id,
+                amount_minor=body.amount_minor,
+                currency=body.currency,
+                cci=body.cci,
+                holder_name=body.holder_name,
+                bank_code=body.bank_code,
+                fee_minor=body.fee_minor,
+                idempotency_key=key,
+                external_ref=body.external_ref,
+                metadata=body.metadata,
+                gateway=resolve_gateway(None),
+            )
+            return ({"data": _interbank_data(tx)}, tx.id)
+
+        response, replayed = _execute_idempotent(
+            db, key=key, user_id=user_id, endpoint=endpoint, body=payload, run=_run
+        )
+    except AppError:
+        db.rollback()
+        raise
+    except ExternalRefConflictError as exc:
+        db.rollback()
+        raise AppError(code="CONFLICT", message=str(exc), status_code=409) from exc
+    except (
+        transfers_service.TransferError,
+        InterbankError,
+        HolderLookupError,
+        ValueError,
+        TypeError,
+    ) as exc:
+        db.rollback()
+        mapped = _try_map_holder_or_transfer(exc)
+        raise mapped from exc
+    except Exception:
+        db.rollback()
+        raise
+    db.commit()
+    data = dict(response.get("data", {}))
+    return {"data": data, "meta": {"request_id": _request_id(request), "replayed": replayed}}
+
+
+def _try_map_holder_or_transfer(exc: Exception) -> AppError:
+    """Mapea errores de titular (neutros) o de transferencia/cuentas."""
+    if isinstance(exc, HolderLookupError):
+        return _map_holder_error(exc)
+    return _map_transfer_error(exc)
+
+
+@router.get(
+    "/transactions/{transaction_id}",
+    response_model=TransactionDetailResponse,
+    status_code=200,
+    summary="Estado y seguimiento de una transaccion (polling interbancario)",
+)
+def get_transaction_detail(
+    transaction_id: str,
+    request: Request,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Detalle + `tracking` + historial (sin PII: titular enmascarado).
+
+    `404 NOT_FOUND` si no existe o el id no es UUID (neutro);
+    `403 NOT_AUTHORIZED` si es de otro titular. Solo lectura (sin
+    `Idempotency-Key`: no mueve dinero).
+    """
+    try:
+        wanted = uuid.UUID(str(transaction_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AppError(
+            code="NOT_FOUND", message="transaccion inexistente", status_code=404
+        ) from exc
+    tx = tx_repository.get_transaction(db, wanted)
+    if tx is None:
+        raise AppError(code="NOT_FOUND", message="transaccion inexistente", status_code=404)
+    if tx.initiator_user_id is not None and tx.initiator_user_id != user_id:
+        raise AppError(
+            code="NOT_AUTHORIZED",
+            message="la transaccion no pertenece al titular",
+            status_code=403,
+        )
+    history = [
+        {
+            "from_status": h.from_status,
+            "to_status": h.to_status,
+            "reason": h.reason,
+            "actor_type": h.actor_type,
+            "created_at": h.created_at.isoformat() if h.created_at is not None else None,
+        }
+        for h in tx_repository.list_history(db, tx.id)
+    ]
+    data = {
+        "transaction_id": str(tx.id),
+        "type": tx.type,
+        "status": tx.status,
+        "source_account_id": str(tx.source_account_id) if tx.source_account_id else None,
+        "target_account_id": str(tx.target_account_id) if tx.target_account_id else None,
+        "amount_minor": int(tx.amount_minor),
+        "currency": tx.currency,
+        "fee_minor": int(tx.fee_minor or 0),
+        "external_ref": tx.external_ref,
+        "tracking": tracking_of(tx) if tx.type == "INTERBANK_TRANSFER" else {},
+        "failure_code": failure_code_of(tx),
+        "history": history,
+    }
+    return {"data": data, "meta": {"request_id": _request_id(request)}}
 
 
 __all__ = ["get_current_user_id", "router"]

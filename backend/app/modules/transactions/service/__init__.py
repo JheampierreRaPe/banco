@@ -905,8 +905,26 @@ __all__ = [
     "create_holder_lookup_provider",
     "execute_transfer",
     "resolve_third_party_fee",
+    "transfer_interbank",
     "transfer_own",
     "transfer_third_party",
     "validate_holder",
+    "validate_interbank_parties",
     "validate_transfer_parties",
 ]
+
+
+def __getattr__(name: str):
+    """Re-export perezoso de la saga interbancaria (E2-T09).
+
+    `service/interbank.py` no se importa a nivel top para evitar el ciclo
+    (`interbank` referencia este paquete de forma perezosa dentro de sus
+    funciones); se resuelve bajo demanda y se cachea en el modulo.
+    """
+    if name in ("transfer_interbank", "validate_interbank_parties"):
+        from app.modules.transactions.service import interbank as _interbank
+
+        value = getattr(_interbank, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"modulo {__name__!r} sin atributo {name!r}")

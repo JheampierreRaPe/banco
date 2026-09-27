@@ -1,7 +1,6 @@
 ---
 description: Validador de fase de Banca Online Integral. SOLO LECTURA: corre suites, revisa diffs contra docs/15 y docs/16 y emite dictamen con severidad. Nunca edita archivos.
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
 permission:
   edit: deny
   bash: allow

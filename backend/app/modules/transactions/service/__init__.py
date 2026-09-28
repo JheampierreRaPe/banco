@@ -88,6 +88,7 @@ from app.modules.transactions.domain.state_machine import (
 )
 from app.modules.transactions.models import HoldStatus, Transaction
 from app.modules.transactions.service import biometric as biometric_service
+from app.modules.transactions.service.reversal import record_ledger_entry as _record_ledger_entry
 
 logger = logging.getLogger(__name__)
 
@@ -474,7 +475,7 @@ def _retain_hold_phase(
         currency=currency,
     )
     port.apply_delta(session, source, -total_minor, currency)
-    ledger_service.post_entry(
+    hold_entry = ledger_service.post_entry(
         session,
         entry_type=HOLD_ENTRY_TYPE,
         postings=[
@@ -496,6 +497,9 @@ def _retain_hold_phase(
         transaction_id=tx.id,
         description=f"hold {tx.id}",
     )
+    # Traza para el reverso (E2-T25): ids de asientos en `meta`, antes de
+    # transicionar (el CAS expira el objeto: registrar siempre antes).
+    _record_ledger_entry(session, tx, hold_entry.id, "hold")
     _publish_outbox(
         session,
         event_type=domain_events.FUNDS_HELD,
@@ -543,7 +547,7 @@ def _settle_held_phase(
         if fee_account is None:  # pragma: no cover - defensivo
             raise RuntimeError(f"cuenta de comision {FEE_ACCOUNT_CODE} inexistente")
         fee_account_id = fee_account.id
-    ledger_service.post_entry(
+    settle_entry = ledger_service.post_entry(
         session,
         entry_type=SETTLE_ENTRY_TYPE,
         postings=_settle_postings(
@@ -559,6 +563,8 @@ def _settle_held_phase(
         transaction_id=tx.id,
         description=f"settle {tx.id}",
     )
+    # Traza para el reverso (E2-T25), antes de transicionar.
+    _record_ledger_entry(session, tx, settle_entry.id, "settle")
     port.apply_delta(session, target, amount_minor, currency)
     tx_repository.update_hold_status(session, hold.id, HoldStatus.CAPTURED.value)
     tx = tx_repository.transition_transaction(
@@ -727,7 +733,7 @@ def continue_from_authorized(
             dst_avail, _dst_hold = ledger_service.ensure_customer_accounts(
                 session, target, currency
             )
-            ledger_service.post_entry(
+            own_entry = ledger_service.post_entry(
                 session,
                 entry_type=OWN_SETTLE_ENTRY_TYPE,
                 postings=_own_settle_postings(
@@ -736,6 +742,8 @@ def continue_from_authorized(
                 transaction_id=tx.id,
                 description=f"own settle {tx.id}",
             )
+            # Traza para el reverso (E2-T25), antes de transicionar.
+            _record_ledger_entry(session, tx, own_entry.id, "own")
             active_port.apply_delta(session, source, -total_minor, currency)
             active_port.apply_delta(session, target, amount_minor, currency)
             tx = tx_repository.transition_transaction(

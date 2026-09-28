@@ -211,6 +211,46 @@ class AuthorizeTransactionResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class ReverseTransactionRequest(BaseModel):
+    """`POST /transactions/{id}/reverse`: motivo opcional (E2-T25, HU06/HU17).
+
+    Cuerpo opcional: sin cuerpo se reversa sin motivo registrado. El motivo
+    es solo trazabilidad (viaja al historial, nunca a logs).
+    """
+
+    reason: str | None = Field(
+        default=None, max_length=280, description="Motivo del reverso (opcional)"
+    )
+
+
+class ReverseTransactionData(BaseModel):
+    """Resultado del reverso: operacion en `REVERSED` + asiento inverso."""
+
+    transaction_id: uuid.UUID
+    status: str
+    reversal_entry_id: uuid.UUID | None = Field(
+        default=None,
+        description="Asiento inverso principal (el de liquidacion; `None` solo "
+        "en rutas delegadas sin traza directa)",
+    )
+    reverses_entry_id: uuid.UUID | None = Field(
+        default=None, description="Asiento original compensado (principal)"
+    )
+    reversal_entry_ids: list[uuid.UUID] = Field(
+        default_factory=list, description="Todos los asientos inversos creados"
+    )
+    reverses_entry_ids: list[uuid.UUID] = Field(
+        default_factory=list, description="Todos los asientos originales compensados"
+    )
+
+
+class ReverseTransactionResponse(BaseModel):
+    """Envoltorio `05#4` (`data` + `meta` con `request_id` y `replayed`)."""
+
+    data: ReverseTransactionData
+    meta: dict = Field(default_factory=dict)
+
+
 class TransactionListItem(BaseModel):
     """Fila del historial (`GET /transactions`, E2-T24, HU06/HU15/HU17).
 
@@ -245,6 +285,9 @@ __all__ = [
     "InterbankTransferData",
     "InterbankTransferRequest",
     "InterbankTransferResponse",
+    "ReverseTransactionData",
+    "ReverseTransactionRequest",
+    "ReverseTransactionResponse",
     "TransactionDetailData",
     "TransactionDetailResponse",
     "TransactionHistoryItem",

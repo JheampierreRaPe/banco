@@ -8,6 +8,10 @@ y autorizacion (E2-T19, HU08).
   `nonce` con el dispositivo para pagos en `PENDING_AUTHORIZATION`;
   idempotente, con persistencia del fallo antes del error (OBS-3) y
   limite diario por perfil resuelto del titular (OBS-1, CA-03).
+- `POST /transactions/{id}/reverse` (E2-T25, HU06/HU17/HU18): reverso
+  autorizado con asiento inverso via `ledger.service.reverse_entry`
+  (solo `POSTED`/`SETTLED`/`CONCILIATED` -> `REVERSED`); idempotente y
+  seguro ante concurrencia (CAS + exclusion por transaccion).
 - Sin logica en el router (05#1): valida, traduce y delega al `service/`.
 - Auth: `Authorization: Bearer <jwt>` (`sub` = user_id, 05#2, mismo patron
   que `accounts.api`); sin token valido -> 401. En tests se inyecta
@@ -54,6 +58,8 @@ from app.modules.transactions.schemas import (
     AuthorizeTransactionResponse,
     InterbankTransferRequest,
     InterbankTransferResponse,
+    ReverseTransactionRequest,
+    ReverseTransactionResponse,
     TransactionDetailResponse,
     TransactionListResponse,
     TransferOwnRequest,
@@ -63,6 +69,7 @@ from app.modules.transactions.schemas import (
 from app.modules.transactions.service import biometric as biometric_service
 from app.modules.transactions.service import listing as listing_service
 from app.modules.transactions.service import receipt as receipt_service
+from app.modules.transactions.service import reversal as reversal_service
 from app.modules.transactions.service.interbank import (
     ExternalRefConflictError,
     InterbankError,
@@ -863,6 +870,129 @@ def authorize_transaction(
     data = dict(response.get("data", {}))
     logger.info(
         "authorize transaction_id=%s status=%s replayed=%s",
+        data.get("transaction_id"),
+        data.get("status"),
+        replayed,
+    )
+    return {"data": data, "meta": {"request_id": _request_id(request), "replayed": replayed}}
+
+
+def _reverse_data(result: dict) -> dict:
+    """Serializa el resultado al `data` de `ReverseTransactionResponse`.
+
+    Solo UUIDs/texto (snapshot de idempotencia JSON-serializable). El
+    principal es el ultimo en orden de creacion (liquidacion `settle` u
+    `own`); las listas completas viajan como suplemento auditable.
+    """
+    tx = result["transaction"]
+    reversals = [str(v) for v in result.get("reversal_entry_ids", [])]
+    reverses = [str(v) for v in result.get("reverses_entry_ids", [])]
+    return {
+        "transaction_id": str(tx.id),
+        "status": tx.status,
+        "reversal_entry_id": reversals[-1] if reversals else None,
+        "reverses_entry_id": reverses[-1] if reverses else None,
+        "reversal_entry_ids": reversals,
+        "reverses_entry_ids": reverses,
+    }
+
+
+@router.post(
+    "/transactions/{transaction_id}/reverse",
+    response_model=ReverseTransactionResponse,
+    status_code=200,
+    summary="Reverso/compensacion de una transferencia (asiento inverso)",
+)
+def reverse_transaction(
+    transaction_id: str,
+    request: Request,
+    body: ReverseTransactionRequest | None = None,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compensa una operacion con un asiento inverso (E2-T25, HU06/HU17/HU18).
+
+    Solo en `POSTED`/`SETTLED`/`CONCILIATED` (-> `REVERSED`, terminal): el
+    asiento inverso invierte debe/haber via `ledger.service.reverse_entry`
+    y referencia el original (`reverses_entry_id`); el original y sus
+    `postings` permanecen intactos y los saldos vuelven al estado previo.
+    En otro estado -> `409 CONFLICT` sin crear asientos (los pendientes
+    usan cancelacion/liberacion de hold, no reverso).
+
+    `Idempotency-Key` obligatoria (mueve dinero): misma clave + mismo
+    cuerpo = misma respuesta (`meta.replayed=true`, sin duplicar el
+    asiento); misma clave + cuerpo distinto = `409`. Las validaciones de
+    titular/existencia/estado no consumen la clave (revertidas,
+    reintentables). `INTERBANK_TRANSFER` delega en la saga (E2-T09).
+    Errores: `401 NOT_AUTHENTICATED`, `422 VALIDATION_ERROR` (sin clave o
+    esquema), `404 NOT_FOUND` (inexistente), `403 NOT_AUTHORIZED` (ajena,
+    generico), `409 CONFLICT` (estado no permitido, clave con cuerpo
+    distinto o carrera). Sin PII ni motivos en logs.
+    """
+    endpoint = "/transactions/reverse"
+    key = _require_key(request, endpoint)
+    try:
+        wanted = uuid.UUID(str(transaction_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AppError(
+            code="NOT_FOUND", message="transaccion inexistente", status_code=404
+        ) from exc
+    clean_reason = (body.reason.strip() if body and body.reason else None) or None
+    payload = {"transaction_id": str(wanted), "reason": clean_reason}
+
+    def _run():
+        fresh = tx_repository.get_transaction(db, wanted)
+        if fresh is None:
+            raise _AuthHalt("NOT_FOUND", "transaccion inexistente", 404)
+        if fresh.initiator_user_id is not None and fresh.initiator_user_id != user_id:
+            raise _AuthHalt("NOT_AUTHORIZED", "la transaccion no pertenece al titular", 403)
+        try:
+            result = reversal_service.reverse_transaction(
+                db,
+                wanted,
+                reason=clean_reason,
+                initiator_user_id=user_id,
+            )
+        except reversal_service.TransactionNotFoundError as exc:
+            raise _AuthHalt("NOT_FOUND", "transaccion inexistente", 404) from exc
+        except reversal_service.NotAuthorizedError as exc:
+            raise _AuthHalt(
+                "NOT_AUTHORIZED", "la transaccion no pertenece al titular", 403
+            ) from exc
+        except reversal_service.ReversalStateError as exc:
+            raise _AuthHalt("CONFLICT", str(exc), 409) from exc
+        return ({"data": _reverse_data(result)}, result["transaction"].id)
+
+    try:
+        response, replayed = _execute_idempotent(
+            db, key=key, user_id=user_id, endpoint=endpoint, body=payload, run=_run
+        )
+    except AppError:
+        db.rollback()
+        raise
+    except _AuthHalt as exc:
+        db.rollback()
+        raise AppError(code=exc.code, message=exc.message, status_code=exc.status_code) from exc
+    except ConcurrencyError as exc:
+        db.rollback()
+        raise AppError(
+            code="CONFLICT",
+            message="conflicto de concurrencia, reintente el reverso",
+            status_code=409,
+        ) from exc
+    except reversal_service.ReversalIntegrityError as exc:
+        db.rollback()
+        raise AppError(code="REVERSAL_FAILED", message=str(exc), status_code=500) from exc
+    except (reversal_service.ReversalError, ValueError, TypeError) as exc:
+        db.rollback()
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=400) from exc
+    except Exception:
+        db.rollback()
+        raise
+    db.commit()
+    data = dict(response.get("data", {}))
+    logger.info(
+        "reverse transaction_id=%s status=%s replayed=%s",
         data.get("transaction_id"),
         data.get("status"),
         replayed,

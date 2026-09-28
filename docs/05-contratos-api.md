@@ -57,8 +57,11 @@ Error (estilo problem+json):
 ```
 
 Codigos de error reales (verificados en codigo, 2026-09-25; `DUPLICATE_BENEFICIARY`,
-`IDEMPOTENCY_CONFLICT` y `RECEIPT_FORMAT_NOT_SUPPORTED` anadidos 2026-09-26, E2-T10/E2-T13):
-`ACCOUNT_LOCKED`, `DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_BENEFICIARY` (409),
+`IDEMPOTENCY_CONFLICT` y `RECEIPT_FORMAT_NOT_SUPPORTED` anadidos 2026-09-26, E2-T10/E2-T13;
+`DAILY_LIMIT_EXCEEDED`/`BIOMETRIC_PREVENTIVE_BLOCK` y `CONFLICT` de reverso consolidados
+2026-09-27, E2-T17/E2-T19/E2-T25):
+`ACCOUNT_LOCKED`, `BIOMETRIC_PREVENTIVE_BLOCK`, `CONFLICT` (409), `DAILY_LIMIT_EXCEEDED`,
+`DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_BENEFICIARY` (409),
 `DUPLICATE_DOCUMENT`, `DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`,
 `EXPORT_FORMAT_NOT_SUPPORTED` (501), `IDEMPOTENCY_CONFLICT` (409),
 `INSUFFICIENT_FUNDS` (solo como `data.failure_code` con `data.status=REJECTED` en
@@ -438,6 +441,75 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > malformado, neutro), `403 NOT_AUTHORIZED` (ajena), `409 VALIDATION_ERROR` (estado no
 > emitible: solo `POSTED`/`SETTLED`/`CONCILIATED`) y `501 RECEIPT_FORMAT_NOT_SUPPORTED` (no hay
 > backend PDF disponible, patron `E2-T03`).
+>
+> Contrato E2-T19 `POST /api/v1/transactions/{id}/authorize` (Bearer, HU08,
+> `05#6.3`/G01): completa la autorizacion biometrica de un pago sensible en
+> `PENDING_AUTHORIZATION`. Request `{nonce, signature, device_id}` con
+> cabecera `Idempotency-Key` obligatoria -> `200 {"data": {"transaction_id",
+> "status"}, "meta": {"request_id", "replayed"}}`. Con firma valida contra el
+> `device_binding` vigente (fachada `identity`, D-03) consume el `nonce` (un
+> solo uso, TTL) y continua `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED`
+> reutilizando el hold sin duplicar asiento; el replay con la misma clave
+> devuelve el mismo resultado. Solo el titular puede autorizarla. Errores:
+> `401 NOT_AUTHENTICATED` (sin token), `403 NOT_AUTHORIZED` (transaccion
+> ajena o firma/binding invalidos; cuerpo **generico** sin oraculo),
+> `400 EXPIRED_NONCE` (reto expirado o `nonce` reutilizado), `404 NOT_FOUND`
+> (transaccion inexistente o id malformado), `409 CONFLICT` (estado distinto
+> de `PENDING_AUTHORIZATION`, o misma `Idempotency-Key` con cuerpo distinto),
+> `422` (falta `Idempotency-Key` o payload malformado). La firma invalida no
+> mueve dinero ni crea asiento; el evento de seguridad del fallo lo emite
+> `E2-T17`/`E2-T20` (`auth.failed_attempt`). El endpoint **no recalcula** el
+> umbral (lo decidio `E2-T17`). Sin PII ni secretos en logs.
+>
+> Contrato E2-T24 `GET /api/v1/transactions` (Bearer, HU06/HU15/HU17,
+> `05#6.3`/G16): historial paginado de las operaciones **del titular**
+> (`initiator_user_id` del JWT). Query opcional `date_from`/`date_to`
+> (ISO-8601 UTC, sobre `created_at`), `type` (`transaction_type`), `status`
+> (`transaction_status`), `page` (`>= 1`) y `page_size` (default 20, max 100)
+> -> `200 {"data": [ {"transaction_id", "type", "status", "amount_minor",
+> "fee_minor", "currency", "created_at", "settled_at", "external_ref",
+> "source_account_masked", "target_account_masked"} ], "meta": {"page",
+> "page_size", "total", "request_id"}}`. Orden determinista `created_at DESC,
+> id`; las cuentas origen/destino viajan **siempre enmascaradas** (`****1234`),
+> sin numero completo, documento, CCI ni titular. Solo lectura (no mueve
+> dinero; sin `Idempotency-Key`). Errores: `401 NOT_AUTHENTICATED`; `422`
+> (fechas invertidas o `type`/`status`/`page`/`page_size` invalidos). El
+> listado nunca devuelve operaciones de otro titular (`CA-04`).
+>
+> Contrato E2-T25 `POST /api/v1/transactions/{id}/reverse` (Bearer,
+> HU06/HU17/HU18, `05#6.3`/G17): compensa una operacion con un **asiento
+> inverso** creado solo via `ledger.service.reverse_entry` (referencia
+> `reverses_entry_id`; el original y sus `postings` permanecen intactos), sin
+> editar ni borrar nada. Request opcional `{reason?}` (max 280) con cabecera
+> `Idempotency-Key` obligatoria -> `200 {"data": {"transaction_id", "status"
+> (`REVERSED`), "reversal_entry_id", "reverses_entry_id",
+> "reversal_entry_ids", "reverses_entry_ids"}, "meta": {"request_id",
+> "replayed"}}`. **Estados permitidos (G17):** `POSTED`/`SETTLED`/
+> `CONCILIATED` -> `REVERSED` (terminal); `INITIATED`/`VALIDATED`/
+> `PENDING_AUTHORIZATION`/`AUTHORIZED`/`FUNDS_HELD` piden cancelacion/
+> liberacion de hold (no reverso) y `REJECTED`/`FAILED`/`REVERSED` son
+> terminales. Idempotente: misma clave + mismo cuerpo = misma respuesta sin
+> duplicar el asiento inverso; `INTERBANK_TRANSFER` delega en la saga
+> (`E2-T09`). Emite `transfer.reversed` por `outbox` (y el
+> `ledger.entry.posted` del inverso, `E2-T23`). Errores: `401
+> NOT_AUTHENTICATED`, `403 NOT_AUTHORIZED` (ajena, generico), `404 NOT_FOUND`
+> (inexistente/id malformado), `409 CONFLICT` (estado no permitido, misma
+> clave con cuerpo distinto, o carrera), `422` (falta `Idempotency-Key` o
+> esquema). Cuadre del inverso: `sum(debitos)=sum(creditos)` por moneda; el
+> original + inverso suman cero por cuenta.
+>
+> Contrato E2-T14 tope pre-aprobado (HU07 `CA-03`, integrado al motor de
+> `E2-T07`): cuando la transferencia (`POST /transfers/own`/`third-party`,
+> `beneficiary_id` explicito o `metadata["beneficiary_id"]`) apunta a un
+> beneficiario del titular cuyo `preapproved_limit_minor >= amount_minor +
+> fee_minor` y misma moneda, la operacion queda **exenta del reto biometrico**
+> (se omite `PENDING_AUTHORIZATION`; se autoriza directo). El evento
+> `transaction.initiated` viaja con `exemption_reason="PREAPPROVED_LIMIT"` y
+> `beneficiary_id` (UUID; sin PII) cuando aplica; en otro caso ambos son
+> `null`. Moneda distinta al tope -> rechazo de validacion
+> (`PreapprovedCurrencyMismatchError`, `400 VALIDATION_ERROR`); la exencion no
+> ignora el limite diario del perfil (`E2-T18`) ni los bloqueos de `risk`. Sin
+> endpoint nuevo (reusan las transferencias existentes).
 
 ### 6.4 Creditos (`credits`) - HU09-HU12
 
@@ -493,6 +565,26 @@ Detalle del flujo KYC (`identity`, E1-T29):
 |---|---|---|
 | GET/PUT | `/admin/parameters` | Parametros configurables. |
 | GET/POST | `/admin/users/{id}/roles` | Roles y permisos (Admin de seguridad). |
+
+> Contrato E2-T26 `GET/PUT /api/v1/admin/parameters` (Bearer, **rol admin**,
+> `05#6.8`/G18): **fachada** auditada sobre `shared/config` (unico dueno del
+> esquema de `config.parameters`; `admin` nunca escribe directo).
+> - `GET /admin/parameters` con filtros opcionales `module`/`prefix` -> `200
+>   {"data": [ {"key", "value_json", "module", "description", "updated_by",
+>   "updated_at"} ], "meta": {"page", "page_size", "total", "request_id"}}`
+>   (lista vacia -> `200`, no `404`).
+> - `PUT /admin/parameters/{key}` body `{value_json}` -> `200 {"data":
+>   {"key", "value_json", "updated_at"}, "meta": {...}}`; valida el tipo segun
+>   la clave (entero `>= 0`, etc.), es idempotente por naturaleza (misma clave
+>   + mismo valor = mismo estado) y audita cada cambio (`updated_by` del JWT +
+>   `updated_at`, sin PII). No mueve dinero (sin `Idempotency-Key`) y **no**
+>   emite `parameter.updated` (decision E2-T18; la trazabilidad la dan las
+>   columnas).
+> - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol admin);
+>   `404 NOT_FOUND` (clave inexistente al escribir); `422 VALIDATION_ERROR`
+>   (valor de tipo/formato invalido). Cambiar el umbral/topes/limites se
+>   refleja en el motor sin despliegue (fachada `shared/config`, regla de oro
+>   6).
 
 ## 7. API de integracion interbancaria (a definir con el equipo par)
 

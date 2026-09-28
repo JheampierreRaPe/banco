@@ -242,7 +242,38 @@ eventos (`outbox`/`inbox`).
   `risk`/`E2-T20`. **CA-03** limite diario por perfil: `acumulado + amount + fee > limite`
   -> `REJECTED` con `DAILY_LIMIT_EXCEEDED` sin hold. Todo intento fallido emite
   `auth.failed_attempt` (CA-04), sin filtrar el motivo (sin oraculo). El `risk_profile` del
-  titular lo aporta el llamante (por defecto rige el generico/`STANDARD`).
+  titular lo aporta el llamante (por defecto rige el generico/`STANDARD`);
+  `E2-T19` lo resuelve end-to-end en el router (`resolve_risk_profile`, cierra OBS-1).
+- **Tope pre-aprobado por beneficiario (E2-T14, HU07 CA-03):** si la
+  transferencia lleva `beneficiary_id` (o `metadata["beneficiary_id"]`) de un
+  beneficiario del titular con `preapproved_limit_minor >= amount_minor +
+  fee_minor` y misma moneda, el motor omite `PENDING_AUTHORIZATION` y autoriza
+  directo (`AUTHORIZED` con `PREAPPROVED_EXEMPT_REASON`); el tope se lee por la
+  fachada `accounts.beneficiaries_service.get_for_operation` (sin importar sus
+  modelos, D-01) y la decision viaja en `transaction.initiated`
+  (`exemption_reason="PREAPPROVED_LIMIT"` + `beneficiary_id`, solo UUIDs, sin
+  PII). Por encima del tope o sin beneficiario rige el gate de `E2-T17`.
+- **Endpoint de autorizacion (E2-T19, HU08 CA-01):**
+  `POST /transactions/{id}/authorize` (Bearer, `Idempotency-Key` obligatoria)
+  recibe `{nonce, signature, device_id}`, valida titular y firma/binding por la
+  fachada `identity` (D-03), consume el `nonce` de un solo uso (TTL) y continua
+  `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` sin duplicar asiento; estado
+  distinto -> `409`, firma/ajena -> `403` generico (sin oraculo), `nonce`
+  vencido/reutilizado -> `EXPIRED_NONCE`. No recalcula el umbral.
+- **Listado del titular (E2-T24, HU06/HU15/HU17):** `GET /transactions`
+  (Bearer, solo lectura) pagina (`page`/`page_size`, default 20, max 100) las
+  operaciones del `initiator_user_id` del JWT con filtros `date_from`/
+  `date_to`/`type`/`status`; cuentas origen/destino siempre enmascaradas
+  (`****1234`), orden estable `created_at DESC, id`; sin PII ni numeros
+  completos (G16).
+- **Reverso/compensacion (E2-T25, HU06/HU17/HU18):**
+  `POST /transactions/{id}/reverse` (Bearer, `Idempotency-Key` obligatoria)
+  crea un **asiento inverso** solo via la fachada `ledger.service.reverse_entry`
+  (referencia `reverses_entry_id`; el original y sus `postings` intactos) en
+  `POSTED`/`SETTLED`/`CONCILIATED` -> `REVERSED` (G17); idempotente (servicio +
+  clave) y seguro ante concurrencia (exclusion por transaccion + CAS por
+  `version`); `INTERBANK_TRANSFER` delega en la saga (`E2-T09`) y emite
+  `transfer.reversed` por `outbox`.
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -303,6 +334,14 @@ eventos (`outbox`/`inbox`).
   `get_or_create`/`update_behavior` idempotentes por PK (migracion `0023`); lo consulta el motor
   (`E2-T17`). El motor antifraude completo (`alerts`/`risk_rules` y la ampliacion del perfil) es
   HU20 (`E6-T03`/`E6-T04`, Sprint 4): aqui no se crean ni se pisan esas tablas.
+- **Consumo de `auth.failed_attempt` (E2-T20, HU08 CA-04/CA-02):** el
+  consumidor `risk.on_auth_failed_attempt` (D-04: sesion y `commit` propios,
+  `event_id=entry.id`, idempotente por `processed_events` con consumidor
+  `risk-auth-failures`) sube la severidad del `risk_profiles` (`score`, extra
+  si `blocked`), deja auditoria (`risk.auth_failed_attempt`/
+  `risk.auth_preventive_block`) y notifica al cliente por push
+  (`auth_failed_attempt`/`auth_blocked`); **no mueve dinero** ni crea
+  `risk.alerts` (tablas de HU20, D-16).
 - **Expone:** `/risk/*`, `/compliance/*`; eventos `fraud.alert.raised`, `screening.hit`,
   `ros.filed`.
 - **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
@@ -324,6 +363,9 @@ eventos (`outbox`/`inbox`).
 - **Responsabilidad:** push, correo, SMS, plantillas y preferencias.
 - **Dueno de:** `notification_templates`, `notifications`, `user_channel_preferences`.
 - **Expone:** fachada `send(...)`; eventos `notification.sent`, `notification.failed`.
+- **Plantillas de seguridad (E2-T20, HU08):** `auth_failed_attempt` (intento
+  biometrico fallido) y `auth_blocked` (bloqueo preventivo), canal push,
+  invocadas por la fachada `send(...)` desde el consumidor `risk` sin PII.
 - **Consume:** practicamente todos los eventos de negocio.
 - **Puede llamar a:** adaptador de notificaciones; `audit`.
 - **Prohibido:** depender de modulos de negocio.
@@ -342,7 +384,14 @@ eventos (`outbox`/`inbox`).
 - **Responsabilidad:** gestion de usuarios internos, roles y permisos; administra parametros via fachada (sin ser dueno del esquema).
 - **Dueno de:** `role_permissions` (el esquema y ciclo de vida de `config.parameters` es de `shared`/`config`; ver abajo).
 - **Expone:** `/admin/*` (incluye `GET/PUT /admin/parameters` como fachada de lectura/escritura auditada).
-- **Prohibido:** cambiar reglas sin dejar auditoria.
+- **Fachada de parametros (E2-T26, HU08/HU20):** `GET /admin/parameters`
+  (listado/consulta con filtros `module`/`prefix`) y `PUT
+  /admin/parameters/{key}` (validacion de tipo) delegan **toda** la
+  lectura/escritura en `shared.config` (unico dueno); rol admin exigido desde
+  el JWT; cada cambio auditado (`updated_by`/`updated_at`), sin evento
+  `parameter.updated` (decision E2-T18). No mueve dinero.
+- **Prohibido:** cambiar reglas sin dejar auditoria; escribir
+  `config.parameters` directamente (siempre via la fachada de `shared/config`).
 
 ## `shared` / `config` (infraestructura)
 

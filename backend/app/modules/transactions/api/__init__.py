@@ -1,4 +1,5 @@
-"""Endpoints de transferencias (E2-T07, HU06 CA-01/CA-03) y autorizacion (E2-T19, HU08).
+"""Endpoints de transferencias (E2-T07, HU06 CA-01/CA-03), listado (E2-T24)
+y autorizacion (E2-T19, HU08).
 
 - `POST /transfers/own` (ruta atomica SIN hold, `04#7.1`) y
   `POST /transfers/third-party` (hold + liquidacion, `04#7.2`), montados
@@ -29,9 +30,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 import jwt
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.adapters.holder_lookup import HolderLookupError
@@ -53,11 +55,13 @@ from app.modules.transactions.schemas import (
     InterbankTransferRequest,
     InterbankTransferResponse,
     TransactionDetailResponse,
+    TransactionListResponse,
     TransferOwnRequest,
     TransferResponse,
     TransferThirdPartyRequest,
 )
 from app.modules.transactions.service import biometric as biometric_service
+from app.modules.transactions.service import listing as listing_service
 from app.modules.transactions.service import receipt as receipt_service
 from app.modules.transactions.service.interbank import (
     ExternalRefConflictError,
@@ -496,6 +500,60 @@ def _try_map_holder_or_transfer(exc: Exception) -> AppError:
     if isinstance(exc, HolderLookupError):
         return _map_holder_error(exc)
     return _map_transfer_error(exc)
+
+
+@router.get(
+    "/transactions",
+    response_model=TransactionListResponse,
+    status_code=200,
+    summary="Historial paginado del titular con filtros (HU06/HU15/HU17)",
+)
+def list_my_transactions(
+    request: Request,
+    date_from: datetime | None = Query(default=None, description="Desde (ISO-8601 UTC)"),
+    date_to: datetime | None = Query(default=None, description="Hasta (ISO-8601 UTC)"),
+    type: str | None = Query(default=None, description="Tipo (`transaction_type`)"),
+    status: str | None = Query(default=None, description="Estado (`transaction_status`)"),
+    page: int = Query(default=listing_service.DEFAULT_PAGE, ge=1),
+    page_size: int = Query(
+        default=listing_service.DEFAULT_PAGE_SIZE, ge=1, le=listing_service.MAX_PAGE_SIZE
+    ),
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Historial del titular con paginacion `page`/`page_size` (E2-T24).
+
+    Solo devuelve transacciones del `initiator_user_id` del JWT; filtros
+    opcionales por rango de `created_at` (UTC), `type` y `status`, con
+    orden estable (`created_at DESC, id`). Cuentas siempre enmascaradas
+    (sin PII ni numeros en claro). Solo lectura (sin `Idempotency-Key`:
+    repetir la llamada no altera datos).
+    Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422
+    VALIDATION_ERROR` (fechas invertidas, `type`/`status` desconocidos;
+    `page`/`page_size` fuera de rango lo rechaza FastAPI con `422`).
+    """
+    try:
+        items, total = listing_service.list_transactions(
+            db,
+            user_id,
+            date_from=date_from,
+            date_to=date_to,
+            type=type,
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
+    except listing_service.ListingValidationError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
+    return {
+        "data": items,
+        "meta": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "request_id": _request_id(request),
+        },
+    }
 
 
 @router.get(

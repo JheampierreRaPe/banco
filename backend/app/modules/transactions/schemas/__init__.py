@@ -211,6 +211,33 @@ class AuthorizeTransactionResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class TransactionListItem(BaseModel):
+    """Fila del historial (`GET /transactions`, E2-T24, HU06/HU15/HU17).
+
+    Cuentas siempre enmascaradas (`****1234`; interbancaria sin cuenta
+    destino: `CCI **** (banco <code>)`); sin PII ni numeros en claro.
+    """
+
+    transaction_id: uuid.UUID
+    type: str
+    status: str
+    amount_minor: int
+    fee_minor: int = 0
+    currency: str
+    created_at: str | None = None
+    settled_at: str | None = None
+    source_account_masked: str | None = None
+    target_account_masked: str | None = None
+    external_ref: str | None = None
+
+
+class TransactionListResponse(BaseModel):
+    """Envoltorio `05#4` para el listado (`data` + `meta` de paginacion)."""
+
+    data: list[TransactionListItem] = Field(default_factory=list)
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
     "AuthorizeTransactionData",
     "AuthorizeTransactionRequest",
@@ -221,6 +248,8 @@ __all__ = [
     "TransactionDetailData",
     "TransactionDetailResponse",
     "TransactionHistoryItem",
+    "TransactionListItem",
+    "TransactionListResponse",
     "TransferData",
     "TransferOwnRequest",
     "TransferResponse",

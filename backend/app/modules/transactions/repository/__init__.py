@@ -208,6 +208,79 @@ def list_history(session: Session, tx_id: uuid.UUID) -> Sequence[TransactionStat
     return list(session.scalars(stmt).all())
 
 
+def _user_tx_filters(
+    user_id: uuid.UUID,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    type: str | None = None,
+    status: str | None = None,
+) -> list:
+    """Filtros del listado del titular (E2-T24): propiedad + fecha/tipo/estado."""
+    filters = [Transaction.initiator_user_id == user_id]
+    if date_from is not None:
+        filters.append(Transaction.created_at >= date_from)
+    if date_to is not None:
+        filters.append(Transaction.created_at <= date_to)
+    if type is not None:
+        filters.append(Transaction.type == type)
+    if status is not None:
+        filters.append(Transaction.status == status)
+    return filters
+
+
+def count_user_transactions(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    type: str | None = None,
+    status: str | None = None,
+) -> int:
+    """Total del titular con los filtros (para `meta.total`; una sola consulta)."""
+    stmt = (
+        sa.select(sa.func.count())
+        .select_from(Transaction)
+        .where(
+            *_user_tx_filters(
+                user_id, date_from=date_from, date_to=date_to, type=type, status=status
+            )
+        )
+    )
+    return int(session.scalar(stmt) or 0)
+
+
+def list_user_transactions(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    type: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Sequence[Transaction]:
+    """Pagina del titular con orden estable (`created_at DESC, id DESC`).
+
+    Una sola consulta acotada (`limit`/`offset`, sin joins ni N+1): el
+    llamante enmascara por fachada `accounts` (ver `service/listing.py`).
+    """
+    stmt = (
+        sa.select(Transaction)
+        .where(
+            *_user_tx_filters(
+                user_id, date_from=date_from, date_to=date_to, type=type, status=status
+            )
+        )
+        .order_by(Transaction.created_at.desc(), Transaction.id.desc())
+        .limit(max(0, int(limit)))
+        .offset(max(0, int(offset)))
+    )
+    return list(session.scalars(stmt).all())
+
+
 def create_hold(
     session: Session,
     *,
@@ -285,6 +358,7 @@ def expire_due_holds(session: Session, *, now: datetime | None = None) -> Sequen
 
 
 __all__ = [
+    "count_user_transactions",
     "create_hold",
     "create_transaction",
     "expire_due_holds",
@@ -294,6 +368,7 @@ __all__ = [
     "list_active_holds",
     "list_history",
     "list_holds_by_transaction",
+    "list_user_transactions",
     "transition_transaction",
     "update_hold_status",
 ]

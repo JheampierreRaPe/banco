@@ -40,9 +40,10 @@ Frontera (reglas de oro 1/3/4/6/7/8/9):
   loguean); el `nonce` vive en `transactions.metadata` solo para
   correlacion (nunca material biometrico).
 - Eventos solo por `outbox` (import perezoso); `flush` sin `commit`.
-- El `risk_profile` del titular lo aporta el llamante (la capa API lo
-  resuelve por fachada de `identity`); por defecto rige el limite
-  generico/`STANDARD` (semilla `0023`), sin leer tablas ajenas.
+- El `risk_profile` del titular lo resuelve la capa API con
+  `resolve_risk_profile` (lectura best-effort en el propio motor con el
+  usuario autenticado, E2-T19, OBS-1); por defecto rige el limite
+  generico/`STANDARD` (semilla `0023`), sin leer tablas ajenas por ORM.
 
 Concurrencia/idempotencia:
 - La continuacion reutiliza el hold `ACTIVE` previo (no duplica asiento ni
@@ -56,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import uuid
 from collections.abc import Callable
@@ -176,6 +178,43 @@ def default_max_attempts_reader(session: Session) -> int:
     from app.modules.shared.config import parameters as config_params
 
     return config_params.get_max_failed_attempts(session)
+
+
+def resolve_risk_profile(session: Session, user_id: uuid.UUID | str | None) -> str | None:
+    """Perfil de riesgo del titular para el limite diario (OBS-1, E2-T19, CA-03).
+
+    Lee `risk_profile` del titular por SQL acotado en `SAVEPOINT`, sin
+    importar modelos ajenos (la unica via a `identity` sigue siendo la
+    fachada `device_login` para firma/binding, D-03; esta lectura vive en
+    el propio motor con el usuario autenticado, best-effort).
+    Tabla ausente, titular inexistente o valor invalido -> `None` (rige el
+    limite generico/`STANDARD`, mismo fallback que `evaluate_gate`).
+    Normaliza a `strip().upper()`; token valido `[A-Z0-9_]{1,20}` (misma
+    forma que la fachada de parametros para `transfer.daily_limit_*`).
+    Nunca lanza; sin PII en logs (solo si se resolvio o no).
+    """
+    if user_id is None:
+        return None
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    try:
+        with session.begin_nested():
+            stmt = sa.text("SELECT risk_profile FROM identity.users WHERE id = :uid").bindparams(
+                sa.bindparam("uid", type_=sa.Uuid())
+            )
+            raw = session.execute(stmt, {"uid": uid}).scalar()
+    except Exception:  # noqa: BLE001 - sin acceso rige el generico
+        logger.debug("risk_profile sin acceso: limite generico")
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    token = raw.strip().upper()
+    if len(token) > 20 or re.fullmatch(r"[A-Z0-9_]+", token) is None:
+        return None
+    logger.debug("risk_profile resuelto")
+    return token
 
 
 def default_binding_reader(session: Session, user_id: uuid.UUID, device_id: str) -> dict | None:
@@ -791,5 +830,6 @@ __all__ = [
     "new_challenge_block",
     "release_pending_holds",
     "request_biometric_challenge",
+    "resolve_risk_profile",
     "save_block",
 ]

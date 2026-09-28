@@ -64,6 +64,15 @@ class TransferData(BaseModel):
         description="`INSUFFICIENT_FUNDS`/`DAILY_LIMIT_EXCEEDED`/"
         "`BIOMETRIC_PREVENTIVE_BLOCK` cuando `status` es `REJECTED`",
     )
+    nonce: str | None = Field(
+        default=None,
+        description="`nonce` a firmar con el dispositivo cuando `status` es "
+        "`PENDING_AUTHORIZATION` (E2-T19, HU08); `None` en otro caso",
+    )
+    expires_in: int | None = Field(
+        default=None,
+        description="Segundos de vigencia del `nonce` (E2-T19, HU08)",
+    )
 
 
 class TransferResponse(BaseModel):
@@ -115,6 +124,15 @@ class InterbankTransferData(BaseModel):
         default=None,
         description="`INSUFFICIENT_FUNDS`/`TRANSFER_TIMEOUT`/`INTERBANK_REJECTED`",
     )
+    nonce: str | None = Field(
+        default=None,
+        description="`nonce` a firmar con el dispositivo cuando `status` es "
+        "`PENDING_AUTHORIZATION` (E2-T19, HU08); `None` en otro caso",
+    )
+    expires_in: int | None = Field(
+        default=None,
+        description="Segundos de vigencia del `nonce` (E2-T19, HU08)",
+    )
 
 
 class InterbankTransferResponse(BaseModel):
@@ -158,7 +176,45 @@ class TransactionDetailResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class AuthorizeTransactionRequest(BaseModel):
+    """`POST /transactions/{id}/authorize`: firma del `nonce` (E2-T19, HU08 CA-01).
+
+    `device_id` + `signature` obligatorios; `nonce` opcional como eco del
+    reto vigente: si se envia y no coincide con el almacenado, el intento
+    se rechaza generico (y cuenta como fallido). La verificacion siempre
+    usa el reto almacenado en la transaccion (un solo uso, TTL corto).
+    Sin material biometrico: solo la firma del reto.
+    """
+
+    device_id: str = Field(..., min_length=1, max_length=128)
+    signature: str = Field(..., min_length=1, max_length=4096)
+    nonce: str | None = Field(default=None, max_length=256)
+
+
+class AuthorizeTransactionData(BaseModel):
+    """Nuevo estado tras autorizar (con `tracking` si es interbancaria)."""
+
+    transaction_id: uuid.UUID
+    status: str
+    tracking: dict = Field(default_factory=dict)
+    failure_code: str | None = Field(
+        default=None,
+        description="`BIOMETRIC_PREVENTIVE_BLOCK` cuando el bloqueo preventivo "
+        "deja `status` en `REJECTED` (E2-T17, HU08 CA-02)",
+    )
+
+
+class AuthorizeTransactionResponse(BaseModel):
+    """Envoltorio `05#4` (`data` + `meta` con `request_id` y `replayed`)."""
+
+    data: AuthorizeTransactionData
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
+    "AuthorizeTransactionData",
+    "AuthorizeTransactionRequest",
+    "AuthorizeTransactionResponse",
     "InterbankTransferData",
     "InterbankTransferRequest",
     "InterbankTransferResponse",

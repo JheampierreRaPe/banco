@@ -314,6 +314,26 @@ def _coerce_optional_user(value: uuid.UUID | str | None) -> uuid.UUID | None:
         raise ValueError(f"initiator_user_id debe ser UUID, recibido: {value!r}") from exc
 
 
+def _resolve_beneficiary_id(
+    explicit: uuid.UUID | str | None, metadata: dict[str, Any] | None
+) -> uuid.UUID | str | None:
+    """Beneficiario destino para la exencion por tope (E2-T14, HU07 CA-03).
+
+    Precede el parametro explicito; como alternativa, `metadata` puede
+    traer `"beneficiary_id"` (asi `POST /transfers/third-party` lo usa sin
+    cambiar su contrato). Sin dato -> `None` (rige el gate biometrico).
+    No valida aqui: la fachada lo resuelve (inexistente/ajeno/baja ->
+    sin exencion, sin oraculo).
+    """
+    if explicit is not None:
+        return explicit
+    if isinstance(metadata, dict):
+        candidate = metadata.get("beneficiary_id")
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _settle_postings(
     src_hold_id: uuid.UUID,
     dst_avail_id: uuid.UUID,
@@ -804,6 +824,7 @@ def execute_transfer(
     device_id: str | None = None,
     threshold_reader=None,
     daily_limit_reader=None,
+    beneficiary_id: uuid.UUID | str | None = None,
 ) -> Transaction:
     """Ejecuta una transferencia atomica (hold + asiento + estados).
 
@@ -822,6 +843,13 @@ def execute_transfer(
       (`DAILY_LIMIT_EXCEEDED`) sin hold. `risk_profile` lo aporta el
       llamante (por defecto rige el generico/`STANDARD`); `device_id`
       anticipa el dispositivo del reto (si falta se adopta al autorizar).
+    - Exencion por tope pre-aprobado (E2-T14, HU07 CA-03): si
+      `beneficiary_id` (o `metadata["beneficiary_id"]`) apunta a un
+      beneficiario del titular con `preapproved_limit_minor >= amount +
+      fee` en la misma moneda, la biometria del gate se omite
+      (`VALIDATED -> AUTHORIZED` directo, con auditoria en `meta` e
+      historial); por encima del tope, sin tope o sin beneficiario rige el
+      gate normal. La exencion nunca ignora el limite diario ni bloqueos.
     Ante fallo tecnico re-lanza tras marcar FAILED/RELEASED best-effort
     (el llamador revierte: rollback total).
     """
@@ -848,6 +876,26 @@ def execute_transfer(
         if existing is not None:
             return existing
 
+    total_minor = amount_minor + fee_minor
+    # Exencion por tope pre-aprobado (E2-T14): solo lectura por fachada de
+    # `accounts`, ANTES de crear la transaccion (una moneda distinta lanza
+    # `PreapprovedCurrencyMismatchError` sin dejar residual). Sin
+    # beneficiario/tope -> `None` (rige el gate). La decision es por
+    # operacion (el tope no se consume): concurrentes se evaluan cada una
+    # contra el tope vigente, sin estado compartido ni carrera (D-13).
+    preapproved: dict[str, Any] | None = None
+    preapproved_ref = _resolve_beneficiary_id(beneficiary_id, metadata)
+    if preapproved_ref is not None:
+        initiator = _coerce_optional_user(initiator_user_id)
+        if initiator is not None:
+            preapproved = biometric_service.evaluate_preapproved_exemption(
+                session,
+                user_id=initiator,
+                beneficiary_id=preapproved_ref,
+                total_minor=total_minor,
+                currency=currency,
+            )
+
     if balance_port is not None:
         port: BalancePort = balance_port
     else:  # Cableado productivo E2-T01 (opcion b): adaptador real sin ciclos.
@@ -857,7 +905,6 @@ def execute_transfer(
             port = DEFAULT_BALANCE_PORT
         else:
             port = _resolve_bp(None, fallback=DEFAULT_BALANCE_PORT)
-    total_minor = amount_minor + fee_minor
     tx: Transaction | None = None
     try:
         # 3. Crea + valida + autoriza (historial por transicion).
@@ -895,6 +942,39 @@ def execute_transfer(
             )
             return tx
         if gate.requires_biometry:
+            if preapproved is not None:
+                # Tope pre-aprobado suficiente (E2-T14, HU07 CA-03): se
+                # omite `PENDING_AUTHORIZATION` y se autoriza directo, con
+                # auditoria en `meta` e historial. Nunca aplica sobre
+                # `limit_exceeded` (ya retornado arriba) ni sobre bloqueos.
+                biometric_service.mark_preapproved_exempt(
+                    session,
+                    tx,
+                    beneficiary_id=preapproved["beneficiary_id"],
+                    limit_minor=preapproved["limit_minor"],
+                    currency=preapproved["currency"],
+                    total_minor=preapproved["total_minor"],
+                )
+                tx_repository.transition_transaction(
+                    session,
+                    tx.id,
+                    "AUTHORIZED",
+                    reason=biometric_service.PREAPPROVED_EXEMPT_REASON,
+                )
+                return continue_from_authorized(
+                    session,
+                    tx,
+                    source=source,
+                    target=target,
+                    amount_minor=amount_minor,
+                    currency=currency,
+                    fee_minor=fee_minor,
+                    total_minor=total_minor,
+                    tx_type=tx_type,
+                    settle=settle,
+                    atomic=atomic,
+                    port=port,
+                )
             return _pend_for_biometry(
                 session,
                 tx,
@@ -936,7 +1016,24 @@ def execute_transfer(
 
 
 def _emit_initiated(session: Session, tx: Transaction, *, tx_type: str, fee_minor: int) -> None:
-    """Registra `transaction.initiated` en el outbox (best-effort, E2-T07)."""
+    """Registra `transaction.initiated` en el outbox (best-effort, E2-T07).
+
+    Incluye la razon de exencion por tope pre-aprobado cuando aplica
+    (E2-T14, HU07 CA-03): `exemption_reason="PREAPPROVED_LIMIT"` y el
+    `beneficiary_id` (solo UUIDs e importes ya auditados en `meta`, sin
+    PII); en otro caso ambos son `None`.
+    """
+    exemption_reason: str | None = None
+    beneficiary_id: str | None = None
+    meta = getattr(tx, "meta", None)
+    if isinstance(meta, dict):
+        block = meta.get(biometric_service.PREAPPROVED_META_KEY)
+        if isinstance(block, dict) and (
+            block.get("exemption_reason") == biometric_service.PREAPPROVED_EXEMPTION_REASON
+        ):
+            exemption_reason = biometric_service.PREAPPROVED_EXEMPTION_REASON
+            candidate = block.get("beneficiary_id")
+            beneficiary_id = str(candidate) if candidate is not None else None
     _publish_outbox(
         session,
         event_type=domain_events.TRANSACTION_INITIATED,
@@ -950,6 +1047,8 @@ def _emit_initiated(session: Session, tx: Transaction, *, tx_type: str, fee_mino
             "fee_minor": int(fee_minor),
             "currency": tx.currency,
             "status": tx.status,
+            "exemption_reason": exemption_reason,
+            "beneficiary_id": beneficiary_id,
         },
     )
 
@@ -970,6 +1069,7 @@ def transfer_own(
     device_id: str | None = None,
     threshold_reader=None,
     daily_limit_reader=None,
+    beneficiary_id: uuid.UUID | str | None = None,
 ) -> Transaction:
     """Caso de uso `OWN_TRANSFER` (E2-T07, HU06 CA-01, `04#7.1`).
 
@@ -980,8 +1080,10 @@ def transfer_own(
     sobre el umbral queda en `PENDING_AUTHORIZATION` sin retener (la ruta
     atomica no crea hold) hasta `authorize_transaction` (E2-T19); sobre el
     limite diario del perfil queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`).
-    Solo `flush` (el llamante decide la transaccion); eventos por `outbox`
-    (`transaction.initiated` aqui, `transfer.settled` en el motor).
+    `beneficiary_id` (o `metadata["beneficiary_id"]`) habilita la exencion
+    por tope pre-aprobado (E2-T14, HU07 CA-03). Solo `flush` (el llamante
+    decide la transaccion); eventos por `outbox` (`transaction.initiated`
+    aqui, `transfer.settled` en el motor).
     """
     validate_amount_minor(amount_minor)
     validate_currency(currency)
@@ -1012,6 +1114,7 @@ def transfer_own(
         device_id=device_id,
         threshold_reader=threshold_reader,
         daily_limit_reader=daily_limit_reader,
+        beneficiary_id=beneficiary_id,
     )
     _emit_initiated(session, tx, tx_type="OWN_TRANSFER", fee_minor=0)
     return tx
@@ -1035,6 +1138,7 @@ def transfer_third_party(
     device_id: str | None = None,
     threshold_reader=None,
     daily_limit_reader=None,
+    beneficiary_id: uuid.UUID | str | None = None,
 ) -> Transaction:
     """Caso de uso `THIRD_PARTY_TRANSFER` (E2-T07, HU06, `04#7.2`).
 
@@ -1045,8 +1149,11 @@ def transfer_third_party(
     insuficiente -> `REJECTED` sin tocar saldos. Gate biometrico (E2-T17,
     HU08): sobre el umbral queda en `PENDING_AUTHORIZATION` con hold hasta
     `authorize_transaction` (E2-T19); sobre el limite diario del perfil
-    queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`) sin hold. Solo `flush`;
-    eventos por `outbox` (`transaction.initiated` aqui,
+    queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`) sin hold. `beneficiary_id`
+    (o `metadata["beneficiary_id"]`) habilita la exencion por tope
+    pre-aprobado: con tope suficiente en la misma moneda se omite la
+    biometria del gate (E2-T14, HU07 CA-03). Solo `flush`; eventos por
+    `outbox` (`transaction.initiated` aqui,
     `funds.held`/`transfer.settled` en el motor).
     """
     validate_amount_minor(amount_minor)
@@ -1079,6 +1186,7 @@ def transfer_third_party(
         device_id=device_id,
         threshold_reader=threshold_reader,
         daily_limit_reader=daily_limit_reader,
+        beneficiary_id=beneficiary_id,
     )
     _emit_initiated(session, tx, tx_type="THIRD_PARTY_TRANSFER", fee_minor=resolved_fee)
     return tx

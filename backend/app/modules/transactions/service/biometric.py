@@ -121,12 +121,28 @@ class ExpiredNonceError(BiometricError):
     """`nonce` vencido (-> 400 `EXPIRED_NONCE`, patron OTP)."""
 
 
+class PreapprovedCurrencyMismatchError(ValueError):
+    """El tope pre-aprobado esta en otra moneda (-> 400 `VALIDATION_ERROR`).
+
+    Se lanza cuando se invoca al motor con un `beneficiary_id` cuyo tope
+    tiene `currency` distinta a la de la operacion (E2-T14): el tope es
+    por beneficiario *y por moneda*, asi que no puede evaluarse. Sin PII:
+    el mensaje no incluye alias, cuentas ni documentos.
+    """
+
+
 #: Mensaje generico estable (identico para firma, binding o dispositivo).
 NOT_AUTHORIZED_MESSAGE = "Autorizacion biometrica invalida"
 #: Mensaje de `nonce` vencido (mismo patron que login con dispositivo).
 EXPIRED_NONCE_MESSAGE = "Desafio vencido, solicite uno nuevo"
 #: Motivo de historial al exigir biometria.
 REQUIRED_REASON = "biometria requerida"
+#: Motivo de historial al eximir por tope pre-aprobado (E2-T14, HU07 CA-03).
+PREAPPROVED_EXEMPT_REASON = "exento de biometria por tope pre-aprobado"
+#: Razon de exencion en el payload de `transaction.initiated` (E2-T14).
+PREAPPROVED_EXEMPTION_REASON = "PREAPPROVED_LIMIT"
+#: Clave de `transactions.metadata` con el detalle de la exencion (E2-T14).
+PREAPPROVED_META_KEY = "preapproved_exemption"
 #: Motivo de historial al superar el reto.
 PASSED_REASON = "biometria superada"
 #: Motivo de historial al bloquear preventivamente.
@@ -339,6 +355,141 @@ def evaluate_gate(
     )
 
 
+# ------------------------------------------- Exencion por tope pre-aprobado
+
+
+def is_preapproved_exempt(
+    *,
+    limit_minor: int | None,
+    limit_currency: str | None,
+    total_minor: int,
+    currency: str,
+) -> bool:
+    """Regla pura de exencion por tope pre-aprobado (E2-T14, HU07 CA-03).
+
+    Exento solo si el beneficiario tiene tope (`limit_minor is not None`),
+    con la misma moneda que la operacion, y `total_minor
+    (amount + fee) <= limit_minor`. Sin tope o sin moneda verificable no
+    hay exencion (se comporta como hoy: rige el gate biometrico).
+
+    Lanza `PreapprovedCurrencyMismatchError` si el tope declara una moneda
+    distinta a la operacion (-> `VALIDATION_ERROR` en la API). Dinero
+    entero en centimos; nunca `float`. Sin PII en el mensaje.
+    """
+    if limit_minor is None:
+        return False
+    if limit_currency is None:
+        return False
+    if limit_currency != currency:
+        raise PreapprovedCurrencyMismatchError(
+            "el tope pre-aprobado esta en otra moneda que la operacion"
+        )
+    return int(total_minor) <= int(limit_minor)
+
+
+def read_preapproved_limit(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    beneficiary_id: uuid.UUID | str,
+) -> dict | None:
+    """Tope del beneficiario por fachada de `accounts` (E2-T14, D-10).
+
+    Solo lectura via `accounts.service.beneficiaries.get_for_operation`
+    (import perezoso, sin ciclos; jamas modelos/repositorios de
+    `accounts`). Retorna `{"beneficiary_id", "preapproved_limit_minor",
+    "currency"}` o `None` si no existe, es de otro titular o esta dado de
+    baja (sin exencion y sin oraculo: el llamante sigue el gate normal).
+    El contenido en claro jamas se registra en logs ni se expone en
+    respuestas (reglas de oro 7/9).
+    """
+    from app.modules.accounts.service import beneficiaries as beneficiaries_service
+
+    try:
+        record = beneficiaries_service.get_for_operation(session, user_id, beneficiary_id)
+    except (
+        beneficiaries_service.BeneficiaryNotFoundError,
+        beneficiaries_service.BeneficiaryForbiddenError,
+    ):
+        return None
+    return {
+        "beneficiary_id": record["beneficiary_id"],
+        "preapproved_limit_minor": record["preapproved_limit_minor"],
+        "currency": record["currency"],
+    }
+
+
+def evaluate_preapproved_exemption(
+    session: Session,
+    *,
+    user_id: uuid.UUID | None,
+    beneficiary_id: uuid.UUID | str | None,
+    total_minor: int,
+    currency: str,
+) -> dict | None:
+    """Evalua la exencion del gate biometrico por tope (E2-T14, sin escrituras).
+
+    Sin `beneficiary_id` o sin titular no hay exencion (`None`: rige el
+    gate). Con beneficiario valido y tope suficiente retorna el registro
+    `{"beneficiary_id", "limit_minor", "currency", "total_minor"}`; con
+    moneda distinta lanza `PreapprovedCurrencyMismatchError`. La decision
+    es por operacion (el tope no se consume): dos operaciones concurrentes
+    se evaluan cada una contra el tope vigente, sin estado compartido ni
+    condicion de carrera (D-13). Nunca ignora el limite diario ni bloqueos:
+    el llamante aplica esta exencion solo sobre `requires_biometry`, jamas
+    sobre `limit_exceeded`.
+    """
+    if beneficiary_id is None or user_id is None:
+        return None
+    stored = read_preapproved_limit(session, user_id=user_id, beneficiary_id=beneficiary_id)
+    if stored is None:
+        return None
+    if not is_preapproved_exempt(
+        limit_minor=stored["preapproved_limit_minor"],
+        limit_currency=stored["currency"],
+        total_minor=total_minor,
+        currency=currency,
+    ):
+        return None
+    return {
+        "beneficiary_id": stored["beneficiary_id"],
+        "limit_minor": int(stored["preapproved_limit_minor"]),
+        "currency": stored["currency"],
+        "total_minor": int(total_minor),
+    }
+
+
+def mark_preapproved_exempt(
+    session: Session,
+    tx: Transaction,
+    *,
+    beneficiary_id: uuid.UUID,
+    limit_minor: int,
+    currency: str,
+    total_minor: int,
+) -> Transaction:
+    """Registra la exencion en `transactions.metadata` (auditoria, E2-T14).
+
+    Guarda solo UUIDs e importes (`beneficiary_id`, `limit_minor`,
+    `currency`, `total_minor`, `exemption_reason`): sin PII ni sensibles
+    en claro. `flush` sin `commit`; el llamante transiciona despues a
+    `AUTHORIZED` con `PREAPPROVED_EXEMPT_REASON` (queda en
+    `transaction_status_history`).
+    """
+    meta = dict(tx.meta) if isinstance(tx.meta, dict) else {}
+    meta[PREAPPROVED_META_KEY] = {
+        "beneficiary_id": str(beneficiary_id),
+        "limit_minor": int(limit_minor),
+        "currency": currency,
+        "total_minor": int(total_minor),
+        "exemption_reason": PREAPPROVED_EXEMPTION_REASON,
+    }
+    tx.meta = meta
+    session.add(tx)
+    session.flush()
+    return tx
+
+
 # ------------------------------------------------------------ Reto (`nonce`)
 
 
@@ -430,11 +581,13 @@ def _publish_security_event(
     attempt: int,
     blocked: bool,
     reason: str,
+    device_id: str | None = None,
 ) -> None:
     """Enlista `auth.failed_attempt` via outbox (best-effort, sin PII).
 
-    Payload minimo para `risk`/`E2-T20`: ids, contador y motivo generico
-    (`invalid`/`expired`/`blocked`); jamas `nonce`, firmas ni claves.
+    Payload minimo para `risk`/`E2-T20`: ids (`transaction_id`, `user_id`),
+    `device_id` esperado, contador y motivo generico (`invalid`/`expired`/
+    `blocked`); jamas `nonce`, firmas, claves ni material biometrico.
     """
     try:
         from app.core.outbox import record as outbox_record
@@ -442,6 +595,9 @@ def _publish_security_event(
         logger.warning("biometric outbox no disponible: evento no enlistado")
         return
     try:
+        clean_device: str | None = None
+        if isinstance(device_id, str) and device_id.strip() and len(device_id) <= 128:
+            clean_device = device_id.strip()
         outbox_record(
             session,
             aggregate_type="transaction",
@@ -449,6 +605,8 @@ def _publish_security_event(
             event_type=AUTH_FAILED_ATTEMPT_EVENT,
             payload={
                 "transaction_id": str(tx.id),
+                "user_id": str(tx.initiator_user_id) if tx.initiator_user_id is not None else None,
+                "device_id": clean_device,
                 "attempt": int(attempt),
                 "blocked": bool(blocked),
                 "reason": reason,
@@ -592,6 +750,10 @@ def _fail_attempt(
     max_attempts = int(read_max(session))
     attempts = int(block.get("failed_attempts") or 0) + 1
     block["failed_attempts"] = attempts
+    expected_device = block.get("device_id")
+    device_hint = (
+        expected_device if isinstance(expected_device, str) and expected_device.strip() else None
+    )
     if attempts >= max_attempts:
         release_pending_holds(session, tx, balance_port=balance_port)
         mark_rejected(session, tx, PREVENTIVE_BLOCK)
@@ -599,7 +761,14 @@ def _fail_attempt(
         fresh = tx_repository.transition_transaction(
             session, tx.id, "REJECTED", reason=BLOCKED_REASON
         )
-        _publish_security_event(session, fresh, attempt=attempts, blocked=True, reason="blocked")
+        _publish_security_event(
+            session,
+            fresh,
+            attempt=attempts,
+            blocked=True,
+            reason="blocked",
+            device_id=device_hint,
+        )
         logger.info("biometric bloqueo preventivo")
         return fresh
     save_block(session, tx, block)
@@ -610,6 +779,7 @@ def _fail_attempt(
         attempt=attempts,
         blocked=False,
         reason=reason,
+        device_id=device_hint,
     )
     raise error
 
@@ -808,6 +978,9 @@ __all__ = [
     "NONCE_TTL_SECONDS",
     "NOT_AUTHORIZED_MESSAGE",
     "PASSED_REASON",
+    "PREAPPROVED_EXEMPTION_REASON",
+    "PREAPPROVED_EXEMPT_REASON",
+    "PREAPPROVED_META_KEY",
     "PREVENTIVE_BLOCK",
     "REQUIRED_REASON",
     "BiometricDecision",
@@ -815,6 +988,7 @@ __all__ = [
     "BiometricStateError",
     "ExpiredNonceError",
     "NotAuthorizedError",
+    "PreapprovedCurrencyMismatchError",
     "TransactionNotFoundError",
     "authorize_transaction",
     "daily_accumulated_minor",
@@ -824,10 +998,14 @@ __all__ = [
     "default_signature_verifier",
     "default_threshold_reader",
     "evaluate_gate",
+    "evaluate_preapproved_exemption",
     "failure_markers",
     "get_block",
+    "is_preapproved_exempt",
+    "mark_preapproved_exempt",
     "mark_rejected",
     "new_challenge_block",
+    "read_preapproved_limit",
     "release_pending_holds",
     "request_biometric_challenge",
     "resolve_risk_profile",

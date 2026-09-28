@@ -166,6 +166,48 @@ def is_movements_wired(bus: Any | None = None) -> bool:
         return False
 
 
+# ------------------------------------------------- Cableado E2-T20
+# Consumidor `auth.failed_attempt` -> `risk` (severidad) + notificacion.
+# Solo registra/sube severidad, audita y notifica: nunca mueve dinero.
+
+
+def subscribe_risk_security(bus: Any | None = None) -> Any:
+    """Suscribe `on_auth_failed_attempt` al bus (E2-T20, HU08 CA-04/CA-02).
+
+    Idempotente: si el handler ya esta registrado no lo duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna el
+    handler registrado (el arranque real lo usa; los tests lo verifican).
+    """
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_auth_failed_attempt
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers = list(getattr(bus, "_handlers", {}).get(domain_events.AUTH_FAILED_ATTEMPT, []))
+    if on_auth_failed_attempt not in handlers:
+        bus.subscribe(domain_events.AUTH_FAILED_ATTEMPT, on_auth_failed_attempt)
+    return on_auth_failed_attempt
+
+
+def is_risk_security_wired(bus: Any | None = None) -> bool:
+    """`True` si el consumidor de seguridad ya esta suscrito al bus."""
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_auth_failed_attempt
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        return bus.handler_count(domain_events.AUTH_FAILED_ATTEMPT) > 0 and (
+            on_auth_failed_attempt in bus._handlers.get(domain_events.AUTH_FAILED_ATTEMPT, [])
+        )
+    except AttributeError:
+        return False
+
+
 def run_outbox_once(
     *,
     session_factory: Any | None = None,
@@ -262,11 +304,13 @@ __all__ = [
     "get_balance_port",
     "get_default_ports",
     "is_movements_wired",
+    "is_risk_security_wired",
     "is_wired",
     "resolve_account_projection",
     "resolve_balance_port",
     "run_outbox_once",
     "start_outbox_worker",
     "subscribe_accounts_movements",
+    "subscribe_risk_security",
     "wire_ports",
 ]

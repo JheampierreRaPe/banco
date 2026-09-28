@@ -43,9 +43,14 @@ async def lifespan(app: FastAPI):
     resuelve los adaptadores reales via `resolve_*` sin mutar globales
     (diseno E2-T01 opcion b); mutarlos aqui romperia el aislamiento.
     """
-    from app.composition import start_outbox_worker, subscribe_accounts_movements
+    from app.composition import (
+        start_outbox_worker,
+        subscribe_accounts_movements,
+        subscribe_risk_security,
+    )
 
     subscribe_accounts_movements()
+    subscribe_risk_security()
     stop_event = None
     if _outbox_worker_enabled():
         _thread, stop_event = start_outbox_worker(interval_seconds=_outbox_poll_interval_seconds())

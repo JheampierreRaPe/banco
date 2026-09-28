@@ -14,6 +14,10 @@ FUNDS_RELEASED = "funds.released"
 LEDGER_ENTRY_POSTED = "ledger.entry.posted"
 TRANSFER_SETTLED = "transfer.settled"
 FRAUD_ALERT_RAISED = "fraud.alert.raised"
+# Intento fallido de autorizacion biometrica (E2-T17 emisor via outbox,
+# E2-T20 consumidor en `risk` + notificacion; mismo nombre que
+# `identity.service.device_login.AUDIT_FAILED_ATTEMPT`).
+AUTH_FAILED_ATTEMPT = "auth.failed_attempt"
 CREDIT_DISBURSED = "credit.disbursed"
 QR_PAYMENT_CONFIRMED = "qr.payment.confirmed"
 RECONCILIATION_EXCEPTION = "reconciliation.exception"

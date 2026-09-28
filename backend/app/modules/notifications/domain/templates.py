@@ -39,6 +39,27 @@ BASE_TEMPLATES: dict[str, dict] = {
         "subject": None,
         "body_template": "Nuevo inicio de sesion desde {device} el {at}.",
     },
+    # Seguridad de pagos sensibles (E2-T20, HU08 CA-04/CA-02): un canal
+    # natural por codigo. Cuerpo generico sin PII (solo el instante `{at}`;
+    # el `user_id` viaja en la fila, no en el texto).
+    "auth_failed_attempt": {
+        "code": "auth_failed_attempt",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Detectamos un intento de autorizacion no reconocido en tu cuenta "
+            "el {at}. Si no fuiste tu, revisa tu dispositivo."
+        ),
+    },
+    "auth_blocked": {
+        "code": "auth_blocked",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Bloqueamos preventivamente tu operacion tras varios intentos "
+            "fallidos el {at}. Si no fuiste tu, contacta a tu banco."
+        ),
+    },
 }
 
 _SCALAR_TYPES = (str, int, bool, type(None))

@@ -2,13 +2,20 @@
 
 > Nota de archivo (2026-09-26; ampliada 2026-09-27): los briefs de Sprint 1 con `Estado: Hecho`
 > viven en `docs/tasks/archive/` y se citan aqui por ID, sin cambios. En `docs/tasks/` solo
-> estan los briefs no-`Hecho`, incluidos los 18 de este indice aun pendientes; `E2-T07`,
-> `E2-T08`, `E2-T09`, `E2-T10`, `E2-T13`, `E2-T14`, `E2-T17`, `E2-T18`, `E2-T19`, `E2-T20`,
-> `E2-T24`, `E2-T25` y `E2-T26` ya estan `Hecho` (archivados en `docs/tasks/archive/<ID>.md`).
+> estan los briefs no-`Hecho`, incluidos los 15 de este indice aun pendientes; `E2-T07`,
+> `E2-T08`, `E2-T09`, `E2-T10`, `E2-T12`, `E2-T13`, `E2-T14`, `E2-T16`, `E2-T17`, `E2-T18`,
+> `E2-T19`, `E2-T20`, `E2-T22`, `E2-T24`, `E2-T25` y `E2-T26` ya estan `Hecho` (archivados en
+> `docs/tasks/archive/<ID>.md`).
 >
 > Cierre 2026-09-27: con `E2-T14`/`E2-T19`/`E2-T20`/`E2-T24`/`E2-T25`/`E2-T26` el **bloque
 > backend de HU06-HU08 y de operaciones/administracion queda completo**; solo restan el
 > frontend (`E2-T11`/`E2-T15`/`E2-T21`) y la QA de cierre de cada HU (`E2-T12`/`E2-T16`/`E2-T22`).
+>
+> Cierre 2026-10-02: con `E2-T12`/`E2-T16`/`E2-T22` la **QA de HU06-HU08 queda cerrada** y el
+> **bloque HU06-HU08 completo (backend + frontend + QA)**; los features frontend ya fueron
+> entregados (`E2-T11` commit `a79016f`, `E2-T15` commit `631b90a`, `E2-T21` commit `89610f2`).
+> Pendiente en `docs/tasks/`: el bloque de creditos `E3-T01`..`E3-T11` y la deuda de Sprint 1
+> `E2-T23` (los briefs frontend de HU06-HU08 aun no se archivan).
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -19,9 +26,9 @@ ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KY
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
 Total: **31 briefs** (20 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`): **18 pendientes + 13 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
-`E2-T10`/`E2-T13`/`E2-T14`/`E2-T17`/`E2-T18`/`E2-T19`/`E2-T20`/`E2-T24`/`E2-T25`/`E2-T26`,
-archivados).
+creditos `E3-T01`..`E3-T11`): **15 pendientes + 16 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
+`E2-T10`/`E2-T12`/`E2-T13`/`E2-T14`/`E2-T16`/`E2-T17`/`E2-T18`/`E2-T19`/`E2-T20`/`E2-T22`/
+`E2-T24`/`E2-T25`/`E2-T26`, archivados).
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y
@@ -35,13 +42,15 @@ archivados).
 (estados, timeout, polling, compensacion; **`Hecho`**, archivado
 `docs/tasks/archive/E2-T09.md`) - `E2-T10` Comprobante PDF con numero de operacion unico
 (**`Hecho`**, archivado `docs/tasks/archive/E2-T10.md`) - `E2-T11` Pantallas Flutter de
-transferencia - `E2-T12` QA (feliz, insuficiente, duplicada, timeout, reverso).
+transferencia - `E2-T12` QA (feliz, insuficiente, duplicada, timeout, reverso; **`Hecho`**,
+archivado `docs/tasks/archive/E2-T12.md`).
 
 ## HU07 - Gestion de beneficiarios frecuentes (Should, 3 SP) - `accounts`
 `E2-T13` CRUD de beneficiarios con cifrado y busqueda indexada (**`Hecho`**, archivado
 `docs/tasks/archive/E2-T13.md`) - `E2-T14` Tope pre-aprobado integrado al motor (**`Hecho`**,
 archivado `docs/tasks/archive/E2-T14.md`) - `E2-T15`
-Pantalla de agenda Flutter (busqueda/agrupacion) - `E2-T16` QA (busqueda, tope, edicion).
+Pantalla de agenda Flutter (busqueda/agrupacion) - `E2-T16` QA (busqueda, tope, edicion;
+**`Hecho`**, archivado `docs/tasks/archive/E2-T16.md`).
 
 ## HU08 - Autorizacion biometrico-facial de pagos sensibles (Must, 8 SP) - `transactions`/`risk`
 `E2-T17` Integracion motor <-> autorizacion biometrica del dispositivo (`nonce` firmado; dueno de
@@ -53,7 +62,7 @@ perfiles de riesgo configurables sin despliegue (datos/config; **`Hecho`**, arch
 `docs/tasks/archive/E2-T19.md`) - `E2-T20` Evento a `risk` + notificacion ante fallo (consumo
 de la alerta de bloqueo; **`Hecho`**, archivado `docs/tasks/archive/E2-T20.md`) - `E2-T21` UI
 reto biometrico en el flujo de pago - `E2-T22` QA (umbral,
-limite diario, bloqueo).
+limite diario, bloqueo; **`Hecho`**, archivado `docs/tasks/archive/E2-T22.md`).
 
 ## HU09 - Simulador inteligente de creditos (Should, 5 SP) - `credits`
 `E3-T01` Motor de calculo financiero puro y testeable (cuota francesa, cronograma, TCEA) -
@@ -109,7 +118,7 @@ bus/outbox en produccion (`docs/17#6`). Depende de `E2-T04` y `E5-T05`.
 6. `E2-T24` (listado; **`Hecho`**), `E2-T25` (reverso; **`Hecho`**) y `E2-T26` (parametros admin;
    **`Hecho`**) sobre `E2-T07`/`E2-T18`.
 7. `E2-T11`, `E2-T15`, `E2-T21` (frontend, pueden ir con mocks de `docs/05` en paralelo a 2-6).
-8. `E2-T12`, `E2-T16`, `E2-T22` (QA al cierre de cada HU).
+8. `E2-T12`, `E2-T16`, `E2-T22` (QA al cierre de cada HU; **`Hecho`**, archivados).
 9. **Creditos (despues del bloque de transferencias/beneficiarios/pagos sensibles):**
    1. `E3-T01` (motor financiero puro) y `E3-T02` (catalogo `loan_products`) primero.
    2. `E3-T03` (API del simulador) sobre `E3-T01`/`E3-T02`.

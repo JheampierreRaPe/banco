@@ -139,6 +139,11 @@ Reglas de implementacion:
 > supuesto contradice `01-hallazgos-y-decisiones.md`, manda `01` y se corrige el brief
 > (`docs/tasks/README.md#7`).
 
+> **Cierre QA HU06-HU08 (2026-10-02):** QA `E2-T12`/`E2-T16`/`E2-T22` sin hallazgos bloqueantes;
+> suites en verde (`backend/tests/test_e2_t12_transfers_qa.py`,
+> `test_e2_t16_beneficiaries_qa.py`, `test_e2_t22_payment_authorization_qa.py`; 34 passed).
+> Se mantienen abiertas **OBS-2**, **OBS-3** y **OBS-4**.
+
 | # | Supuesto / gap | Brief que lo resuelve | Doc a actualizar |
 |---|---|---|---|
 | G01 | **RESUELTO (E2-T19 `Hecho`, 2026-09-27):** `docs/05#6.3` fija ahora tambien el contrato de `POST /transactions/{id}/authorize` (request `{nonce, signature, device_id}`, `Idempotency-Key`, estados, `EXPIRED_NONCE`/`CONFLICT` y el `403` generico sin oraculo), completando `/transfers/*`, `GET /transactions/{id}` y `GET /transactions/{id}/receipt` (E2-T07/T09/T10). | `E2-T19` (`Hecho`) | `docs/05` |

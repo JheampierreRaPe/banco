@@ -5,6 +5,8 @@ import '../../features/accounts/accounts_routes.dart';
 import '../../features/accounts/data/accounts_service.dart';
 import '../../features/activation/activation_routes.dart';
 import '../../features/activation/activation_service.dart';
+import '../../features/beneficiaries/beneficiaries_routes.dart';
+import '../../features/beneficiaries/data/beneficiaries_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
@@ -106,6 +108,9 @@ GoRouter buildRouter(
   // compartido, asi que cablea aqui la fabrica que resuelven `homeRoutes`
   // y `accountsRoutes`. Solo cableado: la guarda F-T37 no se toca.
   accountsServiceFactory = () => AccountsService(api: client);
+  // Beneficiarios (E2-T15): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/beneficiaries*` exige sesion).
+  beneficiariesServiceFactory = () => BeneficiariesService(api: client);
   // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
   // cableado; la guarda F-T37 no se toca.
   homeProfileServiceFactory = () => HttpProfileService(api: client);
@@ -174,6 +179,7 @@ GoRouter buildRouter(
       ...loginRoutes,
       ...pinResetRoutes,
       ...accountsRoutes,
+      ...beneficiariesRoutes,
       ...homeRoutes,
       ...profileRoutes,
     ],

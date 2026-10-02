@@ -376,6 +376,7 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | POST | `/transfers/interbank` | Transferencia interbancaria (202 + estado). |
 | POST | `/payments/qr` | Pago de QR (HU15). |
 | POST | `/transactions/{id}/authorize` | Autorizacion biometrica de pago sensible (HU08). |
+| POST | `/transactions/{id}/authorize/challenge` | Rotacion del reto tras `EXPIRED_NONCE` (HU08). |
 | GET | `/transactions/{id}` | Estado y detalle. |
 | GET | `/transactions` | Historial filtrable. |
 | GET | `/transactions/{id}/receipt` | Comprobante. |
@@ -460,6 +461,22 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > mueve dinero ni crea asiento; el evento de seguridad del fallo lo emite
 > `E2-T17`/`E2-T20` (`auth.failed_attempt`). El endpoint **no recalcula** el
 > umbral (lo decidio `E2-T17`). Sin PII ni secretos en logs.
+>
+> Contrato reintento tras `EXPIRED_NONCE`
+> `POST /api/v1/transactions/{id}/authorize/challenge` (Bearer, HU08): rota
+> el reto vigente de una operacion en `PENDING_AUTHORIZATION` (via
+> `biometric.request_biometric_challenge` de `E2-T17`: `nonce` nuevo +
+> vencimiento nuevo, conserva `failed_attempts`) ->
+> `200 {"data": {"transaction_id", "nonce", "expires_in"}, "meta":
+> {"request_id"}}`. Solo rotacion: no mueve dinero ni cuenta intento (sin
+> `Idempotency-Key`, como `GET /transactions/{id}`; repetir la llamada
+> reemite el reto). El cliente firma el `nonce` nuevo y reintenta
+> `POST .../authorize` con una `Idempotency-Key` NUEVA (el fallo
+> `EXPIRED_NONCE` quedo snapshotteado bajo la anterior: misma clave + cuerpo
+> distinto = `409`; mismo cuerpo = replay del error). Errores:
+> `401 NOT_AUTHENTICATED`, `404 NOT_FOUND` (inexistente), `403
+> NOT_AUTHORIZED` (ajena), `409 CONFLICT` (no esta en
+> `PENDING_AUTHORIZATION`). Sin PII ni secretos en logs.
 >
 > Contrato E2-T24 `GET /api/v1/transactions` (Bearer, HU06/HU15/HU17,
 > `05#6.3`/G16): historial paginado de las operaciones **del titular**

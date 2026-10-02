@@ -15,6 +15,8 @@ import '../../features/kyc/kyc_dependencies.dart';
 import '../../features/kyc/kyc_routes.dart';
 import '../../features/kyc/kyc_service.dart';
 import '../../features/login/login_routes.dart';
+import '../../features/movements/data/movements_service.dart';
+import '../../features/movements/movements_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
@@ -116,6 +118,10 @@ GoRouter buildRouter(
   // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
   // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
   transfersServiceFactory = () => TransfersService(api: client);
+  // Historial + reverso (E2-T24/E2-T25): mismo patron, solo cableado con
+  // el `ApiClient` compartido; la guarda F-T37 no se toca (`/movements*`
+  // exige sesion).
+  movementsServiceFactory = () => MovementsService(api: client);
   // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
   // cableado; la guarda F-T37 no se toca.
   homeProfileServiceFactory = () => HttpProfileService(api: client);
@@ -186,6 +192,7 @@ GoRouter buildRouter(
       ...accountsRoutes,
       ...beneficiariesRoutes,
       ...transfersRoutes,
+      ...movementsRoutes,
       ...homeRoutes,
       ...profileRoutes,
     ],

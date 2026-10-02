@@ -301,6 +301,14 @@ String transferUserMessage(ApiException error) {
     case 'INSUFFICIENT_FUNDS':
       return 'No tienes saldo suficiente para completar la operacion. '
           'Tu dinero esta seguro: no se debito nada.';
+    case 'DAILY_LIMIT_EXCEEDED':
+      return 'Superaste tu limite diario. Podras operar de nuevo manana.';
+    case 'BIOMETRIC_PREVENTIVE_BLOCK':
+      return 'Protegimos tu cuenta temporalmente. Verifica tu identidad '
+          'para continuar.';
+    case 'EXPIRED_NONCE':
+      return 'La solicitud expiro. Vuelve a intentarlo con una '
+          'nueva autorizacion.';
     case 'HOLDER_NOT_FOUND':
       return 'No pudimos validar el titular con los datos ingresados. '
           'Verifica el CCI directamente con el destinatario antes de continuar.';

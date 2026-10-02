@@ -17,6 +17,8 @@ import '../../features/kyc/kyc_service.dart';
 import '../../features/login/login_routes.dart';
 import '../../features/movements/data/movements_service.dart';
 import '../../features/movements/movements_routes.dart';
+import '../../features/payment_authorization/data/payment_authorization_service.dart';
+import '../../features/payment_authorization/payment_authorization_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
@@ -118,6 +120,18 @@ GoRouter buildRouter(
   // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
   // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
   transfersServiceFactory = () => TransfersService(api: client);
+  // Reto biometrico de pago (E2-T21): mismo patron, solo cableado con el
+  // `ApiClient` compartido + sesion + lector del SO + `device_id` vigente;
+  // la guarda F-T37 no se toca (`/payments/*` exige sesion).
+  paymentAuthorizationServiceFactory = () =>
+      PaymentAuthorizationService(api: client);
+  final systemReader = SystemBiometricReader();
+  paymentAuthorizationDepsFactory = () => PaymentAuthorizationDeps(
+    service: PaymentAuthorizationService(api: client),
+    reader: systemReader,
+    session: session,
+    deviceId: identityStore.deviceId ?? '',
+  );
   // Historial + reverso (E2-T24/E2-T25): mismo patron, solo cableado con
   // el `ApiClient` compartido; la guarda F-T37 no se toca (`/movements*`
   // exige sesion).
@@ -192,6 +206,7 @@ GoRouter buildRouter(
       ...accountsRoutes,
       ...beneficiariesRoutes,
       ...transfersRoutes,
+      ...paymentAuthorizationRoutes,
       ...movementsRoutes,
       ...homeRoutes,
       ...profileRoutes,

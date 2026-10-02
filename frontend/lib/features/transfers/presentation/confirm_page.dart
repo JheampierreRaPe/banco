@@ -8,6 +8,11 @@ import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_status_chip.dart';
 import '../../../core/widgets/error_view.dart';
+import '../../payment_authorization/data/payment_authorization_service.dart';
+import '../../payment_authorization/payment_authorization_controller.dart';
+import '../../payment_authorization/payment_authorization_routes.dart';
+import '../../payment_authorization/presentation/biometric_challenge_sheet.dart';
+import '../../payment_authorization/presentation/payment_error_page.dart';
 import '../data/transfers_service.dart';
 import '../models/transfer.dart';
 import 'tracking_page.dart';
@@ -24,13 +29,29 @@ import 'widgets/cci_status_banner.dart';
 /// - interbancaria aceptada (`202`) -> `/transfers/tracking/:id`.
 /// - `REJECTED` por fondos -> tarjeta de saldo insuficiente (mockup
 ///   `Error Pago 1`; sin debitar, reintentable con otra cuenta).
+/// - `REJECTED` por limite diario o bloqueo preventivo -> estados de error
+///   de pago 2/3 (E2-T21, sin tecnicismos).
+/// - `PENDING_AUTHORIZATION` -> reto biometrico del dispositivo (E2-T21):
+///   bottom sheet `Autorización Biométrica`, firma del `nonce` y
+///   `POST /transactions/{id}/authorize` con la `Idempotency-Key` del
+///   borrador; fallo -> mensaje claro + fallback a PIN; `EXPIRED_NONCE` ->
+///   rotacion del reto + reintento con clave nueva (lo hace el controlador).
 /// - `HOLDER_NOT_FOUND` / `HOLDER_LOOKUP_UNAVAILABLE` (interbancaria) ->
 ///   banner CCI + [Corregir / Reintentar] (misma clave).
 class ConfirmPage extends StatefulWidget {
-  const ConfirmPage({super.key, required this.args, this.service});
+  const ConfirmPage({
+    super.key,
+    required this.args,
+    this.service,
+    this.authDepsFactory,
+  });
 
   final TransferFlowArgs args;
   final TransfersServiceBase? service;
+
+  /// Fabrica del reto biometrico (en produccion resuelve la global
+  /// `paymentAuthorizationDepsFactory`; en tests se inyecta un fake).
+  final PaymentAuthorizationDepsFactory? authDepsFactory;
 
   @override
   State<ConfirmPage> createState() => _ConfirmPageState();
@@ -42,6 +63,13 @@ class _ConfirmPageState extends State<ConfirmPage> {
   TransferResult? _rejected;
   CciState _cciState = CciState.idle;
   final String _holderMasked = '';
+
+  /// Estado de error de pago E2-T21 (mockups 2..6; el 1 conserva su vista
+  /// dedicada `_insufficientView`).
+  PaymentErrorArgs? _paymentError;
+
+  /// Mensaje del fallback a PIN tras el reto (borde del brief E2-T21).
+  String? _pinFallbackMessage;
 
   TransferDraft get _draft => widget.args.draft;
 
@@ -61,6 +89,8 @@ class _ConfirmPageState extends State<ConfirmPage> {
       _error = null;
       _rejected = null;
       _cciState = CciState.idle;
+      _paymentError = null;
+      _pinFallbackMessage = null;
     });
     try {
       final result = await _post(service);
@@ -72,7 +102,23 @@ class _ConfirmPageState extends State<ConfirmPage> {
         });
         return;
       }
+      if (result.requiresBiometricChallenge) {
+        await _startBiometricChallenge(result);
+        return;
+      }
       if (result.isRejected) {
+        final kind = PaymentErrorKind.fromCode(result.failureCode);
+        if (result.failureCode == 'DAILY_LIMIT_EXCEEDED' ||
+            result.failureCode == 'BIOMETRIC_PREVENTIVE_BLOCK') {
+          setState(() {
+            _submitting = false;
+            _paymentError = _errorArgs(
+              kind,
+              transactionId: result.transactionId,
+            );
+          });
+          return;
+        }
         setState(() {
           _submitting = false;
           _error = ApiException(
@@ -95,9 +141,7 @@ class _ConfirmPageState extends State<ConfirmPage> {
           ),
         );
       } else {
-        context.pushReplacement(
-          '/transfers/receipt/${result.transactionId}',
-        );
+        context.pushReplacement('/transfers/receipt/${result.transactionId}');
       }
       if (mounted) setState(() => _submitting = false);
     } on ApiException catch (e) {
@@ -119,8 +163,9 @@ class _ConfirmPageState extends State<ConfirmPage> {
 
   Future<TransferResult> _post(TransfersServiceBase service) {
     final d = _draft;
-    final motiveMeta =
-        d.motive.isEmpty ? null : <String, dynamic>{'motive': d.motive};
+    final motiveMeta = d.motive.isEmpty
+        ? null
+        : <String, dynamic>{'motive': d.motive};
     switch (d.kind) {
       case TransferKind.own:
         return service.createOwnTransfer(
@@ -163,9 +208,314 @@ class _ConfirmPageState extends State<ConfirmPage> {
     }
   }
 
+  /// Monto exhibido del borrador (viene del servidor al confirmar; aqui
+  /// solo display del borrador capturado).
+  String get _amountLabel =>
+      formatMoneyMinor(_draft.amountMinor, _draft.currency);
+
+  /// Destinatario enmascarado (alias de la agenda o mascara; nunca PII).
+  String get _recipientLabel {
+    final d = _draft;
+    if (d.beneficiaryAlias.isNotEmpty) return d.beneficiaryAlias;
+    if (d.destinationMasked.isNotEmpty) return d.destinationMasked;
+    if (d.kind == TransferKind.interbank && d.cci.isNotEmpty) {
+      return maskCciShort(d.cci);
+    }
+    return 'Destinatario';
+  }
+
+  /// Argumentos de [PaymentErrorView] con el resumen del intento.
+  PaymentErrorArgs _errorArgs(
+    PaymentErrorKind kind, {
+    String? transactionId,
+    String? errorCode,
+  }) {
+    final d = _draft;
+    final bankMasked = d.kind == TransferKind.interbank
+        ? (d.bankCode.isEmpty ? 'Otro banco (CCE)' : d.bankCode)
+        : d.destinationMasked;
+    return PaymentErrorArgs(
+      kind: kind,
+      errorCode: errorCode,
+      recipientLabel: _recipientLabel,
+      bankMasked: bankMasked,
+      amountLabel: _amountLabel,
+      totalLabel: _amountLabel,
+      reportRef: transactionId ?? '',
+    );
+  }
+
+  /// Reto biometrico tras `PENDING_AUTHORIZATION` (E2-T21).
+  ///
+  /// Muestra el bottom sheet `Autorización Biométrica` (mockup `0:3964`);
+  /// con la huella superada firma el `nonce` y autoriza con la
+  /// `Idempotency-Key` del borrador. Sin biometria o ante fallo/cancelacion
+  /// ofrece el fallback a PIN; `EXPIRED_NONCE` rota el reto y reintenta con
+  /// clave nueva (lo hace el controlador).
+  Future<void> _startBiometricChallenge(TransferResult pending) async {
+    final factory = widget.authDepsFactory ?? paymentAuthorizationDepsFactory;
+    if (factory == null) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = ApiException(
+          code: 'UNKNOWN',
+          message:
+              'Autorización biométrica no disponible en este momento. '
+              'Inténtalo más tarde.',
+        );
+      });
+      return;
+    }
+    final deps = factory();
+    var nonce = pending.nonce ?? '';
+    if (nonce.isEmpty) {
+      try {
+        final detail = await deps.service.refreshChallenge(
+          pending.transactionId,
+        );
+        nonce = detail.nonce ?? '';
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _submitting = false;
+          _error = e;
+        });
+        return;
+      }
+    }
+    if (!mounted) return;
+    if (nonce.isEmpty) {
+      setState(() {
+        _submitting = false;
+        _paymentError = _errorArgs(
+          PaymentErrorKind.sessionExpired,
+          transactionId: pending.transactionId,
+        );
+      });
+      return;
+    }
+    final controller = deps.buildController();
+    final reason =
+        'Autoriza tu transferencia de $_amountLabel a $_recipientLabel';
+    PaymentAuthState? authState;
+    var sheetBusy = false;
+    var sheetError = '';
+    // El sheet trae su propio estado de carga: se apaga el spinner de la
+    // confirmacion para no animar tras el modal (ni bloquear el hilo).
+    if (mounted) setState(() => _submitting = false);
+    await showModalBottomSheet<BiometricSheetOutcome>(
+      context: context,
+      isDismissible: true,
+      enableDrag: true,
+      backgroundColor: AppColors.surfaceContainerLowest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheet) => BiometricChallengeSheet(
+          amountLabel: _amountLabel,
+          recipientLabel: _recipientLabel,
+          isAuthorizing: sheetBusy,
+          errorMessage: sheetError,
+          onAuthorize: () async {
+            setSheet(() {
+              sheetBusy = true;
+              sheetError = '';
+            });
+            final st = await controller.authorize(
+              transactionId: pending.transactionId,
+              nonce: nonce,
+              idempotencyKey: _draft.idempotencyKey,
+              reason: reason,
+            );
+            if (!sheetContext.mounted) return;
+            if (st.outcome == PaymentAuthOutcome.authorized) {
+              authState = st;
+              Navigator.of(sheetContext).pop(BiometricSheetOutcome.authorize);
+              return;
+            }
+            if (st.outcome == PaymentAuthOutcome.requiresPinFallback) {
+              authState = st;
+              Navigator.of(sheetContext).pop(BiometricSheetOutcome.usePin);
+              return;
+            }
+            if (st.outcome == PaymentAuthOutcome.expired) {
+              authState = st;
+              Navigator.of(sheetContext).pop(BiometricSheetOutcome.authorize);
+              return;
+            }
+            setSheet(() {
+              sheetBusy = false;
+              sheetError = st.message;
+            });
+            authState = st;
+          },
+          onRetry: () async {
+            setSheet(() {
+              sheetBusy = true;
+              sheetError = '';
+            });
+            final st = await controller.authorize(
+              transactionId: pending.transactionId,
+              nonce: nonce,
+              idempotencyKey: _draft.idempotencyKey,
+              reason: reason,
+            );
+            if (!sheetContext.mounted) return;
+            if (st.outcome == PaymentAuthOutcome.authorized ||
+                st.outcome == PaymentAuthOutcome.requiresPinFallback ||
+                st.outcome == PaymentAuthOutcome.expired) {
+              authState = st;
+              Navigator.of(sheetContext).pop(
+                st.outcome == PaymentAuthOutcome.authorized ||
+                        st.outcome == PaymentAuthOutcome.expired
+                    ? BiometricSheetOutcome.authorize
+                    : BiometricSheetOutcome.usePin,
+              );
+              return;
+            }
+            setSheet(() {
+              sheetBusy = false;
+              sheetError = st.message;
+            });
+            authState = st;
+          },
+          onUsePin: () =>
+              Navigator.of(sheetContext).pop(BiometricSheetOutcome.usePin),
+          onCancel: () =>
+              Navigator.of(sheetContext).pop(BiometricSheetOutcome.cancelled),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    final st = authState;
+    if (st == null) {
+      setState(() => _submitting = false);
+      return;
+    }
+    if (st.outcome == PaymentAuthOutcome.authorized && st.result != null) {
+      _continueAfterAuthorization(st.result!, pending);
+      return;
+    }
+    if (st.outcome == PaymentAuthOutcome.expired) {
+      setState(() {
+        _submitting = false;
+        _paymentError = _errorArgs(
+          PaymentErrorKind.sessionExpired,
+          transactionId: pending.transactionId,
+          errorCode: st.code,
+        );
+      });
+      return;
+    }
+    if (st.outcome == PaymentAuthOutcome.requiresPinFallback) {
+      setState(() {
+        _submitting = false;
+        _pinFallbackMessage = st.message;
+      });
+      return;
+    }
+    // Fallo comunicado dentro del sheet con reintento: si el usuario cerro
+    // el sheet con error pendiente, se mapea al estado de error de pago.
+    final kind = PaymentErrorKind.fromCode(st.code);
+    if (kind == PaymentErrorKind.timeout ||
+        kind == PaymentErrorKind.duplicate ||
+        kind == PaymentErrorKind.preventiveBlock ||
+        kind == PaymentErrorKind.dailyLimit) {
+      setState(() {
+        _submitting = false;
+        _paymentError = _errorArgs(
+          kind,
+          transactionId: pending.transactionId,
+          errorCode: st.code,
+        );
+      });
+      return;
+    }
+    setState(() {
+      _submitting = false;
+      _error = ApiException(code: st.code ?? 'UNKNOWN', message: st.message);
+    });
+  }
+
+  /// Continua el flujo tras la autorizacion aceptada (E2-T21 CA-01: sin
+  /// exito del reto no se continua).
+  void _continueAfterAuthorization(
+    AuthorizationResult auth,
+    TransferResult pending,
+  ) {
+    if (auth.isPreventiveBlock) {
+      setState(() {
+        _submitting = false;
+        _paymentError = _errorArgs(
+          PaymentErrorKind.preventiveBlock,
+          transactionId: auth.transactionId,
+          errorCode: auth.failureCode,
+        );
+      });
+      return;
+    }
+    if (_draft.kind == TransferKind.interbank) {
+      final holder = auth.holderMasked.isEmpty
+          ? pending.holderMasked
+          : auth.holderMasked;
+      context.pushReplacement(
+        '/transfers/tracking/${auth.transactionId}',
+        extra: TrackingArgs(
+          transactionId: auth.transactionId,
+          holderMasked: holder,
+          amountMinor: pending.amountMinor,
+          currency: pending.currency,
+        ),
+      );
+    } else {
+      context.pushReplacement('/transfers/receipt/${auth.transactionId}');
+    }
+    if (mounted) setState(() => _submitting = false);
+  }
+
+  /// Acciones de cada estado de error de pago (mockups 1..6).
+  void _onPaymentPrimary(PaymentErrorKind kind, String transactionId) {
+    switch (kind) {
+      case PaymentErrorKind.insufficientFunds:
+        context.pop();
+      case PaymentErrorKind.dailyLimit:
+        context.go('/profile');
+      case PaymentErrorKind.preventiveBlock:
+        context.go('/login');
+      case PaymentErrorKind.sessionExpired:
+        setState(() {
+          _paymentError = null;
+          _pinFallbackMessage = null;
+        });
+        _submit();
+      case PaymentErrorKind.timeout:
+        context.go('/movements');
+      case PaymentErrorKind.duplicate:
+        context.pushReplacement('/transfers/receipt/$transactionId');
+    }
+  }
+
+  void _onPaymentSecondary(PaymentErrorKind kind) {
+    switch (kind) {
+      case PaymentErrorKind.insufficientFunds:
+      case PaymentErrorKind.sessionExpired:
+      case PaymentErrorKind.preventiveBlock:
+      case PaymentErrorKind.dailyLimit:
+      case PaymentErrorKind.timeout:
+      case PaymentErrorKind.duplicate:
+        context.go('/home');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_rejected != null) return _insufficientView(_rejected!);
+    if (_paymentError != null) return _paymentErrorView(_paymentError!);
+    if (_pinFallbackMessage != null) {
+      return _pinFallbackView(_pinFallbackMessage!);
+    }
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(title: const Text('Confirma tu transferencia')),
@@ -180,8 +530,7 @@ class _ConfirmPageState extends State<ConfirmPage> {
                   CciStatusBanner(
                     state: _cciState,
                     holderMasked: _holderMasked,
-                    onRetry:
-                        _cciState == CciState.unavailable ? _submit : null,
+                    onRetry: _cciState == CciState.unavailable ? _submit : null,
                     retryKey: const Key('confirm-retry'),
                   ),
                   const SizedBox(height: 8),
@@ -272,6 +621,130 @@ class _ConfirmPageState extends State<ConfirmPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Estado de error de pago E2-T21 (mockups 2..6).
+  Widget _paymentErrorView(PaymentErrorArgs args) {
+    return Scaffold(
+      backgroundColor: AppColors.surface,
+      appBar: AppBar(
+        leading: IconButton(
+          key: const Key('payment-error-close'),
+          icon: const Icon(Icons.close),
+          onPressed: () => context.pop(),
+        ),
+        title: Text('Estado del pago · ${args.kind.position} de 6'),
+        actions: const [
+          Padding(
+            padding: EdgeInsets.only(right: 16),
+            child: CircleAvatar(
+              radius: 16,
+              backgroundColor: AppColors.primary,
+              child: Icon(Icons.person_outline, size: 18, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+      body: PaymentErrorView(
+        args: args,
+        onPrimary: () => _onPaymentPrimary(args.kind, args.reportRef),
+        onSecondary: () => _onPaymentSecondary(args.kind),
+      ),
+    );
+  }
+
+  /// Fallback a PIN tras el reto (borde del brief E2-T21): mensaje claro +
+  /// accion al login con PIN + reintento de la biometria.
+  Widget _pinFallbackView(String message) {
+    return Scaffold(
+      backgroundColor: AppColors.surface,
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => context.pop(),
+        ),
+        title: const Text('Autorización biométrica'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          AppCard(
+            key: const Key('pin-fallback-card'),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFEAF0EA),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.fingerprint,
+                    size: 32,
+                    color: AppColors.primaryContainer,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Continúa con tu PIN',
+                  style: AppTypography.titleMd.copyWith(
+                    fontSize: 20,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  key: const Key('pin-fallback-message'),
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              key: const Key('pin-fallback-go'),
+              onPressed: () => context.go('/login'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(88, 52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                ),
+              ),
+              child: const Text('Usar mi PIN de seguridad'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              key: const Key('pin-fallback-retry'),
+              onPressed: _submitting
+                  ? null
+                  : () {
+                      setState(() => _pinFallbackMessage = null);
+                      _submit();
+                    },
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(88, 52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                ),
+              ),
+              child: const Text('Reintentar con huella'),
             ),
           ),
         ],
@@ -380,7 +853,10 @@ class _ConfirmPageState extends State<ConfirmPage> {
                       ? 'Destinatario'
                       : draft.beneficiaryAlias,
                 ),
-                _kv('Monto', formatMoneyMinor(draft.amountMinor, draft.currency)),
+                _kv(
+                  'Monto',
+                  formatMoneyMinor(draft.amountMinor, draft.currency),
+                ),
                 _kv(
                   'Total intentado',
                   formatMoneyMinor(result.totalMinor, result.currency),
@@ -472,9 +948,7 @@ class _Hero extends StatelessWidget {
         if (draft.kind == TransferKind.own)
           const AppStatusChip.success(label: 'SIN COMISIÓN')
         else
-          const AppStatusChip.info(
-            label: 'COMISIÓN LA CALCULA EL BANCO',
-          ),
+          const AppStatusChip.info(label: 'COMISIÓN LA CALCULA EL BANCO'),
       ],
     );
   }
@@ -489,25 +963,26 @@ class _SummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final draft = args.draft;
     final isInterbank = draft.kind == TransferKind.interbank;
-    final destAccount =
-        isInterbank ? maskCciShort(draft.cci) : draft.destinationMasked;
-    final bank =
-        isInterbank
-            ? (draft.bankCode.isEmpty
-                ? 'Otro banco (CCE)'
-                : draft.bankCode)
-            : 'CuyCash';
+    final destAccount = isInterbank
+        ? maskCciShort(draft.cci)
+        : draft.destinationMasked;
+    final bank = isInterbank
+        ? (draft.bankCode.isEmpty ? 'Otro banco (CCE)' : draft.bankCode)
+        : 'CuyCash';
     return AppCard(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       child: Column(
         children: [
-          _row('Destinatario',
-              draft.beneficiaryAlias.isEmpty ? '—' : draft.beneficiaryAlias),
-          _row('Cuenta destino',
-              destAccount.isEmpty ? '—' : destAccount),
+          _row(
+            'Destinatario',
+            draft.beneficiaryAlias.isEmpty ? '—' : draft.beneficiaryAlias,
+          ),
+          _row('Cuenta destino', destAccount.isEmpty ? '—' : destAccount),
           _row('Banco', bank),
-          _row('Desde',
-              '${args.source.accountNumberMasked} · ${args.source.currency}'),
+          _row(
+            'Desde',
+            '${args.source.accountNumberMasked} · ${args.source.currency}',
+          ),
           _row('Motivo', draft.motive.isEmpty ? '—' : draft.motive),
           _row(
             'Comisión',

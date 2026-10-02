@@ -890,3 +890,139 @@ def test_facade_boundary_static():
         assert token not in api_src, f"frontera rota en api: {token}"
         assert token not in schemas_src, f"frontera rota en schemas: {token}"
         assert token not in bio_src, f"frontera rota en service: {token}"
+
+
+# ------------------------- Rotacion del reto tras `EXPIRED_NONCE` (fix E2-T21)
+def test_challenge_rotates_nonce_and_preserves_attempts(
+    t19_session, hmac_identity, monkeypatch
+):
+    """`POST .../authorize/challenge` emite un `nonce` NUEVO sin contar intento."""
+    from app.modules.transactions import repository as tx_repo
+    from app.modules.transactions.service import biometric as bio_svc
+
+    session, a1, b1 = t19_session["session"], t19_session["a1"], t19_session["b1"]
+    _add_binding(hmac_identity, USER_A)
+    tx = _third_party_pending(session, a1, b1)
+    session.commit()
+    before = _nonce_of(tx.id, session)
+    with _http(session, USER_A, monkeypatch) as client:
+        resp = client.post(f"/api/v1/transactions/{tx.id}/authorize/challenge")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["transaction_id"] == str(tx.id)
+    assert data["nonce"] and data["nonce"] != before
+    assert data["expires_in"] > 0
+    session.expire_all()
+    fresh = tx_repo.get_transaction(session, tx.id)
+    assert fresh.status == "PENDING_AUTHORIZATION"
+    assert (bio_svc.get_block(fresh) or {})["nonce"] == data["nonce"]
+    assert (bio_svc.get_block(fresh) or {})["failed_attempts"] == 0
+
+
+def test_challenge_rejects_when_not_pending_or_foreign(
+    t19_session, hmac_identity, monkeypatch
+):
+    """Sin espera no hay rotacion: `SETTLED` -> 409, ajena -> 403, inexistente -> 404."""
+    from app.modules.transactions import service as svc
+
+    session, a1, b1 = t19_session["session"], t19_session["a1"], t19_session["b1"]
+    settled = svc.transfer_third_party(
+        session,
+        initiator_user_id=USER_A,
+        source_account_id=a1,
+        target_account_id=b1,
+        amount_minor=1_000,
+        currency="PEN",
+        fee_minor=0,
+        idempotency_key=f"e2t19-{uuid.uuid4()}",
+        balance_port=_real_port(),
+    )
+    session.commit()
+    assert settled.status == "SETTLED"
+    foreign = _third_party_pending(session, b1, a1, initiator_user_id=USER_B)
+    session.commit()
+    with _http(session, USER_A, monkeypatch) as client:
+        assert (
+            client.post(
+                f"/api/v1/transactions/{settled.id}/authorize/challenge"
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                f"/api/v1/transactions/{foreign.id}/authorize/challenge"
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                f"/api/v1/transactions/{uuid.uuid4()}/authorize/challenge"
+            ).status_code
+            == 404
+        )
+
+
+def test_expired_nonce_retry_with_fresh_challenge_and_new_key_settles(
+    t19_session, hmac_identity, monkeypatch
+):
+    """Flujo real `authorize` -> `EXPIRED_NONCE` -> challenge -> reintento: autoriza.
+
+    Regresion del fix E2-T21: con el `nonce` expirado el primer `authorize`
+    (clave `k-1`) responde `400 EXPIRED_NONCE`; tras rotar el reto, el
+    reintento con el `nonce` nuevo y una clave NUEVA (`k-2`, la anterior
+    snapshotteo el fallo: misma clave + cuerpo distinto = `409`) liquida.
+    """
+    from app.modules.transactions import repository as tx_repo
+    from app.modules.transactions.service import biometric as bio_svc
+
+    session, a1, b1 = t19_session["session"], t19_session["a1"], t19_session["b1"]
+    _add_binding(hmac_identity, USER_A)
+    tx = _third_party_pending(session, a1, b1)
+    session.commit()
+    stored = tx_repo.get_transaction(session, tx.id)
+    block = bio_svc.get_block(stored)
+    assert block is not None
+    block["expires_at"] = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
+    bio_svc.save_block(session, tx_repo.get_transaction(session, tx.id), block)
+    session.commit()
+    old_body = {
+        "device_id": DEVICE_A,
+        "signature": _sign(hmac_identity["secret"], block["nonce"]),
+    }
+    with _http(session, USER_A, monkeypatch) as client:
+        expired = client.post(
+            f"/api/v1/transactions/{tx.id}/authorize",
+            json=old_body,
+            headers=_auth_headers("k-fix-1"),
+        )
+        assert expired.status_code == 400, expired.text
+        assert expired.json()["error"]["code"] == "EXPIRED_NONCE"
+        fresh = client.post(f"/api/v1/transactions/{tx.id}/authorize/challenge")
+        assert fresh.status_code == 200, fresh.text
+        fresh_nonce = fresh.json()["data"]["nonce"]
+        assert fresh_nonce != block["nonce"]
+        # Misma clave + cuerpo distinto (nonce/firma nuevos) = 409: por eso
+        # el reintento exige clave nueva.
+        conflict = client.post(
+            f"/api/v1/transactions/{tx.id}/authorize",
+            json={
+                "device_id": DEVICE_A,
+                "signature": _sign(hmac_identity["secret"], fresh_nonce),
+                "nonce": fresh_nonce,
+            },
+            headers=_auth_headers("k-fix-1"),
+        )
+        assert conflict.status_code == 409, conflict.text
+        retry = client.post(
+            f"/api/v1/transactions/{tx.id}/authorize",
+            json={
+                "device_id": DEVICE_A,
+                "signature": _sign(hmac_identity["secret"], fresh_nonce),
+                "nonce": fresh_nonce,
+            },
+            headers=_auth_headers("k-fix-2"),
+        )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["data"]["status"] == "SETTLED"
+    session.expire_all()
+    assert _entry_types(session, tx.id) == ["TRANSFER_HOLD", "TRANSFER_SETTLE"]

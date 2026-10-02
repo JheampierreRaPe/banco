@@ -163,6 +163,8 @@ class TransferResult {
     this.tracking = const {},
     this.failureCode,
     this.replayed = false,
+    this.nonce,
+    this.expiresIn,
   });
 
   final String transactionId;
@@ -178,6 +180,17 @@ class TransferResult {
   final String? failureCode;
   final bool replayed;
 
+  /// Reto biometrico cuando `status == PENDING_AUTHORIZATION` (E2-T17/E2-T21:
+  /// el backend lo incluye en el `data`; en otro estado es `null`).
+  final String? nonce;
+
+  /// Segundos de vigencia del reto (`null` si no hay reto).
+  final int? expiresIn;
+
+  /// `true` si el backend exige el reto biometrico antes de continuar.
+  bool get requiresBiometricChallenge =>
+      status.toUpperCase() == 'PENDING_AUTHORIZATION';
+
   /// Total a debitar para EXHIBIR (`amount + fee` tal como los devuelve el
   /// backend; presentacion, el cliente no decide reglas con este valor).
   int get totalMinor => amountMinor + feeMinor;
@@ -190,8 +203,7 @@ class TransferResult {
 
   /// Titular enmascarado del seguimiento interbancario (`tracking`
   /// de `POST /transfers/interbank`), o vacio.
-  String get holderMasked =>
-      tracking['holder_name_masked']?.toString() ?? '';
+  String get holderMasked => tracking['holder_name_masked']?.toString() ?? '';
 
   factory TransferResult.fromJson(
     Map<String, dynamic> json, {
@@ -221,6 +233,8 @@ class TransferResult {
       tracking: trackingOf(json['tracking']),
       failureCode: json['failure_code']?.toString(),
       replayed: replayed,
+      nonce: json['nonce']?.toString(),
+      expiresIn: (json['expires_in'] as num?)?.toInt(),
     );
   }
 }
@@ -238,6 +252,8 @@ class TransactionDetail {
     this.tracking = const {},
     this.failureCode,
     this.historyLength = 0,
+    this.nonce,
+    this.expiresIn,
   });
 
   final String transactionId;
@@ -250,6 +266,13 @@ class TransactionDetail {
   final Map<String, dynamic> tracking;
   final String? failureCode;
   final int historyLength;
+
+  /// Reto vigente cuando `status == PENDING_AUTHORIZATION` (E2-T21:
+  /// relectura tras `EXPIRED_NONCE`).
+  final String? nonce;
+
+  /// Segundos de vigencia del reto (`null` si no hay reto).
+  final int? expiresIn;
 
   /// Total a debitar para EXHIBIR (ver [TransferResult.totalMinor]).
   int get totalMinor => amountMinor + feeMinor;
@@ -279,11 +302,9 @@ class TransactionDetail {
     }
   }
 
-  bool get isInsufficientFunds =>
-      failureCode == 'INSUFFICIENT_FUNDS';
+  bool get isInsufficientFunds => failureCode == 'INSUFFICIENT_FUNDS';
 
-  String get holderMasked =>
-      tracking['holder_name_masked']?.toString() ?? '';
+  String get holderMasked => tracking['holder_name_masked']?.toString() ?? '';
 
   factory TransactionDetail.fromJson(Map<String, dynamic> json) {
     int minorOf(Object? value) {
@@ -306,6 +327,8 @@ class TransactionDetail {
           : const {},
       failureCode: json['failure_code']?.toString(),
       historyLength: history is List ? history.length : 0,
+      nonce: json['nonce']?.toString(),
+      expiresIn: (json['expires_in'] as num?)?.toInt(),
     );
   }
 }
@@ -328,8 +351,7 @@ class ReceiptResult {
 
   /// Numero de operacion derivado del nombre (`OP-` + 12 hex, E2-T10).
   String get operationNumber {
-    final match =
-        RegExp(r'OP-[0-9A-Fa-f]{12}').firstMatch(suggestedFilename);
+    final match = RegExp(r'OP-[0-9A-Fa-f]{12}').firstMatch(suggestedFilename);
     return match?.group(0)?.toUpperCase() ?? '';
   }
 }

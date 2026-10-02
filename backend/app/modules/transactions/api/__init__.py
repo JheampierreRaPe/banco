@@ -8,6 +8,10 @@ y autorizacion (E2-T19, HU08).
   `nonce` con el dispositivo para pagos en `PENDING_AUTHORIZATION`;
   idempotente, con persistencia del fallo antes del error (OBS-3) y
   limite diario por perfil resuelto del titular (OBS-1, CA-03).
+- `POST /transactions/{id}/authorize/challenge` (HU08, reintento tras
+  `EXPIRED_NONCE`): rota el reto (`nonce` nuevo, conserva
+  `failed_attempts`); solo rotacion, sin `Idempotency-Key`. El reintento
+  del `authorize` usa una clave NUEVA (la anterior snapshotteo el fallo).
 - `POST /transactions/{id}/reverse` (E2-T25, HU06/HU17/HU18): reverso
   autorizado con asiento inverso via `ledger.service.reverse_entry`
   (solo `POSTED`/`SETTLED`/`CONCILIATED` -> `REVERSED`); idempotente y
@@ -56,6 +60,7 @@ from app.modules.transactions.domain.state_machine import ConcurrencyError
 from app.modules.transactions.schemas import (
     AuthorizeTransactionRequest,
     AuthorizeTransactionResponse,
+    ChallengeTransactionResponse,
     InterbankTransferRequest,
     InterbankTransferResponse,
     ReverseTransactionRequest,
@@ -875,6 +880,90 @@ def authorize_transaction(
         replayed,
     )
     return {"data": data, "meta": {"request_id": _request_id(request), "replayed": replayed}}
+
+
+@router.post(
+    "/transactions/{transaction_id}/authorize/challenge",
+    response_model=ChallengeTransactionResponse,
+    status_code=200,
+    summary="Rota el reto biometrico de un pago en espera (HU08)",
+)
+def rotate_biometric_challenge(
+    transaction_id: str,
+    request: Request,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Emite un `nonce` nuevo para reintentar tras `EXPIRED_NONCE` (HU08).
+
+    Rota el reto vigente (`nonce` + vencimiento, conserva
+    `failed_attempts`) via `biometric.request_biometric_challenge` (E2-T17):
+    el cliente firma el `nonce` nuevo y lo envia a
+    `POST /transactions/{id}/authorize` con una `Idempotency-Key` NUEVA
+    (la anterior snapshotteo el fallo `EXPIRED_NONCE`: misma clave +
+    cuerpo distinto = `409`).
+
+    Solo rotacion (no mueve dinero ni cuenta intento: sin
+    `Idempotency-Key`, como `GET /transactions/{id}`; repetir la llamada
+    reemite el reto sin alterar saldos). Solo el titular puede rotarla.
+    Errores: `401 NOT_AUTHENTICATED`, `404 NOT_FOUND` (inexistente),
+    `403 NOT_AUTHORIZED` (ajena), `409 CONFLICT` (no esta en
+    `PENDING_AUTHORIZATION`). Sin PII ni secretos en logs (el `nonce`
+    nunca se loguea).
+    """
+    try:
+        wanted = uuid.UUID(str(transaction_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AppError(
+            code="NOT_FOUND", message="transaccion inexistente", status_code=404
+        ) from exc
+    try:
+        current = tx_repository.get_transaction(db, wanted)
+        if current is None:
+            raise AppError(
+                code="NOT_FOUND", message="transaccion inexistente", status_code=404
+            )
+        if (
+            current.initiator_user_id is not None
+            and current.initiator_user_id != user_id
+        ):
+            raise AppError(
+                code="NOT_AUTHORIZED",
+                message="la transaccion no pertenece al titular",
+                status_code=403,
+            )
+        issued = biometric_service.request_biometric_challenge(db, wanted)
+    except AppError:
+        db.rollback()
+        raise
+    except biometric_service.TransactionNotFoundError as exc:
+        db.rollback()
+        raise AppError(
+            code="NOT_FOUND", message="transaccion inexistente", status_code=404
+        ) from exc
+    except biometric_service.BiometricStateError as exc:
+        db.rollback()
+        raise AppError(
+            code="CONFLICT",
+            message="la operacion no espera autorizacion biometrica",
+            status_code=409,
+        ) from exc
+    except (biometric_service.BiometricError, ValueError, TypeError) as exc:
+        db.rollback()
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=400) from exc
+    except Exception:
+        db.rollback()
+        raise
+    db.commit()
+    logger.info("challenge rotated")
+    return {
+        "data": {
+            "transaction_id": str(wanted),
+            "nonce": issued["nonce"],
+            "expires_in": issued["expires_in"],
+        },
+        "meta": {"request_id": _request_id(request)},
+    }
 
 
 def _reverse_data(result: dict) -> dict:

@@ -211,6 +211,26 @@ class AuthorizeTransactionResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class ChallengeTransactionData(BaseModel):
+    """Reto vigente tras rotar (`POST .../authorize/challenge`, HU08).
+
+    Solo el `nonce` nuevo + su vigencia: el cliente lo firma con el
+    dispositivo y lo envia a `POST .../authorize` con una
+    `Idempotency-Key` NUEVA (la anterior snapshotteo el `EXPIRED_NONCE`).
+    """
+
+    transaction_id: uuid.UUID
+    nonce: str
+    expires_in: int
+
+
+class ChallengeTransactionResponse(BaseModel):
+    """Envoltorio `05#4` (`data` + `meta` con `request_id`)."""
+
+    data: ChallengeTransactionData
+    meta: dict = Field(default_factory=dict)
+
+
 class ReverseTransactionRequest(BaseModel):
     """`POST /transactions/{id}/reverse`: motivo opcional (E2-T25, HU06/HU17).
 
@@ -282,6 +302,8 @@ __all__ = [
     "AuthorizeTransactionData",
     "AuthorizeTransactionRequest",
     "AuthorizeTransactionResponse",
+    "ChallengeTransactionData",
+    "ChallengeTransactionResponse",
     "InterbankTransferData",
     "InterbankTransferRequest",
     "InterbankTransferResponse",

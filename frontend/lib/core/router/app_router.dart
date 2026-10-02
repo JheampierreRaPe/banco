@@ -20,6 +20,8 @@ import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
 import '../../features/profile/profile_routes.dart';
 import '../../features/splash/splash_routes.dart';
+import '../../features/transfers/data/transfers_service.dart';
+import '../../features/transfers/transfers_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../http/api_client.dart';
 import '../session/secure_key_value_storage.dart';
@@ -111,6 +113,9 @@ GoRouter buildRouter(
   // Beneficiarios (E2-T15): mismo patron, solo cableado con el `ApiClient`
   // compartido; la guarda F-T37 no se toca (`/beneficiaries*` exige sesion).
   beneficiariesServiceFactory = () => BeneficiariesService(api: client);
+  // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
+  transfersServiceFactory = () => TransfersService(api: client);
   // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
   // cableado; la guarda F-T37 no se toca.
   homeProfileServiceFactory = () => HttpProfileService(api: client);
@@ -180,6 +185,7 @@ GoRouter buildRouter(
       ...pinResetRoutes,
       ...accountsRoutes,
       ...beneficiariesRoutes,
+      ...transfersRoutes,
       ...homeRoutes,
       ...profileRoutes,
     ],

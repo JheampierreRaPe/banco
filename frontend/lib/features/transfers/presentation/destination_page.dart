@@ -114,6 +114,21 @@ class _DestinationPageState extends State<DestinationPage> {
     });
   }
 
+  /// Alta de beneficiario desde el flujo de transferencia (fix alta
+  /// múltiple): abre `/beneficiaries/new` y, si el formulario devuelve
+  /// `true` (alta guardada), recarga la agenda con [_load] preservando
+  /// origen/modo/selección para que el nuevo beneficiario aparezca de
+  /// inmediato sin perder lo ya elegido.
+  Future<void> _openNewBeneficiary() async {
+    final created = await context.push<bool>('/beneficiaries/new');
+    if (!mounted) return;
+    if (created == true) {
+      setState(() {
+        _future = _load();
+      });
+    }
+  }
+
   /// Cambia la via de destino limpiando campos, titular resuelto y
   /// errores (seleccion mutuamente excluyente, E2-T29).
   void _setMode(ThirdPartyDestinationMode mode) {
@@ -287,6 +302,18 @@ class _DestinationPageState extends State<DestinationPage> {
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: Text(isOwn ? 'Entre mis cuentas' : 'Elegir destinatario'),
+        actions: [
+          // Fix alta múltiple (Nivel 1): acción "Nuevo" siempre visible en
+          // el flujo a tercero cuando el modo es agenda/beneficiario, para
+          // que el alta no dependa del estado vacío de la lista.
+          if (!isOwn && _mode == ThirdPartyDestinationMode.beneficiary)
+            TextButton.icon(
+              key: const Key('destination-new-beneficiary'),
+              onPressed: _openNewBeneficiary,
+              icon: const Icon(Icons.add, size: 20),
+              label: const Text('Nuevo'),
+            ),
+        ],
       ),
       body: FutureBuilder<_DestinationData>(
         future: _future,
@@ -363,7 +390,7 @@ class _DestinationPageState extends State<DestinationPage> {
                           selectedId: _beneficiaryId,
                           onSelected: (b) =>
                               setState(() => _beneficiaryId = b.id),
-                          onNew: () => context.push('/beneficiaries/new'),
+                          onNew: _openNewBeneficiary,
                         )
                       else
                         _LookupPanel(
@@ -527,6 +554,24 @@ class _BeneficiaryOptions extends StatelessWidget {
           ),
           const SizedBox(height: 8),
         ],
+        // Fix alta múltiple (Nivel 1): la opción "Agregar beneficiario"
+        // SIEMPRE visible, también con lista no vacía (antes solo existía
+        // en el estado vacío y con ≥1 beneficiario no había acción de alta).
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            key: const Key('transfer-beneficiary-add'),
+            onPressed: onNew,
+            icon: const Icon(Icons.add, size: 20),
+            label: const Text('Agregar beneficiario'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(88, 52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }

@@ -206,6 +206,8 @@ class _HomePageState extends State<HomePage> {
                         const SizedBox(height: AppSpacing.stackMd),
                         _AccountsCard(accounts: accounts),
                         const SizedBox(height: AppSpacing.stackMd),
+                        const _AgendaCard(),
+                        const SizedBox(height: AppSpacing.stackMd),
                         _MovementsPreviewCard(
                           service: widget.service!,
                           account: accounts.first,
@@ -635,6 +637,68 @@ class _QuickAction extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Acceso a la agenda de beneficiarios (fix alta múltiple Nivel 2).
+///
+/// Punto de entrada a `/beneficiaries` (la agenda ya tiene el botón "Nuevo"
+/// siempre visible): card compacta que no altera el `dash` (`0:3057`) ni las
+/// quick-actions existentes.
+class _AgendaCard extends StatelessWidget {
+  const _AgendaCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppCard(
+      onTap: () => context.push('/beneficiaries'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.successContainer,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            child: Icon(
+              Icons.people_outline,
+              size: 24,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Mis beneficiarios',
+                  key: const Key('home-beneficiaries'),
+                  style: AppTypography.bodyLg.copyWith(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.unit),
+                Text(
+                  'Agenda y contactos frecuentes',
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right,
+            color: AppColors.secondaryText,
+          ),
+        ],
       ),
     );
   }

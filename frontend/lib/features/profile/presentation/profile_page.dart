@@ -157,6 +157,13 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                   const SizedBox(height: AppSpacing.stackMd),
                   _Section(
+                    label: 'AGENDA',
+                    child: _AgendaRow(
+                      onTap: () => context.push('/beneficiaries'),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.stackMd),
+                  _Section(
                     label: 'SEGURIDAD',
                     trailing: Text(
                       'Protección activa',
@@ -492,6 +499,74 @@ class _Section extends StatelessWidget {
           child: child,
         ),
       ],
+    );
+  }
+}
+
+/// Fila de acceso a la agenda de beneficiarios (fix alta múltiple Nivel 2).
+///
+/// Único punto de entrada funcional a `/beneficiaries` desde el perfil (la
+/// agenda ya tiene el botón "Nuevo" siempre visible). El resto de filas
+/// sigue siendo visual (CA-06); esta usa `Key('profile-beneficiaries')`.
+class _AgendaRow extends StatelessWidget {
+  const _AgendaRow({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      key: const Key('profile-beneficiaries'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadii.md - 2),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: AppColors.successContainer,
+                borderRadius: BorderRadius.circular(AppRadii.md - 2),
+              ),
+              child: Icon(
+                Icons.people_outline,
+                size: 18,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Mis beneficiarios',
+                    style: AppTypography.bodyLg.copyWith(
+                      color: scheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.unit / 2),
+                  Text(
+                    'Agenda y contactos frecuentes',
+                    style: AppTypography.bodyMd.copyWith(
+                      color: AppColors.secondaryText,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.secondaryText,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

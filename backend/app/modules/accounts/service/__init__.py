@@ -631,3 +631,35 @@ from app.modules.accounts.service import beneficiaries as beneficiaries_service
 from app.modules.accounts.service import beneficiaries_crypto as beneficiaries_crypto
 
 __all__ += ["beneficiaries_crypto", "beneficiaries_service"]
+
+
+# ------------------------------------------------- Lookup previo (E2-T27)
+def list_active_by_user(session: Session, user_id: uuid.UUID | str) -> list[dict]:
+    """Cuentas `ACTIVE` de un usuario para el lookup previo (E2-T27, HU06).
+
+    Fachada de lectura que consume `transactions` (`resolve_transfer_target`)
+    sin importar modelos ni repositorios de `accounts` (regla de oro 4,
+    D-01). Retorna una vista por cuenta (`account_id`, `user_id`, `status`,
+    `currency`, `account_number`) en orden de creacion; el `account_number`
+    en claro es de uso interno del llamante (jamas en logs ni respuestas:
+    reglas de oro 7/9; la API solo expone UUIDs y mascaras). Solo lectura
+    (sin `flush`/`commit`). Lanza `ValueError` si `user_id` no es UUID.
+    """
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    return [
+        {
+            "account_id": account.id,
+            "user_id": account.user_id,
+            "status": account.status,
+            "currency": account.currency,
+            "account_number": account.account_number,
+        }
+        for account in accounts_repo.list_by_user(session, uid)
+        if account.status == "ACTIVE"
+    ]
+
+
+__all__ += ["list_active_by_user"]

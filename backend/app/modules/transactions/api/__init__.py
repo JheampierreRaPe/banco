@@ -63,6 +63,8 @@ from app.modules.transactions.schemas import (
     ChallengeTransactionResponse,
     InterbankTransferRequest,
     InterbankTransferResponse,
+    ResolveTransferTargetRequest,
+    ResolveTransferTargetResponse,
     ReverseTransactionRequest,
     ReverseTransactionResponse,
     TransactionDetailResponse,
@@ -74,6 +76,7 @@ from app.modules.transactions.schemas import (
 from app.modules.transactions.service import biometric as biometric_service
 from app.modules.transactions.service import listing as listing_service
 from app.modules.transactions.service import receipt as receipt_service
+from app.modules.transactions.service import resolve_target as resolve_target_service
 from app.modules.transactions.service import reversal as reversal_service
 from app.modules.transactions.service.interbank import (
     ExternalRefConflictError,
@@ -376,6 +379,59 @@ def transfer_third_party(
     db.commit()
     data = dict(response.get("data", {}))
     return {"data": data, "meta": {"request_id": _request_id(request), "replayed": replayed}}
+
+
+@router.post(
+    "/transfers/third-party/resolve-target",
+    response_model=ResolveTransferTargetResponse,
+    status_code=200,
+    summary="Lookup previo del destino por DNI/celular (solo lectura)",
+)
+def resolve_third_party_target(
+    body: ResolveTransferTargetRequest,
+    request: Request,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Resuelve la cuenta destino sin mover dinero (E2-T27, HU06 CA-01/CA-02).
+
+    Dado exactamente UNO de `target_document` (`DNI|CE|PASSPORT` + numero) o
+    `target_phone`, devuelve la referencia `target_account_id` + el titular
+    y la cuenta enmascarados para alimentar `POST /transfers/third-party`.
+    Solo lectura: sin `Idempotency-Key` (repetir la llamada no altera datos;
+    la transferencia posterior conserva la suya).
+
+    Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422
+    VALIDATION_ERROR` (ambos/ninguno o formato invalido); `404
+    TARGET_NOT_FOUND` neutro (inexistente o sin cuenta `ACTIVE`, mismo
+    cuerpo: anti-enumeracion); `409 TARGET_AMBIGUOUS` (varias cuentas
+    `ACTIVE`: usar el numero de cuenta). Sin PII en logs ni en la respuesta
+    (solo UUIDs, mascaras y titular enmascarado).
+    """
+    _ = user_id  # El titular autenticado solo gates el acceso (401 sin token).
+    try:
+        document = body.target_document.model_dump() if body.target_document is not None else None
+        result = resolve_target_service.resolve_transfer_target(
+            db,
+            target_document=document,
+            target_phone=body.target_phone,
+        )
+    except resolve_target_service.TargetNotFoundError as exc:
+        raise AppError(code="TARGET_NOT_FOUND", message=str(exc), status_code=404) from exc
+    except resolve_target_service.TargetAmbiguousError as exc:
+        raise AppError(code="TARGET_AMBIGUOUS", message=str(exc), status_code=409) from exc
+    except resolve_target_service.ResolveTargetValidationError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
+    logger.info("resolve_target served")
+    return {
+        "data": {
+            "target_account_id": result["target_account_id"],
+            "holder_name_masked": result["holder_name_masked"],
+            "account_number_masked": result["account_number_masked"],
+            "currency": result["currency"],
+        },
+        "meta": {"request_id": _request_id(request)},
+    }
 
 
 def _map_holder_error(exc: Exception) -> AppError:
@@ -920,13 +976,8 @@ def rotate_biometric_challenge(
     try:
         current = tx_repository.get_transaction(db, wanted)
         if current is None:
-            raise AppError(
-                code="NOT_FOUND", message="transaccion inexistente", status_code=404
-            )
-        if (
-            current.initiator_user_id is not None
-            and current.initiator_user_id != user_id
-        ):
+            raise AppError(code="NOT_FOUND", message="transaccion inexistente", status_code=404)
+        if current.initiator_user_id is not None and current.initiator_user_id != user_id:
             raise AppError(
                 code="NOT_AUTHORIZED",
                 message="la transaccion no pertenece al titular",

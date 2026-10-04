@@ -57,7 +57,10 @@ HOLDER_NAME_MAX_LEN = 150
 BANK_CODE_MAX_LEN = 20
 PHOTO_URL_MAX_LEN = 2000
 HOLDER_DOC_MAX_LEN = 30
-_ACCOUNT_DIGITS_RE = re.compile(r"^[0-9]{8,20}$")
+#: Formato aceptado de cuenta/CCI (E2-T28, HU07; decision del dueno 2026-10-03):
+#: cuenta CuyCash de 14 digitos con DV valido (modulo 11 de `identity`) o CCI
+#: interbancario de 20 digitos. Se retira el rango laxo `8..20`.
+_CCI_RE = re.compile(r"^[0-9]{20}$")
 _BANK_CODE_RE = re.compile(r"^[A-Z0-9]{1,20}$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 _PHOTO_SCHEMES = ("http://", "https://")
@@ -92,13 +95,26 @@ def _coerce_owner(owner_user_id: uuid.UUID | str) -> uuid.UUID:
 
 
 def normalize_account_or_cci(value: object) -> str:
-    """Normaliza cuenta/CCI (sin espacios/guiones); exige 8..20 digitos."""
+    """Normaliza cuenta/CCI (sin espacios/guiones).
+
+    Acepta una cuenta CuyCash de 14 digitos con DV valido (modulo 11,
+    `identity.service.verify_account_number`, import perezoso sin ciclo a
+    nivel top) o un CCI interbancario de 20 digitos; lo demas es
+    `ValueError` (400 `VALIDATION_ERROR`).
+    """
     if not isinstance(value, str):
-        raise TypeError("account_or_cci debe ser texto de 8 a 20 digitos")
+        raise TypeError("account_or_cci debe ser texto (cuenta de 14 digitos o CCI de 20)")
     digits = re.sub(r"[\s\-]+", "", value.strip())
-    if _ACCOUNT_DIGITS_RE.fullmatch(digits) is None:
-        raise ValueError("account_or_cci con formato invalido: debe tener entre 8 y 20 digitos")
-    return digits
+    if _CCI_RE.fullmatch(digits) is not None:
+        return digits
+    from app.modules.identity.service import verify_account_number
+
+    if verify_account_number(digits):
+        return digits
+    raise ValueError(
+        "account_or_cci con formato invalido: "
+        "cuenta CuyCash de 14 digitos con DV valido o CCI de 20 digitos"
+    )
 
 
 def _require_alias(value: object) -> str:

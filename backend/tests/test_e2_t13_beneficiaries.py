@@ -272,7 +272,9 @@ def test_search_limit_100_and_under_one_second(sqlite_session):
             sqlite_session,
             USER_A,
             alias=f"Benef {i:03d}",
-            account_or_cci=f"{10000000 + i:08d}",
+            # E2-T28: `normalize_account_or_cci` solo acepta cuenta de 14
+            # digitos con DV o CCI de 20 (se retira el rango laxo `8..20`).
+            account_or_cci=f"{10000000000000000000 + i:020d}",
         )
     start = time.perf_counter()
     found = beneficiaries_service.search_beneficiaries(sqlite_session, USER_A, "benef")

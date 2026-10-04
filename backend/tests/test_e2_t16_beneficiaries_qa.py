@@ -437,7 +437,9 @@ def test_api_search_caps_at_100_under_one_second(api_ctx):
             session,
             USER_A,
             alias=f"Qa Benef {i:03d}",
-            account_or_cci=f"{20000000 + i:08d}",
+            # E2-T28: `normalize_account_or_cci` solo acepta cuenta de 14
+            # digitos con DV o CCI de 20 (se retira el rango laxo `8..20`).
+            account_or_cci=f"{20000000000000000000 + i:020d}",
         )
     session.commit()
 

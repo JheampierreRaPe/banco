@@ -298,6 +298,47 @@ class TransactionListResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class ResolveTransferTargetDocument(BaseModel):
+    """`target_document` del lookup previo (E2-T27, HU06).
+
+    Campos en texto libre opcional: el formato (`DNI` 8 digitos, `CE`/`PASSPORT`
+    6-12 alfanumericos, tipo en `DNI|CE|PASSPORT`) lo valida el servicio
+    (`422 VALIDATION_ERROR` uniforme); el schema no rechaza por patron para
+    dar un unico codigo de error.
+    """
+
+    type: str | None = Field(default=None, description="`DNI|CE|PASSPORT`")
+    number: str | None = Field(default=None, description="Numero de documento (sin formato fijo)")
+
+
+class ResolveTransferTargetRequest(BaseModel):
+    """`POST /transfers/third-party/resolve-target` (E2-T27, HU06).
+
+    Exactamente UNO de `target_document` / `target_phone` (ambos o ninguno
+    -> `422 VALIDATION_ERROR` desde el servicio). Solo lectura: sin
+    `Idempotency-Key`.
+    """
+
+    target_document: ResolveTransferTargetDocument | None = Field(default=None)
+    target_phone: str | None = Field(default=None)
+
+
+class ResolveTransferTargetData(BaseModel):
+    """Destino resuelto: referencia + mascaras (sin PII completa)."""
+
+    target_account_id: uuid.UUID
+    holder_name_masked: str
+    account_number_masked: str
+    currency: str
+
+
+class ResolveTransferTargetResponse(BaseModel):
+    """Envoltorio `05#4` (`data` + `meta` con `request_id`)."""
+
+    data: ResolveTransferTargetData
+    meta: dict = Field(default_factory=dict)
+
+
 __all__ = [
     "AuthorizeTransactionData",
     "AuthorizeTransactionRequest",
@@ -307,6 +348,10 @@ __all__ = [
     "InterbankTransferData",
     "InterbankTransferRequest",
     "InterbankTransferResponse",
+    "ResolveTransferTargetData",
+    "ResolveTransferTargetDocument",
+    "ResolveTransferTargetRequest",
+    "ResolveTransferTargetResponse",
     "ReverseTransactionData",
     "ReverseTransactionRequest",
     "ReverseTransactionResponse",

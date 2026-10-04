@@ -12,8 +12,25 @@ import '../../../core/widgets/loading_view.dart';
 import '../../accounts/models/account.dart';
 import '../../beneficiaries/models/beneficiary.dart';
 import '../data/transfers_service.dart';
+import '../models/resolve_target.dart';
 import '../models/transfer.dart';
 import 'widgets/account_option_list.dart';
+
+/// Via de destino a tercero (E2-T29): agenda, DNI o celular.
+///
+/// DNI/celular exigen lookup previo (`resolve-target`) y solo con el
+/// titular enmascarado resuelto se habilita continuar; la transferencia
+/// posterior usa el `target_account_id` devuelto (el POST no cambia).
+enum ThirdPartyDestinationMode {
+  /// Beneficiario de la agenda (`GET /beneficiaries`).
+  beneficiary,
+
+  /// DNI con lookup previo (`target_document`).
+  dni,
+
+  /// Celular con lookup previo (`target_phone`).
+  phone,
+}
 
 /// Seleccion de origen y destino (mockups `Transferencia Entre Mis Cuentas`
 /// y `Enviar - Selección Beneficiario`, `pantallas.fig`).
@@ -21,10 +38,14 @@ import 'widgets/account_option_list.dart';
 /// - Origen: cuentas propias (`GET /accounts`, 4 estados).
 /// - Destino propio: otra cuenta propia (se excluye el origen).
 /// - Destino tercero: beneficiario de la agenda (`GET /beneficiaries`,
-///   datos enmascarados; 4 estados).
+///   datos enmascarados; 4 estados) o DNI/celular con lookup previo
+///   (`POST /transfers/third-party/resolve-target`, E2-T29: muestra el
+///   titular enmascarado antes de confirmar y continua con el
+///   `target_account_id` resuelto).
 ///
 /// Al continuar navega a `/transfers/amount` con [TransferFlowArgs] (la
-/// `Idempotency-Key` del intento se genera aqui una sola vez).
+/// `Idempotency-Key` del intento se genera aqui una sola vez; el lookup
+/// previo es lectura y NO usa `Idempotency-Key`).
 class DestinationPage extends StatefulWidget {
   const DestinationPage({super.key, required this.kind, this.service});
 
@@ -41,6 +62,21 @@ class _DestinationPageState extends State<DestinationPage> {
   String? _targetId;
   String? _beneficiaryId;
 
+  ThirdPartyDestinationMode _mode = ThirdPartyDestinationMode.beneficiary;
+  final _dniController = TextEditingController();
+  final _phoneController = TextEditingController();
+  ResolvedTarget? _resolved;
+  bool _resolving = false;
+  String? _lookupError;
+  String? _lookupFieldError;
+
+  @override
+  void dispose() {
+    _dniController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -56,10 +92,9 @@ class _DestinationPageState extends State<DestinationPage> {
       );
     }
     final accounts = await service.accounts();
-    final beneficiaries =
-        widget.kind == TransferKind.thirdParty
-            ? await service.beneficiaries()
-            : const <Beneficiary>[];
+    final beneficiaries = widget.kind == TransferKind.thirdParty
+        ? await service.beneficiaries()
+        : const <Beneficiary>[];
     return _DestinationData(accounts: accounts, beneficiaries: beneficiaries);
   }
 
@@ -68,14 +103,114 @@ class _DestinationPageState extends State<DestinationPage> {
       _sourceId = null;
       _targetId = null;
       _beneficiaryId = null;
+      _mode = ThirdPartyDestinationMode.beneficiary;
+      _dniController.clear();
+      _phoneController.clear();
+      _resolved = null;
+      _resolving = false;
+      _lookupError = null;
+      _lookupFieldError = null;
       _future = _load();
     });
+  }
+
+  /// Cambia la via de destino limpiando campos, titular resuelto y
+  /// errores (seleccion mutuamente excluyente, E2-T29).
+  void _setMode(ThirdPartyDestinationMode mode) {
+    if (_mode == mode) return;
+    setState(() {
+      _mode = mode;
+      _beneficiaryId = null;
+      _dniController.clear();
+      _phoneController.clear();
+      _resolved = null;
+      _resolving = false;
+      _lookupError = null;
+      _lookupFieldError = null;
+    });
+  }
+
+  /// Al editar el DNI/celular tras un lookup, el titular resuelto queda
+  /// stale: se limpia el panel y se deshabilita continuar hasta volver
+  /// a buscar (E2-T29 fix: evita transferir a un destino ya cambiado).
+  void _onLookupFieldChanged(String _) {
+    if (_resolved == null &&
+        _lookupError == null &&
+        _lookupFieldError == null) {
+      return;
+    }
+    setState(() {
+      _resolved = null;
+      _lookupError = null;
+      _lookupFieldError = null;
+    });
+  }
+
+  /// Lookup previo por DNI/celular: valida formato local, consulta
+  /// `resolve-target` y muestra el titular enmascarado (sin PII en
+  /// logs: el documento/celular solo viaja en el request).
+  Future<void> _lookup() async {
+    if (_resolving) return;
+    final service = widget.service;
+    if (service == null) {
+      setState(() {
+        _lookupError = 'Servicio de transferencias no configurado.';
+      });
+      return;
+    }
+    final isDni = _mode == ThirdPartyDestinationMode.dni;
+    final raw = isDni ? _dniController.text : _phoneController.text;
+    final fieldError = isDni ? dniFormatError(raw) : phoneFormatError(raw);
+    if (fieldError != null) {
+      setState(() {
+        _lookupFieldError = fieldError;
+        _lookupError = null;
+        _resolved = null;
+      });
+      return;
+    }
+    setState(() {
+      _resolving = true;
+      _lookupFieldError = null;
+      _lookupError = null;
+      _resolved = null;
+    });
+    try {
+      final resolved = isDni
+          ? await service.resolveTarget(
+              documentType: 'DNI',
+              documentNumber: normalizeLookupDigits(raw),
+            )
+          : await service.resolveTarget(phone: normalizeLookupDigits(raw));
+      if (!mounted) return;
+      setState(() {
+        _resolving = false;
+        _resolved = resolved;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _resolving = false;
+        if (e.code == 'TARGET_NOT_FOUND') {
+          _lookupError = kTargetNotFoundMessage;
+        } else if (e.code == 'TARGET_AMBIGUOUS') {
+          _lookupError = kTargetAmbiguousMessage;
+        } else {
+          _lookupError = transferUserMessage(e);
+        }
+      });
+    }
   }
 
   bool get _canContinue {
     if (_sourceId == null) return false;
     if (widget.kind == TransferKind.own) {
       return _targetId != null && _targetId != _sourceId;
+    }
+    // Tercero: agenda exige beneficiario; DNI/celular exigen el
+    // titular resuelto por el lookup previo (E2-T29 CA-02).
+    if (_mode != ThirdPartyDestinationMode.beneficiary) {
+      return _resolved != null && !_resolving;
     }
     return _beneficiaryId != null;
   }
@@ -89,14 +224,35 @@ class _DestinationPageState extends State<DestinationPage> {
         sourceAccountId: source.id,
         targetAccountId: target.id,
         destinationMasked: target.accountNumberMasked,
-        beneficiaryAlias:
-            'Cuenta CuyCash ${accountTypeLabel(target.type)}',
+        beneficiaryAlias: 'Cuenta CuyCash ${accountTypeLabel(target.type)}',
         currency: source.currency,
         amountMinor: 0,
       );
       context.push(
         '/transfers/amount',
         extra: TransferFlowArgs(draft: draft, source: source, target: target),
+      );
+      return;
+    }
+    // Destino por DNI/celular (E2-T29): la transferencia usa el
+    // `target_account_id` resuelto por el lookup (no DNI/celular); el
+    // alias visible es el titular enmascarado del servidor.
+    if (_mode != ThirdPartyDestinationMode.beneficiary) {
+      final resolved = _resolved;
+      if (resolved == null) return;
+      final draft = TransferDraft(
+        kind: TransferKind.thirdParty,
+        sourceAccountId: source.id,
+        targetAccountId: resolved.targetAccountId,
+        beneficiaryAlias: resolved.holderNameMasked,
+        destinationMasked:
+            '${resolved.accountNumberMasked} · ${currencyAccountLabel(resolved.currency)}',
+        currency: resolved.currency,
+        amountMinor: 0,
+      );
+      context.push(
+        '/transfers/amount',
+        extra: TransferFlowArgs(draft: draft, source: source),
       );
       return;
     }
@@ -140,11 +296,10 @@ class _DestinationPageState extends State<DestinationPage> {
           }
           if (snapshot.hasError) {
             final error = snapshot.error;
-            final message =
-                error is ApiException
-                    ? transferUserMessage(error)
-                    : 'Ocurrió un error al consultar el servidor. '
-                        'Revisa tu conexión a internet o intenta de nuevo.';
+            final message = error is ApiException
+                ? transferUserMessage(error)
+                : 'Ocurrió un error al consultar el servidor. '
+                      'Revisa tu conexión a internet o intenta de nuevo.';
             return Padding(
               padding: const EdgeInsets.all(16),
               child: ErrorView(message: message, onRetry: _retry),
@@ -155,7 +310,8 @@ class _DestinationPageState extends State<DestinationPage> {
             return Padding(
               padding: const EdgeInsets.all(16),
               child: EmptyView(
-                message: 'Aún no tienes cuentas para transferir.\n'
+                message:
+                    'Aún no tienes cuentas para transferir.\n'
                     'Abre tu primera cuenta para empezar.',
                 actionLabel: 'Ir al inicio',
                 onAction: () => context.pop(),
@@ -174,23 +330,20 @@ class _DestinationPageState extends State<DestinationPage> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                   children: [
-                    _SectionLabel(
-                      isOwn ? 'DESDE MI CUENTA' : 'CUENTA ORIGEN',
-                    ),
+                    _SectionLabel(isOwn ? 'DESDE MI CUENTA' : 'CUENTA ORIGEN'),
                     const SizedBox(height: 8),
                     AccountOptionList(
                       accounts: data.accounts,
                       selectedId: _sourceId,
                       keyPrefix: 'transfer-origin',
-                      onSelected:
-                          (a) => setState(() {
-                            _sourceId = a.id;
-                            if (_targetId == a.id) _targetId = null;
-                          }),
+                      onSelected: (a) => setState(() {
+                        _sourceId = a.id;
+                        if (_targetId == a.id) _targetId = null;
+                      }),
                     ),
                     const SizedBox(height: 16),
                     _SectionLabel(
-                      isOwn ? 'A MI CUENTA' : 'BENEFICIARIO DESTINO',
+                      isOwn ? 'A MI CUENTA' : 'DESTINO DEL TERCERO',
                     ),
                     const SizedBox(height: 8),
                     if (isOwn)
@@ -199,19 +352,32 @@ class _DestinationPageState extends State<DestinationPage> {
                         selectedId: _targetId,
                         excludeId: _sourceId,
                         keyPrefix: 'transfer-dest',
-                        onSelected:
-                            (a) => setState(() => _targetId = a.id),
+                        onSelected: (a) => setState(() => _targetId = a.id),
                       )
-                    else
-                      _BeneficiaryOptions(
-                        beneficiaries: data.beneficiaries,
-                        selectedId: _beneficiaryId,
-                        onSelected:
-                            (b) =>
-                                setState(() => _beneficiaryId = b.id),
-                        onNew:
-                            () => context.push('/beneficiaries/new'),
-                      ),
+                    else ...[
+                      _ModeTabs(mode: _mode, onChanged: _setMode),
+                      const SizedBox(height: 12),
+                      if (_mode == ThirdPartyDestinationMode.beneficiary)
+                        _BeneficiaryOptions(
+                          beneficiaries: data.beneficiaries,
+                          selectedId: _beneficiaryId,
+                          onSelected: (b) =>
+                              setState(() => _beneficiaryId = b.id),
+                          onNew: () => context.push('/beneficiaries/new'),
+                        )
+                      else
+                        _LookupPanel(
+                          isDni: _mode == ThirdPartyDestinationMode.dni,
+                          dniController: _dniController,
+                          phoneController: _phoneController,
+                          fieldError: _lookupFieldError,
+                          lookupError: _lookupError,
+                          resolving: _resolving,
+                          resolved: _resolved,
+                          onLookup: _lookup,
+                          onChanged: _onLookupFieldChanged,
+                        ),
+                    ],
                   ],
                 ),
               ),
@@ -283,7 +449,8 @@ class _BeneficiaryOptions extends StatelessWidget {
   Widget build(BuildContext context) {
     if (beneficiaries.isEmpty) {
       return EmptyView(
-        message: 'Aún no tienes beneficiarios.\n'
+        message:
+            'Aún no tienes beneficiarios.\n'
             'Guarda tus cuentas frecuentes para transferir en un toque.',
         actionLabel: 'Agregar beneficiario',
         onAction: onNew,
@@ -359,6 +526,247 @@ class _BeneficiaryOptions extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+/// Selector de via de destino a tercero (E2-T29): agenda, DNI o celular.
+///
+/// Mutuamente excluyente; al cambiar se limpian campos, titular
+/// resuelto y errores ([_DestinationPageState._setMode]).
+class _ModeTabs extends StatelessWidget {
+  const _ModeTabs({required this.mode, required this.onChanged});
+
+  final ThirdPartyDestinationMode mode;
+  final ValueChanged<ThirdPartyDestinationMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          _ModeTab(
+            key: const Key('dest-mode-beneficiary'),
+            label: 'Beneficiario',
+            selected: mode == ThirdPartyDestinationMode.beneficiary,
+            onTap: () => onChanged(ThirdPartyDestinationMode.beneficiary),
+          ),
+          _ModeTab(
+            key: const Key('dest-mode-dni'),
+            label: 'DNI',
+            selected: mode == ThirdPartyDestinationMode.dni,
+            onTap: () => onChanged(ThirdPartyDestinationMode.dni),
+          ),
+          _ModeTab(
+            key: const Key('dest-mode-phone'),
+            label: 'Celular',
+            selected: mode == ThirdPartyDestinationMode.phone,
+            onTap: () => onChanged(ThirdPartyDestinationMode.phone),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeTab extends StatelessWidget {
+  const _ModeTab({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.surfaceContainerLowest
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            label,
+            style: AppTypography.labelMd.copyWith(
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: selected ? AppColors.primary : AppColors.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Panel de lookup previo por DNI/celular (E2-T29).
+///
+/// Cubre los 4 estados: inicial (ayuda de formato), carga
+/// (`Consultando...`), titular resuelto (mascaras del servidor) y
+/// error (neutro `TARGET_NOT_FOUND` o accionable `TARGET_AMBIGUOUS`).
+/// El documento/celular en claro nunca se exhibe mas alla del campo.
+class _LookupPanel extends StatelessWidget {
+  const _LookupPanel({
+    required this.isDni,
+    required this.dniController,
+    required this.phoneController,
+    required this.fieldError,
+    required this.lookupError,
+    required this.resolving,
+    required this.resolved,
+    required this.onLookup,
+    required this.onChanged,
+  });
+
+  final bool isDni;
+  final TextEditingController dniController;
+  final TextEditingController phoneController;
+  final String? fieldError;
+  final String? lookupError;
+  final bool resolving;
+  final ResolvedTarget? resolved;
+  final VoidCallback onLookup;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedTarget = resolved;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          isDni ? 'DNI del destinatario' : 'Celular del destinatario',
+          style: AppTypography.labelMd.copyWith(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: AppColors.secondary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                key: Key(isDni ? 'dest-dni-input' : 'dest-phone-input'),
+                controller: isDni ? dniController : phoneController,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.search,
+                onChanged: onChanged,
+                onSubmitted: (_) => onLookup(),
+                decoration: InputDecoration(
+                  hintText: isDni ? '42891044' : '987654321',
+                  helperText: isDni
+                      ? 'DNI de 8 o 9 dígitos'
+                      : 'Celular de 9 dígitos (empieza con 9)',
+                  errorText: fieldError,
+                  filled: true,
+                  fillColor: AppColors.surfaceContainerLowest,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              height: 56,
+              child: FilledButton(
+                key: const Key('dest-lookup-button'),
+                onPressed: resolving ? null : onLookup,
+                child: resolving
+                    ? const SizedBox.square(
+                        key: Key('dest-lookup-loading'),
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
+                      )
+                    : const Text('Buscar'),
+              ),
+            ),
+          ],
+        ),
+        if (lookupError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            lookupError!,
+            key: const Key('dest-lookup-error'),
+            style: AppTypography.bodyMd.copyWith(
+              fontSize: 13,
+              color: AppColors.error,
+            ),
+          ),
+        ],
+        if (resolvedTarget != null) ...[
+          const SizedBox(height: 12),
+          AppCard(
+            key: const Key('dest-resolved-card'),
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: AppColors.surfaceContainerHigh,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.verified_user_outlined,
+                    size: 22,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        resolvedTarget.holderNameMasked,
+                        style: AppTypography.bodyLg.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${resolvedTarget.accountNumberMasked} · '
+                        '${currencyAccountLabel(resolvedTarget.currency)}',
+                        style: AppTypography.bodyMd.copyWith(
+                          fontSize: 12,
+                          color: AppColors.outline,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.check_circle,
+                  key: Key('dest-resolved-check'),
+                  color: AppColors.primary,
+                ),
+              ],
+            ),
+          ),
         ],
       ],
     );

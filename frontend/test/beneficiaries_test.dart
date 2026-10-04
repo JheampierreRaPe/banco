@@ -15,10 +15,8 @@ import 'package:go_router/go_router.dart';
 /// Fake del servicio (seam `BeneficiariesServiceBase`): sin red, con datos
 /// que replican los shapes E2-T13 (`GET /beneficiaries` -> `data` + `meta`).
 class FakeBeneficiariesService implements BeneficiariesServiceBase {
-  FakeBeneficiariesService({
-    List<Beneficiary>? seed,
-    this.hangList = false,
-  }) : items = List<Beneficiary>.from(seed ?? _defaultSeed);
+  FakeBeneficiariesService({List<Beneficiary>? seed, this.hangList = false})
+    : items = List<Beneficiary>.from(seed ?? _defaultSeed);
 
   static const _defaultSeed = [
     Beneficiary(
@@ -100,10 +98,12 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
     if (q.isEmpty) return List<Beneficiary>.from(items);
     // El "servidor" filtra por alias/nombre/banco (cliente delgado).
     return items
-        .where((b) =>
-            _plain(b.alias).contains(q) ||
-            _plain(b.holderName).contains(q) ||
-            _plain(b.bankCode).contains(q))
+        .where(
+          (b) =>
+              _plain(b.alias).contains(q) ||
+              _plain(b.holderName).contains(q) ||
+              _plain(b.bankCode).contains(q),
+        )
         .toList();
   }
 
@@ -152,7 +152,10 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
 }
 
 /// Harness con `GoRouter` real (las paginas usan `context.push/pop`).
-Widget _harness(FakeBeneficiariesService fake, {String initial = '/beneficiaries'}) {
+Widget _harness(
+  FakeBeneficiariesService fake, {
+  String initial = '/beneficiaries',
+}) {
   final router = GoRouter(
     initialLocation: initial,
     routes: [
@@ -181,7 +184,10 @@ Widget _harness(FakeBeneficiariesService fake, {String initial = '/beneficiaries
   return MaterialApp.router(routerConfig: router);
 }
 
-Future<void> _pumpList(WidgetTester tester, FakeBeneficiariesService fake) async {
+Future<void> _pumpList(
+  WidgetTester tester,
+  FakeBeneficiariesService fake,
+) async {
   await tester.pumpWidget(_harness(fake));
   await tester.pumpAndSettle();
 }
@@ -199,7 +205,9 @@ void _tallViewport(WidgetTester tester) {
 
 void main() {
   group('BeneficiariesPage', () {
-    testWidgets('lista agrupa por banco con topes enmascarados', (tester) async {
+    testWidgets('lista agrupa por banco con topes enmascarados', (
+      tester,
+    ) async {
       _tallViewport(tester);
       await _pumpList(tester, FakeBeneficiariesService());
 
@@ -221,14 +229,12 @@ void main() {
       await tester.pumpWidget(_harness(fake));
       await tester.pump();
 
-      expect(
-        find.byKey(const Key('beneficiaries-skeleton')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const Key('beneficiaries-skeleton')), findsOneWidget);
     });
 
-    testWidgets('busqueda con debounce consulta al servidor (?q=)',
-        (tester) async {
+    testWidgets('busqueda con debounce consulta al servidor (?q=)', (
+      tester,
+    ) async {
       final fake = FakeBeneficiariesService();
       await _pumpList(tester, fake);
 
@@ -251,8 +257,10 @@ void main() {
     testWidgets('vacio ofrece agregar beneficiario', (tester) async {
       await _pumpList(tester, FakeBeneficiariesService(seed: []));
 
-      expect(find.textContaining('Aún no tienes beneficiarios'),
-          findsOneWidget);
+      expect(
+        find.textContaining('Aún no tienes beneficiarios'),
+        findsOneWidget,
+      );
       await tester.tap(find.text('Agregar beneficiario'));
       await tester.pumpAndSettle();
 
@@ -293,8 +301,7 @@ void main() {
       expect(find.text('Interbank · •••• 9102'), findsOneWidget);
     });
 
-    testWidgets('eliminar exige confirmacion y borra tras 2xx',
-        (tester) async {
+    testWidgets('eliminar exige confirmacion y borra tras 2xx', (tester) async {
       final fake = FakeBeneficiariesService();
       await _pumpList(tester, fake);
 
@@ -352,7 +359,7 @@ void main() {
       );
       await tester.enterText(
         find.byKey(const Key('beneficiary-account')),
-        '19194827104012',
+        '00112345678908',
       );
       await tester.pump();
     }
@@ -367,15 +374,16 @@ void main() {
 
       expect(fake.lastCreated, isNotNull);
       expect(fake.lastCreated!.alias, 'Mamá Lima');
-      expect(fake.lastCreated!.accountOrCci, '19194827104012');
+      expect(fake.lastCreated!.accountOrCci, '00112345678908');
       expect(fake.lastCreated!.preapprovedLimitMinor, 50000);
       expect(fake.lastCreated!.currency, 'PEN');
       // Vuelve a la agenda tras guardar.
       expect(find.text('Agenda de Beneficiarios'), findsOneWidget);
     });
 
-    testWidgets('duplicado muestra banner con codigo y se ignora',
-        (tester) async {
+    testWidgets('duplicado muestra banner con codigo y se ignora', (
+      tester,
+    ) async {
       final fake = FakeBeneficiariesService()
         ..saveError = ApiException(
           code: 'DUPLICATE_BENEFICIARY',
@@ -393,9 +401,7 @@ void main() {
 
       // El formulario pudo quedar con scroll abajo (enterText enfoca);
       // se revela el banner antes de tocarlo.
-      await tester.ensureVisible(
-        find.byKey(const Key('duplicate-dismiss')),
-      );
+      await tester.ensureVisible(find.byKey(const Key('duplicate-dismiss')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('duplicate-dismiss')));
       await tester.pumpAndSettle();
@@ -420,8 +426,9 @@ void main() {
       );
     });
 
-    testWidgets('modo RUC valida 11 digitos y muestra banner SUNAT',
-        (tester) async {
+    testWidgets('modo RUC valida 11 digitos y muestra banner SUNAT', (
+      tester,
+    ) async {
       final fake = FakeBeneficiariesService();
       await pumpNew(tester, fake);
 
@@ -476,7 +483,7 @@ void main() {
       );
       await tester.enterText(
         find.byKey(const Key('beneficiary-account')),
-        '19194827104012',
+        '00112345678908',
       );
       await tester.tap(find.byKey(const Key('beneficiary-save')));
       await tester.pumpAndSettle();
@@ -485,13 +492,12 @@ void main() {
       expect(fake.lastUpdated!.preapprovedLimitMinor, 30000);
     });
 
-    testWidgets('el CCI completo nunca se muestra en pantalla',
-        (tester) async {
+    testWidgets('el CCI completo nunca se muestra en pantalla', (tester) async {
       final fake = FakeBeneficiariesService();
       await _pumpList(tester, fake);
 
       // La lista solo expone enmascarados.
-      expect(find.textContaining('19194827104012'), findsNothing);
+      expect(find.textContaining('00112345678908'), findsNothing);
       expect(find.text('•••• 7744 · Cuenta Soles'), findsOneWidget);
     });
   });
@@ -544,8 +550,7 @@ void main() {
         },
       );
 
-      final items =
-          await BeneficiariesService(api: api).list(query: 'mama');
+      final items = await BeneficiariesService(api: api).list(query: 'mama');
 
       expect(capturedQuery, containsPair('q', 'mama'));
       expect(items, hasLength(1));
@@ -553,50 +558,52 @@ void main() {
       expect(items.single.preapprovedLimitMinor, 50000);
     });
 
-    test('create usa Idempotency-Key y no expone cuenta en respuesta',
-        () async {
-      String? idempotencyKey;
-      Map<String, dynamic>? capturedBody;
-      final api = stubClient(
-        (o) => Response(
-          requestOptions: o,
-          statusCode: 201,
-          data: {
-            'data': {
-              'id': 'b-new',
-              'alias': 'Mamá Lima',
-              'bank_code': 'BCP',
-              'account_masked': '•••• 0012',
-              'holder_name': '••••',
-              'currency': 'PEN',
-              'status': 'ACTIVE',
+    test(
+      'create usa Idempotency-Key y no expone cuenta en respuesta',
+      () async {
+        String? idempotencyKey;
+        Map<String, dynamic>? capturedBody;
+        final api = stubClient(
+          (o) => Response(
+            requestOptions: o,
+            statusCode: 201,
+            data: {
+              'data': {
+                'id': 'b-new',
+                'alias': 'Mamá Lima',
+                'bank_code': 'BCP',
+                'account_masked': '•••• 0012',
+                'holder_name': '••••',
+                'currency': 'PEN',
+                'status': 'ACTIVE',
+              },
+              'meta': {'replayed': false},
             },
-            'meta': {'replayed': false},
+          ),
+          onRequest: (o) {
+            idempotencyKey = o.headers['Idempotency-Key']?.toString();
+            if (o.data is Map) {
+              capturedBody = Map<String, dynamic>.from(o.data as Map);
+            }
+            return null;
           },
-        ),
-        onRequest: (o) {
-          idempotencyKey = o.headers['Idempotency-Key']?.toString();
-          if (o.data is Map) {
-            capturedBody = Map<String, dynamic>.from(o.data as Map);
-          }
-          return null;
-        },
-      );
+        );
 
-      final created = await BeneficiariesService(api: api).create(
-        const BeneficiaryInput(
-          alias: 'Mamá Lima',
-          accountOrCci: '19194827104012',
-          bankCode: 'BCP',
-          preapprovedLimitMinor: 50000,
-        ),
-      );
+        final created = await BeneficiariesService(api: api).create(
+          const BeneficiaryInput(
+            alias: 'Mamá Lima',
+            accountOrCci: '00112345678908',
+            bankCode: 'BCP',
+            preapprovedLimitMinor: 50000,
+          ),
+        );
 
-      expect(idempotencyKey, isNotNull);
-      expect(idempotencyKey, isNotEmpty);
-      expect(capturedBody!['account_or_cci'], '19194827104012');
-      expect(created.accountMasked, '•••• 0012');
-    });
+        expect(idempotencyKey, isNotNull);
+        expect(idempotencyKey, isNotEmpty);
+        expect(capturedBody!['account_or_cci'], '00112345678908');
+        expect(created.accountMasked, '•••• 0012');
+      },
+    );
 
     test('remove exige confirm=true', () async {
       Map<String, dynamic>? capturedQuery;
@@ -622,8 +629,7 @@ void main() {
         },
       );
 
-      final deleted =
-          await BeneficiariesService(api: api).remove('b1');
+      final deleted = await BeneficiariesService(api: api).remove('b1');
 
       expect(capturedPath, contains('/beneficiaries/b1'));
       expect(capturedQuery, containsPair('confirm', 'true'));
@@ -658,9 +664,9 @@ void main() {
       );
 
       try {
-        await BeneficiariesService(api: api).create(
-          const BeneficiaryInput(alias: 'X', accountOrCci: '12345678'),
-        );
+        await BeneficiariesService(
+          api: api,
+        ).create(const BeneficiaryInput(alias: 'X', accountOrCci: '12345678'));
         fail('debió lanzar ApiException');
       } on ApiException catch (e) {
         expect(e.code, 'DUPLICATE_BENEFICIARY');

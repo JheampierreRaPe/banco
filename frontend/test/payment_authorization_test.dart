@@ -25,6 +25,7 @@ import 'package:banca_online/features/payment_authorization/payment_authorizatio
 import 'package:banca_online/features/payment_authorization/presentation/biometric_challenge_sheet.dart';
 import 'package:banca_online/features/payment_authorization/presentation/payment_error_page.dart';
 import 'package:banca_online/features/transfers/data/transfers_service.dart';
+import 'package:banca_online/features/transfers/models/resolve_target.dart';
 import 'package:banca_online/features/transfers/models/transfer.dart';
 import 'package:banca_online/features/transfers/presentation/confirm_page.dart';
 import 'package:flutter/material.dart';
@@ -750,6 +751,14 @@ class _FakeConfirmTransfers implements TransfersServiceBase {
     Map<String, dynamic>? metadata,
     String? idempotencyKey,
   }) => throw UnimplementedError();
+
+  @override
+  Future<ResolvedTarget> resolveTarget({
+    String? documentType,
+    String? documentNumber,
+    String? phone,
+  }) =>
+      throw UnimplementedError();
 
   @override
   Future<TransactionDetail> getTransaction(String transactionId) =>

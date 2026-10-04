@@ -6,6 +6,7 @@ import 'package:banca_online/core/session/in_memory_session_repository.dart';
 import 'package:banca_online/features/accounts/models/account.dart';
 import 'package:banca_online/features/beneficiaries/models/beneficiary.dart';
 import 'package:banca_online/features/transfers/data/transfers_service.dart';
+import 'package:banca_online/features/transfers/models/resolve_target.dart';
 import 'package:banca_online/features/transfers/models/transfer.dart';
 import 'package:banca_online/features/transfers/presentation/amount_page.dart';
 import 'package:banca_online/features/transfers/presentation/confirm_page.dart';
@@ -90,16 +91,15 @@ class FakeTransfersService implements TransfersServiceBase {
     required String source,
     required String target,
     required int amount,
-  }) =>
-      TransferResult(
-        transactionId: 'tx-own-1',
-        type: 'OWN_TRANSFER',
-        status: 'SETTLED',
-        amountMinor: amount,
-        currency: 'PEN',
-        sourceAccountId: source,
-        targetAccountId: target,
-      );
+  }) => TransferResult(
+    transactionId: 'tx-own-1',
+    type: 'OWN_TRANSFER',
+    status: 'SETTLED',
+    amountMinor: amount,
+    currency: 'PEN',
+    sourceAccountId: source,
+    targetAccountId: target,
+  );
 
   static TransferResult _interbankAccepted({required int amount}) =>
       TransferResult(
@@ -194,6 +194,13 @@ class FakeTransfersService implements TransfersServiceBase {
   }
 
   @override
+  Future<ResolvedTarget> resolveTarget({
+    String? documentType,
+    String? documentNumber,
+    String? phone,
+  }) => throw UnimplementedError();
+
+  @override
   Future<TransactionDetail> getTransaction(String transactionId) async {
     pollCalls++;
     if (pollScript.isNotEmpty) {
@@ -286,10 +293,8 @@ Widget _harness(
       ),
       GoRoute(
         path: '/transfers/confirm',
-        builder: (context, state) => ConfirmPage(
-          args: state.extra as TransferFlowArgs,
-          service: fake,
-        ),
+        builder: (context, state) =>
+            ConfirmPage(args: state.extra as TransferFlowArgs, service: fake),
       ),
       GoRoute(
         path: '/transfers/interbank',
@@ -318,10 +323,8 @@ Widget _harness(
       // Ruta solo-tests: confirmacion directa con borrador fijo.
       GoRoute(
         path: '/test-confirm',
-        builder: (context, state) => ConfirmPage(
-          args: confirmArgs ?? _ownArgs(),
-          service: fake,
-        ),
+        builder: (context, state) =>
+            ConfirmPage(args: confirmArgs ?? _ownArgs(), service: fake),
       ),
     ],
   );
@@ -343,8 +346,9 @@ TransferFlowArgs _ownArgs({String key = 'k-test-1', int amount = 25000}) {
 
 void main() {
   group('TransfersHomePage', () {
-    testWidgets('hub muestra los 3 tipos y abre la interbancaria',
-        (tester) async {
+    testWidgets('hub muestra los 3 tipos y abre la interbancaria', (
+      tester,
+    ) async {
       await tester.pumpWidget(_harness(FakeTransfersService()));
       await tester.pumpAndSettle();
 
@@ -377,10 +381,7 @@ void main() {
       // Monto: chips + escritura manual.
       await tester.tap(find.byKey(const Key('amount-chip-200')));
       await tester.pump();
-      await tester.enterText(
-        find.byKey(const Key('amount-input')),
-        '250.00',
-      );
+      await tester.enterText(find.byKey(const Key('amount-input')), '250.00');
       await tester.pump();
       await tester.enterText(
         find.byKey(const Key('amount-motive')),
@@ -418,10 +419,7 @@ void main() {
       await tester.tap(find.byKey(const Key('destination-continue')));
       await tester.pumpAndSettle();
 
-      await tester.enterText(
-        find.byKey(const Key('amount-input')),
-        '100.00',
-      );
+      await tester.enterText(find.byKey(const Key('amount-input')), '100.00');
       await tester.pump();
       await tester.tap(find.byKey(const Key('amount-continue')));
       await tester.pumpAndSettle();
@@ -447,8 +445,9 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('saldo insuficiente muestra tarjeta sin debitar',
-        (tester) async {
+    testWidgets('saldo insuficiente muestra tarjeta sin debitar', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..ownResult = const TransferResult(
           transactionId: 'tx-own-2',
@@ -474,10 +473,10 @@ void main() {
       expect(find.text('Transferencia exitosa'), findsNothing);
     });
 
-    testWidgets('error de red muestra ErrorView y reintenta misma clave',
-        (tester) async {
-      final fake = FakeTransfersService()
-        ..ownError = ApiException.network();
+    testWidgets('error de red muestra ErrorView y reintenta misma clave', (
+      tester,
+    ) async {
+      final fake = FakeTransfersService()..ownError = ApiException.network();
       await pumpConfirm(tester, fake, _ownArgs(key: 'k-retry-1'));
 
       await tester.tap(find.byKey(const Key('confirm-submit')));
@@ -492,8 +491,9 @@ void main() {
       expect(fake.keysOwn, ['k-retry-1', 'k-retry-1']);
     });
 
-    testWidgets('409 idempotencia avisa operacion ya registrada',
-        (tester) async {
+    testWidgets('409 idempotencia avisa operacion ya registrada', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..ownError = ApiException(
           code: 'IDEMPOTENCY_CONFLICT',
@@ -513,9 +513,7 @@ void main() {
       WidgetTester tester,
       FakeTransfersService fake,
     ) async {
-      await tester.pumpWidget(
-        _harness(fake, initial: '/transfers/interbank'),
-      );
+      await tester.pumpWidget(_harness(fake, initial: '/transfers/interbank'));
       await tester.pumpAndSettle();
     }
 
@@ -527,9 +525,11 @@ void main() {
       await tester.pump();
       // La tarjeta de monto nace fuera del viewport (ListView perezoso):
       // se arrastra hasta construirla.
-      for (var i = 0;
-          i < 4 && find.byKey(const Key('interbank-amount')).evaluate().isEmpty;
-          i++) {
+      for (
+        var i = 0;
+        i < 4 && find.byKey(const Key('interbank-amount')).evaluate().isEmpty;
+        i++
+      ) {
         await tester.drag(
           find.byKey(const Key('interbank-form-list')),
           const Offset(0, -400),
@@ -543,8 +543,9 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('CCI incompleto bloquea continuar; 20 digitos lo habilita',
-        (tester) async {
+    testWidgets('CCI incompleto bloquea continuar; 20 digitos lo habilita', (
+      tester,
+    ) async {
       await pumpForm(tester, FakeTransfersService());
 
       expect(find.text('0 / 20'), findsOneWidget);
@@ -572,8 +573,9 @@ void main() {
       );
     });
 
-    testWidgets('flujo feliz va a seguimiento y al comprobante',
-        (tester) async {
+    testWidgets('flujo feliz va a seguimiento y al comprobante', (
+      tester,
+    ) async {
       final fake = FakeTransfersService();
       await pumpForm(tester, fake);
       await fillValidCci(tester);
@@ -598,8 +600,9 @@ void main() {
       expect(fake.keysInterbank, hasLength(1));
     });
 
-    testWidgets('HOLDER_NOT_FOUND muestra no-hallado y vuelve al formulario',
-        (tester) async {
+    testWidgets('HOLDER_NOT_FOUND muestra no-hallado y vuelve al formulario', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..interbankError = ApiException(
           code: 'HOLDER_NOT_FOUND',
@@ -629,8 +632,9 @@ void main() {
       expect(find.byKey(const Key('cci-field')), findsOneWidget);
     });
 
-    testWidgets('error CCE ofrece reintento con la misma clave',
-        (tester) async {
+    testWidgets('error CCE ofrece reintento con la misma clave', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..interbankError = ApiException(
           code: 'HOLDER_LOOKUP_UNAVAILABLE',
@@ -646,9 +650,7 @@ void main() {
 
       expect(find.byKey(const Key('cci-banner-unavailable')), findsOneWidget);
       expect(
-        find.text(
-          'Servicio interbancario no disponible temporalmente',
-        ),
+        find.text('Servicio interbancario no disponible temporalmente'),
         findsOneWidget,
       );
 
@@ -658,10 +660,7 @@ void main() {
 
       expect(find.text('Transferencia registrada'), findsOneWidget);
       expect(fake.keysInterbank, hasLength(2));
-      expect(
-        fake.keysInterbank[0],
-        equals(fake.keysInterbank[1]),
-      );
+      expect(fake.keysInterbank[0], equals(fake.keysInterbank[1]));
     });
   });
 
@@ -700,10 +699,7 @@ void main() {
     testWidgets('no hallado es neutro y accionable', (tester) async {
       await pumpBanner(tester, CciState.notFound);
       expect(find.byKey(const Key('cci-banner-not-found')), findsOneWidget);
-      expect(
-        find.textContaining('verifica el número de CCI'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('verifica el número de CCI'), findsOneWidget);
     });
 
     testWidgets('error CCE muestra reintento', (tester) async {
@@ -731,8 +727,9 @@ void main() {
   });
 
   group('TrackingPage (seguimiento 202)', () {
-    testWidgets('polling FUNDS_HELD -> SETTLED con avance de tiempo',
-        (tester) async {
+    testWidgets('polling FUNDS_HELD -> SETTLED con avance de tiempo', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..pollScript = [_heldInterbank, _settledInterbank];
       await tester.pumpWidget(
@@ -754,8 +751,9 @@ void main() {
       expect(find.byKey(const Key('tracking-receipt-cta')), findsOneWidget);
     });
 
-    testWidgets('timeout muestra seguimiento con reintento que no duplica',
-        (tester) async {
+    testWidgets('timeout muestra seguimiento con reintento que no duplica', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..pollScript = [
           const TransactionDetail(
@@ -808,8 +806,9 @@ void main() {
   });
 
   group('ReceiptPage', () {
-    testWidgets('descarga informa nombre y pendiente de guardado',
-        (tester) async {
+    testWidgets('descarga informa nombre y pendiente de guardado', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()..pollScript = [_settledOwn];
       await tester.pumpWidget(
         _harness(fake, initial: '/transfers/receipt/tx-own-1'),
@@ -820,10 +819,11 @@ void main() {
       expect(find.text('S/ 250.00'), findsWidgets);
       expect(find.text('Nº OP-ABCDEF123456'), findsOneWidget);
 
-      for (var i = 0;
-          i < 4 &&
-              find.byKey(const Key('receipt-download')).evaluate().isEmpty;
-          i++) {
+      for (
+        var i = 0;
+        i < 4 && find.byKey(const Key('receipt-download')).evaluate().isEmpty;
+        i++
+      ) {
         await tester.drag(find.byType(ListView), const Offset(0, -400));
         await tester.pumpAndSettle();
       }
@@ -836,8 +836,9 @@ void main() {
       );
     });
 
-    testWidgets('REJECTED muestra el motivo en vez del comprobante',
-        (tester) async {
+    testWidgets('REJECTED muestra el motivo en vez del comprobante', (
+      tester,
+    ) async {
       final fake = FakeTransfersService()
         ..pollScript = [
           const TransactionDetail(
@@ -920,8 +921,7 @@ void main() {
       return api;
     }
 
-    test('createOwn envia Idempotency-Key y total viene del backend',
-        () async {
+    test('createOwn envia Idempotency-Key y total viene del backend', () async {
       String? key;
       Map<String, dynamic>? body;
       final api = stubClient(
@@ -1134,9 +1134,8 @@ void main() {
     });
 
     test('transferUserMessage mapea sin PII', () {
-      String msg(String code) => transferUserMessage(
-        ApiException(code: code, message: 'srv'),
-      );
+      String msg(String code) =>
+          transferUserMessage(ApiException(code: code, message: 'srv'));
 
       expect(msg('INSUFFICIENT_FUNDS'), contains('saldo suficiente'));
       expect(msg('HOLDER_NOT_FOUND'), contains('titular'));

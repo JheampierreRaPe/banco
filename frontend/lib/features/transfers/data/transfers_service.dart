@@ -7,6 +7,7 @@ import '../../../core/errors/api_exception.dart';
 import '../../../core/http/api_client.dart';
 import '../../accounts/models/account.dart';
 import '../../beneficiaries/models/beneficiary.dart';
+import '../models/resolve_target.dart';
 import '../models/transfer.dart';
 
 /// Contrato del servicio de transferencias (seam para tests con fake).
@@ -14,6 +15,8 @@ import '../models/transfer.dart';
 /// Endpoints (base `/api/v1` ya incluida en el cliente, docs/05 §6.3):
 /// - `POST /transfers/own` (+ `Idempotency-Key`) -> `201 {data, meta}`
 /// - `POST /transfers/third-party` (+ `Idempotency-Key`) -> `201 {data, meta}`
+/// - `POST /transfers/third-party/resolve-target` (lookup previo E2-T27,
+///   solo lectura, SIN `Idempotency-Key`) -> `200 {data, meta}`
 /// - `POST /transfers/interbank` (+ `Idempotency-Key`) -> `202 {data, meta}`
 /// - `GET /transactions/{id}` -> `200 {data, meta}` (seguimiento/polling)
 /// - `GET /transactions/{id}/receipt` -> `200` PDF (comprobante)
@@ -70,6 +73,21 @@ abstract class TransfersServiceBase {
     int? feeMinor,
     Map<String, dynamic>? metadata,
     String? idempotencyKey,
+  });
+
+  /// Lookup previo de destino por DNI o celular (E2-T27/E2-T29, solo
+  /// lectura, SIN `Idempotency-Key`: no mueve dinero).
+  ///
+  /// Exactamente UNO de [documentNumber] (con [documentType], p. ej. `DNI`)
+  /// o [phone]; ambos/ninguno -> `VALIDATION_ERROR` local antes de la red.
+  /// La UI muestra el titular enmascarado y la transferencia posterior usa
+  /// el `target_account_id` devuelto. Errores del servidor: `404
+  /// TARGET_NOT_FOUND` (neutro) y `409 TARGET_AMBIGUOUS` (usar numero de
+  /// cuenta). Sin PII en logs: el documento/celular solo viaja en el body.
+  Future<ResolvedTarget> resolveTarget({
+    String? documentType,
+    String? documentNumber,
+    String? phone,
   });
 
   /// Estado y detalle (`GET /transactions/{id}`, polling interbancario).
@@ -240,6 +258,39 @@ class TransfersService implements TransfersServiceBase {
   }
 
   @override
+  Future<ResolvedTarget> resolveTarget({
+    String? documentType,
+    String? documentNumber,
+    String? phone,
+  }) async {
+    final doc = (documentNumber ?? '').trim();
+    final tel = (phone ?? '').trim();
+    final hasDoc = doc.isNotEmpty;
+    final hasPhone = tel.isNotEmpty;
+    if (hasDoc == hasPhone) {
+      throw ApiException(
+        code: 'VALIDATION_ERROR',
+        message:
+            'Indica el DNI o el celular del destinatario (solo uno).',
+      );
+    }
+    final resp = await api.post(
+      '/transfers/third-party/resolve-target',
+      data: hasDoc
+          ? {
+              'target_document': {
+                'type': (documentType ?? 'DNI').toUpperCase(),
+                'number': doc,
+              },
+            }
+          : {
+              'target_phone': tel,
+            },
+    );
+    return ResolvedTarget.fromJson(_dataEnvelope(resp.data));
+  }
+
+  @override
   Future<TransactionDetail> getTransaction(String transactionId) async {
     final resp = await api.get('/transactions/$transactionId');
     return TransactionDetail.fromJson(_dataEnvelope(resp.data));
@@ -290,12 +341,13 @@ TransfersServiceFactory? transfersServiceFactory;
 
 /// Mensaje UI en espanol para un [ApiException] de transferencias.
 ///
-/// Cubre los errores del brief (docs/05 §4 + E2-T09): `INSUFFICIENT_FUNDS`
+/// Cubre los errores del brief (docs/05 §4 + E2-T09 + E2-T27): `INSUFFICIENT_FUNDS`
 /// (201/202 con `REJECTED`, sin debitar), `NOT_FOUND`, `NOT_AUTHORIZED`,
 /// `VALIDATION_ERROR`, `TRANSFER_TIMEOUT`/`INTERBANK_UNAVAILABLE`,
 /// conflictos de idempotencia (`409`) y CCI (`HOLDER_NOT_FOUND` neutro,
-/// `HOLDER_LOOKUP_UNAVAILABLE` reintentable). Sin PII: nunca incluye el CCI,
-/// el titular en claro ni el cuerpo del servidor.
+/// `HOLDER_LOOKUP_UNAVAILABLE` reintentable), mas el lookup previo
+/// (`TARGET_NOT_FOUND` neutro, `TARGET_AMBIGUOUS` accionable). Sin PII:
+/// nunca incluye el CCI, el titular en claro ni el cuerpo del servidor.
 String transferUserMessage(ApiException error) {
   switch (error.code) {
     case 'INSUFFICIENT_FUNDS':
@@ -325,6 +377,10 @@ String transferUserMessage(ApiException error) {
       return 'Revisa los datos ingresados e intentalo de nuevo.';
     case 'NOT_FOUND':
       return 'No encontramos la cuenta destino. Verifica los datos.';
+    case 'TARGET_NOT_FOUND':
+      return kTargetNotFoundMessage;
+    case 'TARGET_AMBIGUOUS':
+      return kTargetAmbiguousMessage;
     case 'NOT_AUTHORIZED':
       return 'No tienes permiso para esta operacion.';
     case 'CONFLICT':

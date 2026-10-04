@@ -10,6 +10,7 @@ import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../data/beneficiaries_service.dart';
 import '../models/beneficiary.dart';
+import '../utils/account_number.dart';
 import 'delete_beneficiary_dialog.dart';
 
 /// Tipo de documento del mockup (selector DNI/RUC + campo SUNAT/RENIEC).
@@ -23,7 +24,8 @@ enum BeneficiaryDocType { dni, ruc }
 ///   de formato (mockups `Alta` y `Alta 4 - RUC SUNAT`). La validacion de
 ///   formato es solo longitud/digitos (UI); el backend decide las reglas.
 /// - Error de cuenta/CCI bajo el campo (mockup `Alta 3 - Error CCI`): el
-///   cliente no calcula digitos verificadores, solo refleja `VALIDATION_ERROR`.
+///   cliente valida el formato (14 digitos con DV modulo 11 o 20 CCI,
+///   E2-T29); el backend revalida y decide (`VALIDATION_ERROR`).
 /// - Duplicado con banner naranja + `Ver existente`/`Ignorar` (mockup
 ///   `Alta 2 - Duplicado`, codigo `DUPLICATE_BENEFICIARY` visible).
 /// - Tope pre-aprobado con chips S/100/300/500/Otro (mockup `TopeCard`,
@@ -178,9 +180,9 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       _docVerified = false;
       ok = false;
     }
-    final accountDigits = _digits(_accountController.text);
-    if (accountDigits.length < 8 || accountDigits.length > 20) {
-      _accountError = 'Ingresa entre 8 y 20 dígitos (cuenta o CCI).';
+    final accountError = accountFormatError(_accountController.text);
+    if (accountError != null) {
+      _accountError = accountError;
       ok = false;
     } else {
       _accountError = null;
@@ -215,7 +217,7 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     });
     final input = BeneficiaryInput(
       alias: _aliasController.text.trim(),
-      accountOrCci: _digits(_accountController.text),
+      accountOrCci: normalizeAccountOrCci(_accountController.text),
       bankCode: _bankCode == 'OTRO' ? null : _bankCode,
       holderDoc: _digits(_docController.text),
       preapprovedLimitMinor: _topEnabled ? _topMinor : null,
@@ -250,7 +252,8 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       if (e.code == 'VALIDATION_ERROR') {
         setState(() {
           _accountError =
-              'Dígito verificador de cuenta incorrecto. Verifica el CCI de 20 dígitos.';
+              'Dígito verificador de cuenta incorrecto. '
+              'Verifica los 14 dígitos (cuenta) o 20 (CCI).';
         });
         return;
       }
@@ -485,16 +488,19 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
                 const SizedBox(height: 16),
                 _SectionLabel(
                   title: 'Número de Cuenta o CCI *',
-                  hint: '13, 14 o 20 dígitos',
+                  hint: '14 dígitos (cuenta) o 20 (CCI)',
                 ),
                 const SizedBox(height: 8),
                 AppTextField(
                   key: const Key('beneficiary-account'),
                   label: '',
                   controller: _accountController,
-                  hintText: '191-94827104-0-12',
+                  hintText: '00194827104018',
                   errorText: _accountError,
-                  keyboardType: TextInputType.number,
+                  // Texto (no numerico restrictivo): el formato —14 con DV
+                  // o 20 CCI— se valida en el `validator` (E2-T29); el
+                  // teclado no garantiza el formato.
+                  keyboardType: TextInputType.text,
                   textInputAction: TextInputAction.done,
                 ),
                 const SizedBox(height: 20),

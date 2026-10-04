@@ -266,7 +266,7 @@
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | user_id | UUID | No | - | REF identity.users, IDX | - |
-| account_number | VARCHAR(20) | No | - | UQ | Numero interno. |
+| account_number | VARCHAR(20) | No | - | UQ | Numero interno de 14 digitos con DV (prefijo `001`). |
 | type | VARCHAR(20) | No | - | CK | `account_type`. |
 | currency | CHAR(3) | No | 'PEN' | | ISO-4217. |
 | status | VARCHAR(20) | No | 'ACTIVE' | IDX, CK | `account_status`. |
@@ -275,6 +275,16 @@
 | opened_at | TIMESTAMPTZ | No | now() | | - |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
+
+> Formato de `account_number` (decision del dueno 2026-10-03, `E2-T28`): **14 digitos con digito
+> verificador** — `001` (prefijo de entidad, 3) + `CCCCCCCCCC` (cuerpo, 10) + `D` (DV, 1). El DV es
+> **modulo 11 con pesos ciclicos 2..7 de derecha a izquierda** sobre los 13 primeros digitos:
+> `dv = 11 - (suma mod 11)`, mapeando `10`/`11` -> `0`; `verify_account_number` exige
+> `^001[0-9]{11}$` + DV valido. La columna sigue `VARCHAR(20)` UQ (14 digitos caben). El numero en
+> claro es interno (jamas en logs ni respuestas; la API solo expone UUIDs y `account_number_masked`
+> `****` + ultimos 4). La migracion `0024_accounts_numeric_backfill` reasigna numeros de 14 digitos
+> a las cuentas existentes no conformes (incluidas las de formato hex `001-<12 hex>`), de forma
+> determinista y unica.
 
 ### 5.2 `account_balances`
 

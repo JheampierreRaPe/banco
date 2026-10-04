@@ -2,7 +2,7 @@
 
 > Nota de archivo (2026-09-26; ampliada 2026-09-27): los briefs de Sprint 1 con `Estado: Hecho`
 > viven en `docs/tasks/archive/` y se citan aqui por ID, sin cambios. En `docs/tasks/` solo
-> estan los briefs no-`Hecho`, incluidos los 15 de este indice aun pendientes; `E2-T07`,
+> estan los briefs no-`Hecho`, incluidos los 12 de este indice aun pendientes; `E2-T07`,
 > `E2-T08`, `E2-T09`, `E2-T10`, `E2-T12`, `E2-T13`, `E2-T14`, `E2-T16`, `E2-T17`, `E2-T18`,
 > `E2-T19`, `E2-T20`, `E2-T22`, `E2-T24`, `E2-T25` y `E2-T26` ya estan `Hecho` (archivados en
 > `docs/tasks/archive/<ID>.md`).
@@ -16,6 +16,12 @@
 > entregados (`E2-T11` commit `a79016f`, `E2-T15` commit `631b90a`, `E2-T21` commit `89610f2`).
 > Pendiente en `docs/tasks/`: el bloque de creditos `E3-T01`..`E3-T11` y la deuda de Sprint 1
 > `E2-T23` (los briefs frontend de HU06-HU08 aun no se archivan).
+>
+> Cierre 2026-10-04: las **mejoras de destino** `E2-T27`/`E2-T28`/`E2-T29` quedan `Hecho` y
+> archivadas (`docs/tasks/archive/`); commits `03feb2d` (backend: lookup previo + cuenta 14+DV +
+> backfill `0024`) y `46f7304` (UI Flutter). Cierran los gaps `G40`/`G41`/`G42` de `docs/18#9`.
+> Con ellas, el unico bloque funcional pendiente del sprint es creditos (HU09/HU10) mas la deuda
+> `E2-T23`.
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -26,9 +32,9 @@ ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KY
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
 Total: **31 briefs** (20 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`): **15 pendientes + 16 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
+creditos `E3-T01`..`E3-T11`): **12 pendientes + 19 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
 `E2-T10`/`E2-T12`/`E2-T13`/`E2-T14`/`E2-T16`/`E2-T17`/`E2-T18`/`E2-T19`/`E2-T20`/`E2-T22`/
-`E2-T24`/`E2-T25`/`E2-T26`, archivados).
+`E2-T24`/`E2-T25`/`E2-T26`/`E2-T27`/`E2-T28`/`E2-T29`, archivados).
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y
@@ -103,9 +109,11 @@ Insumos verificados: `_new_account_number()` genera hex `001-<12 hex>`
 `8..20` con `TextInputType.number` (`beneficiary_form_page.dart:148,181-183,218,497`), por lo que el
 hex rompe la UI.
 
-`E2-T27` Lookup previo de destino por DNI/celular (anti-enumeracion) - `E2-T28` Numero de cuenta de
-14 digitos con DV + migracion/backfill - `E2-T29` UI: cuenta de 14 digitos (DV) y destino por
-DNI/celular con lookup previo.
+`E2-T27` Lookup previo de destino por DNI/celular (anti-enumeracion; **`Hecho`**, archivado
+`docs/tasks/archive/E2-T27.md`) - `E2-T28` Numero de cuenta de 14 digitos con DV +
+migracion/backfill (`0024`; **`Hecho`**, archivado `docs/tasks/archive/E2-T28.md`) - `E2-T29` UI:
+cuenta de 14 digitos (DV) y destino por DNI/celular con lookup previo (**`Hecho`**, archivado
+`docs/tasks/archive/E2-T29.md`).
 
 > Dependencias: `E2-T27` y `E2-T28` son independientes entre si; `E2-T29` (UI) depende de ambos.
 > `E2-T27` depende de `E2-T07`/`E2-T13` (ambos `Hecho`); `E2-T28` depende de `E2-T01`/`E2-T02`

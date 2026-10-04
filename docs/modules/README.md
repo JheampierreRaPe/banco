@@ -145,6 +145,14 @@ eventos (`outbox`/`inbox`).
   razon social, el resto `business_name` `NULL`); jamas documento, correo,
   telefono ni hashes (`401 NOT_AUTHENTICATED` / `404 NOT_FOUND` neutro; solo
   lectura, sin migracion; el cliente solo presenta).
+- **Fachada de lookup de titular para el motor (E2-T27, HU06):**
+  `identity.service.target_lookup` expone `resolve_user_by_document(session, number)`
+  (hash HMAC server-side `hash_document_number` + `get_by_doc_hash`; el numero en
+  claro nunca se persiste ni se loguea) y `resolve_user_by_phone(session, phone)`
+  (comparacion normalizada a solo digitos; el valor en claro nunca se loguea), mas
+  `normalize_phone`. Retornan una vista minima (`user_id`, `first_name`, `last_name`,
+  `business_name`) o `None`; solo lectura. La consume `transactions` para el lookup
+  previo (`resolve-target`) sin importar sus modelos (regla de oro 4, D-01).
 - **Puede llamar a:** adaptador `KycProvider`, `notifications`, `audit`.
 - **Prohibido:** tocar cuentas, ledger o transacciones.
 
@@ -167,6 +175,12 @@ eventos (`outbox`/`inbox`).
   `transfer_own`/`transfer_third_party` para validar propiedad/estado/moneda sin
   importar modelos de `accounts`. El `account_number` en claro es interno (jamas en
   logs ni respuestas; la API solo expone UUIDs).
+- **Fachada de cuentas activas para el lookup previo (E2-T27, HU06):**
+  `accounts.service.list_active_by_user(session, user_id) -> list[{account_id,
+  user_id, status, currency, account_number}]` (solo lectura; `ValueError` si el
+  `user_id` no es UUID). La consume `transactions` (`resolve_target`) para resolver la
+  cardinalidad de cuentas `ACTIVE` del titular (0 -> `404` neutro; 1 -> `200`; >= 2 ->
+  `409 TARGET_AMBIGUOUS`) sin importar modelos de `accounts`.
 - **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
   busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
   `PUT /{id}` (edicion parcial incl. `preapproved_limit_minor`) y `DELETE /{id}?confirm=true`
@@ -207,6 +221,18 @@ eventos (`outbox`/`inbox`).
   obligatoria; insuficiente -> `201` con `status=REJECTED` +
   `failure_code=INSUFFICIENT_FUNDS`, sin tocar saldos). Validacion de cuentas
   solo por la fachada `accounts.service.get_account` (D-01).
+- **Lookup previo de destino por DNI/celular (E2-T27, HU06):**
+  `POST /transfers/third-party/resolve-target` (Bearer, solo lectura, **sin**
+  `Idempotency-Key`) resuelve la cuenta destino **antes** de confirmar. Request
+  exactamente UNO de `target_document` (`{type: DNI|CE|PASSPORT, number}`) o
+  `target_phone` -> `200 {target_account_id, holder_name_masked,
+  account_number_masked, currency}`. Errores: `404 TARGET_NOT_FOUND` **neutro**
+  (inexistente o sin cuenta `ACTIVE`), `409 TARGET_AMBIGUOUS` (varias cuentas
+  `ACTIVE`), `422 VALIDATION_ERROR`. Servicio `transactions.service.resolve_target`;
+  consume las fachadas `identity.service.target_lookup` y
+  `accounts.service.list_active_by_user` (D-01) y reutiliza `mask_holder_name`
+  (E2-T08) + `mask_account_number`. El `POST /transfers/third-party` **no cambia**
+  (sigue recibiendo `target_account_id`). Sin PII en logs ni respuestas.
 - **Saga interbancaria (E2-T09, HU06):** `POST /transfers/interbank` (`202` +
   `tracking`) y `GET /transactions/{id}` (detalle + `tracking` + `history`);
   maquina `FUNDS_HELD -> POSTED -> SETTLED` con compensacion a `FAILED`

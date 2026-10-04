@@ -324,30 +324,119 @@ void main() {
     expect(find.text('Próximamente'), findsOneWidget);
   });
 
-  testWidgets('quick-actions son visuales (Proximamente)', (tester) async {
+  testWidgets('quick-actions restantes siguen visuales (Proximamente)',
+      (tester) async {
     await tester.pumpWidget(_okHarness());
     await tester.pumpAndSettle();
 
-    for (final key in ['qa-transferir', 'qa-pagar', 'qa-qr', 'qa-recargar']) {
+    for (final key in ['qa-pagar', 'qa-qr', 'qa-recargar']) {
       await tester.tap(find.byKey(Key(key)));
       await tester.pump();
       expect(find.text('Próximamente'), findsOneWidget);
     }
   });
 
-  testWidgets('bottom-nav: tabs visuales salvo Perfil', (tester) async {
-    await tester.pumpWidget(_okHarness());
+  testWidgets('quick-action Transferir navega a /transfers', (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/transfers',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Transferencias (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('bottomNav-operar')));
-    await tester.pump();
-    expect(find.text('Próximamente'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('qa-transferir')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Transferencias (fake)'), findsOneWidget);
+    expect(find.text('Próximamente'), findsNothing);
+  });
+
+  testWidgets('bottom-nav: Tarjetas sigue visual (Proximamente)',
+      (tester) async {
+    await tester.pumpWidget(_okHarness());
+    await tester.pumpAndSettle();
 
     // El segundo SnackBar reemplaza/encola al primero: se asienta y se
     // verifica el visible (el de Tarjetas).
     await tester.tap(find.byKey(const Key('bottomNav-tarjetas')));
     await tester.pumpAndSettle();
     expect(find.text('Próximamente'), findsOneWidget);
+  });
+
+  testWidgets('bottom-nav Operar navega a /transfers', (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/transfers',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Transferencias (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('bottomNav-operar')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Transferencias (fake)'), findsOneWidget);
+    expect(find.text('Próximamente'), findsNothing);
+  });
+
+  testWidgets('Ver todos los movimientos abre /movements', (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/movements',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Historial (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Ver todos los movimientos'),
+      300,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ver todos los movimientos'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Historial (fake)'), findsOneWidget);
   });
 
   testWidgets('bottom-nav Perfil navega a /profile', (tester) async {

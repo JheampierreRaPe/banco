@@ -26,9 +26,10 @@ import '../data/profile_service.dart';
 ///   **El cliente NUNCA suma saldos** (cliente delgado, `docs/19` §4/§8): el
 ///   monto se muestra tal cual responde el servidor; el ojo solo oculta el
 ///   texto en pantalla (estado local, sin recalcular ni llamar al servidor).
-/// - Quick-actions (`0:3082`) y `Analizar`/campana/bottom-nav
-///   (`Inicio`/`Operar`/`Tarjetas`): visuales -> "Proximamente". Solo
-///   `Perfil` navega (`/profile`, ruta privada ya existente).
+/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers`
+///   (Sprint 2); `Pagar`/`Cobrar QR`/`Recargar` y `Analizar`/campana siguen
+///   visuales -> "Proximamente". Bottom-nav: `Operar` (1) -> `/transfers`,
+///   `Perfil` (3) -> `/profile`; `Inicio`/`Tarjetas` visuales.
 /// - `MIS CUENTAS` (`0:3108`, de `GET /accounts`, pull-to-refresh) +
 ///   `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta,
 ///   `GET /accounts/{id}/movements`, pagina 1, 3 items) + banner
@@ -136,7 +137,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onNavSelect(BuildContext context, int index) {
-    // F-T54: solo `Perfil (3)` navega; el resto es visual ("Proximamente").
+    // Operar (1) -> hub de transferencias (Sprint 2, `/transfers`);
+    // Perfil (3) -> `/profile`. El resto sigue siendo visual ("Proximamente").
+    if (index == 1) {
+      context.push('/transfers');
+      return;
+    }
     if (index == 3) {
       context.push('/profile');
       return;
@@ -528,8 +534,8 @@ class _TotalsHeroState extends State<_TotalsHero> {
 
 /// Fila de accesos rapidos del `dash` (`0:3082`).
 ///
-/// Presentacion pura: las 4 acciones son visuales ("Proximamente"), sin
-/// navegacion ni operacion real. `Cobrar QR` va destacado en ocre.
+/// `Transferir` navega a `/transfers` (Sprint 2); el resto sigue siendo
+/// visual ("Proximamente"). `Cobrar QR` va destacado en ocre.
 class _QuickActions extends StatelessWidget {
   const _QuickActions();
 
@@ -557,6 +563,9 @@ class _QuickActions extends StatelessWidget {
               tileColor: item.$3
                   ? scheme.secondaryContainer
                   : AppColors.surfaceContainerLowest,
+              onTap: item.$4 == 'qa-transferir'
+                  ? () => context.push('/transfers')
+                  : null,
             ),
           ),
       ],
@@ -572,6 +581,7 @@ class _QuickAction extends StatelessWidget {
     required this.highlighted,
     required this.iconColor,
     required this.tileColor,
+    this.onTap,
   });
 
   final String storageKey;
@@ -581,18 +591,23 @@ class _QuickAction extends StatelessWidget {
   final Color iconColor;
   final Color tileColor;
 
+  /// Accion real de navegacion (solo `Transferir` la define; `null` =
+  /// visual con "Proximamente").
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
     return InkWell(
       key: Key(storageKey),
-      onTap: () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Próximamente'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      },
+      onTap: onTap ??
+          () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Próximamente'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          },
       borderRadius: BorderRadius.circular(AppRadii.md),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
@@ -758,7 +773,9 @@ class _MovementsPreviewCard extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
-              onPressed: () => context.push('/accounts/${account.id}'),
+              // Historial nuevo (E2-T24, Sprint 2): el detalle por cuenta
+              // sigue vivo tocando cada fila (`_AccountRow` -> `/accounts/:id`).
+              onPressed: () => context.push('/movements'),
               child: const Text('Ver todos los movimientos'),
             ),
           ),

@@ -70,12 +70,16 @@ Codigos de error reales (verificados en codigo, 2026-09-25; `DUPLICATE_BENEFICIA
 `INVALID_PIN_RESET`, `INVALID_REFRESH`, `INVALID_SETUP_CODE`, `KYC_UNAVAILABLE`,
 `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`, `PIN_ALREADY_SET`, `PIN_REQUIRED`,
 `RATE_LIMITED`, `RECEIPT_FORMAT_NOT_SUPPORTED` (501), `REFRESH_EXPIRED`, `REFRESH_REUSED`,
-`RESEND_LIMIT`, `SESSION_INACTIVE`, `VALIDATION_ERROR`.
+`RESEND_LIMIT`, `SESSION_INACTIVE`, `TARGET_AMBIGUOUS` (409, E2-T27: el destino por DNI/celular
+resuelve a un usuario con varias cuentas `ACTIVE`), `TARGET_NOT_FOUND` (404 neutro, E2-T27: DNI/
+celular inexistente o usuario sin cuenta `ACTIVE`), `VALIDATION_ERROR`.
 Fuentes: `backend/app/modules/identity/api/*` (+ `service/`), `backend/app/modules/accounts/api/__init__.py`
 (`EXPORT_FORMAT_NOT_SUPPORTED`, `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`,
 `VALIDATION_ERROR`), `backend/app/modules/accounts/api/beneficiaries.py`
 (`DUPLICATE_BENEFICIARY`, `IDEMPOTENCY_CONFLICT`), `backend/app/modules/transactions/api/__init__.py`
 (`RECEIPT_FORMAT_NOT_SUPPORTED`). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
+`TARGET_NOT_FOUND`/`TARGET_AMBIGUOUS` (decisiones de destino 2026-10-03, E2-T27) se fijan en el
+endpoint de lookup previo descrito en `#6.3`.
 
 ## 5. Codigos HTTP
 
@@ -362,10 +366,18 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > NOT_FOUND` (inexistente/baja, id malformado o beneficiario ajeno no listado); `403
 > NOT_AUTHORIZED` (beneficiario de otro titular en `PUT`/`DELETE`); `409 DUPLICATE_BENEFICIARY`
 > (mismo alias o misma cuenta/CCI `ACTIVE` del titular); `409 IDEMPOTENCY_CONFLICT` (misma
-> `Idempotency-Key` con cuerpo distinto); `400 VALIDATION_ERROR` (alias vacio, CCI con formato
-> distinto de 8-20 digitos, moneda desconocida, `preapproved_limit_minor < 0`, o falta
-> `confirm=true`). Dinero entero en centimos; datos sensibles cifrados en reposo (AES-256-GCM)
+> `Idempotency-Key` con cuerpo distinto); `400 VALIDATION_ERROR` (alias vacio, cuenta/CCI con
+> formato invalido —CuyCash 14 digitos con DV valido, o CCI de 20 digitos—, moneda desconocida,
+> `preapproved_limit_minor < 0`, o falta `confirm=true`). Dinero entero en centimos; datos sensibles cifrados en reposo (AES-256-GCM)
 > e indexados para busqueda sin descifrar.
+
+> Formato del numero de cuenta CuyCash (decision del dueno 2026-10-03, `E2-T28`): **14 digitos con
+> digito verificador** — `001` (prefijo, 3) + `CCCCCCCCCC` (cuerpo, 10) + `D` (DV, 1). El DV es
+> **modulo 11 con pesos ciclicos 2..7 de derecha a izquierda** sobre los 13 primeros digitos:
+> `dv = 11 - (suma mod 11)`, mapeando `10`/`11` -> `0`. `accounts.accounts.account_number` sigue
+> siendo `String(20)` UQ. En `GET /accounts` solo se expone `account_number_masked` (`****` +
+> ultimos 4). `normalize_account_or_cci` de beneficiarios acepta una cuenta CuyCash de 14 digitos
+> **con DV valido** o un CCI de 20 digitos (se retira el rango laxo `8..20`).
 
 ### 6.3 Transacciones (`transactions`) - HU06, HU08, HU15, HU17
 
@@ -373,6 +385,7 @@ Detalle del flujo KYC (`identity`, E1-T29):
 |---|---|---|
 | POST | `/transfers/own` | Transferencia entre cuentas propias. |
 | POST | `/transfers/third-party` | Transferencia a tercero (mismo banco). |
+| POST | `/transfers/third-party/resolve-target` | Lookup previo de destino por DNI/celular (E2-T27). |
 | POST | `/transfers/interbank` | Transferencia interbancaria (202 + estado). |
 | POST | `/payments/qr` | Pago de QR (HU15). |
 | POST | `/transactions/{id}/authorize` | Autorizacion biometrica de pago sensible (HU08). |
@@ -399,6 +412,23 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > cuenta no `ACTIVE`), `409 CONFLICT` (misma clave + cuerpo distinto). Saldo
 > insuficiente = `201` con `status=REJECTED` (sin tocar saldos; reintentable con la
 > misma clave). Solo UUIDs en respuestas (regla de oro 9).
+>
+> Contrato E2-T27 lookup previo de destino por DNI/celular (Bearer, HU06; **decision del dueno
+> 2026-10-03**): `POST /api/v1/transfers/third-party/resolve-target` (solo lectura, **sin**
+> `Idempotency-Key`; no mueve dinero) resuelve la cuenta destino de un tercero **antes** de
+> confirmar la transferencia. Request: exactamente UNO de `target_document`
+> (`{type: DNI|CE|PASSPORT, number}`) **o** `target_phone` (mutuamente excluyente; ambos/ninguno ->
+> `422`) -> `200 {"data": {"target_account_id", "holder_name_masked",
+> "account_number_masked" (`****dddd`), "currency"}, "meta": {"request_id"}}`. El cliente muestra
+> el titular enmascarado y luego ejecuta `POST /transfers/third-party` con ese
+> `target_account_id`. El **POST de la transferencia NO se extiende**: no acepta
+> `target_document`/`target_phone` (se descarto esa via). Errores: `401 NOT_AUTHENTICATED`;
+> `404 TARGET_NOT_FOUND` **neutro** (mismo cuerpo si el DNI/celular no existe o si el usuario no
+> tiene cuenta `ACTIVE`; anti-enumeracion); `409 TARGET_AMBIGUOUS` (el usuario resuelto tiene
+> **varias cuentas `ACTIVE`**: no se elige "la principal", se pide usar el numero de cuenta);
+> `422 VALIDATION_ERROR` (formato de documento/celular o combinacion de campos). Sin PII en
+> respuestas ni logs (solo UUID + titular/cuenta enmascarados); el numero en claro nunca se
+> devuelve.
 >
 > Contrato E2-T09 saga interbancaria `POST /api/v1/transfers/interbank` y
 > `GET /api/v1/transactions/{id}` (Bearer, HU06): request

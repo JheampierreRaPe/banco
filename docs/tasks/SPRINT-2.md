@@ -77,6 +77,40 @@ notificacion (+ revision del analista) - `E3-T09` UI Flutter (formulario, consen
 `E3-T10` Pantalla de revision del analista (panel web) - `E3-T11` QA (aprobado, rechazado, en
 revision, bureau caido).
 
+## Mejoras de destino (decisiones finales del dueno 2026-10-03) - `transactions`/`identity`/`accounts`/`frontend`
+
+Transferencia a tercero por dos vias, con decisiones finales del dueno:
+
+- **Vía DNI/celular = lookup previo.** No se extiende el body de `POST /transfers/third-party`:
+  se agrega un endpoint de **previsualizacion** (`POST /transfers/third-party/resolve-target`, solo
+  lectura, sin `Idempotency-Key`) que valida existencia y devuelve **titular enmascarado + referencia
+  `target_account_id`**; la transferencia consume esa referencia. Anti-enumeracion: `404
+  TARGET_NOT_FOUND` **neutro** (mismo cuerpo si no existe o no hay cuenta `ACTIVE`). Un usuario con
+  **varias cuentas `ACTIVE`** no se resuelve solo: **error `409 TARGET_AMBIGUOUS`** (usar el numero
+  de cuenta).
+- **Numero de cuenta = 14 digitos con digito verificador.** Reemplaza `_new_account_number()`
+  (`001-<12 hex>`); algoritmo **modulo 11** (pesos `2..7` de derecha a izquierda; `dv = 11 - (suma
+  mod 11)`, `10`/`11` -> `0`). `account_number` sigue `String(20)`.
+- **Backfill** de las cuentas existentes (incluida la del dueno `001-01a7124e8ebe`) via **migracion
+  Alembic** con numeros unicos de 14 digitos. Verificado en codigo: `/accounts/{id}` usa UUID y
+  `movements_view`/`account_ref`/beneficiarios no guardan el numero en claro -> no rompe URLs ni
+  proyecciones.
+- **`normalize_account_or_cci`** acepta 14 digitos con DV valido (CuyCash) o 20 digitos (CCI);
+  se retira el rango laxo `8..20`.
+
+Insumos verificados: `_new_account_number()` genera hex `001-<12 hex>`
+(`identity/service/__init__.py:58-59`) y el formulario de beneficiarios usa `_digits()` y valida
+`8..20` con `TextInputType.number` (`beneficiary_form_page.dart:148,181-183,218,497`), por lo que el
+hex rompe la UI.
+
+`E2-T27` Lookup previo de destino por DNI/celular (anti-enumeracion) - `E2-T28` Numero de cuenta de
+14 digitos con DV + migracion/backfill - `E2-T29` UI: cuenta de 14 digitos (DV) y destino por
+DNI/celular con lookup previo.
+
+> Dependencias: `E2-T27` y `E2-T28` son independientes entre si; `E2-T29` (UI) depende de ambos.
+> `E2-T27` depende de `E2-T07`/`E2-T13` (ambos `Hecho`); `E2-T28` depende de `E2-T01`/`E2-T02`
+> (ambos `Hecho`). Gaps registrados/actualizados en `docs/18#9` (G40/G41/G42).
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado

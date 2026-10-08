@@ -86,6 +86,7 @@ class FakeTransfersService implements TransfersServiceBase {
   List<String?> keysThird = [];
   List<String?> keysInterbank = [];
   String? lastBeneficiaryId;
+  String? lastTargetAccountId;
 
   static TransferResult _own({
     required String source,
@@ -152,7 +153,7 @@ class FakeTransfersService implements TransfersServiceBase {
   @override
   Future<TransferResult> createThirdPartyTransfer({
     required String sourceAccountId,
-    required String targetAccountId,
+    String? targetAccountId,
     required int amountMinor,
     String currency = 'PEN',
     int? feeMinor,
@@ -162,6 +163,7 @@ class FakeTransfersService implements TransfersServiceBase {
   }) async {
     keysThird.add(idempotencyKey);
     lastBeneficiaryId = beneficiaryId;
+    lastTargetAccountId = targetAccountId;
     if (thirdError != null) throw thirdError!;
     return thirdResult ??
         TransferResult(
@@ -430,6 +432,9 @@ void main() {
 
       expect(find.text('Transferencia exitosa'), findsOneWidget);
       expect(fake.lastBeneficiaryId, 'b1');
+      // E2-T30: la agenda envia `beneficiary_id`, no el id del
+      // beneficiario como `target_account_id`.
+      expect(fake.lastTargetAccountId, isNull);
     });
   });
 

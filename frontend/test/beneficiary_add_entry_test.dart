@@ -83,7 +83,7 @@ class _FakeTransfers implements TransfersServiceBase {
   @override
   Future<TransferResult> createThirdPartyTransfer({
     required String sourceAccountId,
-    required String targetAccountId,
+    String? targetAccountId,
     required int amountMinor,
     String currency = 'PEN',
     int? feeMinor,

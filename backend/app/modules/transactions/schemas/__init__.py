@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 CURRENCY_PATTERN = r"^[A-Z]{3}$"
 
@@ -33,10 +33,29 @@ class TransferOwnRequest(BaseModel):
 
 
 class TransferThirdPartyRequest(BaseModel):
-    """`POST /transfers/third-party`: a otra cuenta del banco (con comision)."""
+    """`POST /transfers/third-party`: a otra cuenta del banco (con comision).
+
+    Dos formas de destino (E2-T30): (a) `target_account_id` de una cuenta
+    real, o (b) `beneficiary_id` (campo o `metadata["beneficiary_id"]`)
+    resuelto server-side a la cuenta real del beneficiario. Si ambos
+    vienen y `target_account_id` resuelve, gana `target_account_id` (el
+    beneficiario solo habilita la exencion por tope, E2-T14). Sin ninguno
+    -> `400 VALIDATION_ERROR` desde el servicio. Campos desconocidos se
+    rechazan (`extra="forbid"`: el POST de dinero no acepta identificadores
+    del lookup previo, E2-T27).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     source_account_id: uuid.UUID
-    target_account_id: uuid.UUID
+    target_account_id: uuid.UUID | None = Field(
+        default=None,
+        description="Cuenta destino real; opcional si viene `beneficiary_id`",
+    )
+    beneficiary_id: uuid.UUID | None = Field(
+        default=None,
+        description="Beneficiario de la agenda resuelto server-side (E2-T30)",
+    )
     amount_minor: int = Field(..., ge=1, description="Monto en centimos (> 0)")
     currency: str = Field(..., pattern=CURRENCY_PATTERN, description="ISO-4217")
     fee_minor: int | None = Field(

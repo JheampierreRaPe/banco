@@ -332,18 +332,35 @@ def transfer_third_party(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Hold + liquidacion; la comision se acredita a `4100` (HU06, `04#7.2`)."""
+    """Hold + liquidacion; la comision se acredita a `4100` (HU06, `04#7.2`).
+
+    El destino admite cuenta real (`target_account_id`) o beneficiario de
+    la agenda (`beneficiary_id` o `metadata["beneficiary_id"]`), resuelto
+    server-side a la cuenta real (E2-T30). El `beneficiary_id` explicito se
+    pasa al servicio para la exencion por tope (E2-T14).
+    """
     endpoint = "/transfers/third-party"
     key = _require_key(request, endpoint)
     payload = body.model_dump(mode="json")
     profile = _holder_profile(db, user_id)
+    beneficiary_ref = body.beneficiary_id
+    if beneficiary_ref is None and isinstance(body.metadata, dict):
+        beneficiary_ref = body.metadata.get("beneficiary_id")
     try:
-        # Solo lectura (no consume la clave si la cuenta/moneda falla).
+        # Solo lectura (no consume la clave si el destino/moneda falla):
+        # resuelve beneficiario -> cuenta real antes de validar (E2-T30).
+        resolved_target = transfers_service.resolve_third_party_target_id(
+            db,
+            initiator_user_id=user_id,
+            target_account_id=body.target_account_id,
+            beneficiary_id=body.beneficiary_id,
+            metadata=body.metadata,
+        )
         transfers_service.validate_transfer_parties(
             db,
             initiator_user_id=user_id,
             source_account_id=body.source_account_id,
-            target_account_id=body.target_account_id,
+            target_account_id=resolved_target,
             currency=body.currency,
             kind="THIRD_PARTY_TRANSFER",
         )
@@ -353,7 +370,7 @@ def transfer_third_party(
                 db,
                 initiator_user_id=user_id,
                 source_account_id=body.source_account_id,
-                target_account_id=body.target_account_id,
+                target_account_id=resolved_target,
                 amount_minor=body.amount_minor,
                 currency=body.currency,
                 fee_minor=body.fee_minor,
@@ -361,6 +378,7 @@ def transfer_third_party(
                 external_ref=body.external_ref,
                 metadata=body.metadata,
                 risk_profile=profile,
+                beneficiary_id=beneficiary_ref,
             )
             return ({"data": _transfer_data(tx)}, tx.id)
 

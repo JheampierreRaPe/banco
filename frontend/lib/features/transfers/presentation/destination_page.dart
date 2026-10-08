@@ -274,14 +274,14 @@ class _DestinationPageState extends State<DestinationPage> {
     final beneficiary = data.beneficiaries.firstWhere(
       (b) => b.id == _beneficiaryId,
     );
-    // SUPUESTO E2-T11 (riesgo documentado): el backend resuelve la cuenta
-    // destino del beneficiario; el `beneficiary_id` viaja ademas en
-    // `metadata` para la exencion por tope (E2-T14). Si el backend responde
+    // Destino por agenda (E2-T30): el backend resuelve server-side la
+    // cuenta real del beneficiario a partir de `beneficiary_id` (el
+    // borrador NO lleva `targetAccountId`); el `beneficiary_id` ademas
+    // habilita la exencion por tope (E2-T14). Si el backend responde
     // `NOT_FOUND`, la confirmacion muestra "cuenta destino invalida".
     final draft = TransferDraft(
       kind: TransferKind.thirdParty,
       sourceAccountId: source.id,
-      targetAccountId: beneficiary.id,
       beneficiaryId: beneficiary.id,
       beneficiaryAlias: beneficiary.alias,
       destinationMasked:

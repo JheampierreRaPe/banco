@@ -44,11 +44,15 @@ abstract class TransfersServiceBase {
 
   /// Transferencia a tercero del mismo banco.
   ///
-  /// `beneficiaryId` viaja en `metadata["beneficiary_id"]` para la exencion
-  /// por tope (E2-T14); el display usa la agenda (datos enmascarados).
+  /// Destino (E2-T30): `beneficiaryId` de la agenda (resuelto server-side
+  /// a la cuenta real; viaja como `beneficiary_id` top-level y en
+  /// `metadata["beneficiary_id"]` para la exencion por tope, E2-T14) o
+  /// `targetAccountId` real (flujo DNI/celular tras `resolve-target`).
+  /// Con agenda se omite `target_account_id`; el display usa la agenda
+  /// (datos enmascarados).
   Future<TransferResult> createThirdPartyTransfer({
     required String sourceAccountId,
-    required String targetAccountId,
+    String? targetAccountId,
     required int amountMinor,
     String currency = 'PEN',
     int? feeMinor,
@@ -194,7 +198,7 @@ class TransfersService implements TransfersServiceBase {
   @override
   Future<TransferResult> createThirdPartyTransfer({
     required String sourceAccountId,
-    required String targetAccountId,
+    String? targetAccountId,
     required int amountMinor,
     String currency = 'PEN',
     int? feeMinor,
@@ -203,14 +207,18 @@ class TransfersService implements TransfersServiceBase {
     String? idempotencyKey,
   }) async {
     final meta = <String, dynamic>{...?metadata};
-    if (beneficiaryId != null && beneficiaryId.isNotEmpty) {
+    final hasBeneficiary = beneficiaryId != null && beneficiaryId.isNotEmpty;
+    if (hasBeneficiary) {
       meta['beneficiary_id'] = beneficiaryId;
     }
+    final hasTarget =
+        targetAccountId != null && targetAccountId.isNotEmpty;
     final resp = await api.postWithIdempotency(
       '/transfers/third-party',
       data: {
         'source_account_id': sourceAccountId,
-        'target_account_id': targetAccountId,
+        if (hasTarget) 'target_account_id': targetAccountId,
+        if (hasBeneficiary) 'beneficiary_id': beneficiaryId,
         'amount_minor': amountMinor,
         'currency': currency,
         'fee_minor': ?feeMinor,

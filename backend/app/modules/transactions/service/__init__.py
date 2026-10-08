@@ -335,6 +335,90 @@ def _resolve_beneficiary_id(
     return None
 
 
+#: Mensaje neutro cuando el destino no resuelve (cuenta inexistente,
+#: beneficiario inexistente/ajeno/dado de baja o numero no resoluble):
+#: identico en todos los casos (anti-enumeracion, E2-T30).
+NEUTRAL_TARGET_NOT_FOUND_MESSAGE = "cuenta destino inexistente"
+
+
+def resolve_third_party_target_id(
+    session: Session,
+    *,
+    initiator_user_id: uuid.UUID | str,
+    target_account_id: uuid.UUID | str | None = None,
+    beneficiary_id: uuid.UUID | str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> uuid.UUID:
+    """Resuelve el destino de `transfer_third_party` (E2-T30, solo lectura).
+
+    Precedencia (sin tocar BD salvo lecturas):
+
+    1. Si `target_account_id` viene y `accounts.service.get_account` lo
+       resuelve -> se usa tal cual (comportamiento E2-T07; el beneficiario
+       solo habilita la exencion por tope, E2-T14).
+    2. Si `target_account_id` falta **o no resuelve** y hay beneficiario
+       (`beneficiary_id` explicito o `metadata["beneficiary_id"]`) ->
+       `accounts.service.beneficiaries.get_for_operation` ->
+       `account_or_cci` -> `accounts.service.get_account_by_number` ->
+       el `account_id` real de la cuenta.
+    3. Sin ninguno de los dos -> `ValueError` ("destino requerido",
+       el router lo traduce a `400 VALIDATION_ERROR`).
+
+    Solo resuelven cuentas CuyCash de 14 digitos: un `account_or_cci` de
+    20 (CCI interbancario) u otro formato, o un numero sin cuenta, es
+    `AccountNotFoundError` neutro (sin derivar a interbancaria). Un
+    beneficiario inexistente, ajeno o dado de baja colapsa al MISMO
+    `AccountNotFoundError` neutro (sin oraculo de existencia ni de
+    titularidad; nunca `403` por el beneficiario). El numero en claro
+    jamas se registra en logs ni se expone (regla de oro 7/9).
+    """
+    from app.modules.accounts.service import beneficiaries as _beneficiaries_service
+    from app.modules.accounts.service import get_account as _get_account_info
+    from app.modules.accounts.service import get_account_by_number as _get_by_number
+
+    try:
+        initiator = (
+            initiator_user_id
+            if isinstance(initiator_user_id, uuid.UUID)
+            else uuid.UUID(str(initiator_user_id))
+        )
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AccountNotAuthorizedError("titular invalido") from exc
+
+    if target_account_id is not None:
+        wanted = _coerce_account(target_account_id, "target_account_id")
+        try:
+            info = _get_account_info(session, wanted)
+        except (ValueError, AttributeError, TypeError):
+            info = None
+        if info is not None:
+            return wanted
+
+    beneficiary_ref = _resolve_beneficiary_id(beneficiary_id, metadata)
+    if beneficiary_ref is None:
+        if target_account_id is not None:
+            raise AccountNotFoundError(NEUTRAL_TARGET_NOT_FOUND_MESSAGE)
+        raise ValueError("destino requerido: target_account_id o beneficiary_id")
+
+    try:
+        record = _beneficiaries_service.get_for_operation(session, initiator, beneficiary_ref)
+    except (
+        _beneficiaries_service.BeneficiaryNotFoundError,
+        _beneficiaries_service.BeneficiaryForbiddenError,
+        ValueError,
+        AttributeError,
+        TypeError,
+    ):
+        raise AccountNotFoundError(NEUTRAL_TARGET_NOT_FOUND_MESSAGE) from None
+    number = record.get("account_or_cci")
+    if not isinstance(number, str) or len(number) != 14 or not number.isdigit():
+        raise AccountNotFoundError(NEUTRAL_TARGET_NOT_FOUND_MESSAGE)
+    found = _get_by_number(session, number)
+    if found is None:
+        raise AccountNotFoundError(NEUTRAL_TARGET_NOT_FOUND_MESSAGE)
+    return found["account_id"]
+
+
 def _settle_postings(
     src_hold_id: uuid.UUID,
     dst_avail_id: uuid.UUID,
@@ -1133,7 +1217,7 @@ def transfer_third_party(
     *,
     initiator_user_id: uuid.UUID | str,
     source_account_id: uuid.UUID | str,
-    target_account_id: uuid.UUID | str,
+    target_account_id: uuid.UUID | str | None = None,
     amount_minor: int,
     currency: str,
     fee_minor: int | None = None,
@@ -1149,6 +1233,12 @@ def transfer_third_party(
     beneficiary_id: uuid.UUID | str | None = None,
 ) -> Transaction:
     """Caso de uso `THIRD_PARTY_TRANSFER` (E2-T07, HU06, `04#7.2`).
+
+    El destino se resuelve server-side con `resolve_third_party_target_id`
+    (E2-T30): `target_account_id` de una cuenta real, o `beneficiary_id`
+    (campo o `metadata["beneficiary_id"]`) resuelto a la cuenta real del
+    beneficiario. La transaccion persiste el `target_account_id` real y
+    conserva `beneficiary_id` en `metadata` para la exencion (E2-T14).
 
     Valida por fachada (origen del titular y `ACTIVE`, destino existente y
     `ACTIVE`, moneda coherente) y ejecuta el camino hold + liquidacion. La
@@ -1166,19 +1256,32 @@ def transfer_third_party(
     """
     validate_amount_minor(amount_minor)
     validate_currency(currency)
+    resolved_target = resolve_third_party_target_id(
+        session,
+        initiator_user_id=initiator_user_id,
+        target_account_id=target_account_id,
+        beneficiary_id=beneficiary_id,
+        metadata=metadata,
+    )
     validate_transfer_parties(
         session,
         initiator_user_id=initiator_user_id,
         source_account_id=source_account_id,
-        target_account_id=target_account_id,
+        target_account_id=resolved_target,
         currency=currency,
         kind="THIRD_PARTY_TRANSFER",
     )
     resolved_fee = resolve_third_party_fee(session, fee_minor)
+    beneficiary_ref = _resolve_beneficiary_id(beneficiary_id, metadata)
+    effective_metadata = metadata
+    if beneficiary_ref is not None:
+        effective_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        if "beneficiary_id" not in effective_metadata:
+            effective_metadata["beneficiary_id"] = str(beneficiary_ref)
     tx = execute_transfer(
         session,
         source_account_id=source_account_id,
-        target_account_id=target_account_id,
+        target_account_id=resolved_target,
         amount_minor=amount_minor,
         currency=currency,
         fee_minor=resolved_fee,
@@ -1186,7 +1289,7 @@ def transfer_third_party(
         idempotency_key=idempotency_key,
         initiator_user_id=_coerce_optional_user(initiator_user_id),
         external_ref=external_ref,
-        metadata=metadata,
+        metadata=effective_metadata,
         settle=settle,
         atomic=False,
         balance_port=balance_port,
@@ -1317,6 +1420,7 @@ __all__ = [
     "execute_transfer",
     "hold_src_hold_id",
     "resolve_third_party_fee",
+    "resolve_third_party_target_id",
     "transfer_interbank",
     "transfer_own",
     "transfer_third_party",

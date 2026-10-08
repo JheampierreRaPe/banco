@@ -179,7 +179,7 @@ class _ConfirmPageState extends State<ConfirmPage> {
       case TransferKind.thirdParty:
         return service.createThirdPartyTransfer(
           sourceAccountId: d.sourceAccountId,
-          targetAccountId: d.targetAccountId ?? '',
+          targetAccountId: d.targetAccountId,
           amountMinor: d.amountMinor,
           currency: d.currency,
           beneficiaryId: d.beneficiaryId,

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/errors/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_status_chip.dart';
@@ -73,9 +74,16 @@ class _ReceiptPageState extends State<ReceiptPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Estado terminal (exito o rechazo): sin back fisico ni flecha.
+    // La unica salida es "Volver al inicio" (-> /home con `go`).
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
       backgroundColor: AppColors.surface,
-      appBar: AppBar(title: const Text('Comprobante')),
+      appBar: AppBar(
+        title: const Text('Comprobante'),
+        automaticallyImplyLeading: false,
+      ),
       body: FutureBuilder<_ReceiptData>(
         future: _future,
         builder: (context, snapshot) {
@@ -207,14 +215,22 @@ class _ReceiptPageState extends State<ReceiptPage> {
               const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
-                child: TextButton(
-                  onPressed: () => context.pop(),
-                  child: const Text('Volver'),
+                child: FilledButton(
+                  key: const Key('receipt-home-cta'),
+                  onPressed: () => context.go('/home'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(88, 52),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                    ),
+                  ),
+                  child: const Text('Volver al inicio'),
                 ),
               ),
             ],
           );
         },
+      ),
       ),
     );
   }
@@ -270,9 +286,16 @@ class _ReceiptPageState extends State<ReceiptPage> {
         const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
-          child: OutlinedButton(
-            onPressed: () => context.pop(),
-            child: const Text('Volver'),
+          child: FilledButton(
+            key: const Key('receipt-home-cta'),
+            onPressed: () => context.go('/home'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(88, 52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+            ),
+            child: const Text('Volver al inicio'),
           ),
         ),
       ],

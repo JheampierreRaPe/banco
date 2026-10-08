@@ -328,6 +328,12 @@ Widget _harness(
         builder: (context, state) =>
             ConfirmPage(args: confirmArgs ?? _ownArgs(), service: fake),
       ),
+      // Destino de "Volver al inicio" (los CTA usan `go`, no `push`).
+      GoRoute(
+        path: '/home',
+        builder: (context, state) =>
+            const Scaffold(body: Center(child: Text('Home test'))),
+      ),
     ],
   );
   return MaterialApp.router(routerConfig: router);
@@ -808,6 +814,65 @@ void main() {
 
       expect(find.text('Transferencia registrada'), findsOneWidget);
     });
+
+    testWidgets('exito sin back, con comprobante y Volver al inicio', (
+      tester,
+    ) async {
+      final fake = FakeTransfersService()..pollScript = [_settledInterbank];
+      await tester.pumpWidget(
+        _harness(fake, initial: '/transfers/tracking/tx-ib-1'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Transferencia registrada'), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+      expect(find.byKey(const Key('tracking-receipt-cta')), findsOneWidget);
+      expect(find.byKey(const Key('tracking-home-cta')), findsOneWidget);
+      final popScope = tester.widget<PopScope>(
+        find.byType(PopScope).first,
+      );
+      expect(popScope.canPop, isFalse);
+
+      await tester.ensureVisible(
+        find.byKey(const Key('tracking-home-cta')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('tracking-home-cta')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Home test'), findsOneWidget);
+    });
+
+    testWidgets('fallo no-timeout lleva al inicio sin volver a confirmar', (
+      tester,
+    ) async {
+      final fake = FakeTransfersService()
+        ..pollScript = [
+          const TransactionDetail(
+            transactionId: 'tx-ib-2',
+            type: 'INTERBANK_TRANSFER',
+            status: 'REJECTED',
+            amountMinor: 35000,
+            currency: 'PEN',
+            feeMinor: 350,
+            failureCode: 'INSUFFICIENT_FUNDS',
+          ),
+        ];
+      await tester.pumpWidget(
+        _harness(fake, initial: '/transfers/tracking/tx-ib-2'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tracking-failure')), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+      expect(find.text('Volver'), findsNothing);
+      expect(find.byKey(const Key('tracking-home-cta')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('tracking-home-cta')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Home test'), findsOneWidget);
+    });
   });
 
   group('ReceiptPage', () {
@@ -863,6 +928,78 @@ void main() {
       expect(find.text('La transferencia no prosperó'), findsOneWidget);
       expect(find.textContaining('saldo suficiente'), findsOneWidget);
       expect(find.byKey(const Key('receipt-download')), findsNothing);
+    });
+
+    testWidgets('exito sin back y Volver al inicio va a /home con go', (
+      tester,
+    ) async {
+      final fake = FakeTransfersService()..pollScript = [_settledOwn];
+      await tester.pumpWidget(
+        _harness(fake, initial: '/transfers/receipt/tx-own-1'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('receipt-success')), findsOneWidget);
+      // Sin flecha de back ni "Volver" legacy.
+      expect(find.byType(BackButton), findsNothing);
+      expect(find.text('Volver'), findsNothing);
+      for (
+        var i = 0;
+        i < 4 &&
+            find.byKey(const Key('receipt-home-cta')).evaluate().isEmpty;
+        i++
+      ) {
+        await tester.drag(find.byType(ListView), const Offset(0, -400));
+        await tester.pumpAndSettle();
+      }
+      expect(find.text('Volver al inicio'), findsOneWidget);
+      // El back del sistema esta bloqueado (estado terminal).
+      final popScope = tester.widget<PopScope>(
+        find.byType(PopScope).first,
+      );
+      expect(popScope.canPop, isFalse);
+
+      await tester.ensureVisible(find.byKey(const Key('receipt-home-cta')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('receipt-home-cta')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Home test'), findsOneWidget);
+      expect(find.byKey(const Key('receipt-success')), findsNothing);
+    });
+
+    testWidgets('fallo terminal sin back y Volver al inicio va a /home', (
+      tester,
+    ) async {
+      final fake = FakeTransfersService()
+        ..pollScript = [
+          const TransactionDetail(
+            transactionId: 'tx-own-9',
+            type: 'OWN_TRANSFER',
+            status: 'REJECTED',
+            amountMinor: 35000,
+            currency: 'PEN',
+            failureCode: 'INSUFFICIENT_FUNDS',
+          ),
+        ];
+      await tester.pumpWidget(
+        _harness(fake, initial: '/transfers/receipt/tx-own-9'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('La transferencia no prosperó'), findsOneWidget);
+      expect(find.byType(BackButton), findsNothing);
+      expect(find.text('Volver'), findsNothing);
+      expect(find.byKey(const Key('receipt-home-cta')), findsOneWidget);
+      final popScope = tester.widget<PopScope>(
+        find.byType(PopScope).first,
+      );
+      expect(popScope.canPop, isFalse);
+
+      await tester.tap(find.byKey(const Key('receipt-home-cta')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Home test'), findsOneWidget);
     });
   });
 

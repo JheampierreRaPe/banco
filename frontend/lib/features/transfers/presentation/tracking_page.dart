@@ -279,9 +279,16 @@ class _TrackingPageState extends State<TrackingPage> {
 
   Widget _successView() {
     final detail = _detail!;
-    return Scaffold(
+    // Estado terminal: sin back (fisico ni flecha); la salida es
+    // "Ver comprobante" o "Volver al inicio" (-> /home con `go`).
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
       backgroundColor: AppColors.surface,
-      appBar: AppBar(title: const Text('Seguimiento')),
+      appBar: AppBar(
+        title: const Text('Seguimiento'),
+        automaticallyImplyLeading: false,
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
@@ -349,7 +356,23 @@ class _TrackingPageState extends State<TrackingPage> {
               child: const Text('Ver comprobante'),
             ),
           ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              key: const Key('tracking-home-cta'),
+              onPressed: () => context.go('/home'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(88, 52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                ),
+              ),
+              child: const Text('Volver al inicio'),
+            ),
+          ),
         ],
+      ),
       ),
     );
   }
@@ -360,9 +383,17 @@ class _TrackingPageState extends State<TrackingPage> {
     final timeout = detail.failureCode == 'TRANSFER_TIMEOUT' ||
         detail.failureCode == 'INTERBANK_UNAVAILABLE' ||
         detail.failureCode == 'INTERBANK_REJECTED';
-    return Scaffold(
+    // Estado terminal (REJECTED/FAILED/timeout): sin back al
+    // paso de confirmacion; la salida es reintentar (solo GET) o
+    // "Volver al inicio" (-> /home con `go`).
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
       backgroundColor: AppColors.surface,
-      appBar: AppBar(title: const Text('Seguimiento')),
+      appBar: AppBar(
+        title: const Text('Seguimiento'),
+        automaticallyImplyLeading: false,
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
@@ -443,16 +474,39 @@ class _TrackingPageState extends State<TrackingPage> {
                 color: AppColors.outline,
               ),
             ),
-          ] else ...[
+            const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton(
-                onPressed: () => context.pop(),
-                child: const Text('Volver'),
+                key: const Key('tracking-home-cta'),
+                onPressed: () => context.go('/home'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Volver al inicio'),
+              ),
+            ),
+          ] else ...[
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: const Key('tracking-home-cta'),
+                onPressed: () => context.go('/home'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Volver al inicio'),
               ),
             ),
           ],
         ],
+      ),
       ),
     );
   }

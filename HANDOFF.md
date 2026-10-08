@@ -102,6 +102,8 @@ El dueño usa dos palabras clave. **Todo lo de esta sección lo ejecuta un subag
 
 - **Cuando el dueño escriba `hola`:** significa que cerró la sesión anterior y hay que arrancar. **Lo primero** (delegado a un `worker`):
   1. **Levantar los contenedores** (`docker compose start` si ya existen —un `adios` solo los detiene—; o `docker compose up -d` para crearlos) y esperar a `healthy` (`docker compose ps`; backend `:8000`, admin-web `:8080`, postgres/redis, worker).
+     - **OJO (version skew):** `docker compose start` NO recompila. Si hubo cambios de **código o migraciones** del backend desde la última build, la imagen queda vieja y el backend crashea (p. ej. `Can't locate revision ...`) o sirve un contrato desactualizado (**esto causó el `422 target_account_id: missing` de E2-T30**). Tras cualquier cambio de backend: `docker compose build backend worker` y `docker compose up -d --force-recreate backend worker` antes de probar la app.
+     - Tras cambiar el **frontend**, reconstruir e instalar el APK (sección 7). El APK y el backend deben corresponder al **mismo HEAD** (verifica `git log --oneline -1`).
   2. **Warmup del microservicio de KYC** (contenedor `kyc-facial-service-8001` en `:8001`): conectarlo a la red si hace falta (`docker network connect banca-demo_default kyc-facial-service-8001`) y golpear su health/endpoint de listo hasta que responda.
   3. **Verificar que el device esté conectado por adb** (`adb devices -l`; serial TLS tipo `adb-...._adb-tls-connect._tcp`). Si no aparece, reconectar (`adb connect <ip:puerto>` o parear) y reportar.
   - Antes de continuar con cualquier tarea, reportar al dueño el estado de (1) contenedores, (2) warmup KYC y (3) device.

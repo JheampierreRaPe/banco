@@ -26,17 +26,43 @@ import '../../core/errors/api_exception.dart';
 import '../biometrics/biometric_reader.dart';
 import 'data/payment_authorization_service.dart';
 
+/// Deriva la clave del primer `authorize` desde la del borrador.
+///
+/// El backend tiene UQ global `(key, user_id)` sin `endpoint`: reutilizar
+/// la clave del `POST /transfers/...` en `POST .../authorize` (cuerpo
+/// distinto) devuelve `409 CONFLICT` y el reto nunca se ejecuta. Por eso
+/// el `authorize` NUNCA usa la clave del borrador tal cual, sino
+/// `<borrador>-auth` (truncada a 80 conservando el sufijo).
+String? paymentAuthInitialKey(String? draftKey) {
+  final clean = (draftKey ?? '').trim();
+  if (clean.isEmpty) return null;
+  final derived = '$clean-auth';
+  if (derived.length <= 80) return derived;
+  return derived.substring(derived.length - 80);
+}
+
 /// Deriva la clave del reintento tras `EXPIRED_NONCE` (contrato real,
 ///
 /// docs/05 §6.3): el fallo previo quedo snapshotteado bajo [key] (misma
 /// clave + cuerpo distinto = `409`), asi que el reintento con el `nonce`
 /// nuevo exige una clave distinta. Sin clave no hay reintento (`null`).
+/// Aplicada sobre la clave ya derivada (`<borrador>-auth`) produce
+/// `<borrador>-auth-retry-1`, tambien valida ante `409` por reuso
+/// cruzado (misma funcion para el reintento por conflicto).
 String? paymentAuthRetryKey(String? key) {
   final clean = (key ?? '').trim();
   if (clean.isEmpty) return null;
   final derived = '$clean-retry-1';
   if (derived.length <= 80) return derived;
   return derived.substring(derived.length - 80);
+}
+
+/// `true` si [code] es un conflicto de idempotencia (`409`).
+bool isPaymentAuthConflictCode(String? code) {
+  final c = (code ?? '').toUpperCase();
+  return c == 'CONFLICT' ||
+      c == 'IDEMPOTENCY_CONFLICT' ||
+      c == 'DUPLICATE_REQUEST';
 }
 
 /// Desenlace del reto para que la UI continue el flujo de pago.

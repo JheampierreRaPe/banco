@@ -362,6 +362,92 @@ void main() {
       expect(paymentAuthRetryKey(null), isNull);
       expect(paymentAuthRetryKey('  '), isNull);
     });
+
+    test('la clave inicial deriva del borrador con sufijo -auth', () {
+      expect(paymentAuthInitialKey('k-1'), 'k-1-auth');
+      expect(paymentAuthInitialKey(null), isNull);
+      expect(paymentAuthInitialKey('  '), isNull);
+      // El reintento sobre la derivada da `<borrador>-auth-retry-1`.
+      expect(
+        paymentAuthRetryKey(paymentAuthInitialKey('k-1')),
+        'k-1-auth-retry-1',
+      );
+    });
+
+    test('la derivacion respeta el tope de 80 conservando el sufijo', () {
+      final long = List.filled(80, 'k').join();
+      final initial = paymentAuthInitialKey(long)!;
+      expect(initial.length, 80);
+      expect(initial.endsWith('-auth'), isTrue);
+      final retry = paymentAuthRetryKey(initial)!;
+      expect(retry.length, 80);
+      expect(retry.endsWith('-retry-1'), isTrue);
+    });
+
+    test('detecta codigos de conflicto de idempotencia', () {
+      expect(isPaymentAuthConflictCode('CONFLICT'), isTrue);
+      expect(isPaymentAuthConflictCode('IDEMPOTENCY_CONFLICT'), isTrue);
+      expect(isPaymentAuthConflictCode('DUPLICATE_REQUEST'), isTrue);
+      expect(isPaymentAuthConflictCode('NOT_AUTHORIZED'), isFalse);
+      expect(isPaymentAuthConflictCode(null), isFalse);
+    });
+  });
+
+  group('Alcance de idempotencia transfer+authorize (causa raiz)', () {
+    /// Servidor minimo con UQ GLOBAL `(key, user_id)` sin `endpoint`:
+    /// la misma clave con cuerpo distinto da `409`, como el backend real
+    /// (`uq_idempotency_key_user`). El fake anterior no lo modelaba y por
+    /// eso el bug no se detecto.
+    test('misma clave en transfer y authorize da 409', () async {
+      final server = _SharedIdempotencyServer();
+      // El `POST /transfers/third-party` reclama la clave del borrador.
+      server.claim(
+        key: 'k-draft',
+        body: 'transfer|a1|b1|25000',
+      );
+      final auth = _SharedAuthFake(server: server);
+      final c = PaymentAuthorizationController(
+        service: auth,
+        reader: FakeBiometricReader(),
+        signNonce: (nonce) async => 'sig-of-$nonce',
+        deviceId: 'dev-1',
+      );
+      // Reutilizar la clave del borrador en el `authorize` (cuerpo
+      // distinto: firma/nonce) -> `409`, el reto nunca se ejecuta.
+      final st = await c.authorize(
+        transactionId: 'tx-1',
+        nonce: 'n-1',
+        idempotencyKey: 'k-draft',
+        reason: 'Autoriza',
+      );
+      expect(st.outcome, PaymentAuthOutcome.failed);
+      expect(st.code, 'CONFLICT');
+    });
+
+    test('clave derivada -auth autoriza sin conflicto', () async {
+      final server = _SharedIdempotencyServer();
+      server.claim(
+        key: 'k-draft',
+        body: 'transfer|a1|b1|25000',
+      );
+      final auth = _SharedAuthFake(server: server);
+      final c = PaymentAuthorizationController(
+        service: auth,
+        reader: FakeBiometricReader(),
+        signNonce: (nonce) async => 'sig-of-$nonce',
+        deviceId: 'dev-1',
+      );
+      final derived = paymentAuthInitialKey('k-draft')!;
+      expect(derived, 'k-draft-auth');
+      final st = await c.authorize(
+        transactionId: 'tx-1',
+        nonce: 'n-1',
+        idempotencyKey: derived,
+        reason: 'Autoriza',
+      );
+      expect(st.outcome, PaymentAuthOutcome.authorized);
+      expect(st.result?.status, 'SETTLED');
+    });
   });
 
   group('PaymentErrorKind', () {
@@ -575,7 +661,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('reto exitoso continua al comprobante con la misma clave', (
+    testWidgets('reto exitoso continua al comprobante con clave derivada', (
       tester,
     ) async {
       final transfers = _FakeConfirmTransfers();
@@ -588,7 +674,11 @@ void main() {
 
       expect(find.text('Transferencia exitosa'), findsOneWidget);
       expect(auth.authorizeCalls, 1);
-      expect(auth.authorizeKeys, ['k-auth-1']);
+      // Regresion causa raiz: el `authorize` NUNCA reutiliza la clave del
+      // borrador (`k-auth-1`): usa `<borrador>-auth` para no chocar con la
+      // UQ global `(key, user_id)` del backend (mismo cuerpo distinto =
+      // `409` y reto nunca ejecutado).
+      expect(auth.authorizeKeys, ['k-auth-1-auth']);
     });
 
     testWidgets('biometria fallida muestra el fallback a PIN', (tester) async {
@@ -612,6 +702,80 @@ void main() {
       expect(find.text('Login con PIN'), findsOneWidget);
     });
 
+    testWidgets('tap directo en PIN monta el fallback (regresion)', (
+      tester,
+    ) async {
+      final transfers = _FakeConfirmTransfers();
+      final auth = FakePaymentAuthService();
+      await pumpPending(tester, transfers: transfers, auth: auth);
+
+      expect(find.byKey(const Key('biometric-title')), findsOneWidget);
+      // Sin pasar por el controlador: el `onUsePin` antes hacia
+      // `pop(usePin)` sin fijar estado y el fallback nunca se montaba.
+      await tester.tap(find.byKey(const Key('biometric-pin-fallback')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('pin-fallback-card')), findsOneWidget);
+      expect(find.byKey(const Key('pin-fallback-message')), findsOneWidget);
+      expect(auth.authorizeCalls, 0);
+    });
+
+    testWidgets('409 en authorize reconcilia por GET y va al comprobante', (
+      tester,
+    ) async {
+      final transfers = _FakeConfirmTransfers()
+        ..settledDetail = const TransactionDetail(
+          transactionId: 'tx-1',
+          type: 'OWN_TRANSFER',
+          status: 'SETTLED',
+          amountMinor: 25000,
+          currency: 'PEN',
+        );
+      final auth = FakePaymentAuthService()
+        ..authorizeScript = [
+          ApiException(
+            code: 'CONFLICT',
+            message: 'Idempotency-Key ya usada con un cuerpo distinto.',
+          ),
+        ];
+      await pumpPending(tester, transfers: transfers, auth: auth);
+
+      await tapSheetAuthorize(tester);
+
+      // Exito real tras el `409`: comprobante, sin callejon de duplicado.
+      expect(find.text('Transferencia exitosa'), findsOneWidget);
+      expect(auth.authorizeKeys, ['k-auth-1-auth']);
+    });
+
+    testWidgets('409 con pendiente ofrece PIN tras reintento con clave nueva', (
+      tester,
+    ) async {
+      final transfers = _FakeConfirmTransfers()
+        ..settledDetail = const TransactionDetail(
+          transactionId: 'tx-1',
+          type: 'OWN_TRANSFER',
+          status: 'PENDING_AUTHORIZATION',
+          amountMinor: 25000,
+          currency: 'PEN',
+          nonce: 'n-1',
+        );
+      final auth = FakePaymentAuthService()
+        ..authorizeScript = [
+          ApiException(code: 'CONFLICT', message: 'En conflicto.'),
+          ApiException(code: 'CONFLICT', message: 'En conflicto.'),
+        ];
+      await pumpPending(tester, transfers: transfers, auth: auth);
+
+      await tapSheetAuthorize(tester);
+
+      expect(find.byKey(const Key('pin-fallback-card')), findsOneWidget);
+      // El reintento tras el `409` usa clave NUEVA, no la misma.
+      expect(auth.authorizeKeys, [
+        'k-auth-1-auth',
+        'k-auth-1-auth-retry-1',
+      ]);
+    });
+
     testWidgets('EXPIRED_NONCE sin reto nuevo muestra sesion expirada', (
       tester,
     ) async {
@@ -633,9 +797,9 @@ void main() {
 
       expect(find.text('La solicitud expiró'), findsOneWidget);
       // Sin reto nuevo no hay segundo `authorize`: un solo intento con la
-      // clave del borrador + una rotacion (el reintento con `nonce` nuevo y
+      // clave DERIVADA + una rotacion (el reintento con `nonce` nuevo y
       // clave nueva se prueba a nivel controlador).
-      expect(auth.authorizeKeys, ['k-auth-1']);
+      expect(auth.authorizeKeys, ['k-auth-1-auth']);
       expect(auth.refreshCalls, 1);
     });
 
@@ -698,9 +862,62 @@ const _a1 = Account(
   balanceMinor: 485020,
 );
 
+/// Servidor minimo con UQ global `(key, user_id)` para la regresion de la
+/// causa raiz: misma clave + cuerpo distinto -> `409`, como el backend.
+class _SharedIdempotencyServer {
+  final Map<String, String> bodies = {};
+
+  void claim({required String key, required String body}) {
+    bodies[key] = body;
+  }
+
+  void check({required String key, required String body}) {
+    final prior = bodies[key];
+    if (prior != null && prior != body) {
+      throw ApiException(
+        code: 'CONFLICT',
+        message: 'Idempotency-Key ya usada con un cuerpo distinto.',
+      );
+    }
+    bodies[key] = body;
+  }
+}
+
+/// Fake de `authorize` sobre el servidor compartido (semantica real de UQ).
+class _SharedAuthFake implements PaymentAuthorizationServiceBase {
+  _SharedAuthFake({required this.server});
+
+  final _SharedIdempotencyServer server;
+
+  @override
+  Future<AuthorizationResult> authorize({
+    required String transactionId,
+    required String nonce,
+    required String signature,
+    required String deviceId,
+    String? idempotencyKey,
+  }) async {
+    server.check(
+      key: idempotencyKey ?? '',
+      body: 'authorize|$transactionId|$nonce|$signature|$deviceId',
+    );
+    return AuthorizationResult(transactionId: transactionId, status: 'SETTLED');
+  }
+
+  @override
+  Future<TransactionDetail> refreshChallenge(String transactionId) {
+    throw UnimplementedError();
+  }
+}
+
 /// Fake mínimo del POST de transferencias (el resto del seam no se usa).
 class _FakeConfirmTransfers implements TransfersServiceBase {
   TransferResult? ownResult;
+
+  /// Respuesta de `GET /transactions/{id}` para reconciliar `409`.
+  /// `null` = no usado (los tests viejos no tocan el `GET`).
+  TransactionDetail? settledDetail;
+  int getTransactionCalls = 0;
 
   @override
   Future<TransferResult> createOwnTransfer({
@@ -761,8 +978,12 @@ class _FakeConfirmTransfers implements TransfersServiceBase {
       throw UnimplementedError();
 
   @override
-  Future<TransactionDetail> getTransaction(String transactionId) =>
-      throw UnimplementedError();
+  Future<TransactionDetail> getTransaction(String transactionId) async {
+    getTransactionCalls++;
+    final detail = settledDetail;
+    if (detail != null) return detail;
+    throw ApiException(code: 'NOT_FOUND', message: 'No encontrada.');
+  }
 
   @override
   Future<ReceiptResult> getReceipt(String transactionId) =>

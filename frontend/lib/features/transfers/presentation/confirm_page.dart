@@ -33,9 +33,13 @@ import 'widgets/cci_status_banner.dart';
 ///   de pago 2/3 (E2-T21, sin tecnicismos).
 /// - `PENDING_AUTHORIZATION` -> reto biometrico del dispositivo (E2-T21):
 ///   bottom sheet `Autorización Biométrica`, firma del `nonce` y
-///   `POST /transactions/{id}/authorize` con la `Idempotency-Key` del
-///   borrador; fallo -> mensaje claro + fallback a PIN; `EXPIRED_NONCE` ->
-///   rotacion del reto + reintento con clave nueva (lo hace el controlador).
+///   `POST /transactions/{id}/authorize` con clave DERIVADA
+///   `<borrador>-auth` (la UQ `(key, user_id)` es global: reutilizar la del
+///   borrador da `409`); `409` -> reconcilia con `GET /transactions/{id}`
+///   (exito -> comprobante, pendiente -> reintento con clave nueva + PIN,
+///   terminal -> error); fallo -> mensaje claro + fallback a PIN;
+///   `EXPIRED_NONCE` -> rotacion del reto + reintento con clave nueva
+///   (lo hace el controlador).
 /// - `HOLDER_NOT_FOUND` / `HOLDER_LOOKUP_UNAVAILABLE` (interbancaria) ->
 ///   banner CCI + [Corregir / Reintentar] (misma clave).
 class ConfirmPage extends StatefulWidget {
@@ -248,10 +252,12 @@ class _ConfirmPageState extends State<ConfirmPage> {
   /// Reto biometrico tras `PENDING_AUTHORIZATION` (E2-T21).
   ///
   /// Muestra el bottom sheet `Autorización Biométrica` (mockup `0:3964`);
-  /// con la huella superada firma el `nonce` y autoriza con la
-  /// `Idempotency-Key` del borrador. Sin biometria o ante fallo/cancelacion
-  /// ofrece el fallback a PIN; `EXPIRED_NONCE` rota el reto y reintenta con
-  /// clave nueva (lo hace el controlador).
+  /// con la huella superada firma el `nonce` y autoriza con clave derivada
+  /// `<borrador>-auth` (nunca la del borrador: la UQ es global y el reuso
+  /// cruzado da `409`). Sin biometria o ante fallo/cancelacion ofrece el
+  /// fallback a PIN; `EXPIRED_NONCE` rota el reto y reintenta con clave
+  /// nueva (lo hace el controlador); `409` reconcilia con
+  /// `GET /transactions/{id}` antes de mostrar errores.
   Future<void> _startBiometricChallenge(TransferResult pending) async {
     final factory = widget.authDepsFactory ?? paymentAuthorizationDepsFactory;
     if (factory == null) {
@@ -299,98 +305,278 @@ class _ConfirmPageState extends State<ConfirmPage> {
     final reason =
         'Autoriza tu transferencia de $_amountLabel a $_recipientLabel';
     PaymentAuthState? authState;
+    AuthorizationResult? conflictSettled;
+    TransactionDetail? conflictTerminal;
+    // Clave del `authorize` DERIVADA del borrador: la UQ `(key, user_id)`
+    // es global sin `endpoint` y reutilizar la del `POST /transfers/...`
+    // con cuerpo distinto devuelve `409` (el reto nunca se ejecutaria).
+    var currentAuthKey =
+        paymentAuthInitialKey(_draft.idempotencyKey) ?? _draft.idempotencyKey;
     var sheetBusy = false;
     var sheetError = '';
+
+    Future<TransactionDetail?> fetchDetail() async {
+      final svc = widget.service;
+      if (svc == null) return null;
+      try {
+        return await svc.getTransaction(pending.transactionId);
+      } on ApiException {
+        return null;
+      }
+    }
+
+    AuthorizationResult settledFromDetail(TransactionDetail detail) {
+      return AuthorizationResult(
+        transactionId: detail.transactionId,
+        status: detail.status,
+        tracking: detail.tracking,
+        failureCode: detail.failureCode,
+      );
+    }
+
+    bool isTerminalFailure(TransactionDetail detail) {
+      final s = detail.status.toUpperCase();
+      return s == 'REJECTED' || s == 'FAILED';
+    }
+
+    void popSheet(BuildContext sheetContext, BiometricSheetOutcome outcome) {
+      if (sheetContext.mounted) {
+        Navigator.of(sheetContext).pop(outcome);
+      }
+    }
+
+    Future<void> runAttempt(
+      StateSetter setSheet,
+      BuildContext sheetContext,
+    ) async {
+      setSheet(() {
+        sheetBusy = true;
+        sheetError = '';
+      });
+      final st = await controller.authorize(
+        transactionId: pending.transactionId,
+        nonce: nonce,
+        idempotencyKey: currentAuthKey,
+        reason: reason,
+      );
+      if (!sheetContext.mounted) return;
+      if (st.outcome == PaymentAuthOutcome.authorized) {
+        authState = st;
+        popSheet(sheetContext, BiometricSheetOutcome.authorize);
+        return;
+      }
+      if (st.outcome == PaymentAuthOutcome.requiresPinFallback) {
+        authState = st;
+        popSheet(sheetContext, BiometricSheetOutcome.usePin);
+        return;
+      }
+      if (st.outcome == PaymentAuthOutcome.expired) {
+        authState = st;
+        popSheet(sheetContext, BiometricSheetOutcome.authorize);
+        return;
+      }
+      if (!isPaymentAuthConflictCode(st.code)) {
+        setSheet(() {
+          sheetBusy = false;
+          sheetError = st.message;
+        });
+        authState = st;
+        return;
+      }
+      // `409` por reuso cruzado de la clave: reconciliar con el estado
+      // real antes de mostrar "ya procesada" como callejon sin salida.
+      final detail = await fetchDetail();
+      if (!sheetContext.mounted) return;
+      if (detail == null) {
+        setSheet(() {
+          sheetBusy = false;
+          sheetError = st.message;
+        });
+        authState = st;
+        return;
+      }
+      if (detail.isSuccess) {
+        conflictSettled = settledFromDetail(detail);
+        authState = st;
+        popSheet(sheetContext, BiometricSheetOutcome.authorize);
+        return;
+      }
+      if (detail.status.toUpperCase() == 'PENDING_AUTHORIZATION') {
+        final nextKey =
+            paymentAuthRetryKey(currentAuthKey) ?? '$currentAuthKey-retry-1';
+        currentAuthKey = nextKey;
+        var retryNonce = (detail.nonce?.isNotEmpty ?? false)
+            ? detail.nonce!
+            : nonce;
+        if (retryNonce.isEmpty) {
+          try {
+            final fresh = await deps.service.refreshChallenge(
+              pending.transactionId,
+            );
+            if ((fresh.nonce?.isNotEmpty ?? false)) {
+              retryNonce = fresh.nonce!;
+            }
+          } on ApiException {
+            // Sin reto vigente: ir al PIN en vez de bloquear.
+          }
+          if (!sheetContext.mounted) return;
+        }
+        if (retryNonce.isEmpty) {
+          authState = st;
+          popSheet(sheetContext, BiometricSheetOutcome.usePin);
+          return;
+        }
+        final st2 = await controller.authorize(
+          transactionId: pending.transactionId,
+          nonce: retryNonce,
+          idempotencyKey: nextKey,
+          reason: reason,
+        );
+        if (!sheetContext.mounted) return;
+        if (st2.outcome == PaymentAuthOutcome.authorized) {
+          authState = st2;
+          popSheet(sheetContext, BiometricSheetOutcome.authorize);
+          return;
+        }
+        if (st2.outcome == PaymentAuthOutcome.requiresPinFallback) {
+          authState = st2;
+          popSheet(sheetContext, BiometricSheetOutcome.usePin);
+          return;
+        }
+        if (st2.outcome == PaymentAuthOutcome.expired) {
+          authState = st2;
+          popSheet(sheetContext, BiometricSheetOutcome.authorize);
+          return;
+        }
+        if (isPaymentAuthConflictCode(st2.code)) {
+          final again = await fetchDetail();
+          if (!sheetContext.mounted) return;
+          if (again != null && again.isSuccess) {
+            conflictSettled = settledFromDetail(again);
+            authState = st2;
+            popSheet(sheetContext, BiometricSheetOutcome.authorize);
+            return;
+          }
+          if (again != null && isTerminalFailure(again)) {
+            conflictTerminal = again;
+            authState = st2;
+            popSheet(sheetContext, BiometricSheetOutcome.authorize);
+            return;
+          }
+          // Sigue pendiente tras el segundo `409`: ofrecer PIN.
+          authState = st2;
+          popSheet(sheetContext, BiometricSheetOutcome.usePin);
+          return;
+        }
+        setSheet(() {
+          sheetBusy = false;
+          sheetError = st2.message;
+        });
+        authState = st2;
+        return;
+      }
+      if (isTerminalFailure(detail)) {
+        conflictTerminal = detail;
+        authState = st;
+        popSheet(sheetContext, BiometricSheetOutcome.authorize);
+        return;
+      }
+      setSheet(() {
+        sheetBusy = false;
+        sheetError = st.message;
+      });
+      authState = st;
+    }
+
     // El sheet trae su propio estado de carga: se apaga el spinner de la
     // confirmacion para no animar tras el modal (ni bloquear el hilo).
     if (mounted) setState(() => _submitting = false);
-    await showModalBottomSheet<BiometricSheetOutcome>(
-      context: context,
-      isDismissible: true,
-      enableDrag: true,
-      backgroundColor: AppColors.surfaceContainerLowest,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => StatefulBuilder(
-        builder: (context, setSheet) => BiometricChallengeSheet(
-          amountLabel: _amountLabel,
-          recipientLabel: _recipientLabel,
-          isAuthorizing: sheetBusy,
-          errorMessage: sheetError,
-          onAuthorize: () async {
-            setSheet(() {
-              sheetBusy = true;
-              sheetError = '';
-            });
-            final st = await controller.authorize(
-              transactionId: pending.transactionId,
-              nonce: nonce,
-              idempotencyKey: _draft.idempotencyKey,
-              reason: reason,
-            );
-            if (!sheetContext.mounted) return;
-            if (st.outcome == PaymentAuthOutcome.authorized) {
-              authState = st;
-              Navigator.of(sheetContext).pop(BiometricSheetOutcome.authorize);
-              return;
-            }
-            if (st.outcome == PaymentAuthOutcome.requiresPinFallback) {
-              authState = st;
-              Navigator.of(sheetContext).pop(BiometricSheetOutcome.usePin);
-              return;
-            }
-            if (st.outcome == PaymentAuthOutcome.expired) {
-              authState = st;
-              Navigator.of(sheetContext).pop(BiometricSheetOutcome.authorize);
-              return;
-            }
-            setSheet(() {
-              sheetBusy = false;
-              sheetError = st.message;
-            });
-            authState = st;
-          },
-          onRetry: () async {
-            setSheet(() {
-              sheetBusy = true;
-              sheetError = '';
-            });
-            final st = await controller.authorize(
-              transactionId: pending.transactionId,
-              nonce: nonce,
-              idempotencyKey: _draft.idempotencyKey,
-              reason: reason,
-            );
-            if (!sheetContext.mounted) return;
-            if (st.outcome == PaymentAuthOutcome.authorized ||
-                st.outcome == PaymentAuthOutcome.requiresPinFallback ||
-                st.outcome == PaymentAuthOutcome.expired) {
-              authState = st;
-              Navigator.of(sheetContext).pop(
-                st.outcome == PaymentAuthOutcome.authorized ||
-                        st.outcome == PaymentAuthOutcome.expired
-                    ? BiometricSheetOutcome.authorize
-                    : BiometricSheetOutcome.usePin,
-              );
-              return;
-            }
-            setSheet(() {
-              sheetBusy = false;
-              sheetError = st.message;
-            });
-            authState = st;
-          },
-          onUsePin: () =>
-              Navigator.of(sheetContext).pop(BiometricSheetOutcome.usePin),
-          onCancel: () =>
-              Navigator.of(sheetContext).pop(BiometricSheetOutcome.cancelled),
-        ),
-      ),
-    );
+    final sheetOutcome =
+        await showModalBottomSheet<BiometricSheetOutcome>(
+          context: context,
+          isDismissible: true,
+          enableDrag: true,
+          backgroundColor: AppColors.surfaceContainerLowest,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          builder: (sheetContext) => StatefulBuilder(
+            builder: (context, setSheet) => BiometricChallengeSheet(
+              amountLabel: _amountLabel,
+              recipientLabel: _recipientLabel,
+              isAuthorizing: sheetBusy,
+              errorMessage: sheetError,
+              onAuthorize: () => runAttempt(setSheet, sheetContext),
+              onRetry: () => runAttempt(setSheet, sheetContext),
+              onUsePin: () =>
+                  Navigator.of(sheetContext).pop(BiometricSheetOutcome.usePin),
+              onCancel: () => Navigator.of(
+                sheetContext,
+              ).pop(BiometricSheetOutcome.cancelled),
+            ),
+          ),
+        );
     if (!mounted) return;
+    if (conflictSettled != null) {
+      _continueAfterAuthorization(conflictSettled!, pending);
+      return;
+    }
+    if (conflictTerminal != null) {
+      final detail = conflictTerminal!;
+      setState(() {
+        _submitting = false;
+        _paymentError = _errorArgs(
+          PaymentErrorKind.fromCode(detail.failureCode),
+          transactionId: detail.transactionId,
+          errorCode: detail.failureCode,
+        );
+      });
+      return;
+    }
     final st = authState;
+    // `409` sin resolver dentro del sheet (p. ej. fallo el `GET`):
+    // reconciliar una vez fuera antes de mostrar el duplicado.
+    if (st != null && isPaymentAuthConflictCode(st.code)) {
+      final detail = await fetchDetail();
+      if (!mounted) return;
+      if (detail != null && detail.isSuccess) {
+        _continueAfterAuthorization(settledFromDetail(detail), pending);
+        return;
+      }
+      if (detail != null &&
+          detail.status.toUpperCase() == 'PENDING_AUTHORIZATION') {
+        setState(() {
+          _submitting = false;
+          _pinFallbackMessage =
+              'La operación sigue pendiente. Puedes reintentar con tu '
+              'huella o continuar con tu PIN de seguridad.';
+        });
+        return;
+      }
+      if (detail != null && isTerminalFailure(detail)) {
+        setState(() {
+          _submitting = false;
+          _paymentError = _errorArgs(
+            PaymentErrorKind.fromCode(detail.failureCode),
+            transactionId: detail.transactionId,
+            errorCode: detail.failureCode,
+          );
+        });
+        return;
+      }
+    }
     if (st == null) {
+      // El tap directo en "Usar mi PIN" cierra el sheet con `usePin` pero
+      // sin pasar por el controlador: igual debe montar el fallback.
+      if (sheetOutcome == BiometricSheetOutcome.usePin) {
+        setState(() {
+          _submitting = false;
+          _pinFallbackMessage =
+              'No pudimos verificar tu huella. Puedes reintentar o usar '
+              'tu PIN de seguridad.';
+        });
+        return;
+      }
       setState(() => _submitting = false);
       return;
     }
@@ -409,10 +595,14 @@ class _ConfirmPageState extends State<ConfirmPage> {
       });
       return;
     }
-    if (st.outcome == PaymentAuthOutcome.requiresPinFallback) {
+    if (st.outcome == PaymentAuthOutcome.requiresPinFallback ||
+        sheetOutcome == BiometricSheetOutcome.usePin) {
       setState(() {
         _submitting = false;
-        _pinFallbackMessage = st.message;
+        _pinFallbackMessage = st.message.isNotEmpty
+            ? st.message
+            : 'No pudimos verificar tu huella. Puedes reintentar o usar '
+                  'tu PIN de seguridad.';
       });
       return;
     }

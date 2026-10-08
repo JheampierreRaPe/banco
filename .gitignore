@@ -25,6 +25,9 @@ frontend/.dart_tool/
 frontend/.flutter-plugins
 frontend/.flutter-plugins-dependencies
 frontend/build/
+frontend/android/build/
+frontend/android/.gradle/
+frontend/android/app/.cxx/
 frontend/.idea/
 frontend/.vscode/
 

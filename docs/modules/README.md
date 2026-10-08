@@ -181,6 +181,13 @@ eventos (`outbox`/`inbox`).
   `user_id` no es UUID). La consume `transactions` (`resolve_target`) para resolver la
   cardinalidad de cuentas `ACTIVE` del titular (0 -> `404` neutro; 1 -> `200`; >= 2 ->
   `409 TARGET_AMBIGUOUS`) sin importar modelos de `accounts`.
+- **Fachada de lectura por numero de cuenta (E2-T30, HU06/HU07):**
+  `accounts.service.get_account_by_number(session, account_number) -> {account_id,
+  user_id, status, currency, account_number} | None` (solo lectura; `None` si el
+  numero no existe o la entrada no es textual/vacia, sin oraculo). La consume
+  `transactions` (`resolve_third_party_target_id`) para resolver el `account_or_cci`
+  de un beneficiario a su cuenta real sin importar modelos/repositorios de `accounts`
+  (D-01); el numero en claro es de uso interno (jamas en logs ni respuestas).
 - **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
   busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
   `PUT /{id}` (edicion parcial incl. `preapproved_limit_minor`) y `DELETE /{id}?confirm=true`
@@ -231,8 +238,10 @@ eventos (`outbox`/`inbox`).
   `ACTIVE`), `422 VALIDATION_ERROR`. Servicio `transactions.service.resolve_target`;
   consume las fachadas `identity.service.target_lookup` y
   `accounts.service.list_active_by_user` (D-01) y reutiliza `mask_holder_name`
-  (E2-T08) + `mask_account_number`. El `POST /transfers/third-party` **no cambia**
-  (sigue recibiendo `target_account_id`). Sin PII en logs ni respuestas.
+  (E2-T08) + `mask_account_number`. El `POST /transfers/third-party` **no cambia en ese
+  flujo** (sigue recibiendo el `target_account_id` devuelto por `resolve-target`); el
+  destino por beneficiario de la agenda se resuelve server-side en `E2-T30`. Sin PII en
+  logs ni respuestas.
 - **Saga interbancaria (E2-T09, HU06):** `POST /transfers/interbank` (`202` +
   `tracking`) y `GET /transactions/{id}` (detalle + `tracking` + `history`);
   maquina `FUNDS_HELD -> POSTED -> SETTLED` con compensacion a `FAILED`
@@ -279,6 +288,19 @@ eventos (`outbox`/`inbox`).
   modelos, D-01) y la decision viaja en `transaction.initiated`
   (`exemption_reason="PREAPPROVED_LIMIT"` + `beneficiary_id`, solo UUIDs, sin
   PII). Por encima del tope o sin beneficiario rige el gate de `E2-T17`.
+- **Destino por beneficiario de la agenda (E2-T30, HU06/HU07):**
+  `POST /transfers/third-party` resuelve server-side el destino con
+  `resolve_third_party_target_id` (solo lectura, antes de consumir la
+  `Idempotency-Key`): `target_account_id` real > resolucion del beneficiario
+  (`beneficiary_id` campo nuevo opcional o `metadata["beneficiary_id"]`) >
+  `400 VALIDATION_ERROR`. La resolucion encadena
+  `accounts.beneficiaries_service.get_for_operation` -> `account_or_cci` ->
+  `accounts.service.get_account_by_number` -> `account_id` real. Solo cuentas
+  CuyCash de 14 digitos resuelven; un CCI de 20 u otro numero no resoluble, o un
+  beneficiario inexistente/ajeno/dado de baja, colapsan al **mismo `404
+  NOT_FOUND` neutro** (sin derivar a interbancaria, sin oraculo; nunca `403` por
+  el beneficiario). El schema usa `extra="forbid"`. El frontend de agenda envia
+  `beneficiary_id` (no el id del beneficiario como `target_account_id`).
 - **Endpoint de autorizacion (E2-T19, HU08 CA-01):**
   `POST /transactions/{id}/authorize` (Bearer, `Idempotency-Key` obligatoria)
   recibe `{nonce, signature, device_id}`, valida titular y firma/binding por la

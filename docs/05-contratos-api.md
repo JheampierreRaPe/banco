@@ -404,7 +404,9 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > "source_account_id", "target_account_id", "amount_minor", "currency", "fee_minor",
 > "failure_code" (`INSUFFICIENT_FUNDS` solo si `REJECTED`)}, "meta": {"request_id",
 > "replayed"}}`. La propia es atomica sin hold (un asiento `2000-S -> 2000-D`, sin
-> comision); la de tercero es hold+settle con la comision a `4100`. Errores:
+> comision); la de tercero es hold+settle con la comision a `4100`. En
+> `/transfers/third-party` `target_account_id` pasa a **opcional** si se envia
+> `beneficiary_id` (E2-T30, ver abajo); en `/transfers/own` sigue obligatorio. Errores:
 > `401 NOT_AUTHENTICATED`, `422` (falta `Idempotency-Key`, esquema invalido o
 > `amount_minor <= 0` / `fee_minor < 0`, que el esquema rechaza con `ge=1`/`ge=0`),
 > `400 VALIDATION_ERROR` (misma cuenta, moneda incoherente),
@@ -412,6 +414,27 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > cuenta no `ACTIVE`), `409 CONFLICT` (misma clave + cuerpo distinto). Saldo
 > insuficiente = `201` con `status=REJECTED` (sin tocar saldos; reintentable con la
 > misma clave). Solo UUIDs en respuestas (regla de oro 9).
+>
+> Contrato E2-T30 destino por beneficiario de la agenda `POST /transfers/third-party` (Bearer,
+> HU06/HU07): el request de tercero admite dos formas de destino: (a) `target_account_id` de una
+> cuenta real (comportamiento `E2-T07`) o (b) `beneficiary_id` (campo nuevo **opcional**) o
+> `metadata["beneficiary_id"]`, resuelto server-side a la cuenta real del beneficiario.
+> **Precedencia:** si `target_account_id` viene y resuelve (`accounts.service.get_account`), gana
+> tal cual (el beneficiario solo habilita la exencion por tope, `E2-T14`); si falta o no resuelve y
+> hay beneficiario, se resuelve por `accounts.service.beneficiaries.get_for_operation` ->
+> `account_or_cci` -> `accounts.service.get_account_by_number` -> `account_id` real; sin ninguno de
+> los dos -> `400 VALIDATION_ERROR` ("destino requerido"). Solo resuelven cuentas CuyCash de
+> **14 digitos**; un **CCI de 20** de otro banco o un numero sin cuenta -> `404 NOT_FOUND`
+> **neutro** (mismo cuerpo "cuenta destino inexistente", sin revelar si el numero existe), y **no**
+> se deriva automaticamente a `POST /transfers/interbank` (encadenar la saga es tarea aparte). Un
+> beneficiario inexistente, ajeno o dado de baja colapsa al **mismo `404 NOT_FOUND` neutro**
+> (aislamiento por titular; nunca `403` por el beneficiario). La resolucion es de solo lectura y
+> ocurre antes de consumir la `Idempotency-Key`; la respuesta (`TransferResponse`) no cambia y el
+> `target_account_id` devuelto es el de la cuenta real resuelta. Sin PII: el `account_or_cci` en
+> claro nunca va a logs ni respuestas (la API solo devuelve UUIDs). El schema rechaza campos
+> desconocidos (`extra="forbid"`; no acepta identificadores del lookup previo de `E2-T27`). Sin
+> eventos nuevos (`transaction.initiated`/`funds.held`/`transfer.settled` intactos;
+> `transaction.initiated` conserva `exemption_reason`/`beneficiary_id` de `E2-T14`).
 >
 > Contrato E2-T27 lookup previo de destino por DNI/celular (Bearer, HU06; **decision del dueno
 > 2026-10-03**): `POST /api/v1/transfers/third-party/resolve-target` (solo lectura, **sin**
@@ -421,8 +444,9 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > `422`) -> `200 {"data": {"target_account_id", "holder_name_masked",
 > "account_number_masked" (`****dddd`), "currency"}, "meta": {"request_id"}}`. El cliente muestra
 > el titular enmascarado y luego ejecuta `POST /transfers/third-party` con ese
-> `target_account_id`. El **POST de la transferencia NO se extiende**: no acepta
-> `target_document`/`target_phone` (se descarto esa via). Errores: `401 NOT_AUTHENTICATED`;
+> `target_account_id`. El **POST de la transferencia NO se extiende con `target_document`/
+> `target_phone`** (se descarto esa via; el destino por beneficiario de la agenda es otra cosa,
+> ver `E2-T30` arriba). Errores: `401 NOT_AUTHENTICATED`;
 > `404 TARGET_NOT_FOUND` **neutro** (mismo cuerpo si el DNI/celular no existe o si el usuario no
 > tiene cuenta `ACTIVE`; anti-enumeracion); `409 TARGET_AMBIGUOUS` (el usuario resuelto tiene
 > **varias cuentas `ACTIVE`**: no se elige "la principal", se pide usar el numero de cuenta);

@@ -374,10 +374,10 @@ def test_migration_file_chain():
     assert len("0024_accounts_numeric_backfill") <= 32  # limite de alembic_version
 
 
-def test_single_head_is_0024():
+def test_single_head_is_0025():
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0024_accounts_numeric_backfill",)
+    assert get_head_revisions() == ("0025_biometric_coherence",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

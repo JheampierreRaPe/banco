@@ -33,10 +33,10 @@ MIGRATION_PATH = BACKEND_DIR / "migrations" / "versions" / "0023_risk_profiles_p
 
 # ---------------------------------------------------------- Parte A: pura
 def test_defaults_match_seeds():
-    """Defaults = semillas (`0001`/`0019`/`0023`): migrar no cambia conducta."""
+    """Defaults = semillas (`0001`/`0019`/`0023`/`0025`): migrar no cambia conducta."""
     from app.modules.shared.config import parameters as params
 
-    assert params.DEFAULT_BIOMETRIC_THRESHOLD_MINOR == 1_000_000
+    assert params.DEFAULT_BIOMETRIC_THRESHOLD_MINOR == 100_000
     assert params.DEFAULT_DAILY_LIMIT_MINOR == 500_000
     assert params.DEFAULT_MAX_FAILED_ATTEMPTS == 5
     assert params.BIOMETRIC_THRESHOLD_KEY == "transfer.biometric_threshold_minor"
@@ -157,7 +157,7 @@ def _seed_param(session: Session, key: str, value: str, module: str = "transacti
 def _seed_defaults(session: Session) -> None:
     from app.modules.shared.config import parameters as params
 
-    _seed_param(session, params.BIOMETRIC_THRESHOLD_KEY, "1000000")
+    _seed_param(session, params.BIOMETRIC_THRESHOLD_KEY, "100000")
     _seed_param(session, params.DAILY_LIMIT_KEY, "500000")
     _seed_param(session, "transfer.daily_limit_STANDARD_minor", "500000")
     _seed_param(session, params.AUTH_MAX_FAILED_ATTEMPTS_KEY, "5", module="identity")
@@ -167,7 +167,7 @@ def test_read_threshold_limits_and_profiles(sqlite_session: Session):
     from app.modules.shared.config import parameters as params
 
     _seed_defaults(sqlite_session)
-    assert params.get_biometric_threshold_minor(sqlite_session) == 1_000_000
+    assert params.get_biometric_threshold_minor(sqlite_session) == 100_000
     assert params.get_daily_limit_minor(sqlite_session) == 500_000
     assert params.get_daily_limit_minor(sqlite_session, "STANDARD") == 500_000
     assert params.get_max_failed_attempts(sqlite_session) == 5
@@ -179,7 +179,7 @@ def test_hot_change_reflected_without_restart(sqlite_session: Session):
     from app.modules.shared.config import parameters as params
 
     _seed_defaults(sqlite_session)
-    assert params.get_biometric_threshold_minor(sqlite_session) == 1_000_000
+    assert params.get_biometric_threshold_minor(sqlite_session) == 100_000
     assert (
         params.set_parameter(sqlite_session, key=params.BIOMETRIC_THRESHOLD_KEY, value=2_000_000)
         == 2_000_000
@@ -200,7 +200,7 @@ def test_hot_change_reflected_without_restart(sqlite_session: Session):
 def test_missing_key_falls_back(sqlite_session: Session):
     from app.modules.shared.config import parameters as params
 
-    assert params.get_biometric_threshold_minor(sqlite_session) == 1_000_000
+    assert params.get_biometric_threshold_minor(sqlite_session) == 100_000
     assert params.get_daily_limit_minor(sqlite_session, "VIP") == 500_000
     assert params.get_daily_limit_minor(sqlite_session, "STANDARD") == 500_000
     assert params.get_max_failed_attempts(sqlite_session) == 5
@@ -219,7 +219,7 @@ def test_invalid_stored_value_falls_back_without_raising(sqlite_session: Session
         value="0",
         module="identity",
     )
-    assert params.get_biometric_threshold_minor(sqlite_session) == 1_000_000
+    assert params.get_biometric_threshold_minor(sqlite_session) == 100_000
     assert params.get_daily_limit_minor(sqlite_session) == 500_000
     assert params.get_daily_limit_minor(sqlite_session, "STANDARD") == 500_000
     assert params.get_max_failed_attempts(sqlite_session) == 5
@@ -237,7 +237,7 @@ def test_read_without_table_falls_back():
     )
     session = Session(bind=engine, autoflush=False, expire_on_commit=False)
     try:
-        assert params.get_biometric_threshold_minor(session) == 1_000_000
+        assert params.get_biometric_threshold_minor(session) == 100_000
         assert params.get_daily_limit_minor(session, "STANDARD") == 500_000
         assert params.get_max_failed_attempts(session) == 5
     finally:
@@ -384,10 +384,10 @@ def test_risk_profile_validation(sqlite_session: Session):
 
 # -------------------------------------------------------- Parte C: Postgres
 def test_postgres_seeds_and_hot_change(db_session: Session):
-    """Semillas reales (`0001`/`0019`/`0023`) + cambio en caliente."""
+    """Semillas reales (`0001`/`0019`/`0023`/`0025`) + cambio en caliente."""
     from app.modules.shared.config import parameters as params
 
-    assert params.get_biometric_threshold_minor(db_session) == 1_000_000
+    assert params.get_biometric_threshold_minor(db_session) == 100_000
     assert params.get_daily_limit_minor(db_session) == 500_000
     assert params.get_daily_limit_minor(db_session, "STANDARD") == 500_000
     assert params.get_max_failed_attempts(db_session) == 5

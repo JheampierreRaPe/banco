@@ -37,8 +37,10 @@ DAILY_LIMIT_PROFILE_TEMPLATE = "transfer.daily_limit_{profile}_minor"
 #: Tope de intentos fallidos antes del bloqueo (`0001` + `0019`).
 AUTH_MAX_FAILED_ATTEMPTS_KEY = "auth.max_failed_attempts"
 
-#: Defaults = semillas (`0001`/`0019`/`0023`): migrar no cambia conducta.
-DEFAULT_BIOMETRIC_THRESHOLD_MINOR = 1_000_000
+#: Defaults = semillas (`0001`/`0019`/`0023` + `0025` OBS-2: el umbral
+#: biometrico (S/ 1,000) queda por debajo del limite diario (S/ 5,000)
+#: para que el reto (`PENDING_AUTHORIZATION`) sea alcanzable).
+DEFAULT_BIOMETRIC_THRESHOLD_MINOR = 100_000
 DEFAULT_DAILY_LIMIT_MINOR = 500_000
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 

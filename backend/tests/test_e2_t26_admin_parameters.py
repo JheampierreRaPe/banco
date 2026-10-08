@@ -479,7 +479,7 @@ def test_postgres_list_and_hot_change_with_audit(db_client, db_session: Session)
     resp = db_client.get("/api/v1/admin/parameters", headers=headers)
     assert resp.status_code == 200, resp.text
     by_key = {item["key"]: item for item in resp.json()["data"]}
-    assert by_key["transfer.biometric_threshold_minor"]["value_json"] == 1_000_000
+    assert by_key["transfer.biometric_threshold_minor"]["value_json"] == 100_000
 
     resp = db_client.put(
         "/api/v1/admin/parameters/transfer.biometric_threshold_minor",

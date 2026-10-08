@@ -28,6 +28,15 @@
 > `df85e9f` (backend: resolucion server-side del destino + fachada
 > `accounts.service.get_account_by_number`; UI Flutter de agenda). Cierra el gap `G43` de
 > `docs/18#9`.
+>
+> Cierre 2026-10-08: quedan **aplicados** los fixes recientes sobre lo ya `Hecho` de `E2-T30`:
+> la **coherencia de config OBS-2** (migracion `0025_biometric_coherence`: umbral `100000` <
+> limite diario `500000`, reto alcanzable en `(100000, 500000]`; commit `53fb8bc`), la
+> **observabilidad del detalle de validacion `422`** (campos+motivo, sin PII; handler en
+> `app/main.py`; commit `846e159`) y la **UX de comprobante/seguimiento** (estados terminales sin
+> back; CTA "Volver al inicio" a `/home`; commit `06da4f0`). **OBS-2 queda cerrada** (ver
+> `docs/18#9`); siguen **abiertas OBS-3** (CAS del contador de fallos) y **OBS-4** (`nonce` no
+> estrictamente de un solo uso).
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del

@@ -455,9 +455,15 @@ eventos (`outbox`/`inbox`).
   lectura/escritura de `config.parameters`; lectura best-effort por llamada, **sin cache en
   proceso** (un cambio se refleja de inmediato; fallback a las constantes sembradas; nunca
   lanza), escritura transaccional (`flush`), idempotente por `key` UQ y auditada
-  (`updated_at`/`updated_by`, sin PII). Claves: `transfer.biometric_threshold_minor`
-  (1000000), `transfer.daily_limit_minor` (500000), `transfer.daily_limit_{PERFIL}_minor`
-  (`STANDARD` sembrado en `0023`) y `auth.max_failed_attempts` (5). **No emite
+  (`updated_at`/`updated_by`, sin PII). Claves y **valores sembrados coherentes**:
+  `transfer.biometric_threshold_minor` (**100000**, S/ 1,000; semilla `0001` corregida por
+  `0025`), `transfer.daily_limit_minor` (500000, S/ 5,000), `transfer.daily_limit_{PERFIL}_minor`
+  (`STANDARD` sembrado en `0023` con 500000) y `auth.max_failed_attempts` (5).
+  **Invariante (OBS-2, migracion `0025_biometric_coherence`):** el umbral biometrico queda
+  estrictamente por debajo de cada limite diario (`100000 < 500000`) para que el reto
+  (`PENDING_AUTHORIZATION`) sea alcanzable en la banda `(100000, 500000]`; por encima del limite
+  rige `DAILY_LIMIT_EXCEEDED`. Cubierto por `backend/tests/test_obs2_biometric_coherence.py`.
+  **No emite
   `parameter.updated`** (decision E2-T18; la trazabilidad la dan las columnas). `admin` solo lo
   expone via `/admin/parameters` (`E2-T26`); `transactions`/`risk` la consumen.
 - **Worker E2-T23:** `run_outbox_once` (una pasada con sesion/`commit` propios) y

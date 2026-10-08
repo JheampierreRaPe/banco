@@ -11,17 +11,56 @@ desactiva con `OUTBOX_WORKER_ENABLED=0` y su intervalo se configura con
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.errors import AppError, app_error_handler
 from app.core.health import router as health_router
 from app.core.logging import configure_logging
 from app.modules import iter_routers
+
+logger = logging.getLogger(__name__)
+
+
+def _validation_fields(errors: list[dict]) -> list[str]:
+    """Resume `loc` + `type` sin valores crudos (sin PII en logs, regla 7)."""
+    fields: list[str] = []
+    for err in errors:
+        loc = err.get("loc", ())
+        err_type = err.get("type", "unknown")
+        try:
+            loc_str = ".".join(str(part) for part in loc)
+        except Exception:  # noqa: BLE001 - el log nunca debe romper el 422
+            loc_str = "?"
+        fields.append(f"{loc_str}:{err_type}")
+    return fields
+
+
+async def request_validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """422 de esquema: log seguro + contrato `{"detail": [...]}` intacto."""
+    try:
+        raw_errors = exc.errors()
+    except Exception:  # noqa: BLE001 - el log nunca debe romper el 422
+        raw_errors = []
+    fields = _validation_fields(list(raw_errors))
+    logger.warning(
+        "validation_error path=%s method=%s count=%d fields=%s",
+        request.url.path,
+        request.method,
+        len(fields),
+        ",".join(fields),
+    )
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(raw_errors)})
 
 
 def _outbox_worker_enabled() -> bool:
@@ -81,6 +120,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_exception_handler(AppError, app_error_handler)
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.include_router(health_router)
 
     for _name, router in iter_routers():

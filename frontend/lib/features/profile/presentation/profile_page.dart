@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/session/session_identity_store.dart';
@@ -6,6 +7,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/widgets/app_card.dart';
+import '../../accounts/data/accounts_service.dart';
 import '../../biometrics/biometric_reader.dart';
 import '../data/biometric_consent_service.dart';
 
@@ -32,6 +34,13 @@ import '../data/biometric_consent_service.dart';
 ///
 /// [consentService], [identity], [reader] y [onLogout] son inyectables para
 /// tests. Sin servicio de consentimiento el switch muestra un error neutro.
+///
+/// [accountsService] es opcional (D2 8-10-2026-2.txt): cuando se provee se
+/// muestra la tarjeta `MI CUENTA` con el numero enmascarado tal como viene
+/// del backend (`account_number_masked`, solo ultimos 4 visibles) y un boton
+/// para copiarlo (compartir con otros). El cliente nunca desenmascara ni
+/// reconstruye el numero completo (docs/16 §2.9, cliente delgado): se copia
+/// el enmascarado. Sin servicio no se muestra nada (compat con tests/F-T52).
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
     super.key,
@@ -39,12 +48,16 @@ class ProfilePage extends StatefulWidget {
     this.identity,
     this.reader,
     this.onLogout,
+    this.accountsService,
   });
 
   final BiometricConsentServiceBase? consentService;
   final SessionIdentityStore? identity;
   final BiometricReader? reader;
   final Future<void> Function()? onLogout;
+
+  /// Fuente del numero enmascarado (`GET /accounts`); `null` = sin tarjeta.
+  final AccountsServiceBase? accountsService;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -146,6 +159,8 @@ class _ProfilePageState extends State<ProfilePage> {
                 padding: const EdgeInsets.all(AppSpacing.marginMobile),
                 children: [
                   const _HeroCard(),
+                  const SizedBox(height: AppSpacing.stackMd),
+                  _AccountNumberCard(service: widget.accountsService),
                   const SizedBox(height: AppSpacing.stackMd),
                   _Section(
                     label: 'TUS DATOS',
@@ -636,9 +651,125 @@ class _StaticRow extends StatelessWidget {
               Icon(
                 Icons.chevron_right,
                 color: AppColors.secondaryText,
-              ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+/// Tarjeta `MI CUENTA` (D2 8-10-2026-2.txt).
+///
+/// Muestra el numero enmascarado TAL COMO viene del backend
+/// (`account_number_masked`, p. ej. `****0013`: solo ultimos 4 visibles) y
+/// permite copiarlo con un toque (boton `profile-account-copy`, area tactil
+/// 48px) para compartirlo con otros. El cliente nunca desenmascara:
+/// copia el enmascarado y jamas intenta reconstruir el completo
+/// (docs/16 §2.9). Sin [service] no muestra nada (compat F-T52).
+/// Compartir el numero COMPLETO requiere un endpoint dedicado del backend
+/// (fuera de alcance: ver reporte al orquestador).
+class _AccountNumberCard extends StatelessWidget {
+  const _AccountNumberCard({required this.service});
+
+  final AccountsServiceBase? service;
+
+  void _copy(BuildContext context, String masked) {
+    // El copiado es best-effort y NO se espera: en tests/CI el canal de
+    // portapapeles no responde y el `await` colgaria el aviso. El snackbar
+    // se muestra de forma sincrona; el error del plugin se ignora.
+    Clipboard.setData(ClipboardData(text: masked)).catchError((_) {});
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Número de cuenta copiado.'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = service;
+    if (svc == null) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return FutureBuilder(
+      future: svc.getAccounts(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const SizedBox.shrink();
+        }
+        if (snapshot.hasError) return const SizedBox.shrink();
+        final accounts = snapshot.data ?? const [];
+        if (accounts.isEmpty) return const SizedBox.shrink();
+        final masked = accounts.first.accountNumberMasked;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'MI CUENTA',
+              style: AppTypography.labelMd.copyWith(
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.stackXs + 2),
+            AppCard(
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.successContainer,
+                      borderRadius:
+                          BorderRadius.circular(AppRadii.md - 2),
+                    ),
+                    child: Icon(
+                      Icons.account_balance_outlined,
+                      size: 18,
+                      color: scheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Número de cuenta',
+                          style: AppTypography.bodyLg.copyWith(
+                            color: scheme.onSurface,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.unit / 2),
+                        Text(
+                          masked,
+                          key: const Key('profile-account-masked'),
+                          style: AppTypography.bodyMd.copyWith(
+                            color: AppColors.secondaryText,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: IconButton(
+                      key: const Key('profile-account-copy'),
+                      onPressed: () => _copy(context, masked),
+                      icon: const Icon(Icons.copy_outlined, size: 20),
+                      color: scheme.primary,
+                      tooltip: 'Copiar número de cuenta',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

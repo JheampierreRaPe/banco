@@ -849,6 +849,23 @@ class _MovementsPreviewCard extends StatelessWidget {
   }
 }
 
+/// Prefijos internos del ledger que nunca deben mostrarse en el preview
+/// del `dash` (D1 8-10-2026-2.txt: el widget mostraba `hold <uuid>` y
+/// `settle <uuid>` con UUIDs tecnicos, danando la UX).
+///
+/// El backend genera esos `description` (`hold {tx.id}` / `settle {tx.id}` /
+/// `own settle {tx.id}`) para los asientos de retencion/liquidacion; son
+/// mecanica contable, no movimientos de usuario. El filtro es solo
+/// presentacion (cliente delgado): no recalcula saldos ni oculta dinero,
+/// solo evita mostrar filas tecnicas en el preview. El historial completo
+/// (`/movements`) sigue disponible via `Ver todos los movimientos`.
+bool _isInternalLedgerDescription(String description) {
+  final t = description.trim().toLowerCase();
+  return t.startsWith('hold ') ||
+      t.startsWith('settle ') ||
+      t.startsWith('own settle');
+}
+
 /// Preview de movimientos con sus propios mini-estados (carga/error/vacio).
 class _LatestMovements extends StatefulWidget {
   const _LatestMovements({required this.service, required this.account});
@@ -872,7 +889,10 @@ class _LatestMovementsState extends State<_LatestMovements> {
   Future<MovementsPage> _load() => widget.service.getMovements(
         widget.account.id,
         page: 1,
-        pageSize: 3,
+        // Se piden mas filas porque las tecnicas (`hold`/`settle`) se
+        // filtran en presentacion; con 3 justas el preview podia quedar
+        // vacio o mostrar solo mecanica interna.
+        pageSize: 20,
       );
 
   @override
@@ -916,7 +936,12 @@ class _LatestMovementsState extends State<_LatestMovements> {
           );
         }
         final items = snapshot.data?.items ?? const <Movement>[];
-        if (items.isEmpty) {
+        // Solo movimientos de usuario: fuera mecanica `hold`/`settle`.
+        final visible = items
+            .where((m) => !_isInternalLedgerDescription(m.description))
+            .take(3)
+            .toList();
+        if (visible.isEmpty) {
           return Text(
             'Aun no tienes movimientos.',
             style: AppTypography.bodyMd.copyWith(
@@ -926,7 +951,7 @@ class _LatestMovementsState extends State<_LatestMovements> {
         }
         return Column(
           children: [
-            for (final movement in items)
+            for (final movement in visible)
               _MovementRow(
                 movement: movement,
                 accountMasked: widget.account.accountNumberMasked,
@@ -951,6 +976,12 @@ class _MovementRow extends StatelessWidget {
     final color = credit ? AppColors.success : scheme.error;
     final signed = '${credit ? '+' : '-'}'
         '${formatMinor(movement.amountMinor, movement.currency)}';
+    // Defensa: si por cualquier via llega una descripcion tecnica, no se
+    // muestra el UUID interno; se usa un titulo neutro de usuario.
+    final title = _isInternalLedgerDescription(movement.description) ||
+            movement.description.trim().isEmpty
+        ? 'Transferencia'
+        : movement.description;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
       child: Row(
@@ -967,9 +998,7 @@ class _MovementRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  movement.description.isEmpty
-                      ? '(Sin descripcion)'
-                      : movement.description,
+                  title,
                   style: AppTypography.bodyLg.copyWith(
                     color: scheme.onSurface,
                   ),

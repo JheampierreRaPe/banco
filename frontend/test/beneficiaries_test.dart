@@ -25,7 +25,6 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 7744',
       bankCode: 'BCP',
       holderName: 'M. Rojas ••••',
-      preapprovedLimitMinor: 50000,
       currency: 'PEN',
     ),
     Beneficiary(
@@ -34,7 +33,6 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 1120',
       bankCode: 'BCP',
       holderName: 'P. Alvarado ••••',
-      preapprovedLimitMinor: 100000,
       currency: 'PEN',
     ),
     Beneficiary(
@@ -51,7 +49,6 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 4410',
       bankCode: 'BBVA',
       holderName: 'L. Fernandez ••••',
-      preapprovedLimitMinor: 20000,
       currency: 'PEN',
     ),
   ];
@@ -120,7 +117,6 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 0012',
       bankCode: input.bankCode ?? '',
       holderName: '••••',
-      preapprovedLimitMinor: input.preapprovedLimitMinor,
       currency: input.currency,
     );
   }
@@ -136,7 +132,6 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 0012',
       bankCode: input.bankCode ?? '',
       holderName: '••••',
-      preapprovedLimitMinor: input.preapprovedLimitMinor,
       currency: input.currency,
     );
   }
@@ -205,7 +200,7 @@ void _tallViewport(WidgetTester tester) {
 
 void main() {
   group('BeneficiariesPage', () {
-    testWidgets('lista agrupa por banco con topes enmascarados', (
+    testWidgets('lista agrupa por banco sin topes (solo umbral D1)', (
       tester,
     ) async {
       _tallViewport(tester);
@@ -216,10 +211,14 @@ void main() {
       expect(find.text('BBVA PERÚ (1)'), findsOneWidget);
       expect(find.text('Mamá Lima'), findsOneWidget);
       expect(find.text('Lucía Gym'), findsOneWidget);
-      expect(find.text('Tope S/ 500 (Sin biometría)'), findsOneWidget);
-      expect(find.text('Tope S/ 200 (Sin biometría)'), findsOneWidget);
-      // Sin tope: solo Carlos Trabajo (Lucía tiene tope S/ 200).
-      expect(find.text('Sin tope (PIN/Huella)'), findsOneWidget);
+      // D1 (8-10-2026-2.txt): tope eliminado; la agenda muestra la unica
+      // regla (umbral S/ 1,000) y jamas montos de tope por contacto.
+      expect(
+        find.text('Validación biométrica desde S/ 1,000'),
+        findsWidgets,
+      );
+      expect(find.textContaining('Tope S/'), findsNothing);
+      expect(find.text('Sin tope (PIN/Huella)'), findsNothing);
       // Datos enmascarados: solo ultimos 4.
       expect(find.text('•••• 7744 · Cuenta Soles'), findsOneWidget);
     });
@@ -364,7 +363,7 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('alta exitosa guarda con tope y vuelve', (tester) async {
+    testWidgets('alta exitosa guarda sin tope y vuelve (D1)', (tester) async {
       final fake = FakeBeneficiariesService();
       await pumpNew(tester, fake);
       await fillValidForm(tester);
@@ -375,7 +374,11 @@ void main() {
       expect(fake.lastCreated, isNotNull);
       expect(fake.lastCreated!.alias, 'Mamá Lima');
       expect(fake.lastCreated!.accountOrCci, '00112345678908');
-      expect(fake.lastCreated!.preapprovedLimitMinor, 50000);
+      // E2-T33: sin tope en el contrato; el request no lleva el campo.
+      expect(
+        fake.lastCreated!.toJson().containsKey('preapproved_limit_minor'),
+        isFalse,
+      );
       expect(fake.lastCreated!.currency, 'PEN');
       // Vuelve a la agenda tras guardar.
       expect(find.text('Agenda de Beneficiarios'), findsOneWidget);
@@ -460,7 +463,9 @@ void main() {
       expect(fake.lastCreated, isNull);
     });
 
-    testWidgets('edicion actualiza el tope (CA-03)', (tester) async {
+    testWidgets('edicion guarda sin tope aunque existiera antes (D1)', (
+      tester,
+    ) async {
       final fake = FakeBeneficiariesService();
       await tester.pumpWidget(_harness(fake));
       await tester.pumpAndSettle();
@@ -472,11 +477,12 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Editar Beneficiario'), findsOneWidget);
-      // Cambia el tope a S/ 300 (la tarjeta puede estar bajo el pliegue).
-      await tester.ensureVisible(find.byKey(const Key('tope-300')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('tope-300')));
-      await tester.pump();
+      // D1: ya no hay tarjeta de tope; solo la nota del umbral general.
+      expect(find.byKey(const Key('tope-switch')), findsNothing);
+      expect(
+        find.textContaining('requieren validación biométrica'),
+        findsOneWidget,
+      );
       await tester.enterText(
         find.byKey(const Key('beneficiary-doc-number')),
         '42891044',
@@ -489,7 +495,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(fake.lastUpdatedId, 'b1');
-      expect(fake.lastUpdated!.preapprovedLimitMinor, 30000);
+      // E2-T33: sin tope en el contrato; el request no lleva el campo.
+      expect(
+        fake.lastUpdated!.toJson().containsKey('preapproved_limit_minor'),
+        isFalse,
+      );
     });
 
     testWidgets('el CCI completo nunca se muestra en pantalla', (tester) async {
@@ -532,7 +542,6 @@ void main() {
           'bank_code': 'BCP',
           'account_masked': '•••• 7744',
           'holder_name': 'M. Rojas ••••',
-          'preapproved_limit_minor': 50000,
           'currency': 'PEN',
           'status': 'ACTIVE',
         },
@@ -555,7 +564,6 @@ void main() {
       expect(capturedQuery, containsPair('q', 'mama'));
       expect(items, hasLength(1));
       expect(items.single.accountMasked, '•••• 7744');
-      expect(items.single.preapprovedLimitMinor, 50000);
     });
 
     test(
@@ -594,13 +602,13 @@ void main() {
             alias: 'Mamá Lima',
             accountOrCci: '00112345678908',
             bankCode: 'BCP',
-            preapprovedLimitMinor: 50000,
           ),
         );
 
         expect(idempotencyKey, isNotNull);
         expect(idempotencyKey, isNotEmpty);
         expect(capturedBody!['account_or_cci'], '00112345678908');
+        expect(capturedBody!.containsKey('preapproved_limit_minor'), isFalse);
         expect(created.accountMasked, '•••• 0012');
       },
     );

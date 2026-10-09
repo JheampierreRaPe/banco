@@ -2,7 +2,8 @@
 
 - `GET /beneficiaries` (lista + `q` de busqueda, hasta 100, `< 1 s`),
   `POST /beneficiaries` (alta, `Idempotency-Key` opcional pero respetada),
-  `PUT /beneficiaries/{id}` (edicion parcial incl. tope pre-aprobado),
+  `PUT /beneficiaries/{id}` (edicion parcial, E2-T33: sin tope
+  pre-aprobado),
   `DELETE /beneficiaries/{id}?confirm=true` (soft-delete con
   confirmacion de seguridad). Montados bajo `/api/v1` por `app.main` via
   el `router` de `accounts.api` (este sub-router se incluye alli).
@@ -118,7 +119,7 @@ def update_beneficiary(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Edicion parcial (CA-03/CA-04, incl. tope pre-aprobado, solo el
+    """Edicion parcial (CA-03/CA-04, E2-T33: sin tope pre-aprobado, solo el
     titular). 404 si no existe/baja; 403 si es ajeno; 409 si el cambio
     duplica alias/CCI del titular; 400 si el formato es invalido."""
     try:

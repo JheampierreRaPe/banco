@@ -58,8 +58,7 @@ class DeleteBeneficiaryDialog extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             '¿Estás seguro de eliminar a $alias de tus contactos '
-            'rápidos? Sus datos guardados y topes pre-aprobados serán '
-            'borrados.',
+            'rápidos? Sus datos guardados serán borrados.',
             style: const TextStyle(
               fontSize: 12,
               color: AppColors.onSurfaceVariant,

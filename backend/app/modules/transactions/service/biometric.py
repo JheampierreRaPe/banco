@@ -123,28 +123,12 @@ class ExpiredNonceError(BiometricError):
     """`nonce` vencido (-> 400 `EXPIRED_NONCE`, patron OTP)."""
 
 
-class PreapprovedCurrencyMismatchError(ValueError):
-    """El tope pre-aprobado esta en otra moneda (-> 400 `VALIDATION_ERROR`).
-
-    Se lanza cuando se invoca al motor con un `beneficiary_id` cuyo tope
-    tiene `currency` distinta a la de la operacion (E2-T14): el tope es
-    por beneficiario *y por moneda*, asi que no puede evaluarse. Sin PII:
-    el mensaje no incluye alias, cuentas ni documentos.
-    """
-
-
 #: Mensaje generico estable (identico para firma, binding o dispositivo).
 NOT_AUTHORIZED_MESSAGE = "Autorizacion biometrica invalida"
 #: Mensaje de `nonce` vencido (mismo patron que login con dispositivo).
 EXPIRED_NONCE_MESSAGE = "Desafio vencido, solicite uno nuevo"
 #: Motivo de historial al exigir biometria.
 REQUIRED_REASON = "biometria requerida"
-#: Motivo de historial al eximir por tope pre-aprobado (E2-T14, HU07 CA-03).
-PREAPPROVED_EXEMPT_REASON = "exento de biometria por tope pre-aprobado"
-#: Razon de exencion en el payload de `transaction.initiated` (E2-T14).
-PREAPPROVED_EXEMPTION_REASON = "PREAPPROVED_LIMIT"
-#: Clave de `transactions.metadata` con el detalle de la exencion (E2-T14).
-PREAPPROVED_META_KEY = "preapproved_exemption"
 #: Motivo de historial al superar el reto.
 PASSED_REASON = "biometria superada"
 #: Motivo de historial al bloquear preventivamente.
@@ -367,146 +351,6 @@ def evaluate_gate(
         limit_exceeded=exceeded,
         requires_biometry=(not exceeded) and (effective > threshold),
     )
-
-
-# ------------------------------------------- Exencion por tope pre-aprobado
-
-
-def is_preapproved_exempt(
-    *,
-    limit_minor: int | None,
-    limit_currency: str | None,
-    total_minor: int,
-    currency: str,
-) -> bool:
-    """Regla pura de exencion por tope pre-aprobado (E2-T14, HU07 CA-03).
-
-    Exento solo si el beneficiario tiene tope (`limit_minor is not None`),
-    con la misma moneda que la operacion, y `total_minor
-    (amount + fee) <= limit_minor`. Sin tope o sin moneda verificable no
-    hay exencion (se comporta como hoy: rige el gate biometrico).
-
-    Lanza `PreapprovedCurrencyMismatchError` si el tope declara una moneda
-    distinta a la operacion (-> `VALIDATION_ERROR` en la API). Dinero
-    entero en centimos; nunca `float`. Sin PII en el mensaje.
-    """
-    if limit_minor is None:
-        return False
-    if limit_currency is None:
-        return False
-    if limit_currency != currency:
-        raise PreapprovedCurrencyMismatchError(
-            "el tope pre-aprobado esta en otra moneda que la operacion"
-        )
-    return int(total_minor) <= int(limit_minor)
-
-
-def read_preapproved_limit(
-    session: Session,
-    *,
-    user_id: uuid.UUID,
-    beneficiary_id: uuid.UUID | str,
-) -> dict | None:
-    """Tope del beneficiario por fachada de `accounts` (E2-T14, D-10).
-
-    Solo lectura via `accounts.service.beneficiaries.get_for_operation`
-    (import perezoso, sin ciclos; jamas modelos/repositorios de
-    `accounts`). Retorna `{"beneficiary_id", "preapproved_limit_minor",
-    "currency"}` o `None` si no existe, es de otro titular o esta dado de
-    baja (sin exencion y sin oraculo: el llamante sigue el gate normal).
-    El contenido en claro jamas se registra en logs ni se expone en
-    respuestas (reglas de oro 7/9).
-    """
-    from app.modules.accounts.service import beneficiaries as beneficiaries_service
-
-    try:
-        record = beneficiaries_service.get_for_operation(session, user_id, beneficiary_id)
-    except (
-        beneficiaries_service.BeneficiaryNotFoundError,
-        beneficiaries_service.BeneficiaryForbiddenError,
-    ):
-        return None
-    return {
-        "beneficiary_id": record["beneficiary_id"],
-        "preapproved_limit_minor": record["preapproved_limit_minor"],
-        "currency": record["currency"],
-    }
-
-
-def evaluate_preapproved_exemption(
-    session: Session,
-    *,
-    user_id: uuid.UUID | None,
-    beneficiary_id: uuid.UUID | str | None,
-    total_minor: int,
-    currency: str,
-) -> dict | None:
-    """Evalua la exencion del gate biometrico por tope (E2-T14/E2-T32, sin escrituras).
-
-    El tope es un techo absoluto de transferencia rapida, independiente
-    del umbral global: con beneficiario valido y `total <= tope` (misma
-    moneda) retorna el registro `{"beneficiary_id", "limit_minor",
-    "currency", "total_minor"}`; con moneda distinta lanza
-    `PreapprovedCurrencyMismatchError`. Sin `beneficiary_id` o sin
-    titular no hay exencion (`None`: rige el gate).
-
-    El tope compara solo `total = amount + fee` de la operacion (no se
-    consume ni usa el acumulado); el umbral global y el limite diario
-    usan `effective = accumulated + amount + fee` (`evaluate_gate`).
-    Dos operaciones concurrentes se evaluan cada una contra el tope
-    vigente, sin estado compartido ni condicion de carrera (D-13).
-    Nunca ignora el limite diario ni bloqueos: el llamante aplica esta
-    exencion despues de `limit_exceeded` y antes de `requires_biometry`.
-    """
-    if beneficiary_id is None or user_id is None:
-        return None
-    stored = read_preapproved_limit(session, user_id=user_id, beneficiary_id=beneficiary_id)
-    if stored is None:
-        return None
-    if not is_preapproved_exempt(
-        limit_minor=stored["preapproved_limit_minor"],
-        limit_currency=stored["currency"],
-        total_minor=total_minor,
-        currency=currency,
-    ):
-        return None
-    return {
-        "beneficiary_id": stored["beneficiary_id"],
-        "limit_minor": int(stored["preapproved_limit_minor"]),
-        "currency": stored["currency"],
-        "total_minor": int(total_minor),
-    }
-
-
-def mark_preapproved_exempt(
-    session: Session,
-    tx: Transaction,
-    *,
-    beneficiary_id: uuid.UUID,
-    limit_minor: int,
-    currency: str,
-    total_minor: int,
-) -> Transaction:
-    """Registra la exencion en `transactions.metadata` (auditoria, E2-T14).
-
-    Guarda solo UUIDs e importes (`beneficiary_id`, `limit_minor`,
-    `currency`, `total_minor`, `exemption_reason`): sin PII ni sensibles
-    en claro. `flush` sin `commit`; el llamante transiciona despues a
-    `AUTHORIZED` con `PREAPPROVED_EXEMPT_REASON` (queda en
-    `transaction_status_history`).
-    """
-    meta = dict(tx.meta) if isinstance(tx.meta, dict) else {}
-    meta[PREAPPROVED_META_KEY] = {
-        "beneficiary_id": str(beneficiary_id),
-        "limit_minor": int(limit_minor),
-        "currency": currency,
-        "total_minor": int(total_minor),
-        "exemption_reason": PREAPPROVED_EXEMPTION_REASON,
-    }
-    tx.meta = meta
-    session.add(tx)
-    session.flush()
-    return tx
 
 
 # ------------------------------------------------------------ Reto (`nonce`)
@@ -1121,9 +965,6 @@ __all__ = [
     "NONCE_TTL_SECONDS",
     "NOT_AUTHORIZED_MESSAGE",
     "PASSED_REASON",
-    "PREAPPROVED_EXEMPTION_REASON",
-    "PREAPPROVED_EXEMPT_REASON",
-    "PREAPPROVED_META_KEY",
     "PREVENTIVE_BLOCK",
     "REQUIRED_REASON",
     "BiometricDecision",
@@ -1131,7 +972,6 @@ __all__ = [
     "BiometricStateError",
     "ExpiredNonceError",
     "NotAuthorizedError",
-    "PreapprovedCurrencyMismatchError",
     "TransactionNotFoundError",
     "authorize_transaction",
     "authorize_transaction_with_pin",
@@ -1143,14 +983,10 @@ __all__ = [
     "default_signature_verifier",
     "default_threshold_reader",
     "evaluate_gate",
-    "evaluate_preapproved_exemption",
     "failure_markers",
     "get_block",
-    "is_preapproved_exempt",
-    "mark_preapproved_exempt",
     "mark_rejected",
     "new_challenge_block",
-    "read_preapproved_limit",
     "release_pending_holds",
     "request_biometric_challenge",
     "resolve_risk_profile",

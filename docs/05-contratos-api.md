@@ -354,21 +354,25 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > (hasta 100) o busca por alias/nombre en tiempo real `< 1 s` mediante indice ciego (`q`
 > ausente/vacio = lista) -> `200 {"data": [Beneficiary], "meta": {"total", "q"}}`.
 > `POST /beneficiaries` (alta) acepta `{alias, account_or_cci, [photo_url], [bank_code],
-> [holder_name], [holder_doc], [preapproved_limit_minor], [currency]}` con `Idempotency-Key`
+> [holder_name], [holder_doc], [currency]}` con `Idempotency-Key`
 > opcional (recomendada; misma clave + mismo cuerpo = replay sin duplicar) -> `201 {"data":
-> Beneficiary, "meta": {"replayed"}}`. `PUT /beneficiaries/{id}` (edicion parcial, incl.
-> `preapproved_limit_minor`) y `DELETE /beneficiaries/{id}?confirm=true` (soft-delete, exige
+> Beneficiary, "meta": {"replayed"}}`. `PUT /beneficiaries/{id}` (edicion parcial) y
+> `DELETE /beneficiaries/{id}?confirm=true` (soft-delete, exige
 > `confirm=true`) -> `200 {"data": Beneficiary, "meta": {}}`. `Beneficiary` expone `id`, `alias`,
 > `photo_url`, `bank_code`, `account_masked` (`****` + ultimos 4), `holder_name`,
-> `preapproved_limit_minor`, `currency`, `status` (`ACTIVE`/`DELETED`), `created_at`/`updated_at`;
+> `currency`, `status` (`ACTIVE`/`DELETED`), `created_at`/`updated_at`;
 > **nunca** devuelve la cuenta/CCI en claro ni el documento (solo hash en BD). El
-> `owner_user_id` sale del JWT, nunca del cuerpo. Errores: `401 NOT_AUTHENTICATED`; `404
+> `owner_user_id` sale del JWT, nunca del cuerpo. Nota E2-T33 (retiro del tope
+> pre-aprobado, decision del dueno 2026-10-08): el campo historico
+> `preapproved_limit_minor` ya no existe en el contrato; si un cliente antiguo lo
+> envia en `POST`/`PUT`, se **ignora** (sin `422`) y nunca se devuelve en
+> respuestas. Errores: `401 NOT_AUTHENTICATED`; `404
 > NOT_FOUND` (inexistente/baja, id malformado o beneficiario ajeno no listado); `403
 > NOT_AUTHORIZED` (beneficiario de otro titular en `PUT`/`DELETE`); `409 DUPLICATE_BENEFICIARY`
 > (mismo alias o misma cuenta/CCI `ACTIVE` del titular); `409 IDEMPOTENCY_CONFLICT` (misma
 > `Idempotency-Key` con cuerpo distinto); `400 VALIDATION_ERROR` (alias vacio, cuenta/CCI con
 > formato invalido —CuyCash 14 digitos con DV valido, o CCI de 20 digitos—, moneda desconocida,
-> `preapproved_limit_minor < 0`, o falta `confirm=true`). Dinero entero en centimos; datos sensibles cifrados en reposo (AES-256-GCM)
+> o falta `confirm=true`). Dinero entero en centimos; datos sensibles cifrados en reposo (AES-256-GCM)
 > e indexados para busqueda sin descifrar.
 
 > Formato del numero de cuenta CuyCash (decision del dueno 2026-10-03, `E2-T28`): **14 digitos con
@@ -594,18 +598,15 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > esquema). Cuadre del inverso: `sum(debitos)=sum(creditos)` por moneda; el
 > original + inverso suman cero por cuenta.
 >
-> Contrato E2-T14 tope pre-aprobado (HU07 `CA-03`, integrado al motor de
-> `E2-T07`): cuando la transferencia (`POST /transfers/own`/`third-party`,
-> `beneficiary_id` explicito o `metadata["beneficiary_id"]`) apunta a un
-> beneficiario del titular cuyo `preapproved_limit_minor >= amount_minor +
-> fee_minor` y misma moneda, la operacion queda **exenta del reto biometrico**
-> (se omite `PENDING_AUTHORIZATION`; se autoriza directo). El evento
-> `transaction.initiated` viaja con `exemption_reason="PREAPPROVED_LIMIT"` y
-> `beneficiary_id` (UUID; sin PII) cuando aplica; en otro caso ambos son
-> `null`. Moneda distinta al tope -> rechazo de validacion
-> (`PreapprovedCurrencyMismatchError`, `400 VALIDATION_ERROR`); la exencion no
-> ignora el limite diario del perfil (`E2-T18`) ni los bloqueos de `risk`. Sin
-> endpoint nuevo (reusan las transferencias existentes).
+> Nota E2-T33 (retiro del tope pre-aprobado, decision del dueno 2026-10-08,
+> `8-10-2026-2.txt` D1): el contrato E2-T14/E2-T32 (exencion biometrica por
+> `preapproved_limit_minor`, `exemption_reason="PREAPPROVED_LIMIT"` en
+> `transaction.initiated` y `PreapprovedCurrencyMismatchError`) queda
+> **retirado**. Toda transferencia sobre `transfer.biometric_threshold_minor`
+> exige autorizacion (`PENDING_AUTHORIZATION`), tenga o no `beneficiary_id`;
+> `transaction.initiated` ya no lleva `exemption_reason`/`beneficiary_id` de
+> exencion. El destino por beneficiario de la agenda (E2-T30) sigue intacto.
+> Sin endpoint nuevo (reusan las transferencias existentes).
 
 ### 6.4 Creditos (`credits`) - HU09-HU12
 

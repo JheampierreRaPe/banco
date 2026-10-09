@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/errors/api_exception.dart';
@@ -28,10 +27,9 @@ enum BeneficiaryDocType { dni, ruc }
 ///   E2-T29); el backend revalida y decide (`VALIDATION_ERROR`).
 /// - Duplicado con banner naranja + `Ver existente`/`Ignorar` (mockup
 ///   `Alta 2 - Duplicado`, codigo `DUPLICATE_BENEFICIARY` visible).
-/// - Tope pre-aprobado con chips S/100/300/500/1000/2000/Otro (mockup `TopeCard`,
-///   solo el titular; el backend valida). El tope es un techo de
-///   transferencia rapida: hasta ese monto no se pide biometria con este
-///   contacto, incluso por encima del control general (E2-T32).
+/// - Tope pre-aprobado RETIRADO (decision del dueno 8-10-2026-2.txt D1,
+///   E2-T33): el formulario no ofrece ni envia tope; la unica regla es el
+///   umbral biometrico general (S/ 1,000, lo decide el backend).
 /// - Eliminar (solo edicion) con [DeleteBeneficiaryDialog] (mockup
 ///   `Alta 5 - Eliminar`).
 /// - El CCI/cuenta en claro solo viaja en el request; jamas se muestra
@@ -62,14 +60,10 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
   final _aliasController = TextEditingController();
   final _docController = TextEditingController();
   final _accountController = TextEditingController();
-  final _customTopController = TextEditingController();
 
   BeneficiaryDocType _docType = BeneficiaryDocType.dni;
   String _bankCode = 'BCP';
   String _currency = 'PEN';
-  bool _topEnabled = true;
-  int? _topMinor = 50000;
-  bool _customTop = false;
 
   bool _docVerified = false;
   bool _showDuplicate = false;
@@ -106,7 +100,6 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     _aliasController.dispose();
     _docController.dispose();
     _accountController.dispose();
-    _customTopController.dispose();
     super.dispose();
   }
 
@@ -133,21 +126,6 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     _bankCode = b.bankCode.isEmpty ? 'BCP' : b.bankCode.toUpperCase();
     if (!_banks.any((e) => e.$1 == _bankCode)) _bankCode = 'BCP';
     _currency = b.currency.toUpperCase() == 'USD' ? 'USD' : 'PEN';
-    if (b.hasTop) {
-      _topEnabled = true;
-      _topMinor = b.preapprovedLimitMinor;
-      _customTop = _topMinor != 10000 &&
-          _topMinor != 30000 &&
-          _topMinor != 50000 &&
-          _topMinor != 100000 &&
-          _topMinor != 200000;
-      if (_customTop && _topMinor != null) {
-        _customTopController.text = (_topMinor! ~/ 100).toString();
-      }
-    } else {
-      _topEnabled = false;
-      _topMinor = null;
-    }
     _initialized = true;
   }
 
@@ -191,14 +169,6 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     } else {
       _accountError = null;
     }
-    if (_customTop) {
-      final custom = int.tryParse(_customTopController.text.trim()) ?? 0;
-      if (custom <= 0) {
-        ok = false;
-      } else {
-        _topMinor = custom * 100;
-      }
-    }
     setState(() {});
     return ok;
   }
@@ -224,7 +194,6 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       accountOrCci: normalizeAccountOrCci(_accountController.text),
       bankCode: _bankCode == 'OTRO' ? null : _bankCode,
       holderDoc: _digits(_docController.text),
-      preapprovedLimitMinor: _topEnabled ? _topMinor : null,
       currency: _currency,
     );
     try {
@@ -508,20 +477,22 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
                   textInputAction: TextInputAction.done,
                 ),
                 const SizedBox(height: 20),
-                _TopCard(
-                  enabled: _topEnabled,
-                  selectedMinor: _topMinor,
-                  custom: _customTop,
-                  customController: _customTopController,
-                  currency: _currency,
-                  onToggle: (value) => setState(() {
-                    _topEnabled = value;
-                    if (value && _topMinor == null) _topMinor = 50000;
-                  }),
-                  onSelect: (minor, custom) => setState(() {
-                    _topMinor = minor;
-                    _customTop = custom;
-                  }),
+                // D1: sin tarjeta de tope. Nota informativa de la unica
+                // regla vigente (umbral biometrico general S/ 1,000).
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE4EFE6),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    'Las transferencias mayores a S/ 1,000 requieren '
+                    'validación biométrica.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
                 if (editing && initial != null) ...[
                   const SizedBox(height: 20),
@@ -836,229 +807,6 @@ class _DuplicateBanner extends StatelessWidget {
             ],
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Tarjeta de tope pre-aprobado (mockup `TopeCard`, `Protección CuySafe`).
-class _TopCard extends StatelessWidget {
-  const _TopCard({
-    required this.enabled,
-    required this.selectedMinor,
-    required this.custom,
-    required this.customController,
-    required this.currency,
-    required this.onToggle,
-    required this.onSelect,
-  });
-
-  final bool enabled;
-  final int? selectedMinor;
-  final bool custom;
-  final TextEditingController customController;
-  final String currency;
-  final ValueChanged<bool> onToggle;
-  final void Function(int? minor, bool custom) onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final symbol = currency == 'USD' ? r'$' : 'S/';
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFE4EFE6),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(
-                  Icons.bolt,
-                  size: 20,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Transferencia rápida sin biometría',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      'Protección CuySafe',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.secondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                key: const Key('tope-switch'),
-                value: enabled,
-                onChanged: onToggle,
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Hasta este monto, transferencia rápida sin biometría con este '
-            'contacto, incluso por encima del control general. El límite '
-            'diario siempre aplica.',
-            style: TextStyle(
-              fontSize: 12,
-              color: AppColors.onSurfaceVariant,
-            ),
-          ),
-          if (enabled) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                _TopChip(
-                  key: const Key('tope-100'),
-                  label: '$symbol 100',
-                  selected: !custom && selectedMinor == 10000,
-                  onTap: () => onSelect(10000, false),
-                ),
-                _TopChip(
-                  key: const Key('tope-300'),
-                  label: '$symbol 300',
-                  selected: !custom && selectedMinor == 30000,
-                  onTap: () => onSelect(30000, false),
-                ),
-                _TopChip(
-                  key: const Key('tope-500'),
-                  label: '$symbol 500',
-                  selected: !custom && selectedMinor == 50000,
-                  onTap: () => onSelect(50000, false),
-                ),
-                _TopChip(
-                  key: const Key('tope-1000'),
-                  label: '$symbol 1,000',
-                  selected: !custom && selectedMinor == 100000,
-                  onTap: () => onSelect(100000, false),
-                ),
-                _TopChip(
-                  key: const Key('tope-2000'),
-                  label: '$symbol 2,000',
-                  selected: !custom && selectedMinor == 200000,
-                  onTap: () => onSelect(200000, false),
-                ),
-                _TopChip(
-                  key: const Key('tope-custom'),
-                  label: 'Otro',
-                  selected: custom,
-                  onTap: () => onSelect(null, true),
-                ),
-              ],
-            ),
-            if (custom) ...[
-              const SizedBox(height: 8),
-              TextField(
-                key: const Key('tope-custom-value'),
-                controller: customController,
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                ],
-                decoration: InputDecoration(
-                  hintText: 'Monto en soles',
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Tope operativo actual:',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: AppColors.outline,
-                  ),
-                ),
-                Text(
-                  selectedMinor == null
-                      ? 'Sin tope'
-                      : '$symbol ${selectedMinor! ~/ 100} por operación',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primary,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _TopChip extends StatelessWidget {
-  const _TopChip({
-    super.key,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    // Ancho fijo: vive en un `Wrap` (E2-T32, 6 presets) donde `Expanded`
-    // no aplica (exige padre `Flex`).
-    return SizedBox(
-      width: 100,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          height: 36,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.primary
-                : AppColors.surfaceContainerLowest,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            label,
-            style: AppTypography.labelMd.copyWith(
-              fontSize: 12,
-              fontWeight:
-                  selected ? FontWeight.bold : FontWeight.w600,
-              color: selected
-                  ? AppColors.onPrimary
-                  : AppColors.onSurfaceVariant,
-            ),
-          ),
-        ),
       ),
     );
   }

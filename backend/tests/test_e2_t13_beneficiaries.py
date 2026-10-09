@@ -181,7 +181,6 @@ def test_create_list_roundtrip_masked(sqlite_session):
         **_payload(
             holder_name="Maria Torres",
             holder_doc="12345678",
-            preapproved_limit_minor=50_000,
             currency="PEN",
         ),
     )
@@ -285,19 +284,16 @@ def test_search_limit_100_and_under_one_second(sqlite_session):
 
 
 def test_update_reindexes_and_validates(sqlite_session):
-    view = beneficiaries_service.create_beneficiary(
-        sqlite_session, USER_A, **_payload(preapproved_limit_minor=None)
-    )
+    view = beneficiaries_service.create_beneficiary(sqlite_session, USER_A, **_payload())
     updated = beneficiaries_service.update_beneficiary(
         sqlite_session,
         USER_A,
         view["id"],
         alias="Tia Rosa",
-        preapproved_limit_minor=99_00,
         currency="PEN",
     )
     assert updated["alias"] == "Tia Rosa"
-    assert updated["preapproved_limit_minor"] == 99_00
+    assert updated["currency"] == "PEN"
     assert [
         v["alias"]
         for v in beneficiaries_service.search_beneficiaries(sqlite_session, USER_A, "rosa")
@@ -305,9 +301,8 @@ def test_update_reindexes_and_validates(sqlite_session):
     # El alias viejo como palabra exacta ya no matchea el registro.
     assert beneficiaries_service.search_beneficiaries(sqlite_session, USER_A, "mama") == []
     cleared = beneficiaries_service.update_beneficiary(
-        sqlite_session, USER_A, view["id"], preapproved_limit_minor=None, holder_name=None
+        sqlite_session, USER_A, view["id"], holder_name=None
     )
-    assert cleared["preapproved_limit_minor"] is None
     assert cleared["holder_name"] is None
 
 
@@ -350,14 +345,8 @@ def test_create_validation_errors(sqlite_session):
         beneficiaries_service.create_beneficiary(sqlite_session, USER_A, **_payload(alias="   "))
     with pytest.raises(ValueError):
         beneficiaries_service.create_beneficiary(sqlite_session, USER_A, **_payload(cci="ABC"))
-    with pytest.raises(ValueError):
-        beneficiaries_service.create_beneficiary(
-            sqlite_session, USER_A, **_payload(preapproved_limit_minor=-1)
-        )
-    with pytest.raises(TypeError):
-        beneficiaries_service.create_beneficiary(
-            sqlite_session, USER_A, **_payload(preapproved_limit_minor=10.5)
-        )
+    # E2-T33: el tope pre-aprobado dejo de existir (los casos `< 0`/`float`
+    # ya no aplican: el contrato HTTP ignora el campo, ver CA-03).
     with pytest.raises(ValueError):
         beneficiaries_service.create_beneficiary(sqlite_session, USER_A, **_payload(currency="XX"))
 
@@ -528,7 +517,6 @@ def test_api_crud_happy_path(api_client):
             "account_or_cci": CCI_A1,
             "holder_name": "Maria Torres",
             "currency": "PEN",
-            "preapproved_limit_minor": 50000,
         },
     )
     assert created.status_code == 201, created.text
@@ -536,16 +524,18 @@ def test_api_crud_happy_path(api_client):
     assert data["account_masked"] == "****1111"
     assert CCI_A1 not in created.text
     assert "holder_doc" not in created.text
+    assert "preapproved_limit_minor" not in data
 
     listed = api_client.get("/api/v1/beneficiaries")
     assert listed.status_code == 200 and listed.json()["meta"]["total"] == 1
+    assert "preapproved_limit_minor" not in listed.json()["data"][0]
 
     found = api_client.get("/api/v1/beneficiaries", params={"q": "mam"})
     assert found.status_code == 200 and len(found.json()["data"]) == 1
 
     updated = api_client.put(
         f"/api/v1/beneficiaries/{data['id']}",
-        json={"alias": "Mama Nueva", "preapproved_limit_minor": 60000},
+        json={"alias": "Mama Nueva"},
     )
     assert updated.status_code == 200
     assert updated.json()["data"]["alias"] == "Mama Nueva"
@@ -558,6 +548,35 @@ def test_api_crud_happy_path(api_client):
     assert deleted.status_code == 200
     assert deleted.json()["data"]["status"] == "DELETED"
     assert api_client.get("/api/v1/beneficiaries").json()["meta"]["total"] == 0
+
+
+def test_api_legacy_limit_field_ignored(api_client):
+    """E2-T33 CA-03: un cliente antiguo que envia el tope historico no falla
+    (se ignora, sin 422) y la respuesta nunca expone el campo."""
+    created = api_client.post(
+        "/api/v1/beneficiaries",
+        json={
+            "alias": "Mama",
+            "account_or_cci": CCI_A1,
+            "currency": "PEN",
+            "preapproved_limit_minor": 50000,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert "preapproved_limit_minor" not in created.json()["data"]
+    bid = created.json()["data"]["id"]
+
+    updated = api_client.put(
+        f"/api/v1/beneficiaries/{bid}",
+        json={"alias": "Mama Nueva", "preapproved_limit_minor": -5},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["data"]["alias"] == "Mama Nueva"
+    assert "preapproved_limit_minor" not in updated.json()["data"]
+
+    listed = api_client.get("/api/v1/beneficiaries")
+    assert listed.status_code == 200
+    assert "preapproved_limit_minor" not in listed.json()["data"][0]
 
 
 def test_api_errors(api_client):
@@ -654,8 +673,8 @@ def test_postgres_crud_smoke(db_session):
     assert view["account_masked"] == "****1111"
     assert len(beneficiaries_service.search_beneficiaries(db_session, owner, "mar")) == 1
     updated = beneficiaries_service.update_beneficiary(
-        db_session, owner, view["id"], preapproved_limit_minor=10_00
+        db_session, owner, view["id"], holder_name="Maria Torres"
     )
-    assert updated["preapproved_limit_minor"] == 10_00
+    assert updated["holder_name"] == "Maria Torres"
     deleted = beneficiaries_service.delete_beneficiary(db_session, owner, view["id"], confirm=True)
     assert deleted["status"] == "DELETED"

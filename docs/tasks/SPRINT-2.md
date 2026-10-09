@@ -170,6 +170,17 @@ mutuamente excluyente en `POST /transactions/{id}/authorize` + fachada
 > `docs/18#9`. `E2-T32` **cambia la semantica** de `E2-T14`: el tope ya no queda supeditado al
 > umbral global (es un techo por operacion; el limite diario y los bloqueos nunca se saltan).
 
+## Retiro real del tope pre-aprobado (decision del dueno 2026-10-08) - `accounts`/`transactions`/`frontend`
+
+`E2-T33` Retiro real del tope pre-aprobado de beneficiarios: la columna/`CHECK` se eliminan por
+la migracion `0026`, la rama de exencion sale del motor (el unico gate es umbral + limite
+diario), el contrato ignora el campo historico (sin `422`) y la agenda deja de distinguir por
+tope (**`Hecho`**, brief `docs/tasks/E2-T33.md`).
+
+> Dependencias: `E2-T13`, `E2-T14`, `E2-T17`, `E2-T18`, `E2-T30`, `E2-T32` (todas `Hecho`).
+> Gap `G46` registrado en `docs/18#9` (`G37`/`G45` superados; `CA-05` de HU07 de `E2-T32`
+> **ANULADO** y `CA-03` de HU07 (tope) **RETIRADO**).
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado

@@ -10,6 +10,8 @@ import '../models/beneficiary.dart';
 /// - La cuenta/CCI en claro solo viaja en el cuerpo del request; la respuesta
 ///   y la lista solo exponen `account_masked`. Jamas se guarda en disco ni se
 ///   escribe en logs (sin PII).
+/// - E2-T33: el tope pre-aprobado dejo de existir en el contrato (el backend
+///   ignora el campo historico); el cliente no lo envia.
 class BeneficiaryInput {
   const BeneficiaryInput({
     required this.alias,
@@ -17,7 +19,6 @@ class BeneficiaryInput {
     this.bankCode,
     this.holderName,
     this.holderDoc,
-    this.preapprovedLimitMinor,
     this.currency = 'PEN',
   });
 
@@ -28,7 +29,6 @@ class BeneficiaryInput {
   final String? bankCode;
   final String? holderName;
   final String? holderDoc;
-  final int? preapprovedLimitMinor;
   final String currency;
 
   Map<String, dynamic> toJson() => {
@@ -39,8 +39,6 @@ class BeneficiaryInput {
           'holder_name': holderName,
         if (holderDoc != null && holderDoc!.isNotEmpty)
           'holder_doc': holderDoc,
-        if (preapprovedLimitMinor != null)
-          'preapproved_limit_minor': preapprovedLimitMinor,
         'currency': currency,
       };
 }
@@ -53,7 +51,7 @@ abstract class BeneficiariesServiceBase {
   /// Alta con `Idempotency-Key` (docs/05 §6.2: recomendada en el alta).
   Future<Beneficiary> create(BeneficiaryInput input, {String? idempotencyKey});
 
-  /// Edicion parcial (incl. `preapproved_limit_minor`, HU07 CA-03).
+  /// Edicion parcial (HU07 CA-03).
   Future<Beneficiary> update(String id, BeneficiaryInput input);
 
   /// Soft-delete; exige `confirm=true` y solo tras 2xx se refleja en UI.

@@ -201,7 +201,6 @@ def _repo_kwargs(owner, alias="Mama", cci=CCI_1):
         "holder_name_enc": None,
         "name_search_hash": None,
         "holder_doc_hash": None,
-        "preapproved_limit_minor": None,
         "currency": None,
         "token_hashes": set(),
     }

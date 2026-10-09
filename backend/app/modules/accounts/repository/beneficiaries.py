@@ -50,7 +50,6 @@ def create_beneficiary(
     holder_name_enc: str | None,
     name_search_hash: str | None,
     holder_doc_hash: str | None,
-    preapproved_limit_minor: int | None,
     currency: str | None,
     token_hashes: set[str],
 ) -> Beneficiary:
@@ -67,7 +66,6 @@ def create_beneficiary(
         holder_name_enc=holder_name_enc,
         name_search_hash=name_search_hash,
         holder_doc_hash=holder_doc_hash,
-        preapproved_limit_minor=preapproved_limit_minor,
         currency=currency,
         status="ACTIVE",
     )

@@ -463,31 +463,15 @@ class _BeneficiaryGroupSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  group.title,
-                  style: AppTypography.labelMd.copyWith(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.outline,
-                  ),
-                ),
-              ),
-              if (mode == BeneficiaryGroupMode.byBank)
-                Text(
-                  group.items
-                          .any((b) => b.hasTop)
-                      ? 'Prioritarios'
-                      : 'Frecuentes',
-                  style: AppTypography.labelMd.copyWith(
-                    fontSize: 11,
-                    color: AppColors.outline,
-                  ),
-                ),
-            ],
+          // E2-T33: la agenda ya no distingue por tope (sin etiquetas
+          // por tope); solo el titulo del grupo.
+          Text(
+            group.title,
+            style: AppTypography.labelMd.copyWith(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.outline,
+            ),
           ),
           const SizedBox(height: 8),
           for (final b in group.items) ...[
@@ -505,7 +489,7 @@ class _BeneficiaryGroupSection extends StatelessWidget {
   }
 }
 
-/// Tarjeta de beneficiario (mockup: avatar + alias + titular + cuenta + tope).
+/// Tarjeta de beneficiario (mockup: avatar + alias + titular + cuenta).
 class _BeneficiaryCard extends StatelessWidget {
   const _BeneficiaryCard({
     required this.beneficiary,
@@ -534,19 +518,15 @@ class _BeneficiaryCard extends StatelessWidget {
             width: 44,
             height: 44,
             alignment: Alignment.center,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               shape: BoxShape.circle,
-              color: b.hasTop
-                  ? AppColors.successContainer
-                  : AppColors.surfaceContainerHigh,
+              color: AppColors.surfaceContainerHigh,
             ),
             child: Text(
               b.initials,
               style: AppTypography.labelMd.copyWith(
                 fontWeight: FontWeight.bold,
-                color: b.hasTop
-                    ? AppColors.primary
-                    : AppColors.onSurfaceVariant,
+                color: AppColors.onSurfaceVariant,
               ),
             ),
           ),
@@ -563,14 +543,6 @@ class _BeneficiaryCard extends StatelessWidget {
                         style: AppTypography.titleMd.copyWith(fontSize: 15),
                       ),
                     ),
-                    if (b.hasTop) ...[
-                      const SizedBox(width: 6),
-                      const Icon(
-                        Icons.star,
-                        size: 16,
-                        color: AppColors.secondary,
-                      ),
-                    ],
                   ],
                 ),
                 const SizedBox(height: 2),
@@ -590,17 +562,11 @@ class _BeneficiaryCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                if (b.hasTop &&
-                    b.preapprovedLimitMinor != null)
-                  AppStatusChip.success(
-                    label:
-                        'Tope ${formatTop(b.preapprovedLimitMinor!, b.currency)} '
-                        '(Sin biometría)',
-                  )
-                else
-                  const AppStatusChip.info(
-                    label: 'Sin tope (PIN/Huella)',
-                  ),
+                // E2-T33: sin tope; toda transferencia sigue la unica regla
+                // del umbral biometrico (S/ 1,000, lo decide el backend).
+                const AppStatusChip.info(
+                  label: 'Validación biométrica desde S/ 1,000',
+                ),
               ],
             ),
           ),

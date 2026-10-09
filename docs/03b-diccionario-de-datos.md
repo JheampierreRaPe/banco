@@ -309,7 +309,6 @@
 | account_or_cci | VARCHAR(30) | No | - | | Cuenta o CCI. |
 | holder_name | VARCHAR(150) | Si | - | | - |
 | holder_doc_hash | VARCHAR(128) | Si | - | | - |
-| preapproved_limit_minor | BIGINT | Si | - | CK >=0 | Tope sin factor extra. |
 | currency | CHAR(3) | Si | - | | - |
 | status | VARCHAR(20) | No | 'ACTIVE' | | `ACTIVE`/`DELETED`. |
 | created_at | TIMESTAMPTZ | No | now() | | - |

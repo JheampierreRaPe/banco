@@ -198,7 +198,7 @@ eventos (`outbox`/`inbox`).
   (D-01); el numero en claro es de uso interno (jamas en logs ni respuestas).
 - **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
   busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
-  `PUT /{id}` (edicion parcial incl. `preapproved_limit_minor`) y `DELETE /{id}?confirm=true`
+  `PUT /{id}` (edicion parcial) y `DELETE /{id}?confirm=true`
   (soft-delete `status=DELETED`, exige confirmacion). Cifrado en reposo AES-256-GCM
   (`alias_enc`/`account_enc`/`holder_name_enc`; sobres versionados `B1`, fallback stdlib `B0`
   solo en `local`/tests) y `holder_doc_hash` como HMAC; la cuenta/CCI jamas viaja en claro (la
@@ -209,7 +209,9 @@ eventos (`outbox`/`inbox`).
   `WHERE status='ACTIVE'` (migraciones `0021`/`0022`); evento `beneficiary.saved` por `outbox`
   (payload sin PII). Errores `DUPLICATE_BENEFICIARY` (409), `IDEMPOTENCY_CONFLICT` (409),
   `VALIDATION_ERROR` (400) / `NOT_FOUND` (404) / `NOT_AUTHORIZED` (403). Fachada interna
-  `get_for_operation` entrega el claro **solo** al motor (`E2-T14`), nunca la API. Fuera de
+  `get_for_operation` entrega el claro **solo** al motor (`E2-T30`), nunca la API. **E2-T33:**
+  el tope pre-aprobado dejo de existir (columna/`CHECK` eliminados por la migracion `0026`;
+  el contrato ignora el campo historico sin `422` y nunca lo devuelve). Fuera de
   `local` el arranque exige `cryptography` + `BENEFICIARY_CRYPTO_KEY`/`BENEFICIARY_INDEX_PEPPER`
   (fail-fast).
 - **Cableado E2-T23:** `accounts.events.on_ledger_entry_posted(entry)` (sesion/`commit`
@@ -287,22 +289,12 @@ eventos (`outbox`/`inbox`).
   `auth.failed_attempt` (CA-04), sin filtrar el motivo (sin oraculo). El `risk_profile` del
   titular lo aporta el llamante (por defecto rige el generico/`STANDARD`);
   `E2-T19` lo resuelve end-to-end en el router (`resolve_risk_profile`, cierra OBS-1).
-- **Tope pre-aprobado por beneficiario (E2-T14/E2-T32, HU07 CA-03):** si la
-  transferencia lleva `beneficiary_id` (o `metadata["beneficiary_id"]`) de un
-  beneficiario del titular con `preapproved_limit_minor >= amount_minor +
-  fee_minor` y misma moneda, el motor omite `PENDING_AUTHORIZATION` y autoriza
-  directo (`AUTHORIZED` con `PREAPPROVED_EXEMPT_REASON`); el tope se lee por la
-  fachada `accounts.beneficiaries_service.get_for_operation` (sin importar sus
-  modelos, D-01) y la decision viaja en `transaction.initiated`
-  (`exemption_reason="PREAPPROVED_LIMIT"` + `beneficiary_id`, solo UUIDs, sin
-  PII). **`E2-T32` fija el tope como techo absoluto de transferencia rapida:** se
-  evalua por operacion (`total = amount_minor + fee_minor`) como regla
-  independiente del umbral global, de modo que `total <= tope` **exime de
-  biometria aunque `effective` (acumulado) supere
-  `transfer.biometric_threshold_minor`**; por encima del tope rige el gate normal
-  de `E2-T17` y el **limite diario siempre manda**. Esto **cambia la semantica
-  previa de `E2-T14`** ("por encima del tope aplican las reglas... sin saltarse el
-  umbral global"): ver `docs/18#9` `G45` y `docs/tasks/archive/E2-T14.md`.
+- **Retiro del tope pre-aprobado (E2-T33, HU07/HU08):** el tope por beneficiario
+  (E2-T14/E2-T32) queda **retirado**: la columna/`CHECK` se eliminan por la migracion
+  `0026`, el motor ya no evalua exencion alguna (el unico gate es `evaluate_gate`:
+  umbral + limite diario) y `transaction.initiated` no lleva datos de exencion.
+  El `beneficiary_id` (campo o `metadata`) solo resuelve el destino (E2-T30) y ya
+  no altera la decision biometrica. `docs/18#9` `G37`/`G45` quedan superados.
 - **Destino por beneficiario de la agenda (E2-T30, HU06/HU07):**
   `POST /transfers/third-party` resuelve server-side el destino con
   `resolve_third_party_target_id` (solo lectura, antes de consumir la

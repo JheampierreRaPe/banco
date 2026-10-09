@@ -1,20 +1,21 @@
-"""QA de beneficiarios: busqueda, tope pre-aprobado y edicion/eliminacion (E2-T16, HU07).
+"""QA de beneficiarios: busqueda, edicion/eliminacion y contrato HTTP (E2-T16, HU07).
 
 Cierra el QA de HU07 CA-01..CA-04 sobre lo ya probado por `E2-T13` (CRUD
-cifrado + busqueda indexada), `E2-T14` (tope integrado al motor) y `E2-T15`
-(agenda Flutter). No duplica esas suites: aqui solo se cubren los huecos.
+cifrado + busqueda indexada) y `E2-T15` (agenda Flutter). No duplica esas
+suites: aqui solo se cubren los huecos.
+
+E2-T33 (retiro del tope pre-aprobado): los tests de edicion/validacion del
+tope y de exencion del gate se retiraron con la feature (ver
+`test_e2_t33_no_preapproved_exemption.py` como reemplazo); aqui solo quedan
+busqueda, edicion de campos vigentes, errores y seguridad.
 
 Mapeo brief -> test:
 - busqueda `?q=` por alias/prefijo/nombre via HTTP, tope 100, < 1 s,
   aislamiento y enmascarado ................ `test_api_search_*`
-- tope editable solo por el titular ......... `test_*_limit_*_owner*`
-- editar el tope cambia la exencion .......... `test_limit_edit_changes_exemption`
+- edicion solo por el titular ............... `test_*_edit_*_owner*`
 - edicion/eliminacion: confirmacion, soft-delete, reutilizacion de alias,
-  errores 400/403/404/409/422 ............... `test_api_edit_*`, `test_api_delete_*`,
+  errores 400/403/404/409 .................. `test_api_edit_*`, `test_api_delete_*`,
   `test_api_soft_delete_then_alias_reusable`
-- exencion del tope via `POST /transfers/third-party` (HTTP, con
-  `metadata["beneficiary_id"]`) ............. `test_api_third_party_exemption_*`
-- tope con moneda distinta via HTTP -> 400 .. `test_api_currency_mismatch_*`
 - seguridad: sin claro en BD/respuestas/logs, `beneficiary.saved` sin PII,
   duplicados 409 ............................ `test_api_no_cleartext_*`,
   `test_api_saved_event_without_pii`, `test_api_edit_duplicate_*`
@@ -135,40 +136,6 @@ def lite_session():
 
 
 @pytest.fixture()
-def engine_session():
-    """Sesion SQLite con motor completo (cuentas fondeadas + parametros)."""
-    from app.modules.accounts import repository as accounts_repo
-
-    engine = _make_engine(FULL_TABLES, ("accounts", "ledger", "shared", "transactions", "config"))
-    with engine.begin() as conn:
-        conn.execute(
-            sa.text(
-                "CREATE TABLE config.parameters (id TEXT PRIMARY KEY, "
-                "key TEXT NOT NULL UNIQUE, value_json TEXT NOT NULL, "
-                "module TEXT NOT NULL, description TEXT, updated_at TEXT, "
-                "created_at TEXT, updated_by TEXT)"
-            )
-        )
-    session = Session(bind=engine, autoflush=False, expire_on_commit=False)
-    try:
-        a1 = accounts_repo.create_account(
-            session, user_id=USER_A, account_number="00991112222", type="AHORRO", currency="PEN"
-        )
-        b1 = accounts_repo.create_account(
-            session, user_id=USER_B, account_number="00881113333", type="AHORRO", currency="PEN"
-        )
-        accounts_repo.apply_delta(
-            session, a1.id, available_delta=200_000, held_delta=0, currency="PEN"
-        )
-        _seed_params(session)
-        session.commit()
-        yield {"session": session, "a1": a1.id, "b1": b1.id}
-    finally:
-        session.close()
-        engine.dispose()
-
-
-@pytest.fixture()
 def api_ctx(monkeypatch):
     """App completa sobre SQLite + auth simulada (conmutable USER_A/B)."""
     from app.modules.accounts import repository as accounts_repo
@@ -230,11 +197,11 @@ def _auth(key: str | None = None) -> dict:
     return headers
 
 
-# ------------------------------------------------- Parte A: tope solo del titular
+# ------------------------------------------------- Parte A: edicion solo del titular
 
 
-def test_limit_editable_only_by_owner_service(lite_session):
-    """El tope solo lo edita el titular (CA-03): un tercero recibe 403."""
+def test_edit_editable_only_by_owner_service(lite_session):
+    """La edicion solo la hace el titular (CA-03): un tercero recibe 403."""
     from app.modules.accounts.service import beneficiaries as beneficiaries_service
 
     view = beneficiaries_service.create_beneficiary(
@@ -242,24 +209,24 @@ def test_limit_editable_only_by_owner_service(lite_session):
         USER_A,
         alias="Mama",
         account_or_cci=CCI_1,
-        preapproved_limit_minor=50_000,
+        holder_name="Titular Original",
         currency="PEN",
     )
     updated = beneficiaries_service.update_beneficiary(
-        lite_session, USER_A, view["id"], preapproved_limit_minor=60_000
+        lite_session, USER_A, view["id"], holder_name="Titular Nuevo"
     )
-    assert updated["preapproved_limit_minor"] == 60_000
+    assert updated["holder_name"] == "Titular Nuevo"
     with pytest.raises(beneficiaries_service.BeneficiaryForbiddenError):
         beneficiaries_service.update_beneficiary(
-            lite_session, USER_B, view["id"], preapproved_limit_minor=1
+            lite_session, USER_B, view["id"], holder_name="Intruso"
         )
-    # El intento ajeno se rechaza antes de mutar: el tope sigue en 60_000.
+    # El intento ajeno se rechaza antes de mutar: el nombre sigue intacto.
     fresh = beneficiaries_service.list_beneficiaries(lite_session, USER_A)[0]
-    assert fresh["preapproved_limit_minor"] == 60_000  # el ajeno no lo movio
+    assert fresh["holder_name"] == "Titular Nuevo"  # el ajeno no lo movio
 
 
-def test_update_rejects_invalid_cci_currency_limit_service(lite_session):
-    """Editar con CCI/currency/tope invalidos se rechaza (400 del router)."""
+def test_update_rejects_invalid_cci_currency_service(lite_session):
+    """Editar con CCI/currency invalidos se rechaza (400 del router)."""
     from app.modules.accounts.service import beneficiaries as beneficiaries_service
 
     view = beneficiaries_service.create_beneficiary(
@@ -275,77 +242,8 @@ def test_update_rejects_invalid_cci_currency_limit_service(lite_session):
         )
     with pytest.raises((ValueError, TypeError)):
         beneficiaries_service.update_beneficiary(lite_session, USER_A, view["id"], currency="XX")
-    with pytest.raises((ValueError, TypeError)):
-        beneficiaries_service.update_beneficiary(
-            lite_session, USER_A, view["id"], preapproved_limit_minor=-1
-        )
-    with pytest.raises((ValueError, TypeError)):
-        beneficiaries_service.update_beneficiary(
-            lite_session, USER_A, view["id"], preapproved_limit_minor=10.5
-        )
-
-
-# --------------------------------- Parte B: editar el tope cambia la exencion
-
-
-def test_limit_edit_changes_exemption(engine_session):
-    """Subir el tope exime; bajarlo o quitarlo vuelve a exigir (CA-03)."""
-    from app.modules.accounts.service import beneficiaries as beneficiaries_service
-    from app.modules.transactions import service as svc
-    from app.modules.transactions.service import biometric as bio_svc
-
-    session = engine_session["session"]
-    a1, b1 = engine_session["a1"], engine_session["b1"]
-
-    def _pay(amount: int, beneficiary_id: str):
-        from app.modules.accounts.repository import ACCOUNTS_BALANCE_PORT
-
-        tx = svc.transfer_third_party(
-            session,
-            initiator_user_id=USER_A,
-            source_account_id=a1,
-            target_account_id=b1,
-            amount_minor=amount,
-            currency="PEN",
-            fee_minor=0,
-            idempotency_key=f"e2t16-{uuid.uuid4()}",
-            balance_port=ACCOUNTS_BALANCE_PORT,
-            beneficiary_id=beneficiary_id,
-        )
-        session.commit()
-        return tx
-
-    view = beneficiaries_service.create_beneficiary(
-        session,
-        USER_A,
-        alias="Tope Dinamico",
-        account_or_cci=CCI_1,
-        preapproved_limit_minor=5_000,
-        currency="PEN",
-    )
-    session.commit()
-
-    assert _pay(10_000, view["id"]).status == "PENDING_AUTHORIZATION"
-
-    beneficiaries_service.update_beneficiary(
-        session, USER_A, view["id"], preapproved_limit_minor=50_000
-    )
-    session.commit()
-    settled = _pay(10_000, view["id"])
-    assert settled.status == "SETTLED"
-    reasons = [
-        h.reason or ""
-        for h in __import__("app.modules.transactions.repository", fromlist=["x"]).list_history(
-            session, settled.id
-        )
-    ]
-    assert bio_svc.PREAPPROVED_EXEMPT_REASON in reasons
-
-    beneficiaries_service.update_beneficiary(
-        session, USER_A, view["id"], preapproved_limit_minor=None
-    )
-    session.commit()
-    assert _pay(10_000, view["id"]).status == "PENDING_AUTHORIZATION"
+    # E2-T33: el tope pre-aprobado dejo de existir; el contrato HTTP ignora
+    # el campo historico (ver `test_api_legacy_limit_field_ignored` en E2-T13).
 
 
 # ------------------------------------------------- Parte C: busqueda via HTTP
@@ -472,15 +370,15 @@ def test_api_search_rejects_overlong_q_and_empty_lists_all(api_ctx):
 # ------------------------------------------------- Parte D: edicion via HTTP
 
 
-def test_api_limit_edit_owner_only(api_ctx):
-    """El tope via `PUT` solo lo mueve el titular; el ajeno recibe 403."""
+def test_api_edit_owner_only(api_ctx):
+    """La edicion via `PUT` solo la hace el titular; el ajeno recibe 403."""
     client = api_ctx["client"]
     created = client.post(
         "/api/v1/beneficiaries",
         json={
             "alias": "Mama",
             "account_or_cci": CCI_1,
-            "preapproved_limit_minor": 50_000,
+            "holder_name": "Titular Original",
             "currency": "PEN",
         },
         headers=_auth(),
@@ -489,15 +387,15 @@ def test_api_limit_edit_owner_only(api_ctx):
     bid = created.json()["data"]["id"]
 
     ok = client.put(
-        f"/api/v1/beneficiaries/{bid}", json={"preapproved_limit_minor": 60_000}, headers=_auth()
+        f"/api/v1/beneficiaries/{bid}", json={"holder_name": "Titular Nuevo"}, headers=_auth()
     )
     assert ok.status_code == 200
-    assert ok.json()["data"]["preapproved_limit_minor"] == 60_000
+    assert ok.json()["data"]["holder_name"] == "Titular Nuevo"
 
     api_ctx["current"]["user"] = USER_B
     try:
         denied = client.put(
-            f"/api/v1/beneficiaries/{bid}", json={"preapproved_limit_minor": 1}, headers=_auth()
+            f"/api/v1/beneficiaries/{bid}", json={"holder_name": "Intruso"}, headers=_auth()
         )
         assert denied.status_code == 403
         assert denied.json()["error"]["code"] == "NOT_AUTHORIZED"
@@ -505,15 +403,13 @@ def test_api_limit_edit_owner_only(api_ctx):
         api_ctx["current"]["user"] = USER_A
 
     assert (
-        client.get("/api/v1/beneficiaries", headers=_auth()).json()["data"][0][
-            "preapproved_limit_minor"
-        ]
-        == 60_000
+        client.get("/api/v1/beneficiaries", headers=_auth()).json()["data"][0]["holder_name"]
+        == "Titular Nuevo"
     )
 
 
 def test_api_edit_error_contract(api_ctx):
-    """Contrato de errores de edicion: 400/404/409/422 (CA-04)."""
+    """Contrato de errores de edicion: 400/404/409 (CA-04)."""
     client = api_ctx["client"]
     first = client.post(
         "/api/v1/beneficiaries", json={"alias": "Mama", "account_or_cci": CCI_1}, headers=_auth()
@@ -530,10 +426,12 @@ def test_api_edit_error_contract(api_ctx):
     assert bad_cci.status_code == 400
     assert bad_cci.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    negative = client.put(
+    # E2-T33: el tope historico se ignora (sin 422) y no se devuelve.
+    legacy = client.put(
         f"/api/v1/beneficiaries/{bid}", json={"preapproved_limit_minor": -5}, headers=_auth()
     )
-    assert negative.status_code == 422  # `ge=0` del esquema
+    assert legacy.status_code == 200
+    assert "preapproved_limit_minor" not in legacy.json()["data"]
 
     bad_currency = client.put(
         f"/api/v1/beneficiaries/{bid}", json={"currency": "XX"}, headers=_auth()
@@ -631,57 +529,6 @@ def test_api_soft_delete_then_alias_reusable(api_ctx):
     assert reused.json()["data"]["status"] == "ACTIVE"
 
 
-# --------------------------------- Parte E: exencion del tope via HTTP
-
-
-def _third_party(
-    client, a1: str, b1: str, amount: int, beneficiary_id: str, key: str, fee: int = 0
-):
-    return client.post(
-        "/api/v1/transfers/third-party",
-        json={
-            "source_account_id": a1,
-            "target_account_id": b1,
-            "amount_minor": amount,
-            "currency": "PEN",
-            "fee_minor": fee,
-            "metadata": {"beneficiary_id": beneficiary_id},
-        },
-        headers=_auth(key),
-    )
-
-
-def test_api_third_party_exemption_under_and_over_limit(api_ctx):
-    """Bajo el tope liquida directo; sobre el tope queda `PENDING` (CA-03)."""
-    client = api_ctx["client"]
-    a1, b1 = api_ctx["a1"], api_ctx["b1"]
-    created = client.post(
-        "/api/v1/beneficiaries",
-        json={
-            "alias": "Tope Http",
-            "account_or_cci": CCI_1,
-            "preapproved_limit_minor": 50_000,
-            "currency": "PEN",
-        },
-        headers=_auth(),
-    )
-    assert created.status_code == 201
-    bid = created.json()["data"]["id"]
-
-    under = _third_party(client, a1, b1, 10_000, bid, key="e2t16-under-1")
-    assert under.status_code == 201, under.text
-    assert under.json()["data"]["status"] == "SETTLED"
-
-    over = _third_party(client, a1, b1, 60_000, bid, key="e2t16-over-1")
-    assert over.status_code == 201, over.text
-    over_data = over.json()["data"]
-    assert over_data["status"] == "PENDING_AUTHORIZATION"
-    assert over_data["nonce"]  # reto biometrico exigible
-
-    for raw in (created.text, under.text, over.text):
-        assert CCI_1 not in raw  # sin claro en respuestas de dinero/agenda
-
-
 def test_api_third_party_requires_idempotency_key(api_ctx):
     """La ruta de dinero exige `Idempotency-Key` (-> 422 sin clave)."""
     client = api_ctx["client"]
@@ -698,28 +545,6 @@ def test_api_third_party_requires_idempotency_key(api_ctx):
         headers={"Authorization": "Bearer x"},
     )
     assert resp.status_code == 422
-    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
-
-
-def test_api_currency_mismatch_rejected_as_validation_error(api_ctx):
-    """Tope en otra moneda: el pago se rechaza con `VALIDATION_ERROR`."""
-    client = api_ctx["client"]
-    a1, b1 = api_ctx["a1"], api_ctx["b1"]
-    created = client.post(
-        "/api/v1/beneficiaries",
-        json={
-            "alias": "Tope Usd",
-            "account_or_cci": CCI_1,
-            "preapproved_limit_minor": 50_000,
-            "currency": "USD",
-        },
-        headers=_auth(),
-    )
-    assert created.status_code == 201
-    bid = created.json()["data"]["id"]
-
-    resp = _third_party(client, a1, b1, 10_000, bid, key="e2t16-fx-1")
-    assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
@@ -740,7 +565,6 @@ def test_api_no_cleartext_in_beneficiary_responses(api_ctx, caplog):
                 "account_or_cci": CCI_1,
                 "holder_name": "Testonia Sintetica",
                 "holder_doc": "87654321",
-                "preapproved_limit_minor": 50_000,
                 "currency": "PEN",
             },
             headers=_auth(),

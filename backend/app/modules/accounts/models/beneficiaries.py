@@ -47,10 +47,6 @@ class Beneficiary(Base):
             "status IN ('ACTIVE', 'DELETED')",
             name="ck_beneficiaries_status",
         ),
-        sa.CheckConstraint(
-            "preapproved_limit_minor IS NULL OR preapproved_limit_minor >= 0",
-            name="ck_beneficiaries_preapproved_limit_min",
-        ),
         sa.Index("ix_beneficiaries_owner_alias", "owner_user_id", "alias_search_hash"),
         sa.Index("ix_beneficiaries_owner_account", "owner_user_id", "account_hash"),
         sa.Index("ix_beneficiaries_owner_status", "owner_user_id", "status"),
@@ -93,7 +89,6 @@ class Beneficiary(Base):
     name_search_hash: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     # SOLO hash del documento (el numero en claro nunca se persiste).
     holder_doc_hash: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
-    preapproved_limit_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
     currency: Mapped[str | None] = mapped_column(sa.String(3), nullable=True)
     status: Mapped[str] = mapped_column(
         sa.String(20), nullable=False, default="ACTIVE", server_default="ACTIVE"

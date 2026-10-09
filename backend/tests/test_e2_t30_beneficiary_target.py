@@ -16,7 +16,7 @@ Mapeo brief -> test:
 - beneficiario ajeno/inexistente/dado de baja -> mismo 404 ... `test_*_neutral_*`
 - sin destino -> 400 / moneda incoherente -> 400 ............. `test_*_validation_*`
 - regresion directo + DNI/celular + E2-T16 .................. `test_regression_*`
-- exencion por tope E2-T14 intacta ........................... `test_exemption_*`
+- E2-T33: el beneficiario ya no exime del gate .............. `test_no_exemption_*`
 - idempotencia y concurrencia sin doble debito ............... `test_idempot*`, `test_concurrent_*`
 - fachada `get_account_by_number` ............................ `test_facade_*`
 - HTTP `POST /transfers/third-party` ......................... `test_http_*`
@@ -152,7 +152,6 @@ def t30_session():
             OWNER_A,
             alias="Agenda Destino",
             account_or_cci=DST_B,
-            preapproved_limit_minor=50_000,
             currency="PEN",
         )
         cci = beneficiaries_service.create_beneficiary(
@@ -424,10 +423,18 @@ def test_regression_direct_target_on_second_account(t30_session):
     assert tx.target_account_id == other.id
 
 
-# ------------------------------------------------- E2-T14 intacta
+# ------------------------------------------------- E2-T33: sin exencion
 
 
-def test_exemption_by_explicit_beneficiary_field(t30_session):
+def test_no_exemption_by_explicit_beneficiary_field(t30_session):
+    """E2-T33: el destino se resuelve por agenda pero el gate manda.
+
+    Con `beneficiary_id` explicito y monto sobre el umbral (2000), la
+    operacion queda en `PENDING_AUTHORIZATION` (ya no se omite por tope):
+    la resolucion E2-T30 sigue intacta (`target_account_id` real +
+    `beneficiary_id` en `meta`) y el evento `transaction.initiated` no
+    lleva datos de exencion.
+    """
     from app.modules.shared.models import OutboxEntry
     from app.modules.transactions import repository as tx_repository
     from app.modules.transactions.service import biometric as bio_svc
@@ -435,10 +442,12 @@ def test_exemption_by_explicit_beneficiary_field(t30_session):
     session = t30_session["session"]
     tx = _third_party(session, t30_session["src"], 10_000, beneficiary_id=t30_session["agenda"])
     session.commit()
-    assert tx.status == "SETTLED"
+    assert tx.status == "PENDING_AUTHORIZATION"
+    assert tx.target_account_id == t30_session["dst"]
+    assert isinstance(tx.meta, dict) and tx.meta.get("beneficiary_id") == t30_session["agenda"]
     reasons = [h.reason or "" for h in tx_repository.list_history(session, tx.id)]
-    assert bio_svc.PREAPPROVED_EXEMPT_REASON in reasons
-    assert bio_svc.REQUIRED_REASON not in reasons
+    assert bio_svc.REQUIRED_REASON in reasons
+    assert "preapproved_exemption" not in (tx.meta or {})
     payloads = [
         r.payload
         for r in session.scalars(
@@ -447,8 +456,8 @@ def test_exemption_by_explicit_beneficiary_field(t30_session):
         if r.event_type == "transaction.initiated"
     ]
     assert len(payloads) == 1
-    assert payloads[0]["exemption_reason"] == "PREAPPROVED_LIMIT"
-    assert payloads[0]["beneficiary_id"] == t30_session["agenda"]
+    assert "exemption_reason" not in payloads[0]
+    assert "beneficiary_id" not in payloads[0]
 
 
 # ------------------------------------------------- Idempotencia y concurrencia

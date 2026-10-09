@@ -33,7 +33,7 @@
 |---|---|---|
 | `accounts` | id, user_id, account_number, type, currency, status, ledger_account_id | Numero enmascarado en respuestas. |
 | `account_balances` | account_id, currency, available_minor, held_minor, version | **Proyeccion** del ledger; se actualiza en la misma transaccion. |
-| `beneficiaries` | id, owner_user_id, alias, photo_url, bank_code, account_or_cci, holder_name, preapproved_limit_minor, status | HU07. |
+| `beneficiaries` | id, owner_user_id, alias, photo_url, bank_code, account_or_cci, holder_name, status | HU07. E2-T33: sin tope pre-aprobado (columna eliminada por migracion `0026`). |
 | `movements_view` | account_id, journal_entry_id, direction, amount_minor, currency, description, value_date | Vista de lectura (CQRS ligero). |
 
 Invariante: `available_minor + held_minor = saldo contable de la cuenta en el ledger`.

@@ -1,9 +1,9 @@
 """Casos de uso de beneficiarios frecuentes (E2-T13, HU07 CA-01..CA-04).
 
 Lee/escribe via `accounts/repository/beneficiaries` (E2-T01): sin FK entre
-schemas, dinero entero en centimos (el tope es `BIGINT >= 0`), nunca
-`float`. Sin PII en logs (regla de oro 7): aqui no se loguea alias,
-nombre, CCI ni documento (solo `id` y tamaños).
+schemas, dinero entero en centimos, nunca `float`. Sin PII en logs
+(regla de oro 7): aqui no se loguea alias, nombre, CCI ni documento
+(solo `id` y tamaños).
 
 Reglas aplicadas:
 
@@ -18,7 +18,7 @@ Reglas aplicadas:
   filtrar.
 - Enmascaramiento por defecto (regla de oro 9): las vistas exponen
   `account_masked` (`****` + ultimos 4); el claro solo sale por la
-  fachada interna `get_for_operation` (la usara E2-T14/motor, nunca la
+  fachada interna `get_for_operation` (la usa el motor E2-T30, nunca la
   API).
 - Duplicados por titular: mismo alias normalizado o misma cuenta/CCI
   (ACTIVE) -> `DuplicateBeneficiaryError` (`DUPLICATE_BENEFICIARY`,
@@ -191,16 +191,6 @@ def _clean_currency(value: object) -> str | None:
     return cur
 
 
-def _clean_limit(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError("preapproved_limit_minor debe ser int (centimos), sin float")
-    if value < 0:
-        raise ValueError("preapproved_limit_minor debe ser >= 0")
-    return value
-
-
 def to_view(row) -> dict:
     """Vista para respuestas API: alias/nombre en claro (solo el titular),
     cuenta enmascarada, documento ausente (solo hash en BD)."""
@@ -211,9 +201,6 @@ def to_view(row) -> dict:
         "bank_code": row.bank_code,
         "account_masked": crypto.mask_account_or_cci(row.account_last4),
         "holder_name": crypto.decrypt_value(row.holder_name_enc) if row.holder_name_enc else None,
-        "preapproved_limit_minor": (
-            int(row.preapproved_limit_minor) if row.preapproved_limit_minor is not None else None
-        ),
         "currency": row.currency,
         "status": row.status,
         "created_at": row.created_at.isoformat() if row.created_at is not None else None,
@@ -267,7 +254,6 @@ def create_beneficiary(
     bank_code: object = None,
     holder_name: object = None,
     holder_doc: object = None,
-    preapproved_limit_minor: object = None,
     currency: object = None,
 ) -> dict:
     """Alta de beneficiario (CA-01): valida, cifra, indexa y registra evento."""
@@ -276,7 +262,6 @@ def create_beneficiary(
     digits = normalize_account_or_cci(account_or_cci)
     name = _clean_holder_name(holder_name)
     doc = _clean_holder_doc(holder_doc)
-    limit = _clean_limit(preapproved_limit_minor)
     cur = _clean_currency(currency)
 
     alias_hash = crypto.alias_index(clean_alias)
@@ -300,7 +285,6 @@ def create_beneficiary(
             holder_name_enc=crypto.encrypt_value(name) if name else None,
             name_search_hash=crypto.name_index(name) if name else None,
             holder_doc_hash=crypto.blind_index(doc, domain="doc") if doc else None,
-            preapproved_limit_minor=limit,
             currency=cur,
             token_hashes=crypto.token_hashes_for(clean_alias, name),
         )
@@ -454,7 +438,7 @@ def update_beneficiary(
 ) -> dict:
     """Edicion parcial (CA-03/CA-04): solo el titular; re-cifra y re-indexa
     lo que cambie; `None` limpia opcionales (`photo_url`, `holder_name`,
-    `holder_doc`, `preapproved_limit_minor`, `currency`, `bank_code`)."""
+    `holder_doc`, `currency`, `bank_code`)."""
     owner = _coerce_owner(owner_user_id)
     row = _require_owned_active(session, owner, beneficiary_id)
 
@@ -490,8 +474,6 @@ def update_beneficiary(
     if "holder_doc" in changes:
         doc = _clean_holder_doc(changes["holder_doc"])
         row.holder_doc_hash = crypto.blind_index(doc, domain="doc") if doc else None
-    if "preapproved_limit_minor" in changes:
-        row.preapproved_limit_minor = _clean_limit(changes["preapproved_limit_minor"])
     if "currency" in changes:
         row.currency = _clean_currency(changes["currency"])
     session.flush()
@@ -526,7 +508,7 @@ def delete_beneficiary(
 def get_for_operation(
     session: Session, owner_user_id: uuid.UUID | str, beneficiary_id: uuid.UUID | str
 ) -> dict:
-    """Fachada interna de lectura para el motor (E2-T14, D-01): retorna la
+    """Fachada interna de lectura para el motor (E2-T30, D-01): retorna la
     cuenta/CCI y el nombre en claro SIN pasar por la API. Solo lectura
     (sin `flush`/`commit`). El llamante jamas lo registra en logs ni lo
     expone en respuestas (regla de oro 7/9). `None` si no existe/ajeno
@@ -540,9 +522,6 @@ def get_for_operation(
         "holder_name": crypto.decrypt_value(row.holder_name_enc) if row.holder_name_enc else None,
         "bank_code": row.bank_code,
         "currency": row.currency,
-        "preapproved_limit_minor": (
-            int(row.preapproved_limit_minor) if row.preapproved_limit_minor is not None else None
-        ),
         "status": row.status,
     }
 

@@ -2,11 +2,12 @@
 
 Cubre en el motor transaccional:
 
-- Decision de exigir biometria: si el monto acumulado del dia (operaciones
-  del titular en estados no `REJECTED`/`FAILED`, mas la operacion en curso)
-  supera el umbral configurable (`transfer.biometric_threshold_minor`,
-  fachada `shared.config.parameters` de E2-T18), la transaccion queda en
-  `PENDING_AUTHORIZATION` con `nonce` firmado por el dispositivo.
+- Decision de exigir biometria: si el monto de la operacion
+  (`amount_minor + fee_minor`, E2-T34, HU08) supera el umbral configurable
+  (`transfer.biometric_threshold_minor`, fachada `shared.config.parameters`
+  de E2-T18), la transaccion queda en `PENDING_AUTHORIZATION` con `nonce`
+  firmado por el dispositivo. El umbral es POR OPERACION (no mira el
+  acumulado del dia).
 - Retencion en `PENDING_AUTHORIZATION`: las rutas con hold (terceros /
   interbancaria) crean el hold (fila + delta + asiento + `funds.held`) ANTES
   de debitar/liquidar; la ruta atomica propia (E2-T07, `04#7.1`) no crea
@@ -340,8 +341,7 @@ def evaluate_gate(
         )
     accumulated = daily_accumulated_minor(session, user_id, exclude_tx_id=exclude_tx_id, now=now)
     limit = int(read_limit(session, risk_profile))
-    effective = accumulated + total
-    exceeded = effective > limit
+    exceeded = (accumulated + total) > limit
     return BiometricDecision(
         accumulated_minor=accumulated,
         total_minor=total,
@@ -349,7 +349,7 @@ def evaluate_gate(
         daily_limit_minor=limit,
         profile=risk_profile,
         limit_exceeded=exceeded,
-        requires_biometry=(not exceeded) and (effective > threshold),
+        requires_biometry=(not exceeded) and (total > threshold),
     )
 
 

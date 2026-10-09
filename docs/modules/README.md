@@ -270,12 +270,12 @@ eventos (`outbox`/`inbox`).
   moneda y cuentas enmascaradas (`****1234`; interbancaria sin CCI en claro). Solo emitible en
   `POSTED`/`SETTLED`/`CONCILIATED` (otro estado -> `409 VALIDATION_ERROR`); sin `reportlab` ->
   `501 RECEIPT_FORMAT_NOT_SUPPORTED` (patron `E2-T03`). No crea asientos ni filas.
-- **Autorizacion biometrica de pagos sensibles (E2-T17, HU08):** gate en el motor
-  (no endpoint propio; habilita `POST /transactions/{id}/authorize`, `E2-T19`). Si el
-  **acumulado del dia** del titular (`amount_minor + fee_minor` de estados no
-  `REJECTED`/`FAILED`, mas la operacion en curso) supera
-  `transfer.biometric_threshold_minor` (fachada `shared.config`, E2-T18), la operacion
-  queda en **`PENDING_AUTHORIZATION`** con un `nonce` de un solo uso (TTL 120 s) en
+- **Autorizacion biometrica de pagos sensibles (E2-T17, HU08; umbral por operacion
+  E2-T34):** gate en el motor (no endpoint propio; habilita
+  `POST /transactions/{id}/authorize`, `E2-T19`). Si el **monto de la operacion**
+  (`total = amount_minor + fee_minor`) supera `transfer.biometric_threshold_minor`
+  (fachada `shared.config`, E2-T18), la operacion queda en
+  **`PENDING_AUTHORIZATION`** con un `nonce` de un solo uso (TTL 120 s) en
   `transactions.metadata` (nunca material biometrico) a firmar con el dispositivo; en
   rutas con hold se crea la retencion antes de debitar y la ruta atomica propia
   (`04#7.1`) no retiene nada. La firma/binding se verifican por **fachada de `identity`**

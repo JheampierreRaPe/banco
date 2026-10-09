@@ -925,7 +925,8 @@ def execute_transfer(
       `2000-S -> 2000-D` sin hold ni `FUNDS_HELD`
       (`AUTHORIZED -> POSTED -> SETTLED`); exige `fee_minor == 0` y
       `settle=True`; retorna en `SETTLED` o en `REJECTED` si no hay fondos.
-    - Gate biometrico (E2-T17, HU08): si el acumulado del dia supera el
+    - Gate biometrico (E2-T17, HU08; umbral por operacion E2-T34): si el
+      monto de la operacion (`amount_minor + fee_minor`) supera el
       umbral (`transfer.biometric_threshold_minor`), retorna en
       `PENDING_AUTHORIZATION` con hold (rutas con hold) y `nonce` a firmar;
       la continuacion llega por `biometric.authorize_transaction`

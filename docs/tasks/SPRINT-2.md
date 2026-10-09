@@ -181,6 +181,17 @@ tope (**`Hecho`**, brief `docs/tasks/E2-T33.md`).
 > Gap `G46` registrado en `docs/18#9` (`G37`/`G45` superados; `CA-05` de HU07 de `E2-T32`
 > **ANULADO** y `CA-03` de HU07 (tope) **RETIRADO**).
 
+## Umbral biometrico por operacion (bug del dueno 2026-10-09) - `transactions`
+
+`E2-T34` Umbral biometrico por operacion (no por acumulado del dia): el gate decide con
+`total = amount_minor + fee_minor` (`requires_biometry = (not limit_exceeded) and
+(total > threshold)`); el limite diario SIGUE acumulado y el acumulador excluye ademas
+`PENDING_AUTHORIZATION` y `REVERSED` (brief `docs/tasks/E2-T34.md`).
+
+> Dependencias: `E2-T17`, `E2-T18`, `E2-T19`, `E2-T31`, `E2-T33` (todas `Hecho`).
+> Sin migracion; valores `100000`/`500000` intactos. La semantica acumulada del umbral de
+> `E2-T17` queda superada (nota al inicio de `docs/tasks/archive/E2-T17.md`).
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado

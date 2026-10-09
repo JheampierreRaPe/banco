@@ -58,6 +58,17 @@ class FakePaymentAuthService implements PaymentAuthorizationServiceBase {
   ApiException? refreshError;
   int refreshCalls = 0;
 
+  /// Guion de `authorizeWithPin` (E2-T31): cada llamada consume un item
+  /// ([AuthorizationResult] o [ApiException]).
+  List<Object> authorizePinScript = const [];
+  int authorizePinCalls = 0;
+
+  /// PINs recibidos en cada llamada a `authorizeWithPin`, en orden.
+  List<String> authorizePins = [];
+
+  /// Claves recibidas en cada llamada a `authorizeWithPin`, en orden.
+  List<String?> authorizePinKeys = [];
+
   AuthorizationResult _success() =>
       const AuthorizationResult(transactionId: 'tx-1', status: 'SETTLED');
 
@@ -78,6 +89,25 @@ class FakePaymentAuthService implements PaymentAuthorizationServiceBase {
         : authorizeScript.isEmpty
         ? _success()
         : authorizeScript.last;
+    if (item is ApiException) throw item;
+    return item as AuthorizationResult;
+  }
+
+  @override
+  Future<AuthorizationResult> authorizeWithPin({
+    required String transactionId,
+    required String pin,
+    String? idempotencyKey,
+  }) async {
+    final i = authorizePinCalls;
+    authorizePinCalls++;
+    authorizePins.add(pin);
+    authorizePinKeys.add(idempotencyKey);
+    final item = i < authorizePinScript.length
+        ? authorizePinScript[i]
+        : authorizePinScript.isEmpty
+        ? _success()
+        : authorizePinScript.last;
     if (item is ApiException) throw item;
     return item as AuthorizationResult;
   }
@@ -169,6 +199,34 @@ class RealBackendFake implements PaymentAuthorizationServiceBase {
       );
       _snapshots[key] = {'body': body, 'error': error};
       throw error;
+    }
+    final ok = AuthorizationResult(
+      transactionId: transactionId,
+      status: 'SETTLED',
+    );
+    _snapshots[key] = {'body': body, 'response': ok};
+    return ok;
+  }
+
+  @override
+  Future<AuthorizationResult> authorizeWithPin({
+    required String transactionId,
+    required String pin,
+    String? idempotencyKey,
+  }) async {
+    final key = idempotencyKey ?? '';
+    final body = 'authorize-pin|$transactionId|$pin';
+    final snap = _snapshots[key];
+    if (snap != null) {
+      if (snap['body'] != body) {
+        throw ApiException(
+          code: 'CONFLICT',
+          message: 'Idempotency-Key ya usada con un cuerpo distinto.',
+        );
+      }
+      final error = snap['error'];
+      if (error is ApiException) throw error;
+      return snap['response'] as AuthorizationResult;
     }
     final ok = AuthorizationResult(
       transactionId: transactionId,
@@ -697,9 +755,12 @@ void main() {
       expect(find.byKey(const Key('pin-fallback-message')), findsOneWidget);
       expect(auth.authorizeCalls, 0);
 
-      await tester.tap(find.byKey(const Key('pin-fallback-go')));
-      await tester.pumpAndSettle();
-      expect(find.text('Login con PIN'), findsOneWidget);
+      // E2-T31: el PIN se captura DENTRO del flujo (campo en linea), sin
+      // navegar a `/login` (la guarda expulsaba al usuario).
+      expect(find.byKey(const Key('pin-fallback-field')), findsOneWidget);
+      expect(find.byKey(const Key('pin-fallback-submit')), findsOneWidget);
+      expect(find.byKey(const Key('pin-fallback-go')), findsNothing);
+      expect(find.text('Login con PIN'), findsNothing);
     });
 
     testWidgets('tap directo en PIN monta el fallback (regresion)', (
@@ -900,6 +961,19 @@ class _SharedAuthFake implements PaymentAuthorizationServiceBase {
     server.check(
       key: idempotencyKey ?? '',
       body: 'authorize|$transactionId|$nonce|$signature|$deviceId',
+    );
+    return AuthorizationResult(transactionId: transactionId, status: 'SETTLED');
+  }
+
+  @override
+  Future<AuthorizationResult> authorizeWithPin({
+    required String transactionId,
+    required String pin,
+    String? idempotencyKey,
+  }) async {
+    server.check(
+      key: idempotencyKey ?? '',
+      body: 'authorize-pin|$transactionId|$pin',
     );
     return AuthorizationResult(transactionId: transactionId, status: 'SETTLED');
   }

@@ -28,8 +28,10 @@ enum BeneficiaryDocType { dni, ruc }
 ///   E2-T29); el backend revalida y decide (`VALIDATION_ERROR`).
 /// - Duplicado con banner naranja + `Ver existente`/`Ignorar` (mockup
 ///   `Alta 2 - Duplicado`, codigo `DUPLICATE_BENEFICIARY` visible).
-/// - Tope pre-aprobado con chips S/100/300/500/Otro (mockup `TopeCard`,
-///   solo el titular; el backend valida).
+/// - Tope pre-aprobado con chips S/100/300/500/1000/2000/Otro (mockup `TopeCard`,
+///   solo el titular; el backend valida). El tope es un techo de
+///   transferencia rapida: hasta ese monto no se pide biometria con este
+///   contacto, incluso por encima del control general (E2-T32).
 /// - Eliminar (solo edicion) con [DeleteBeneficiaryDialog] (mockup
 ///   `Alta 5 - Eliminar`).
 /// - El CCI/cuenta en claro solo viaja en el request; jamas se muestra
@@ -136,7 +138,9 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       _topMinor = b.preapprovedLimitMinor;
       _customTop = _topMinor != 10000 &&
           _topMinor != 30000 &&
-          _topMinor != 50000;
+          _topMinor != 50000 &&
+          _topMinor != 100000 &&
+          _topMinor != 200000;
       if (_customTop && _topMinor != null) {
         _customTopController.text = (_topMinor! ~/ 100).toString();
       }
@@ -890,7 +894,7 @@ class _TopCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Transferencias sin biometría',
+                      'Transferencia rápida sin biometría',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     Text(
@@ -913,7 +917,9 @@ class _TopCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Hasta este monto se omite biometría para 1 toque con este contacto.',
+            'Hasta este monto, transferencia rápida sin biometría con este '
+            'contacto, incluso por encima del control general. El límite '
+            'diario siempre aplica.',
             style: TextStyle(
               fontSize: 12,
               color: AppColors.onSurfaceVariant,
@@ -921,7 +927,9 @@ class _TopCard extends StatelessWidget {
           ),
           if (enabled) ...[
             const SizedBox(height: 12),
-            Row(
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
               children: [
                 _TopChip(
                   key: const Key('tope-100'),
@@ -929,21 +937,30 @@ class _TopCard extends StatelessWidget {
                   selected: !custom && selectedMinor == 10000,
                   onTap: () => onSelect(10000, false),
                 ),
-                const SizedBox(width: 6),
                 _TopChip(
                   key: const Key('tope-300'),
                   label: '$symbol 300',
                   selected: !custom && selectedMinor == 30000,
                   onTap: () => onSelect(30000, false),
                 ),
-                const SizedBox(width: 6),
                 _TopChip(
                   key: const Key('tope-500'),
                   label: '$symbol 500',
                   selected: !custom && selectedMinor == 50000,
                   onTap: () => onSelect(50000, false),
                 ),
-                const SizedBox(width: 6),
+                _TopChip(
+                  key: const Key('tope-1000'),
+                  label: '$symbol 1,000',
+                  selected: !custom && selectedMinor == 100000,
+                  onTap: () => onSelect(100000, false),
+                ),
+                _TopChip(
+                  key: const Key('tope-2000'),
+                  label: '$symbol 2,000',
+                  selected: !custom && selectedMinor == 200000,
+                  onTap: () => onSelect(200000, false),
+                ),
                 _TopChip(
                   key: const Key('tope-custom'),
                   label: 'Otro',
@@ -1015,7 +1032,10 @@ class _TopChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
+    // Ancho fijo: vive en un `Wrap` (E2-T32, 6 presets) donde `Expanded`
+    // no aplica (exige padre `Flex`).
+    return SizedBox(
+      width: 100,
       child: GestureDetector(
         onTap: onTap,
         child: Container(

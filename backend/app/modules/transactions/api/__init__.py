@@ -4,8 +4,9 @@ y autorizacion (E2-T19, HU08).
 - `POST /transfers/own` (ruta atomica SIN hold, `04#7.1`) y
   `POST /transfers/third-party` (hold + liquidacion, `04#7.2`), montados
   bajo `/api/v1` por `app.main` via `iter_routers` (sin registro extra).
-- `POST /transactions/{id}/authorize` (E2-T19, HU08 CA-01): firma del
-  `nonce` con el dispositivo para pagos en `PENDING_AUTHORIZATION`;
+- `POST /transactions/{id}/authorize` (E2-T19/E2-T31, HU08): firma del
+  `nonce` con el dispositivo o PIN del titular (mutuamente excluyentes)
+  para pagos en `PENDING_AUTHORIZATION`;
   idempotente, con persistencia del fallo antes del error (OBS-3) y
   limite diario por perfil resuelto del titular (OBS-1, CA-03).
 - `POST /transactions/{id}/authorize/challenge` (HU08, reintento tras
@@ -36,6 +37,7 @@ y autorizacion (E2-T19, HU08).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from datetime import datetime
@@ -816,11 +818,22 @@ def _spoil_signature(signature: str) -> str:
     return clean[:-1] + ("0" if last != "0" else "1")
 
 
+def _pin_digest(pin: str) -> str:
+    """Digest del PIN para el snapshot de idempotencia (E2-T31).
+
+    El PIN jamas queda en el snapshot de `idempotency_keys` (es un
+    secreto): se usa su `sha256` hex, que distingue un PIN de otro
+    (mismo PIN + misma clave = replay; PIN distinto + misma clave = `409`,
+    igual que la firma) sin exponer el valor.
+    """
+    return hashlib.sha256(pin.strip().encode("utf-8")).hexdigest()
+
+
 @router.post(
     "/transactions/{transaction_id}/authorize",
     response_model=AuthorizeTransactionResponse,
     status_code=200,
-    summary="Autoriza un pago sensible con la firma del dispositivo (HU08)",
+    summary="Autoriza un pago sensible con firma o PIN (HU08)",
 )
 def authorize_transaction(
     transaction_id: str,
@@ -829,28 +842,33 @@ def authorize_transaction(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Completa la autorizacion biometrica de un pago en espera (E2-T19, HU08 CA-01).
+    """Completa la autorizacion de un pago en espera (E2-T19/E2-T31, HU08).
 
-    El cliente firma el `nonce` del reto con el dispositivo y envia
-    `{device_id, signature[, nonce]}`; con firma valida el motor continua
-    (`AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED`, reutilizando el hold
-    sin duplicar asiento) y responde el nuevo estado (+ `tracking` si es
-    interbancaria). Con firma invalida no mueve dinero: registra el intento
-    (CA-04) y, tras N fallos, bloquea preventivo (`REJECTED` + `failure_code`,
-    CA-02).
+    Dos factores mutuamente excluyentes (el esquema exige exactamente uno):
+    el cliente firma el `nonce` del reto con el dispositivo y envia
+    `{device_id, signature[, nonce]}`, o envia `{pin}` (PIN del titular;
+    `device_id`/`nonce` se ignoran de forma neutra en esta via). Con el
+    factor valido el motor continua identico (`AUTHORIZED -> FUNDS_HELD ->
+    POSTED -> SETTLED`, reutilizando el hold sin duplicar asiento) y
+    responde el nuevo estado (+ `tracking` si es interbancaria). Con el
+    factor invalido no mueve dinero: registra el intento (CA-04, mismo
+    contador CA-02 en ambas vias) y, tras N fallos, bloquea preventivo
+    (`REJECTED` + `failure_code`, CA-02).
 
     `Idempotency-Key` obligatoria (mueve dinero): misma clave + mismo cuerpo
     = misma respuesta (`meta.replayed=true`, sin re-liquidar ni contar otro
-    intento); misma clave + cuerpo distinto = `409`. Los fallos de firma se
-    persisten ANTES de responder el error (OBS-3: el conteo/evento queda
-    commiteado aunque el HTTP sea 4xx) y su snapshot hace idempotente el
-    reintento identico. Las validaciones de titular/estado no consumen la
-    clave (revertidas, reintentables).
-    Errores: `401 NOT_AUTHENTICATED`, `422 VALIDATION_ERROR` (sin clave o
-    esquema), `404 NOT_FOUND` (inexistente), `403 NOT_AUTHORIZED` (ajena o
-    firma invalida, generico sin oraculo), `400 EXPIRED_NONCE` (reto vencido),
+    intento); misma clave + cuerpo distinto = `409`. El PIN nunca queda en
+    el snapshot (solo su digest). Los fallos del factor se persisten ANTES
+    de responder el error (OBS-3: el conteo/evento queda commiteado aunque
+    el HTTP sea 4xx) y su snapshot hace idempotente el reintento identico.
+    Las validaciones de titular/estado no consumen la clave (revertidas,
+    reintentables).
+    Errores: `401 NOT_AUTHENTICATED`, `422 VALIDATION_ERROR` (sin clave,
+    esquema, o `signature` y `pin` juntos/ninguno), `404 NOT_FOUND`
+    (inexistente), `403 NOT_AUTHORIZED` (ajena o factor invalido, generico
+    sin oraculo), `400 EXPIRED_NONCE` (reto vencido, solo firma),
     `409 CONFLICT` (no esta en `PENDING_AUTHORIZATION`, clave con cuerpo
-    distinto o carrera de concurrencia). Sin PII ni firmas en logs.
+    distinto o carrera de concurrencia). Sin PII ni secretos en logs.
     """
     endpoint = "/transactions/authorize"
     key = _require_key(request, endpoint)
@@ -860,7 +878,12 @@ def authorize_transaction(
         raise AppError(
             code="NOT_FOUND", message="transaccion inexistente", status_code=404
         ) from exc
-    payload = {"transaction_id": str(wanted), **body.model_dump(mode="json")}
+    payload: dict
+    use_pin = body.pin is not None
+    if use_pin:
+        payload = {"transaction_id": str(wanted), "pin_digest": _pin_digest(body.pin or "")}
+    else:
+        payload = {"transaction_id": str(wanted), **body.model_dump(mode="json")}
 
     def _run():
         fresh = tx_repository.get_transaction(db, wanted)
@@ -870,7 +893,45 @@ def authorize_transaction(
             raise _AuthHalt("NOT_AUTHORIZED", "la transaccion no pertenece al titular", 403)
         if fresh.status != "PENDING_AUTHORIZATION":
             raise _AuthHalt("CONFLICT", "la operacion no espera autorizacion biometrica", 409)
-        presented = body.signature.strip()
+        if use_pin:
+            try:
+                tx = biometric_service.authorize_transaction_with_pin(
+                    db,
+                    wanted,
+                    pin=body.pin or "",
+                )
+            except biometric_service.TransactionNotFoundError as exc:
+                raise _AuthHalt("NOT_FOUND", "transaccion inexistente", 404) from exc
+            except biometric_service.BiometricStateError as exc:
+                raise _AuthHalt(
+                    "CONFLICT", "la operacion no espera autorizacion biometrica", 409
+                ) from exc
+            except biometric_service.NotAuthorizedError:
+                db.flush()
+                return (
+                    {
+                        "error": {
+                            "code": "NOT_AUTHORIZED",
+                            "message": biometric_service.NOT_AUTHORIZED_MESSAGE,
+                            "status_code": 403,
+                        }
+                    },
+                    None,
+                )
+            except biometric_service.ExpiredNonceError:
+                db.flush()
+                return (
+                    {
+                        "error": {
+                            "code": "EXPIRED_NONCE",
+                            "message": biometric_service.EXPIRED_NONCE_MESSAGE,
+                            "status_code": 400,
+                        }
+                    },
+                    None,
+                )
+            return ({"data": _authorize_data(tx)}, tx.id)
+        presented = (body.signature or "").strip()
         if body.nonce is not None:
             block = biometric_service.get_block(fresh) or {}
             stored = block.get("nonce")

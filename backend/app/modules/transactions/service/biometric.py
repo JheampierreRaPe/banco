@@ -15,8 +15,10 @@ Cubre en el motor transaccional:
   previo sin duplicarlo.
 - Verificacion por fachada de `identity` (D-03): firma con
   `identity.service.device_login.verify_signature` y lectura del binding
-  con `identity.service.device_login.get_device_binding`; jamas se importan
-  modelos ni repositorios de `identity`.
+  con `identity.service.device_login.get_device_binding`; PIN del titular
+  con `identity.service.pin_authorization.verify_holder_pin` (E2-T31,
+  alternativa mutuamente excluyente con el mismo flujo y CA-02); jamas se
+  importan modelos ni repositorios de `identity`.
 - Limite diario por perfil (D-06, CA-03): si
   `acumulado + amount + fee > limite_del_perfil` (fachada `shared.config`,
   clave por perfil o generica) la operacion queda `REJECTED`
@@ -251,11 +253,23 @@ def default_signature_verifier(nonce: str, signature: str, public_key: str) -> b
     return device_login_service.verify_signature(nonce, signature, public_key)
 
 
+def default_pin_verifier(session: Session, user_id: uuid.UUID | str | None, pin: str) -> bool:
+    """PIN del titular via fachada `identity.service` (D-03, E2-T31).
+
+    Retorna `True` solo si el PIN coincide con la credencial del titular;
+    nunca importa modelos de `identity` (import perezoso, sin ciclos).
+    """
+    from app.modules.identity.service import pin_authorization as pin_authorization_service
+
+    return pin_authorization_service.verify_holder_pin(session, user_id, pin)
+
+
 ThresholdReader = Callable[[Session], int]
 DailyLimitReader = Callable[[Session, Any], int]
 MaxAttemptsReader = Callable[[Session], int]
 BindingReader = Callable[[Session, uuid.UUID, str], dict | None]
 SignatureVerifier = Callable[[str, str, str], bool]
+PinVerifier = Callable[[Session, uuid.UUID | str | None, str], bool]
 
 
 # ------------------------------------------------------------------ Decision
@@ -427,17 +441,22 @@ def evaluate_preapproved_exemption(
     total_minor: int,
     currency: str,
 ) -> dict | None:
-    """Evalua la exencion del gate biometrico por tope (E2-T14, sin escrituras).
+    """Evalua la exencion del gate biometrico por tope (E2-T14/E2-T32, sin escrituras).
 
-    Sin `beneficiary_id` o sin titular no hay exencion (`None`: rige el
-    gate). Con beneficiario valido y tope suficiente retorna el registro
-    `{"beneficiary_id", "limit_minor", "currency", "total_minor"}`; con
-    moneda distinta lanza `PreapprovedCurrencyMismatchError`. La decision
-    es por operacion (el tope no se consume): dos operaciones concurrentes
-    se evaluan cada una contra el tope vigente, sin estado compartido ni
-    condicion de carrera (D-13). Nunca ignora el limite diario ni bloqueos:
-    el llamante aplica esta exencion solo sobre `requires_biometry`, jamas
-    sobre `limit_exceeded`.
+    El tope es un techo absoluto de transferencia rapida, independiente
+    del umbral global: con beneficiario valido y `total <= tope` (misma
+    moneda) retorna el registro `{"beneficiary_id", "limit_minor",
+    "currency", "total_minor"}`; con moneda distinta lanza
+    `PreapprovedCurrencyMismatchError`. Sin `beneficiary_id` o sin
+    titular no hay exencion (`None`: rige el gate).
+
+    El tope compara solo `total = amount + fee` de la operacion (no se
+    consume ni usa el acumulado); el umbral global y el limite diario
+    usan `effective = accumulated + amount + fee` (`evaluate_gate`).
+    Dos operaciones concurrentes se evaluan cada una contra el tope
+    vigente, sin estado compartido ni condicion de carrera (D-13).
+    Nunca ignora el limite diario ni bloqueos: el llamante aplica esta
+    exencion despues de `limit_exceeded` y antes de `requires_biometry`.
     """
     if beneficiary_id is None or user_id is None:
         return None
@@ -939,6 +958,24 @@ def authorize_transaction(
             return fresh
         raise
     logger.info("biometric autorizacion superada")
+    return _continue_after_authorized(
+        session, authorized, balance_port=balance_port, gateway=gateway
+    )
+
+
+def _continue_after_authorized(
+    session: Session,
+    authorized: Transaction,
+    *,
+    balance_port: Any = None,
+    gateway: Any = None,
+) -> Transaction:
+    """Continua el flujo tras el reto superado (firma o PIN, identico).
+
+    `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` reutilizando el hold
+    previo sin duplicar asiento; `INTERBANK_TRANSFER` reanuda su saga
+    (`resume_after_authorization`). `flush` sin `commit`.
+    """
     if authorized.type == "INTERBANK_TRANSFER":
         from app.modules.transactions.service.interbank import (
             resume_after_authorization as _resume_interbank,
@@ -967,6 +1004,112 @@ def authorize_transaction(
     )
 
 
+def authorize_transaction_with_pin(
+    session: Session,
+    tx_id: uuid.UUID | str,
+    *,
+    pin: str,
+    balance_port: Any = None,
+    gateway: Any = None,
+    now: datetime | None = None,
+    max_attempts_reader: MaxAttemptsReader | None = None,
+    pin_verifier: PinVerifier | None = None,
+) -> Transaction:
+    """Autoriza una operacion en `PENDING_AUTHORIZATION` con el PIN del titular.
+
+    Variante real alternativa a la firma (E2-T31, HU08): verifica el PIN
+    contra la credencial del titular por fachada de `identity` (D-03,
+    generico ante cualquier desajuste, sin enumeracion ni oraculo) y, en
+    exito, avanza a `AUTHORIZED` (actor `USER`) y continua el flujo
+    identico a la firma (hold reutilizado sin duplicar;
+    `FUNDS_HELD -> POSTED -> SETTLED`). `gateway` solo aplica a
+    `INTERBANK_TRANSFER` (igual que la firma).
+
+    El PIN incorrecto usa exactamente el mismo contador/bloqueo preventivo
+    CA-02 que la firma (`_fail_attempt` + `auth.failed_attempt` sin motivo;
+    tras N fallos `REJECTED` con `BIOMETRIC_PREVENTIVE_BLOCK` y hold
+    liberado). No se usa el lockout de login del PIN. El `nonce` no aplica
+    a esta via (el llamante lo ignora; tampoco hay `EXPIRED_NONCE` aqui:
+    ese error es solo de la firma). El PIN jamas se persiste en el bloque
+    (solo marcas `authorized`/`authorized_via`). `flush` sin `commit`.
+    """
+    presented = pin.strip() if isinstance(pin, str) else ""
+    if not presented:
+        raise NotAuthorizedError(NOT_AUTHORIZED_MESSAGE)
+    try:
+        wanted = tx_id if isinstance(tx_id, uuid.UUID) else uuid.UUID(str(tx_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise TransactionNotFoundError("transaccion inexistente") from exc
+    tx = tx_repository.get_transaction(session, wanted)
+    if tx is None:
+        raise TransactionNotFoundError("transaccion inexistente")
+    block = get_block(tx)
+    if (
+        tx.status != "PENDING_AUTHORIZATION"
+        or not isinstance(block, dict)
+        or not block.get("nonce")
+    ):
+        if (
+            isinstance(block, dict)
+            and block.get("authorized") is True
+            and block.get("authorized_via") == "pin"
+        ):
+            replayed = tx_repository.get_transaction(session, wanted)
+            if replayed is None:  # pragma: no cover - defensivo
+                raise TransactionNotFoundError("transaccion inexistente")
+            return replayed
+        raise BiometricStateError("la operacion no espera autorizacion biometrica")
+    if block.get("used") is True:
+        raise NotAuthorizedError(NOT_AUTHORIZED_MESSAGE)
+    verify = pin_verifier or default_pin_verifier
+    try:
+        valid = bool(verify(session, tx.initiator_user_id, presented))
+    except Exception:  # noqa: BLE001 - cualquier fallo de fachada es generico
+        valid = False
+    if not valid:
+        return _fail_attempt(
+            session,
+            tx,
+            block,
+            reason="invalid",
+            error=NotAuthorizedError(NOT_AUTHORIZED_MESSAGE),
+            balance_port=balance_port,
+            max_attempts_reader=max_attempts_reader,
+        )
+    moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
+    block["used"] = True
+    block["authorized"] = True
+    block["authorized_via"] = "pin"
+    block["authorized_at"] = moment.isoformat()
+    save_block(session, tx, block)
+    version = int(tx.version)
+    try:
+        authorized = tx_repository.transition_transaction(
+            session,
+            tx.id,
+            "AUTHORIZED",
+            actor="USER",
+            actor_id=tx.initiator_user_id,
+            reason=PASSED_REASON,
+            expected_version=version,
+        )
+    except ConcurrencyError:
+        fresh = tx_repository.get_transaction(session, tx.id)
+        fresh_block = get_block(fresh) if fresh is not None else None
+        if (
+            fresh is not None
+            and fresh.status != "PENDING_AUTHORIZATION"
+            and isinstance(fresh_block, dict)
+            and fresh_block.get("authorized_via") == "pin"
+        ):
+            return fresh
+        raise
+    logger.info("biometric autorizacion superada")
+    return _continue_after_authorized(
+        session, authorized, balance_port=balance_port, gateway=gateway
+    )
+
+
 __all__ = [
     "AUTH_FAILED_ATTEMPT_EVENT",
     "BLOCKED_REASON",
@@ -991,10 +1134,12 @@ __all__ = [
     "PreapprovedCurrencyMismatchError",
     "TransactionNotFoundError",
     "authorize_transaction",
+    "authorize_transaction_with_pin",
     "daily_accumulated_minor",
     "default_binding_reader",
     "default_daily_limit_reader",
     "default_max_attempts_reader",
+    "default_pin_verifier",
     "default_signature_verifier",
     "default_threshold_reader",
     "evaluate_gate",

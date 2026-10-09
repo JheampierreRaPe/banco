@@ -1,8 +1,9 @@
-// Servicio de autorizacion biometrica de pagos (E2-T21, HU08).
+// Servicio de autorizacion de pagos sensibles (E2-T21 + E2-T31, HU08).
 //
-// Contrato (docs/05 §6.3, E2-T19 + challenge de reintento):
+// Contrato (docs/05 §6.3, E2-T19 + challenge de reintento + PIN E2-T31):
 // - `POST /transactions/{id}/authorize` (+ `Idempotency-Key`) con
-//   `{device_id, signature[, nonce]}` ->
+//   `{device_id, signature[, nonce]}` (firma, E2-T19) o `{pin}` (PIN del
+//   titular, E2-T31, mutuamente excluyente) ->
 //   `200 {data: {transaction_id, status, tracking, failure_code},
 //   meta: {request_id, replayed}}`.
 // - `POST /transactions/{id}/authorize/challenge` (sin `Idempotency-Key`:
@@ -85,6 +86,17 @@ abstract class PaymentAuthorizationServiceBase {
     String? idempotencyKey,
   });
 
+  /// Autoriza la transaccion con el PIN del titular (`POST .../authorize`
+  /// con `{pin}`, E2-T31, alternativa a la firma).
+  ///
+  /// [idempotencyKey] sigue las mismas reglas que en [authorize] (misma
+  /// clave + mismo cuerpo = replay; cuerpo distinto = `409`).
+  Future<AuthorizationResult> authorizeWithPin({
+    required String transactionId,
+    required String pin,
+    String? idempotencyKey,
+  });
+
   /// Rota el reto (`POST .../authorize/challenge`) para reintentar tras
   /// `EXPIRED_NONCE` (devuelve el `nonce` nuevo; conserva
   /// `failed_attempts`). Sin `Idempotency-Key`: solo rota, no mueve dinero.
@@ -123,6 +135,23 @@ class PaymentAuthorizationService implements PaymentAuthorizationServiceBase {
     final resp = await api.postWithIdempotency(
       '/transactions/$transactionId/authorize',
       data: {'device_id': deviceId, 'signature': signature, 'nonce': nonce},
+      idempotencyKey: idempotencyKey,
+    );
+    return AuthorizationResult.fromJson(
+      _dataEnvelope(resp.data),
+      replayed: _replayed(resp.data),
+    );
+  }
+
+  @override
+  Future<AuthorizationResult> authorizeWithPin({
+    required String transactionId,
+    required String pin,
+    String? idempotencyKey,
+  }) async {
+    final resp = await api.postWithIdempotency(
+      '/transactions/$transactionId/authorize',
+      data: {'pin': pin},
       idempotencyKey: idempotencyKey,
     );
     return AuthorizationResult.fromJson(

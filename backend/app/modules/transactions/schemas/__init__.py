@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CURRENCY_PATTERN = r"^[A-Z]{3}$"
 
@@ -196,18 +196,38 @@ class TransactionDetailResponse(BaseModel):
 
 
 class AuthorizeTransactionRequest(BaseModel):
-    """`POST /transactions/{id}/authorize`: firma del `nonce` (E2-T19, HU08 CA-01).
+    """`POST /transactions/{id}/authorize`: firma del `nonce` o PIN (E2-T19/E2-T31, HU08).
 
-    `device_id` + `signature` obligatorios; `nonce` opcional como eco del
-    reto vigente: si se envia y no coincide con el almacenado, el intento
-    se rechaza generico (y cuenta como fallido). La verificacion siempre
-    usa el reto almacenado en la transaccion (un solo uso, TTL corto).
-    Sin material biometrico: solo la firma del reto.
+    Dos factores mutuamente excluyentes (E2-T31):
+    - Firma biometrica: `device_id` + `signature` obligatorios; `nonce`
+      opcional como eco del reto vigente: si se envia y no coincide con el
+      almacenado, el intento se rechaza generico (y cuenta como fallido).
+      La verificacion siempre usa el reto almacenado en la transaccion (un
+      solo uso, TTL corto). Sin material biometrico: solo la firma del reto.
+    - PIN de seguridad: `pin` solo (verifica al titular; `device_id`/`nonce`
+      se ignoran de forma neutra en esta via).
+
+    Regla de esquema: exactamente uno de `signature`/`pin`; `device_id`
+    obligatorio solo con `signature`. El `pin` viaja como texto libre
+    (`1..128`, igual que el login: sin validar patron/longitud para no
+    crear un oraculo `422` distinto del `403` generico).
     """
 
-    device_id: str = Field(..., min_length=1, max_length=128)
-    signature: str = Field(..., min_length=1, max_length=4096)
+    device_id: str | None = Field(default=None, min_length=1, max_length=128)
+    signature: str | None = Field(default=None, min_length=1, max_length=4096)
+    pin: str | None = Field(default=None, min_length=1, max_length=128)
     nonce: str | None = Field(default=None, max_length=256)
+
+    @model_validator(mode="after")
+    def _exactly_one_factor(self) -> AuthorizeTransactionRequest:
+        """Exige un solo factor (`signature` o `pin`, nunca ambos ni ninguno)."""
+        has_signature = self.signature is not None
+        has_pin = self.pin is not None
+        if has_signature == has_pin:
+            raise ValueError("se exige exactamente un factor: `signature` o `pin`")
+        if has_signature and self.device_id is None:
+            raise ValueError("`device_id` es obligatorio con `signature`")
+        return self
 
 
 class AuthorizeTransactionData(BaseModel):

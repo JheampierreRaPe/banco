@@ -75,6 +75,30 @@ class _ConfirmPageState extends State<ConfirmPage> {
   /// Mensaje del fallback a PIN tras el reto (borde del brief E2-T21).
   String? _pinFallbackMessage;
 
+  /// Operacion pendiente que el PIN va a autorizar (E2-T31: el PIN se
+  /// captura dentro del flujo, sin navegar a `/login`).
+  TransferResult? _pinPending;
+
+  /// Clave del `authorize` con PIN (derivada `<borrador>-auth`, igual que
+  /// la firma: la UQ `(key, user_id)` es global).
+  String? _pinAuthKey;
+
+  /// PIN capturado en linea (memoria, se limpia tras cada intento; nunca
+  /// se persiste ni se loguea).
+  final TextEditingController _pinController = TextEditingController();
+
+  /// Error del ultimo intento con PIN (mensaje claro, reintentable).
+  String _pinError = '';
+
+  /// Envio del `authorize` con PIN en curso.
+  bool _pinSubmitting = false;
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
   TransferDraft get _draft => widget.args.draft;
 
   Future<void> _submit() async {
@@ -95,6 +119,10 @@ class _ConfirmPageState extends State<ConfirmPage> {
       _cciState = CciState.idle;
       _paymentError = null;
       _pinFallbackMessage = null;
+      _pinPending = null;
+      _pinAuthKey = null;
+      _pinError = '';
+      _pinController.clear();
     });
     try {
       final result = await _post(service);
@@ -550,6 +578,10 @@ class _ConfirmPageState extends State<ConfirmPage> {
           _pinFallbackMessage =
               'La operación sigue pendiente. Puedes reintentar con tu '
               'huella o continuar con tu PIN de seguridad.';
+          _pinPending = pending;
+          _pinAuthKey = currentAuthKey;
+          _pinError = '';
+          _pinController.clear();
         });
         return;
       }
@@ -574,6 +606,10 @@ class _ConfirmPageState extends State<ConfirmPage> {
           _pinFallbackMessage =
               'No pudimos verificar tu huella. Puedes reintentar o usar '
               'tu PIN de seguridad.';
+          _pinPending = pending;
+          _pinAuthKey = currentAuthKey;
+          _pinError = '';
+          _pinController.clear();
         });
         return;
       }
@@ -603,6 +639,10 @@ class _ConfirmPageState extends State<ConfirmPage> {
             ? st.message
             : 'No pudimos verificar tu huella. Puedes reintentar o usar '
                   'tu PIN de seguridad.';
+        _pinPending = pending;
+        _pinAuthKey = currentAuthKey;
+        _pinError = '';
+        _pinController.clear();
       });
       return;
     }
@@ -848,8 +888,12 @@ class _ConfirmPageState extends State<ConfirmPage> {
     );
   }
 
-  /// Fallback a PIN tras el reto (borde del brief E2-T21): mensaje claro +
-  /// accion al login con PIN + reintento de la biometria.
+  /// Fallback a PIN tras el reto (E2-T31): el PIN se captura DENTRO del
+  /// flujo (campo en linea, sin navegar a `/login`: la guarda del router
+  /// expulsaria al usuario) y se envia al `authorize` como alternativa a
+  /// la firma. PIN incorrecto -> mensaje claro y reintento; bloqueo ->
+  /// estado terminal; exito -> comprobante. Cliente delgado: la app no
+  /// decide intentos ni bloqueos (el backend responde cada caso).
   Widget _pinFallbackView(String message) {
     return Scaffold(
       backgroundColor: AppColors.surface,
@@ -858,7 +902,7 @@ class _ConfirmPageState extends State<ConfirmPage> {
           icon: const Icon(Icons.close),
           onPressed: () => context.pop(),
         ),
-        title: const Text('Autorización biométrica'),
+        title: const Text('Autorización con PIN'),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -899,6 +943,35 @@ class _ConfirmPageState extends State<ConfirmPage> {
                     color: AppColors.onSurfaceVariant,
                   ),
                 ),
+                const SizedBox(height: 16),
+                TextField(
+                  key: const Key('pin-fallback-field'),
+                  controller: _pinController,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _submitPin(),
+                  decoration: const InputDecoration(
+                    labelText: 'PIN de seguridad',
+                    hintText: 'Ingresa tu PIN',
+                    border: OutlineInputBorder(),
+                    counterText: '',
+                  ),
+                ),
+                if (_pinError.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _pinError,
+                    key: const Key('pin-fallback-error'),
+                    textAlign: TextAlign.center,
+                    style: AppTypography.bodyMd.copyWith(
+                      color: AppColors.error,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -906,15 +979,20 @@ class _ConfirmPageState extends State<ConfirmPage> {
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              key: const Key('pin-fallback-go'),
-              onPressed: () => context.go('/login'),
+              key: const Key('pin-fallback-submit'),
+              onPressed: _pinSubmitting ? null : _submitPin,
               style: FilledButton.styleFrom(
                 minimumSize: const Size(88, 52),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(AppRadii.md),
                 ),
               ),
-              child: const Text('Usar mi PIN de seguridad'),
+              child: _pinSubmitting
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  : const Text('Autorizar con mi PIN'),
             ),
           ),
           const SizedBox(height: 10),
@@ -922,10 +1000,16 @@ class _ConfirmPageState extends State<ConfirmPage> {
             width: double.infinity,
             child: OutlinedButton(
               key: const Key('pin-fallback-retry'),
-              onPressed: _submitting
+              onPressed: _submitting || _pinSubmitting
                   ? null
                   : () {
-                      setState(() => _pinFallbackMessage = null);
+                      setState(() {
+                        _pinFallbackMessage = null;
+                        _pinPending = null;
+                        _pinAuthKey = null;
+                        _pinError = '';
+                        _pinController.clear();
+                      });
                       _submit();
                     },
               style: OutlinedButton.styleFrom(
@@ -940,6 +1024,165 @@ class _ConfirmPageState extends State<ConfirmPage> {
         ],
       ),
     );
+  }
+
+  /// Envia el PIN capturado al `authorize` (E2-T31, via alternativa).
+  ///
+  /// PIN incorrecto -> mensaje claro y la vista permite reintentar (el
+  /// conteo/bloqueo lo decide el backend) con clave ROTADA (el fallo queda
+  /// snapshotteado: reintentar con la misma clave daria `409`); bloqueo
+  /// preventivo (`REJECTED` + `BIOMETRIC_PREVENTIVE_BLOCK`) -> estado
+  /// terminal; exito -> comprobante/seguimiento. El PIN se limpia de
+  /// memoria tras cada intento (nunca se persiste ni se loguea).
+  Future<void> _submitPin() async {
+    final pending = _pinPending;
+    final factory = widget.authDepsFactory ?? paymentAuthorizationDepsFactory;
+    if (pending == null || factory == null) {
+      setState(() {
+        _pinError = 'No pudimos continuar con tu PIN. Vuelve a intentarlo.';
+      });
+      return;
+    }
+    final pin = _pinController.text.trim();
+    if (pin.isEmpty) {
+      setState(() {
+        _pinError = 'Ingresa tu PIN de seguridad para continuar.';
+      });
+      return;
+    }
+    setState(() {
+      _pinSubmitting = true;
+      _pinError = '';
+    });
+    try {
+      final result = await factory().service.authorizeWithPin(
+        transactionId: pending.transactionId,
+        pin: pin,
+        idempotencyKey: _pinAuthKey,
+      );
+      if (!mounted) return;
+      _pinController.clear();
+      setState(() => _pinSubmitting = false);
+      if (!mounted) return;
+      if (result.isPreventiveBlock) {
+        setState(() {
+          _pinFallbackMessage = null;
+          _pinPending = null;
+          _pinAuthKey = null;
+          _paymentError = _errorArgs(
+            PaymentErrorKind.preventiveBlock,
+            transactionId: result.transactionId,
+            errorCode: result.failureCode,
+          );
+        });
+        return;
+      }
+      if (result.isRejected) {
+        setState(() {
+          _pinFallbackMessage = null;
+          _pinPending = null;
+          _pinAuthKey = null;
+          _paymentError = _errorArgs(
+            PaymentErrorKind.fromCode(result.failureCode),
+            transactionId: result.transactionId,
+            errorCode: result.failureCode,
+          );
+        });
+        return;
+      }
+      _continueAfterAuthorization(result, pending);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _pinController.clear();
+      if (e.code == 'BIOMETRIC_PREVENTIVE_BLOCK') {
+        setState(() {
+          _pinSubmitting = false;
+          _pinFallbackMessage = null;
+          _pinPending = null;
+          _pinAuthKey = null;
+          _paymentError = _errorArgs(
+            PaymentErrorKind.preventiveBlock,
+            transactionId: pending.transactionId,
+            errorCode: e.code,
+          );
+        });
+        return;
+      }
+      if (isPaymentAuthConflictCode(e.code)) {
+        await _reconcilePinConflict(pending);
+        return;
+      }
+      setState(() {
+        _pinSubmitting = false;
+        // E2-T31/D2: el PIN fallido queda snapshotteado bajo `_pinAuthKey`
+        // (digest del PIN; misma clave + PIN distinto = `409`). Rotar la
+        // clave (mismo patron que la firma: sufijo `-retry-1`) para que el
+        // reintento con el PIN correcto autorice en un solo paso.
+        _pinAuthKey = paymentAuthRetryKey(_pinAuthKey) ?? _pinAuthKey;
+        _pinError = paymentAuthorizationUserMessage(e);
+      });
+    }
+  }
+
+  /// Reconcilia un `409` del `authorize` con PIN contra el estado real
+  /// (mismo patron que la firma: exito -> comprobante, pendiente ->
+  /// reintento con clave nueva, terminal -> error).
+  Future<void> _reconcilePinConflict(TransferResult pending) async {
+    final svc = widget.service;
+    TransactionDetail? detail;
+    if (svc != null) {
+      try {
+        detail = await svc.getTransaction(pending.transactionId);
+      } on ApiException {
+        detail = null;
+      }
+    }
+    if (!mounted) return;
+    final resolved = detail;
+    if (resolved != null && resolved.isSuccess) {
+      setState(() => _pinSubmitting = false);
+      _continueAfterAuthorization(
+        AuthorizationResult(
+          transactionId: resolved.transactionId,
+          status: resolved.status,
+          tracking: resolved.tracking,
+          failureCode: resolved.failureCode,
+        ),
+        pending,
+      );
+      return;
+    }
+    if (resolved != null &&
+        resolved.status.toUpperCase() == 'PENDING_AUTHORIZATION') {
+      setState(() {
+        _pinSubmitting = false;
+        _pinAuthKey = paymentAuthRetryKey(_pinAuthKey) ?? _pinAuthKey;
+        _pinError =
+            'Esta operación ya fue procesada. Revisa tus movimientos '
+            'antes de reintentarla.';
+      });
+      return;
+    }
+    if (resolved != null && resolved.isTerminal) {
+      setState(() {
+        _pinSubmitting = false;
+        _pinFallbackMessage = null;
+        _pinPending = null;
+        _pinAuthKey = null;
+        _paymentError = _errorArgs(
+          PaymentErrorKind.fromCode(resolved.failureCode),
+          transactionId: resolved.transactionId,
+          errorCode: resolved.failureCode,
+        );
+      });
+      return;
+    }
+    setState(() {
+      _pinSubmitting = false;
+      _pinError =
+          'Esta operación ya fue procesada. Revisa tus movimientos '
+          'antes de reintentarla.';
+    });
   }
 
   Widget _insufficientView(TransferResult result) {

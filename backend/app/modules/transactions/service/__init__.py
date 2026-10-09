@@ -935,13 +935,15 @@ def execute_transfer(
       (`DAILY_LIMIT_EXCEEDED`) sin hold. `risk_profile` lo aporta el
       llamante (por defecto rige el generico/`STANDARD`); `device_id`
       anticipa el dispositivo del reto (si falta se adopta al autorizar).
-    - Exencion por tope pre-aprobado (E2-T14, HU07 CA-03): si
+    - Exencion por tope pre-aprobado (E2-T14/E2-T32, HU07 CA-03): si
       `beneficiary_id` (o `metadata["beneficiary_id"]`) apunta a un
       beneficiario del titular con `preapproved_limit_minor >= amount +
-      fee` en la misma moneda, la biometria del gate se omite
-      (`VALIDATED -> AUTHORIZED` directo, con auditoria en `meta` e
-      historial); por encima del tope, sin tope o sin beneficiario rige el
-      gate normal. La exencion nunca ignora el limite diario ni bloqueos.
+      fee` en la misma moneda, la operacion se autoriza directo
+      (`VALIDATED -> AUTHORIZED`, con auditoria en `meta` e historial)
+      como techo absoluto de transferencia rapida, AUNQUE el acumulado
+      (`effective`) supere el umbral global; por encima del tope, sin
+      tope o sin beneficiario rige el gate normal. La exencion nunca
+      ignora el limite diario ni bloqueos.
     Ante fallo tecnico re-lanza tras marcar FAILED/RELEASED best-effort
     (el llamador revierte: rollback total).
     """
@@ -1033,40 +1035,44 @@ def execute_transfer(
                 session, tx.id, "REJECTED", reason=biometric_service.DAILY_LIMIT_REASON
             )
             return tx
+        if preapproved is not None:
+            # Techo absoluto por beneficiario (E2-T32, HU07 CA-03): con tope
+            # suficiente en la misma moneda (`total = amount + fee <= tope`)
+            # se omite `PENDING_AUTHORIZATION` y se autoriza directo, con
+            # auditoria en `meta` e historial, AUNQUE `effective` supere el
+            # umbral global. El tope es independiente del umbral: se evalua
+            # por operacion (`total`), mientras el umbral/limite usan el
+            # acumulado (`effective`). Nunca aplica sobre `limit_exceeded`
+            # (ya retornado arriba) ni sobre bloqueos.
+            biometric_service.mark_preapproved_exempt(
+                session,
+                tx,
+                beneficiary_id=preapproved["beneficiary_id"],
+                limit_minor=preapproved["limit_minor"],
+                currency=preapproved["currency"],
+                total_minor=preapproved["total_minor"],
+            )
+            tx_repository.transition_transaction(
+                session,
+                tx.id,
+                "AUTHORIZED",
+                reason=biometric_service.PREAPPROVED_EXEMPT_REASON,
+            )
+            return continue_from_authorized(
+                session,
+                tx,
+                source=source,
+                target=target,
+                amount_minor=amount_minor,
+                currency=currency,
+                fee_minor=fee_minor,
+                total_minor=total_minor,
+                tx_type=tx_type,
+                settle=settle,
+                atomic=atomic,
+                port=port,
+            )
         if gate.requires_biometry:
-            if preapproved is not None:
-                # Tope pre-aprobado suficiente (E2-T14, HU07 CA-03): se
-                # omite `PENDING_AUTHORIZATION` y se autoriza directo, con
-                # auditoria en `meta` e historial. Nunca aplica sobre
-                # `limit_exceeded` (ya retornado arriba) ni sobre bloqueos.
-                biometric_service.mark_preapproved_exempt(
-                    session,
-                    tx,
-                    beneficiary_id=preapproved["beneficiary_id"],
-                    limit_minor=preapproved["limit_minor"],
-                    currency=preapproved["currency"],
-                    total_minor=preapproved["total_minor"],
-                )
-                tx_repository.transition_transaction(
-                    session,
-                    tx.id,
-                    "AUTHORIZED",
-                    reason=biometric_service.PREAPPROVED_EXEMPT_REASON,
-                )
-                return continue_from_authorized(
-                    session,
-                    tx,
-                    source=source,
-                    target=target,
-                    amount_minor=amount_minor,
-                    currency=currency,
-                    fee_minor=fee_minor,
-                    total_minor=total_minor,
-                    tx_type=tx_type,
-                    settle=settle,
-                    atomic=atomic,
-                    port=port,
-                )
             return _pend_for_biometry(
                 session,
                 tx,

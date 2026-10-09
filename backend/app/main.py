@@ -44,6 +44,38 @@ def _validation_fields(errors: list[dict]) -> list[str]:
     return fields
 
 
+def _sanitized_validation_errors(errors: list[dict]) -> list[dict]:
+    """Sanea errores de Pydantic sin PII/secretos (E2-T31: el PIN en `input`).
+
+    Pydantic incluye `input` (body crudo) y `ctx` (valores del validador) en
+    cada error: un 422 los expondria en claro (p. ej. el `pin`). Solo se
+    exponen `loc` + `type` + `msg` (suficientes para corregir el request).
+    """
+    sanitized: list[dict] = []
+    for err in errors:
+        if not isinstance(err, dict):
+            continue
+        try:
+            loc = err.get("loc", ())
+            try:
+                loc_list = (
+                    [str(part) for part in loc] if isinstance(loc, (list, tuple)) else [str(loc)]
+                )
+            except Exception:  # noqa: BLE001 - el 422 nunca debe romperse
+                loc_list = ["?"]
+            sanitized.append(
+                {
+                    "loc": loc_list,
+                    "msg": str(err.get("msg", "")),
+                    "type": str(err.get("type", "")),
+                }
+            )
+        except Exception:  # noqa: BLE001 - un error roto no rompe el 422
+            logger.debug("validation_error sanitario omitido")
+            continue
+    return sanitized
+
+
 async def request_validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
@@ -60,7 +92,8 @@ async def request_validation_error_handler(
         len(fields),
         ",".join(fields),
     )
-    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(raw_errors)})
+    sanitized = _sanitized_validation_errors(list(raw_errors))
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(sanitized)})
 
 
 def _outbox_worker_enabled() -> bool:

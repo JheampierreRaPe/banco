@@ -220,6 +220,20 @@ eventos (`outbox`/`inbox`).
   (lectura). `handle_ledger_entry_posted` (retenidos) NO se suscribe al bus:
   `held` lo sincroniza `AccountsLedgerProjectionAdapter` en la transaccion del
   asiento y suscribirlo sin reconciliar duplicaria el efecto.
+- **Concepto contable E2-T35 + backfill E2-T37:** `movements_view.entry_type` (`VARCHAR(30)`,
+  nullable; migracion `0027_movements_entry_type`) guarda el `entry_type` del
+  asiento por fila (mismo valor para sus patas). Las filas historicas se
+  repoblaron con la migracion de datos `0028_backfill_entry_type` (E2-T37:
+  copia por `journal_entry_id` desde `ledger.journal_entries`, idempotente
+  por `entry_type IS NULL`, reversible, read-only sobre `ledger`); `NULL`
+  solo en filas huerfanas/no resolubles y
+  `GET /accounts/{id}/movements` lo expone. La atribucion resuelve **primero
+  por `ledger_account_id`** contra las cuentas del cliente; si existe pero no
+  es de cliente (libros de sistema/transito `2200`/`1000`/`4100`), la fila se
+  omite sin caer a `account_ref` (que solo vale cuando `ledger_account_id`
+  esta ausente). El cliente traduce `entry_type` a etiqueta en español y
+  oculta las patas internas (`TRANSFER_HOLD`/`INTERBANK_HOLD`); nunca muestra
+  UUIDs ni texto tecnico crudo.
 - **Puede llamar a:** `ledger` (crear subcuentas), `audit`.
 - **Prohibido:** escribir asientos; calcular saldos por fuera del ledger.
 
@@ -352,7 +366,8 @@ eventos (`outbox`/`inbox`).
   eventos `ledger.entry.posted`.
 - **Emision E2-T23:** `post_entry`/`reverse_entry` registran `ledger.entry.posted`
   en `shared.outbox` en la misma transaccion del asiento (`flush`, sin `commit`;
-  payload `entry_id`, `transaction_id`, `description`, `value_date`, `postings`).
+  payload `entry_id`, `entry_type` (E2-T35: concepto contable del asiento),
+  `transaction_id`, `description`, `value_date`, `postings`).
 - **Consume:** nada (es el registro final).
 - **Puede llamar a:** `audit`.
 - **Prohibido:** llamar a modulos de negocio; los asientos solo entran por su fachada.

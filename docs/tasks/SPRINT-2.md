@@ -192,6 +192,20 @@ tope (**`Hecho`**, brief `docs/tasks/E2-T33.md`).
 > Sin migracion; valores `100000`/`500000` intactos. La semantica acumulada del umbral de
 > `E2-T17` queda superada (nota al inicio de `docs/tasks/archive/E2-T17.md`).
 
+## Movimientos reales en home e historial (bug del dueno 2026-10-09) - `accounts`/`ledger`/`frontend`
+
+`E2-T35` Concepto contable `entry_type` en `ledger.entry.posted` (solo payload),
+columna `accounts.movements_view.entry_type` (migracion `0027_movements_entry_type`),
+regla de atribucion por `ledger_account_id` (las patas de sistema/transito
+`2200`/`1000`/`4100` no se proyectan al cliente), `entry_type` en
+`GET /accounts/{id}/movements` y presentacion Flutter (mapper central,
+preview con filtro/paginacion/refresh + historial sin UUIDs; brief
+`docs/tasks/E2-T35.md`).
+
+> Dependencias: `E2-T03`, `E2-T04`, `E2-T23`, `E2-T24`, `E2-T11`, `E2-T25` (todas `Hecho`).
+> Sin backfill: las filas ya proyectadas quedan `entry_type = NULL` (fallback en
+> cliente); el motor de dinero no cambia (solo la clave `entry_type` del payload).
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado

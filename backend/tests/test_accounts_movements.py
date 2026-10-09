@@ -46,6 +46,8 @@ EXPECTED_COLUMNS = {
     "amount_minor",
     "currency",
     "description",
+    # E2-T35: concepto contable del asiento (nullable; NULL en filas legacy).
+    "entry_type",
     "value_date",
     "created_at",
 }

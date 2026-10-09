@@ -325,6 +325,7 @@
 | amount_minor | BIGINT | Monto. |
 | currency | CHAR(3) | Moneda. |
 | description | TEXT | Concepto. |
+| entry_type | VARCHAR(30) | Concepto contable del asiento (E2-T35; backfill `0028` E2-T37: `NULL` solo en filas huerfanas/no resolubles, con fallback en cliente). |
 | value_date | DATE | Fecha valor. |
 | created_at | TIMESTAMPTZ | - |
 

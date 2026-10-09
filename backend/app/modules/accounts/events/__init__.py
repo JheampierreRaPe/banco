@@ -3,8 +3,8 @@
 Contrato D-04: el bus `app.core.bus` entrega **solo el `entry`** (registro
 de `shared.outbox`, sin sesion). `on_ledger_entry_posted(entry)` abre **su
 propia sesion** con `commit` propio, deriva `event_id = entry.id`, mapea
-`entry.payload` (`entry_id`, `transaction_id`, `description`, `value_date`,
-`postings`) y llama a `handle_movement_event(...)` (idempotente por
+`entry.payload` (`entry_id`, `entry_type`, `transaction_id`, `description`,
+`value_date`, `postings`) y llama a `handle_movement_event(...)` (idempotente por
 `processed_events`, consumidor `"accounts-movements"`).
 
 Sin imports a modelos `ledger`: solo dicts del payload por evento/fachada
@@ -64,6 +64,7 @@ def on_ledger_entry_posted(entry: Any, *, session_factory: Callable[[], Any] | N
             postings=list(payload.get("postings") or []),
             transaction_id=payload.get("transaction_id"),
             description=payload.get("description"),
+            entry_type=payload.get("entry_type"),
             value_date=_parse_value_date(payload.get("value_date")),
         )
         session.commit()

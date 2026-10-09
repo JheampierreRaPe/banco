@@ -103,7 +103,8 @@ def _emit_entry_posted(session: Session, entry: JournalEntry) -> bool:
     Misma sesion/transaccion del asiento (`flush`, sin `commit`, sin
     publicar: regla de oro 8). Payload exacto que consume
     `accounts.repository.movements.handle_movement_event`: `entry_id`,
-    `transaction_id`, `description`, `value_date` (ISO) y `postings`
+    `entry_type` (concepto contable del asiento, E2-T35), `transaction_id`,
+    `description`, `value_date` (ISO) y `postings`
     `[{ledger_account_id, direction, amount_minor, currency, account_ref}]`
     (UUIDs como texto, JSON-serializable). `True` si se registro;
     `False` si el outbox no esta cableado (best-effort, como el motor).
@@ -116,6 +117,7 @@ def _emit_entry_posted(session: Session, entry: JournalEntry) -> bool:
     rows = _list_postings(session, entry.id)
     payload = {
         "entry_id": str(entry.id),
+        "entry_type": entry.entry_type,
         "transaction_id": str(entry.transaction_id) if entry.transaction_id is not None else None,
         "description": entry.description,
         "value_date": entry.value_date.isoformat() if entry.value_date is not None else None,

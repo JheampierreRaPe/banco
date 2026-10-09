@@ -16,14 +16,20 @@ Decision documentada (vista materializada vs tabla):
   (re-derivacion desde los postings que entrega el evento, nunca lectura
   directa a tablas `ledger`). Equivalente funcional, portable SQLite/Postgres.
 
-Mapeo cuenta elegido (documentado):
-1. Via primaria `posting["account_ref"]` (REF logica que el ledger informa
-   por posting, ver `ledger/repository/entries.py`: `Posting.account_ref`).
-2. Fallback por `posting["ledger_account_id"]` buscando en las REFs propias
+Mapeo cuenta elegido (documentado; E2-T35 corrige la intencion original):
+1. Via primaria `posting["ledger_account_id"]` buscando en las REFs propias
    (`accounts.ledger_account_id` / `accounts.ledger_hold_account_id`):
-   cubre postings sin `account_ref` (p.ej. `2000-*`/`2100-*`).
-3. Sin dueno (cuentas del sistema, p.ej. `4000-Comisiones`): se omite, no
-   pertenece a ningun cliente. Nunca se importa ni se lee `ledger`.
+   cubre las patas reales del cliente. Si el `ledger_account_id` esta
+   presente pero NO es cuenta de cliente (libros de sistema/transito,
+   p.ej. `2200-Transito`, `1000-Banco`, `4100-Comisiones`, que el motor
+   rotula con `account_ref` del origen), la fila **se omite**: no se cae
+   a `account_ref` (antes esas patas se atribuian al cliente y descuadraban
+   el signo, p.ej. `INTERBANK_SEND` DEBIT+CREDIT neteando 0).
+2. Fallback `posting["account_ref"]` (REF logica que el ledger informa
+   por posting, ver `ledger/repository/entries.py`: `Posting.account_ref`):
+   solo cuando `ledger_account_id` esta ausente.
+3. Sin dueno: se omite, no pertenece a ningun cliente. Nunca se importa
+   ni se lee `ledger`.
 
 Idempotencia (doble capa, mismo patron que E2-T01 `handle_ledger_entry_posted`):
 - `processed_events` via `shared.try_mark_processed` (import perezoso),
@@ -91,6 +97,7 @@ class MovementView(Base):
     currency: Mapped[str] = mapped_column(sa.String(3), primary_key=True)
     transaction_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
     description: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    entry_type: Mapped[str | None] = mapped_column(sa.String(30), nullable=True)
     value_date: Mapped[date | None] = mapped_column(sa.Date(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
@@ -151,31 +158,49 @@ def _coerce_value_date(value: date | datetime | None) -> date | None:
     return value
 
 
+def _validate_entry_type(entry_type: str | None) -> str | None:
+    """Concepto contable del asiento (`journal_entries.entry_type`, E2-T35).
+
+    `None` = fila legacy (el cliente aplica fallback sin mostrar texto
+    crudo). Si viene texto, debe ser `str` no vacio de hasta 30 chars
+    (mismo limite que `ledger.domain.entries.validate_entry_type`).
+    """
+    if entry_type is None:
+        return None
+    if not isinstance(entry_type, str) or not entry_type.strip():
+        raise ValueError(f"entry_type debe ser str no vacio, recibido: {entry_type!r}")
+    if len(entry_type) > 30:
+        raise ValueError(f"entry_type supera VARCHAR(30), recibido: {entry_type!r}")
+    return entry_type
+
+
 def resolve_movement_account_id(session: Session, posting: dict) -> uuid.UUID | None:
     """Resuelve la cuenta de cliente de un posting (`None` si es del sistema).
 
-    1. `account_ref` (REF que informa el ledger por posting).
-    2. Fallback: `ledger_account_id` contra las REFs propias
-       (`ledger_account_id` / `ledger_hold_account_id`).
+    1. `ledger_account_id` contra las REFs propias (`ledger_account_id` /
+       `ledger_hold_account_id`). Si esta presente pero no es cuenta de
+       cliente (libro de sistema/transito), se omite SIN caer a
+       `account_ref`.
+    2. Fallback `account_ref`: solo cuando `ledger_account_id` esta ausente.
     Solo lee tablas propias (`accounts`); nunca `ledger`.
     """
     if not isinstance(posting, dict):
         raise TypeError(f"posting debe ser dict, recibido: {posting!r}")
-    ref = posting.get("account_ref")
-    if ref is not None:
-        aid = _coerce_uuid(ref, "account_ref")
-        return aid if session.get(Account, aid) is not None else None
     ledger_id = posting.get("ledger_account_id")
-    if ledger_id is None:
-        return None
-    lid = _coerce_uuid(ledger_id, "ledger_account_id")
-    stmt = sa.select(Account.id).where(
-        sa.or_(
-            Account.ledger_account_id == lid,
-            Account.ledger_hold_account_id == lid,
+    if ledger_id is not None:
+        lid = _coerce_uuid(ledger_id, "ledger_account_id")
+        stmt = sa.select(Account.id).where(
+            sa.or_(
+                Account.ledger_account_id == lid,
+                Account.ledger_hold_account_id == lid,
+            )
         )
-    )
-    return session.scalar(stmt)
+        return session.scalar(stmt)
+    ref = posting.get("account_ref")
+    if ref is None:
+        return None
+    aid = _coerce_uuid(ref, "account_ref")
+    return aid if session.get(Account, aid) is not None else None
 
 
 def _insert_movement(
@@ -188,6 +213,7 @@ def _insert_movement(
     currency: str,
     transaction_id: uuid.UUID | None,
     description: str | None,
+    entry_type: str | None,
     value_date: date | None,
 ) -> bool:
     """Inserta una fila si no existe (UQ natural). `True` si inserto."""
@@ -213,6 +239,7 @@ def _insert_movement(
                     currency=currency,
                     transaction_id=transaction_id,
                     description=description,
+                    entry_type=entry_type,
                     value_date=value_date,
                 )
             )
@@ -229,6 +256,7 @@ def _derive_movements(
     postings: list[dict],
     transaction_id: uuid.UUID | None,
     description: str | None,
+    entry_type: str | None,
     value_date: date | None,
 ) -> int:
     """Deriva filas desde los postings del origen. Retorna nº de insertadas."""
@@ -246,6 +274,7 @@ def _derive_movements(
             currency=_validate_currency(posting.get("currency")),
             transaction_id=transaction_id,
             description=description,
+            entry_type=entry_type,
             value_date=value_date,
         ):
             inserted += 1
@@ -261,6 +290,7 @@ def handle_movement_event(
     postings: list[dict],
     transaction_id: uuid.UUID | str | None = None,
     description: str | None = None,
+    entry_type: str | None = None,
     value_date: date | datetime | None = None,
 ) -> bool:
     """Consumidor `ledger.entry.posted` -> proyeccion `movements_view`.
@@ -273,8 +303,9 @@ def handle_movement_event(
     Cada posting: `{"ledger_account_id", "direction", "amount_minor",
     "currency", "account_ref" | None}` (forma de `ledger/repository/entries.py`,
     consumida por evento/fachada: aqui solo se reciben dicts, sin importar
-    modelos `ledger`). `transaction_id`/`description`/`value_date` son
-    datos del asiento que informa el evento.
+    modelos `ledger`). `transaction_id`/`description`/`entry_type`/`value_date`
+    son datos del asiento que informa el evento (`entry_type` es el concepto
+    contable, E2-T35; `None` en eventos legacy).
     """
     from app.modules.shared.repository.outbox import try_mark_processed
 
@@ -290,6 +321,7 @@ def handle_movement_event(
         postings=postings,
         transaction_id=tx_id,
         description=description,
+        entry_type=_validate_entry_type(entry_type),
         value_date=_coerce_value_date(value_date),
     )
     return True
@@ -302,6 +334,7 @@ def rebuild_entry_movements(
     postings: list[dict],
     transaction_id: uuid.UUID | str | None = None,
     description: str | None = None,
+    entry_type: str | None = None,
     value_date: date | datetime | None = None,
 ) -> int:
     """Re-deriva la proyeccion de un asiento desde el origen (gana el origen).
@@ -323,6 +356,7 @@ def rebuild_entry_movements(
         postings=postings,
         transaction_id=tx_id,
         description=description,
+        entry_type=_validate_entry_type(entry_type),
         value_date=_coerce_value_date(value_date),
     )
 

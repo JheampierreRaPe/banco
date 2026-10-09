@@ -330,7 +330,7 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | GET | `/accounts` | Consolidado de cuentas y saldos. |
 | GET | `/accounts/totals` | Total contable consolidado por moneda (E1-T43, HU05; Bearer). |
 | GET | `/accounts/{id}` | Detalle con disponible/retenido/contable. |
-| GET | `/accounts/{id}/movements` | Movimientos paginados de `movements_view` (filtros: `date_from`/`date_to` fecha valor ISO y `direction` `DEBIT`/`CREDIT`, opcionales). |
+| GET | `/accounts/{id}/movements` | Movimientos paginados de `movements_view` (filtros: `date_from`/`date_to` fecha valor ISO y `direction` `DEBIT`/`CREDIT`, opcionales). Cada item incluye `entry_type` (E2-T35: concepto contable del asiento, `NULL` en filas legacy; el cliente lo traduce a etiqueta en español y oculta las patas internas `TRANSFER_HOLD`/`INTERBANK_HOLD`). |
 | GET | `/accounts/{id}/movements/export` | Export de movimientos (MVP: CSV; `xlsx`/`pdf` solo si hay backend disponible, si no `501 EXPORT_FORMAT_NOT_SUPPORTED`). Filtros: `date_from`/`date_to` (fecha valor ISO; obligatorios en export) y `direction` (`DEBIT`/`CREDIT`, opcional). |
 | GET/POST/PUT/DELETE | `/beneficiaries` | Gestion de beneficiarios frecuentes. |
 

@@ -300,8 +300,11 @@ def test_happy_path_settles_with_entries_hold_and_history(
     assert len(entry_calls) == 2
     for call in entry_calls:
         assert call["aggregate_type"] == "journal_entry"
+        # E2-T35: el payload agrega `entry_type` (concepto contable); el
+        # motor (asientos, cuadre, validaciones) no cambia.
         assert set(call["payload"]) == {
             "entry_id",
+            "entry_type",
             "transaction_id",
             "description",
             "value_date",

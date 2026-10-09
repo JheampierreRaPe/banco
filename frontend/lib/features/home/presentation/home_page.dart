@@ -12,6 +12,7 @@ import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../accounts/data/accounts_service.dart';
 import '../../accounts/models/account.dart';
+import '../../accounts/models/movement_concept.dart';
 import '../../accounts/utils/format.dart';
 import '../data/profile_service.dart';
 
@@ -57,6 +58,13 @@ class _HomePageState extends State<HomePage> {
   late Future<List<Account>> _accountsFuture;
   late Future<AccountsTotals> _totalsFuture;
 
+  /// Llave del preview de movimientos: permite recargarlo en
+  /// *pull-to-refresh* y al re-entrar a `/home` (E2-T35).
+  final _previewKey = GlobalKey<_MovementsPreviewCardState>();
+
+  /// Router observado para recargar el preview al volver a `/home`.
+  GoRouter? _listenedRouter;
+
   @override
   void initState() {
     super.initState();
@@ -67,6 +75,46 @@ class _HomePageState extends State<HomePage> {
     // sin suscriptor; los FutureBuilder siguen recibiendo valores/errores.
     _accountsFuture.ignore();
     _totalsFuture.ignore();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Suscripcion al delegate (una sola vez por router): cada navegacion lo
+    // notifica, este o no este `State` en la ruta superior. Sin `GoRouter`
+    // (tests con `MaterialApp` plano) no se observa nada.
+    final router = GoRouter.maybeOf(context);
+    if (!identical(router, _listenedRouter)) {
+      _listenedRouter?.routerDelegate.removeListener(_onRouteChanged);
+      _listenedRouter = router;
+      router?.routerDelegate.addListener(_onRouteChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _listenedRouter?.routerDelegate.removeListener(_onRouteChanged);
+    _listenedRouter = null;
+    super.dispose();
+  }
+
+  /// Al volver a `/home` (p. ej. tras operar en `/transfers`, cuyo CTA
+  /// vuelve con `context.go('/home')`) se recarga el preview sin reiniciar
+  /// la app. La primera carga la hace `initState` (el delegate no notifica
+  /// al montar, asi que no hay doble fetch).
+  void _onRouteChanged() {
+    if (!mounted) return;
+    final router = _listenedRouter;
+    if (router == null) return;
+    String path;
+    try {
+      path = router.state.uri.path;
+    } catch (_) {
+      return;
+    }
+    if (path == '/home') {
+      _previewKey.currentState?.reload();
+    }
   }
 
   Future<List<Account>> _loadAccounts() {
@@ -98,6 +146,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final accounts = _loadAccounts();
     final totals = _loadTotals();
+    // El preview tiene su propio estado: tambien se recarga (E2-T35).
+    final preview = _previewKey.currentState?.reload() ?? Future.value();
     accounts.ignore();
     totals.ignore();
     setState(() {
@@ -113,6 +163,11 @@ class _HomePageState extends State<HomePage> {
       await totals;
     } catch (_) {
       // El hero muestra su estado neutro; no se tumba la pantalla.
+    }
+    try {
+      await preview;
+    } catch (_) {
+      // El preview muestra su propio error/reintento.
     }
   }
 
@@ -209,6 +264,7 @@ class _HomePageState extends State<HomePage> {
                         const _AgendaCard(),
                         const SizedBox(height: AppSpacing.stackMd),
                         _MovementsPreviewCard(
+                          key: _previewKey,
                           service: widget.service!,
                           account: accounts.first,
                         ),
@@ -808,14 +864,26 @@ class _AccountRow extends StatelessWidget {
 }
 
 /// Card `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta).
-class _MovementsPreviewCard extends StatelessWidget {
+class _MovementsPreviewCard extends StatefulWidget {
   const _MovementsPreviewCard({
+    super.key,
     required this.service,
     required this.account,
   });
 
   final AccountsServiceBase service;
   final Account account;
+
+  @override
+  State<_MovementsPreviewCard> createState() => _MovementsPreviewCardState();
+}
+
+class _MovementsPreviewCardState extends State<_MovementsPreviewCard> {
+  final _latestKey = GlobalKey<_LatestMovementsState>();
+
+  /// Recarga el preview (lo usan el *pull-to-refresh* y la vuelta a
+  /// `/home` desde `HomePage`).
+  Future<void> reload() => _latestKey.currentState?.reload() ?? Future.value();
 
   @override
   Widget build(BuildContext context) {
@@ -832,7 +900,11 @@ class _MovementsPreviewCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppSpacing.stackSm),
-          _LatestMovements(service: service, account: account),
+          _LatestMovements(
+            key: _latestKey,
+            service: widget.service,
+            account: widget.account,
+          ),
           const SizedBox(height: AppSpacing.stackSm),
           Align(
             alignment: Alignment.centerLeft,
@@ -849,26 +921,18 @@ class _MovementsPreviewCard extends StatelessWidget {
   }
 }
 
-/// Prefijos internos del ledger que nunca deben mostrarse en el preview
-/// del `dash` (D1 8-10-2026-2.txt: el widget mostraba `hold <uuid>` y
-/// `settle <uuid>` con UUIDs tecnicos, danando la UX).
-///
-/// El backend genera esos `description` (`hold {tx.id}` / `settle {tx.id}` /
-/// `own settle {tx.id}`) para los asientos de retencion/liquidacion; son
-/// mecanica contable, no movimientos de usuario. El filtro es solo
-/// presentacion (cliente delgado): no recalcula saldos ni oculta dinero,
-/// solo evita mostrar filas tecnicas en el preview. El historial completo
-/// (`/movements`) sigue disponible via `Ver todos los movimientos`.
-bool _isInternalLedgerDescription(String description) {
-  final t = description.trim().toLowerCase();
-  return t.startsWith('hold ') ||
-      t.startsWith('settle ') ||
-      t.startsWith('own settle');
-}
-
 /// Preview de movimientos con sus propios mini-estados (carga/error/vacio).
+///
+/// Filtra por `entry_type` (E2-T35, `movement_concept.dart`): las patas
+/// internas (`TRANSFER_HOLD`/`INTERBANK_HOLD`) no son dinero del usuario y
+/// se ocultan; cada fila visible muestra su etiqueta de negocio (nunca un
+/// UUID). El signo (`+`/`-`) sale de `direction`; no se calcula nada.
 class _LatestMovements extends StatefulWidget {
-  const _LatestMovements({required this.service, required this.account});
+  const _LatestMovements({
+    super.key,
+    required this.service,
+    required this.account,
+  });
 
   final AccountsServiceBase service;
   final Account account;
@@ -878,26 +942,71 @@ class _LatestMovements extends StatefulWidget {
 }
 
 class _LatestMovementsState extends State<_LatestMovements> {
-  late Future<MovementsPage> _future;
+  /// Movimientos visibles que muestra el preview (maximo 3).
+  static const int _targetVisible = 3;
+
+  /// Pagina amplia + hasta 5 paginas: si la primera trae solo patas
+  /// internas, se sigue pidiendo hasta juntar 3 visibles o agotar `total`.
+  static const int _previewPageSize = 100;
+  static const int _previewMaxPages = 5;
+
+  late Future<List<Movement>> _future;
 
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _future = _loadVisible();
   }
 
-  Future<MovementsPage> _load() => widget.service.getMovements(
+  /// Recarga el preview (retorna cuando termina, con error tragado: el
+  /// `FutureBuilder` muestra el estado).
+  Future<void> reload() async {
+    final future = _loadVisible();
+    future.ignore();
+    if (!mounted) return;
+    setState(() {
+      _future = future;
+    });
+    try {
+      await future;
+    } catch (_) {
+      // El FutureBuilder muestra el error con su reintento.
+    }
+  }
+
+  Future<List<Movement>> _loadVisible() async {
+    final visible = <Movement>[];
+    var page = 1;
+    var total = 1 << 30;
+    var fetched = 0;
+    while (visible.length < _targetVisible &&
+        page <= _previewMaxPages &&
+        fetched < total) {
+      final result = await widget.service.getMovements(
         widget.account.id,
-        page: 1,
-        // Se piden mas filas porque las tecnicas (`hold`/`settle`) se
-        // filtran en presentacion; con 3 justas el preview podia quedar
-        // vacio o mostrar solo mecanica interna.
-        pageSize: 20,
+        page: page,
+        pageSize: _previewPageSize,
       );
+      total = result.total;
+      fetched += result.items.length;
+      for (final movement in result.items) {
+        if (!isInternalMovement(
+          entryType: movement.entryType,
+          description: movement.description,
+        )) {
+          visible.add(movement);
+          if (visible.length >= _targetVisible) break;
+        }
+      }
+      if (result.items.isEmpty) break;
+      page++;
+    }
+    return visible.take(_targetVisible).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<MovementsPage>(
+    return FutureBuilder<List<Movement>>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -926,21 +1035,14 @@ class _LatestMovementsState extends State<_LatestMovements> {
               Expanded(child: Text(message)),
               TextButton(
                 onPressed: () {
-                  setState(() {
-                    _future = _load();
-                  });
+                  reload();
                 },
                 child: const Text('Reintentar'),
               ),
             ],
           );
         }
-        final items = snapshot.data?.items ?? const <Movement>[];
-        // Solo movimientos de usuario: fuera mecanica `hold`/`settle`.
-        final visible = items
-            .where((m) => !_isInternalLedgerDescription(m.description))
-            .take(3)
-            .toList();
+        final visible = snapshot.data ?? const <Movement>[];
         if (visible.isEmpty) {
           return Text(
             'Aun no tienes movimientos.',
@@ -976,12 +1078,12 @@ class _MovementRow extends StatelessWidget {
     final color = credit ? AppColors.success : scheme.error;
     final signed = '${credit ? '+' : '-'}'
         '${formatMinor(movement.amountMinor, movement.currency)}';
-    // Defensa: si por cualquier via llega una descripcion tecnica, no se
-    // muestra el UUID interno; se usa un titulo neutro de usuario.
-    final title = _isInternalLedgerDescription(movement.description) ||
-            movement.description.trim().isEmpty
-        ? 'Transferencia'
-        : movement.description;
+    // Etiqueta de negocio por `entry_type` (E2-T35): si llega texto tecnico
+    // o un UUID, el helper lo sustituye por un titulo neutro de usuario.
+    final title = conceptForMovement(
+      entryType: movement.entryType,
+      description: movement.description,
+    ).label;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
       child: Row(

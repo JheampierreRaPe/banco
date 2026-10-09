@@ -325,6 +325,7 @@ def to_movement(row: object) -> Movement:
         amount_minor=int(get(row, "amount_minor")),  # type: ignore[arg-type]
         currency=get(row, "currency"),
         description=get(row, "description"),
+        entry_type=get(row, "entry_type"),
         value_date=get(row, "value_date"),
         created_at=get(row, "created_at"),
     )

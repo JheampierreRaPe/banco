@@ -893,9 +893,7 @@ def test_facade_boundary_static():
 
 
 # ------------------------- Rotacion del reto tras `EXPIRED_NONCE` (fix E2-T21)
-def test_challenge_rotates_nonce_and_preserves_attempts(
-    t19_session, hmac_identity, monkeypatch
-):
+def test_challenge_rotates_nonce_and_preserves_attempts(t19_session, hmac_identity, monkeypatch):
     """`POST .../authorize/challenge` emite un `nonce` NUEVO sin contar intento."""
     from app.modules.transactions import repository as tx_repo
     from app.modules.transactions.service import biometric as bio_svc
@@ -919,9 +917,7 @@ def test_challenge_rotates_nonce_and_preserves_attempts(
     assert (bio_svc.get_block(fresh) or {})["failed_attempts"] == 0
 
 
-def test_challenge_rejects_when_not_pending_or_foreign(
-    t19_session, hmac_identity, monkeypatch
-):
+def test_challenge_rejects_when_not_pending_or_foreign(t19_session, hmac_identity, monkeypatch):
     """Sin espera no hay rotacion: `SETTLED` -> 409, ajena -> 403, inexistente -> 404."""
     from app.modules.transactions import service as svc
 
@@ -943,21 +939,13 @@ def test_challenge_rejects_when_not_pending_or_foreign(
     session.commit()
     with _http(session, USER_A, monkeypatch) as client:
         assert (
-            client.post(
-                f"/api/v1/transactions/{settled.id}/authorize/challenge"
-            ).status_code
-            == 409
+            client.post(f"/api/v1/transactions/{settled.id}/authorize/challenge").status_code == 409
         )
         assert (
-            client.post(
-                f"/api/v1/transactions/{foreign.id}/authorize/challenge"
-            ).status_code
-            == 403
+            client.post(f"/api/v1/transactions/{foreign.id}/authorize/challenge").status_code == 403
         )
         assert (
-            client.post(
-                f"/api/v1/transactions/{uuid.uuid4()}/authorize/challenge"
-            ).status_code
+            client.post(f"/api/v1/transactions/{uuid.uuid4()}/authorize/challenge").status_code
             == 404
         )
 

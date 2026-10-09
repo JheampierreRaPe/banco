@@ -111,3 +111,4 @@
   planificador lo prefiere. **No duplicar** `E1-T09` (Hecho, mock).
 - **Estado:** `Hecho` (2026-09-25: ya implementado — `GmailNotificationSender` en `backend/app/adapters/notification_sender.py` con `EMAIL_PROVIDER=gmail|mock`; briefs `E1-T25`/`E1-T26` archivados en `docs/tasks/archive/`).
 - **Limitacion conocida (2026-09-25):** el consumidor de `ledger.entry.posted` hacia `movements_view` no esta cableado en produccion (stub idempotente en `accounts/repository/__init__.py:379`; proyeccion via `movements.py:266`). El cableado (worker/bus) es del Sprint 2.
+- **RESUELTO (2026-10-08):** el cableado ya esta implementado (E2-T23; brief `docs/tasks/archive/E2-T23.md`, commit `b3c5805`): el `lifespan` suscribe `on_ledger_entry_posted` al bus y arranca el worker periodico del outbox, dejando `movements_view` viva en produccion.

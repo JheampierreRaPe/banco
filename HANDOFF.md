@@ -44,7 +44,7 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
 ## 4. Pendientes
 
 - **BLOQUE PRINCIPAL — Créditos (HU09/HU10):** briefs `E3-T01..T11` ya creados en `docs/tasks/` (**sin implementar**). Simulador (`E3-T01..T05`) + solicitud/evaluación (`E3-T06..T11`). Ver `docs/08-epica-3-creditos.md` y `docs/tasks/SPRINT-2.md`.
-- **Drift de papeleo:** los briefs `E2-T11`, `E2-T15`, `E2-T21`, `E2-T23` **siguen `Pendiente`** en `docs/tasks/` aunque ya están implementados y commiteados (`631b90a`, `a79016f`, `89610f2`, `b3c5805`). Al cerrar, pasarlos a `Hecho`/`archive/`.
+- **Drift de papeleo:** los briefs `E2-T11`, `E2-T15`, `E2-T21`, `E2-T23` **siguen `Pendiente`** en `docs/tasks/` aunque ya están implementados y commiteados (`a79016f`, `631b90a`, `89610f2`, `b3c5805`). Al cerrar, pasarlos a `Hecho`/`archive/`.
 - **Errores nuevos del dueño (sin especificar):** reportó "unos errores" que corregirá más tarde; pendiente de reproducir/describir.
 - **Observaciones abiertas (`docs/18` §9):**
   - **OBS-3:** el contador de fallos biométricos (`save_block`) no usa CAS por `version` (dos fallos concurrentes pueden subcontar) y depende de que el llamante haga commit.

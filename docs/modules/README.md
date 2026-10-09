@@ -67,6 +67,14 @@ eventos (`outbox`/`inbox`).
   status} | None` (lectura nueva, solo lectura). Las consume `transactions` para autorizar
   pagos sensibles **sin importar modelos de `identity`**; el `public_key` se trata como
   material secreto (R26) y cualquier ausencia/desajuste se responde generico (sin oraculo).
+- **Fachada de verificacion de PIN del titular para el motor (E2-T31, D-03):**
+  `identity.service.pin_authorization.verify_holder_pin(session, user_id, pin) -> bool`
+  verifica el PIN en claro contra `credentials.pin_hash` del titular con
+  comparacion en tiempo constante (`pin_login.verify_pin`); sin credencial o sin
+  PIN usa una rama ciega (hash ficticio) y responde `False` sin enumeracion ni
+  oraculo de tiempos. Solo lectura/verificacion: no toca el lockout de login
+  (`failed_attempts`/`locked_until`) ni emite eventos. La consume `transactions`
+  para la variante PIN de `authorize`, **sin importar modelos de `identity`**.
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
@@ -279,7 +287,7 @@ eventos (`outbox`/`inbox`).
   `auth.failed_attempt` (CA-04), sin filtrar el motivo (sin oraculo). El `risk_profile` del
   titular lo aporta el llamante (por defecto rige el generico/`STANDARD`);
   `E2-T19` lo resuelve end-to-end en el router (`resolve_risk_profile`, cierra OBS-1).
-- **Tope pre-aprobado por beneficiario (E2-T14, HU07 CA-03):** si la
+- **Tope pre-aprobado por beneficiario (E2-T14/E2-T32, HU07 CA-03):** si la
   transferencia lleva `beneficiary_id` (o `metadata["beneficiary_id"]`) de un
   beneficiario del titular con `preapproved_limit_minor >= amount_minor +
   fee_minor` y misma moneda, el motor omite `PENDING_AUTHORIZATION` y autoriza
@@ -287,7 +295,14 @@ eventos (`outbox`/`inbox`).
   fachada `accounts.beneficiaries_service.get_for_operation` (sin importar sus
   modelos, D-01) y la decision viaja en `transaction.initiated`
   (`exemption_reason="PREAPPROVED_LIMIT"` + `beneficiary_id`, solo UUIDs, sin
-  PII). Por encima del tope o sin beneficiario rige el gate de `E2-T17`.
+  PII). **`E2-T32` fija el tope como techo absoluto de transferencia rapida:** se
+  evalua por operacion (`total = amount_minor + fee_minor`) como regla
+  independiente del umbral global, de modo que `total <= tope` **exime de
+  biometria aunque `effective` (acumulado) supere
+  `transfer.biometric_threshold_minor`**; por encima del tope rige el gate normal
+  de `E2-T17` y el **limite diario siempre manda**. Esto **cambia la semantica
+  previa de `E2-T14`** ("por encima del tope aplican las reglas... sin saltarse el
+  umbral global"): ver `docs/18#9` `G45` y `docs/tasks/archive/E2-T14.md`.
 - **Destino por beneficiario de la agenda (E2-T30, HU06/HU07):**
   `POST /transfers/third-party` resuelve server-side el destino con
   `resolve_third_party_target_id` (solo lectura, antes de consumir la
@@ -308,6 +323,16 @@ eventos (`outbox`/`inbox`).
   `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` sin duplicar asiento; estado
   distinto -> `409`, firma/ajena -> `403` generico (sin oraculo), `nonce`
   vencido/reutilizado -> `EXPIRED_NONCE`. No recalcula el umbral.
+- **Autorizacion por PIN (E2-T31, HU08):** el mismo
+  `POST /transactions/{id}/authorize` admite `{pin}` (PIN del titular) como
+  factor alternativo, mutuamente excluyente con `{device_id, signature[, nonce]}`
+  (exactamente uno; `422` si ambos o ninguno). El PIN se verifica por la fachada
+  `identity.service.pin_authorization.verify_holder_pin` (comparacion en tiempo
+  constante; sin credencial/sin PIN -> rama ciega) y, en exito, continua el mismo
+  flujo con hold reutilizado; el fallo usa el contador/bloqueo preventivo `CA-02`
+  de `E2-T17` (no el lockout de login). El PIN nunca se persiste (solo su `sha256`
+  en el snapshot de idempotencia) ni se refleja en respuestas/logs (`422` con
+  `loc`/`type`/`msg`). Sin endpoints ni eventos nuevos.
 - **Listado del titular (E2-T24, HU06/HU15/HU17):** `GET /transactions`
   (Bearer, solo lectura) pagina (`page`/`page_size`, default 20, max 100) las
   operaciones del `initiator_user_id` del JWT con filtros `date_from`/

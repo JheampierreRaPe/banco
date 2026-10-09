@@ -37,6 +37,14 @@
 > back; CTA "Volver al inicio" a `/home`; commit `06da4f0`). **OBS-2 queda cerrada** (ver
 > `docs/18#9`); siguen **abiertas OBS-3** (CAS del contador de fallos) y **OBS-4** (`nonce` no
 > estrictamente de un solo uso).
+>
+> Cierre 2026-10-08 (E2-T31/E2-T32): la autorizacion por **PIN** del titular (alternativa real a
+> la firma en `POST /transactions/{id}/authorize`; commit `d1b7091`, fachada
+> `identity.service.pin_authorization.verify_holder_pin`, contrato en `docs/05#6.3`) y el **tope
+> pre-aprobado como techo absoluto** de transferencia rapida (commit `d1b7091`; invierte la
+> semantica de `E2-T14`) quedan `Hecho` y **archivados**
+> (`docs/tasks/archive/E2-T31.md`, `docs/tasks/archive/E2-T32.md`); cierran los gaps `G44`/`G45`
+> de `docs/18#9`.
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -46,10 +54,10 @@ Base ya construida (Sprint 1, `Hecho`): motor `E5-T03`/`E5-T04`/`E5-T06`, outbox
 ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KYC/login y
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
-Total: **31 briefs** (20 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`): **11 pendientes + 20 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
+Total: **33 briefs** (22 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
+creditos `E3-T01`..`E3-T11`): **11 pendientes + 22 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
 `E2-T10`/`E2-T12`/`E2-T13`/`E2-T14`/`E2-T16`/`E2-T17`/`E2-T18`/`E2-T19`/`E2-T20`/`E2-T22`/
-`E2-T24`/`E2-T25`/`E2-T26`/`E2-T27`/`E2-T28`/`E2-T29`/`E2-T30`, archivados).
+`E2-T24`/`E2-T25`/`E2-T26`/`E2-T27`/`E2-T28`/`E2-T29`/`E2-T30`/`E2-T31`/`E2-T32`, archivados).
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y
@@ -139,6 +147,19 @@ opcional + `beneficiary_id`; **`Hecho`**, archivado `docs/tasks/archive/E2-T30.m
 > (ambos `Hecho`); `E2-T30` depende de `E2-T07`/`E2-T13`/`E2-T14`/`E2-T27`/`E2-T29` (todos `Hecho`).
 > Gaps registrados/actualizados en `docs/18#9` (G40/G41/G42 y G43).
 
+## Autorizacion por PIN y tope como techo (decisiones 2026-10-08) - `transactions`/`identity`/`frontend`
+
+`E2-T31` Autorizar un pago sensible por PIN (alternativa real a la firma biometrica: campo `pin`
+mutuamente excluyente en `POST /transactions/{id}/authorize` + fachada
+`identity.service.pin_authorization.verify_holder_pin`; **`Hecho`**, archivado
+`docs/tasks/archive/E2-T31.md`) - `E2-T32` Tope pre-aprobado por beneficiario como techo absoluto
+(exime por encima del umbral global; **`Hecho`**, archivado `docs/tasks/archive/E2-T32.md`).
+
+> Dependencias: `E2-T31` depende de `E2-T19`/`E2-T17`/`E2-T21`/`E1-T14`; `E2-T32` depende de
+> `E2-T14`/`E2-T17`/`E2-T18`/`E2-T30`/`E2-T15` (todas `Hecho`). Gaps `G44`/`G45` registrados en
+> `docs/18#9`. `E2-T32` **cambia la semantica** de `E2-T14`: el tope ya no queda supeditado al
+> umbral global (es un techo por operacion; el limite diario y los bloqueos nunca se saltan).
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado
@@ -176,7 +197,9 @@ bus/outbox en produccion (`docs/17#6`). Depende de `E2-T04` y `E5-T05`.
    paralelo.
 5. `E2-T17` (integracion biometrica; incluye bloqueo `CA-02` y limite diario `CA-03`;
    **`Hecho`**), `E2-T19` (endpoint authorize; **`Hecho`**), `E2-T14` (tope pre-aprobado;
-   **`Hecho`**), `E2-T20` (evento a `risk` + notificacion; **`Hecho`**).
+   **`Hecho`**), `E2-T20` (evento a `risk` + notificacion; **`Hecho`**), y luego `E2-T31`
+   (authorize por PIN; **`Hecho`**) y `E2-T32` (tope como techo absoluto; **`Hecho`**), que
+   cierran `G44`/`G45`.
 6. `E2-T24` (listado; **`Hecho`**), `E2-T25` (reverso; **`Hecho`**) y `E2-T26` (parametros admin;
    **`Hecho`**) sobre `E2-T07`/`E2-T18`.
 7. `E2-T11`, `E2-T15`, `E2-T21` (frontend, pueden ir con mocks de `docs/05` en paralelo a 2-6).

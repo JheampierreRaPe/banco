@@ -516,6 +516,31 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > `E2-T17`/`E2-T20` (`auth.failed_attempt`). El endpoint **no recalcula** el
 > umbral (lo decidio `E2-T17`). Sin PII ni secretos en logs.
 >
+> Contrato E2-T31 factor PIN en `POST /api/v1/transactions/{id}/authorize` (Bearer,
+> HU08): el mismo endpoint admite **dos factores mutuamente excluyentes**:
+> `{device_id, signature[, nonce]}` (E2-T19) **o** `{pin}` (PIN de seguridad del
+> titular). El esquema exige **exactamente uno**: `signature`+`pin` juntos o
+> ninguno -> `422`; `device_id` es obligatorio solo con `signature`; `nonce` solo
+> aplica a la firma (con `pin` se ignora de forma neutra y en la via PIN no existe
+> `EXPIRED_NONCE`). El PIN se verifica contra la credencial del titular por la
+> fachada de `identity` (`pin_authorization.verify_holder_pin`, comparacion en
+> tiempo constante; sin credencial o sin PIN usa una rama ciega) y, en exito, el
+> flujo continua identico a la firma (`AUTHORIZED -> FUNDS_HELD -> POSTED ->
+> SETTLED`, hold reutilizado). El PIN incorrecto y cualquier desajuste comparten el
+> **mismo `403 NOT_AUTHORIZED` neutro** de la firma invalida, cuentan como intento
+> fallido (mismo contador/bloqueo preventivo CA-02 de `E2-T17`) y emiten
+> `auth.failed_attempt` sin motivo. Errores: `401 NOT_AUTHENTICATED`; `422`
+> (falta `Idempotency-Key`, esquema invalido, o `signature`/`pin` juntos o
+> ninguno); `404 NOT_FOUND` (inexistente/id malformado, neutro); `403
+> NOT_AUTHORIZED` (ajena, PIN incorrecto, titular sin PIN o firma/binding
+> invalido: generico, sin oraculo); `400 EXPIRED_NONCE` (solo firma); `409
+> CONFLICT` (estado distinto de `PENDING_AUTHORIZATION` o misma clave con cuerpo
+> distinto). Bloqueo preventivo -> `200` con `status=REJECTED` +
+> `failure_code=BIOMETRIC_PREVENTIVE_BLOCK`. **El PIN nunca se refleja en
+> respuestas ni logs**: el snapshot de idempotencia guarda solo su `sha256`
+> (`pin_digest`), no el valor, y el handler de `422` devuelve `detail` con solo
+> `loc`/`type`/`msg` (sin `input` ni `ctx`, que expondrian el body crudo).
+>
 > Contrato reintento tras `EXPIRED_NONCE`
 > `POST /api/v1/transactions/{id}/authorize/challenge` (Bearer, HU08): rota
 > el reto vigente de una operacion en `PENDING_AUTHORIZATION` (via

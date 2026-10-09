@@ -217,6 +217,17 @@ preview con filtro/paginacion/refresh + historial sin UUIDs; brief
 > Sin backfill: las filas ya proyectadas quedan `entry_type = NULL` (fallback en
 > cliente); el motor de dinero no cambia (solo la clave `entry_type` del payload).
 
+## Backfill de `entry_type` en movimientos (correccion del validador 2026-10-09) - `accounts`
+
+`E2-T37` Backfill de `entry_type` en el historial: migracion de datos `0028_backfill_entry_type`
+que puebla las filas historicas de `accounts.movements_view.entry_type` (hoy `NULL` por `0027`)
+desde `ledger.journal_entries.entry_type` (join por `journal_entry_id`), idempotente y reversible;
+huerfanas no resolubles quedan `NULL` con fallback del cliente (brief `docs/tasks/E2-T37.md`).
+
+> Dependencias: `E2-T35`, `E2-T23`, `E2-T04` (todas `Hecho`). Migracion `0028`; solo `accounts`,
+> lectura read-only de `ledger.journal_entries`; motor de dinero intacto. Gap `G49` en `docs/18#9`.
+> Supera la nota "sin backfill" de `E2-T35` en este indice.
+
 ## Operaciones y administracion (Must, soporte HU06/HU08/HU17) - `transactions`/`admin`
 `E2-T24` `GET /transactions` (listado paginado de movimientos del titular, filtros por
 fecha/tipo/estado; enmascaramiento; sin PII; **`Hecho`**, archivado

@@ -1341,14 +1341,19 @@ def resume_after_authorization(
     *,
     balance_port=None,
     gateway: InterbankGateway | None = None,
+    daily_limit_reader=None,
 ) -> Transaction:
     """Reanuda una interbancaria tras biometria superada (E2-T17, HU08).
 
     La llama `biometric.authorize_transaction` con la operacion ya en
     `AUTHORIZED`: exige el hold `ACTIVE` creado en `PENDING_AUTHORIZATION`
-    (sin duplicarlo), avanza a `FUNDS_HELD` y ejecuta el envio por la
-    pasarela (`_send_after_hold`: confirma, acepta o compensa, sin
-    reenviar de mas). Solo `flush`.
+    (sin duplicarlo), re-chequea el limite diario con el acumulado a ese
+    instante (E2-T36: si `acumulado + total > limite` la operacion queda
+    `REJECTED` con `DAILY_LIMIT_EXCEEDED`, hold liberado con el
+    `HOLD_RELEASE` existente y sin enviar por la pasarela) y, si cabe,
+    avanza a `FUNDS_HELD` y ejecuta el envio por la pasarela
+    (`_send_after_hold`: confirma, acepta o compensa, sin reenviar de
+    mas). Solo `flush`.
     """
     try:
         wanted = tx_id if isinstance(tx_id, uuid.UUID) else uuid.UUID(str(tx_id))
@@ -1376,6 +1381,11 @@ def resume_after_authorization(
     block = _interbank_meta(tx)
     if not isinstance((block.get("entries") or {}).get("hold_entry"), str):
         raise biometric_service.BiometricStateError("la operacion no conserva la retencion")
+    rejected = biometric_service.reject_if_daily_limit_exceeded(
+        session, tx, balance_port=balance_port, daily_limit_reader=daily_limit_reader
+    )
+    if rejected is not None:
+        return rejected
     tx = tx_repository.transition_transaction(
         session, tx.id, "FUNDS_HELD", reason="fondos retenidos"
     )
@@ -1423,7 +1433,10 @@ def transfer_interbank(
     2. Crea `INITIATED -> VALIDATED -> AUTHORIZED`; sin fondos ->
        `REJECTED` (negocio, sin movimientos). Gate biometrico (E2-T17,
        HU08): sobre el limite diario del perfil -> `REJECTED`
-       (`DAILY_LIMIT_EXCEEDED`, sin hold); sobre el umbral de biometria ->
+        (`DAILY_LIMIT_EXCEEDED`, sin hold; el acumulado incluye
+        `PENDING_AUTHORIZATION` y el limite se re-chequea al autorizar,
+        E2-T36); sobre el umbral de biometria
+        (monto de la operacion, E2-T34) ->
        `PENDING_AUTHORIZATION` con hold hasta `authorize_transaction`
        (E2-T19; la continuacion reanuda el envio sin duplicar).
     3. Retiene el total (`2000-A -> 2100-A`, hold `ACTIVE` SIN `expires_at`:

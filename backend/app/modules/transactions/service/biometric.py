@@ -20,10 +20,16 @@ Cubre en el motor transaccional:
   con `identity.service.pin_authorization.verify_holder_pin` (E2-T31,
   alternativa mutuamente excluyente con el mismo flujo y CA-02); jamas se
   importan modelos ni repositorios de `identity`.
-- Limite diario por perfil (D-06, CA-03): si
+- Limite diario por perfil (D-06, CA-03, E2-T36): si
   `acumulado + amount + fee > limite_del_perfil` (fachada `shared.config`,
   clave por perfil o generica) la operacion queda `REJECTED`
-  (`DAILY_LIMIT_EXCEEDED`) sin hold ni movimientos.
+  (`DAILY_LIMIT_EXCEEDED`) sin hold ni movimientos. El acumulado incluye
+  `PENDING_AUTHORIZATION` (las pendientes con hold si comprometen el dia) y
+  el limite se re-chequea al autorizar (`PENDING_AUTHORIZATION ->
+  AUTHORIZED`, firma/PIN/interbancaria): si a ese instante
+  `acumulado + total > limite`, la operacion queda `REJECTED`
+  (`DAILY_LIMIT_EXCEEDED`) sin liquidar, con el hold liberado
+  (`HOLD_RELEASE` idempotente, ya existente).
 - Bloqueo preventivo por N fallos (D-05, CA-02, dueno E2-T17): tras
   `auth.max_failed_attempts` intentos biometricos fallidos sobre la misma
   operacion, esta queda `REJECTED` (`BIOMETRIC_PREVENTIVE_BLOCK`, hold
@@ -96,8 +102,11 @@ NONCE_TTL_SECONDS = 120
 #: Entropia del `nonce` (`token_urlsafe(32)`, igual que login).
 NONCE_ENTROPY_BYTES = 32
 
-#: Estados que NO cuentan para el acumulado diario (negocio fallido).
-EXCLUDED_ACCUMULATED_STATUSES = ("REJECTED", "FAILED")
+#: Estados que NO cuentan para el acumulado diario: negocio fallido
+#: (`REJECTED`/`FAILED`) y fondos devueltos (`REVERSED`). Las pendientes
+#: (`PENDING_AUTHORIZATION`) SI cuentan desde E2-T36: retienen fondos con
+#: hold y encoladas evadian el limite diario (bypass). Sin migracion.
+EXCLUDED_ACCUMULATED_STATUSES = ("REJECTED", "FAILED", "REVERSED")
 
 
 class BiometricError(ValueError):
@@ -280,10 +289,17 @@ def daily_accumulated_minor(
     exclude_tx_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Suma del dia (UTC) del titular en estados no `REJECTED`/`FAILED`.
+    """Suma del dia (UTC) del titular en estados que comprometen fondos.
 
     Incluye `amount_minor + fee_minor` por operacion; excluye la operacion
-    en curso (`exclude_tx_id`). Dinero entero; sin `float`. Un fallo de
+    en curso (`exclude_tx_id`) y los estados de
+    `EXCLUDED_ACCUMULATED_STATUSES` (`REJECTED`/`FAILED`: negocio fallido;
+    `REVERSED`: fondos devueltos). Desde E2-T36 `PENDING_AUTHORIZATION` SI
+    cuenta (retiene fondos con hold; excluirla permitia encolar pendientes
+    sobre el umbral y evadir el limite diario). Se conservan contando
+    `FUNDS_HELD`/`POSTED`/`SETTLED`/`CONCILIATED` (fondos comprometidos o
+    ya movidos) y los transitorios de la peticion en curso (`INITIATED`,
+    `VALIDATED`, `AUTHORIZED`). Dinero entero; sin `float`. Un fallo de
     lectura se propaga (fallo tecnico: el llamante revierte, sin mover
     dinero a ciegas).
     """
@@ -318,10 +334,17 @@ def evaluate_gate(
 
     - Sin titular (`user_id=None`, llamadas internas) no se exige nada
       (ruta legacy): no hay contra que acumular.
-    - `limit_exceeded`: `acumulado + amount + fee > limite_del_perfil`
-      -> el llamante rechaza (`REJECTED`, sin hold).
-    - `requires_biometry`: `acumulado + amount + fee > umbral` (y sin
-      exceso de limite) -> el llamante retiene en `PENDING_AUTHORIZATION`.
+    - `limit_exceeded`: `acumulado + total > limite_del_perfil` (el limite
+      diario SIGUE siendo acumulado; el acumulado incluye
+      `PENDING_AUTHORIZATION`, E2-T36) -> el llamante rechaza (`REJECTED`,
+      sin hold), donde `total = amount_minor + fee_minor`. El mismo
+      chequeo se repite al autorizar (`_continue_after_authorized` /
+      `resume_after_authorization`): una pendiente creada bajo el limite
+      que ya no cabe se rechaza ahi (`REJECTED`/`DAILY_LIMIT_EXCEEDED`,
+      hold liberado, sin liquidar).
+    - `requires_biometry`: `total > umbral` (umbral POR OPERACION, E2-T34;
+      no mira el acumulado) y sin exceso de limite -> el llamante retiene
+      en `PENDING_AUTHORIZATION`.
     Todo configurable via `config.parameters` (E2-T18); nunca lanza por
     configuracion (la fachada aplica fallbacks).
     """
@@ -504,7 +527,9 @@ def release_pending_holds(session: Session, tx: Transaction, *, balance_port: An
     Marca `RELEASED`, restaura el disponible por el puerto y postea el
     compensatorio `HOLD_RELEASE` (`2100 -> 2000`, idempotente via
     `find_hold_release`): sin perdida ni doble devolucion. Retorna cuantos
-    libero. `flush` sin `commit`.
+    libero. `flush` sin `commit`. Se reutiliza tambien para el rechazo por
+    limite diario al autorizar (E2-T36): el hold sigue `ACTIVE` en
+    `AUTHORIZED` (la transicion no toca holds) y se libera igual.
     """
     from app.modules.ledger import service as ledger_service
 
@@ -659,6 +684,7 @@ def authorize_transaction(
     max_attempts_reader: MaxAttemptsReader | None = None,
     binding_reader: BindingReader | None = None,
     signature_verifier: SignatureVerifier | None = None,
+    daily_limit_reader: DailyLimitReader | None = None,
 ) -> Transaction:
     """Autoriza una operacion en `PENDING_AUTHORIZATION` con firma valida.
 
@@ -666,6 +692,9 @@ def authorize_transaction(
     por fachada de `identity` (D-03, generico ante cualquier desajuste) y,
     en exito, avanza a `AUTHORIZED` (actor `USER`) y continua el flujo
     (hold reutilizado sin duplicar; `FUNDS_HELD -> POSTED -> SETTLED`).
+    Al continuar re-chequea el limite diario (E2-T36): si el acumulado a
+    ese instante ya no deja sitio, la operacion queda `REJECTED`
+    (`DAILY_LIMIT_EXCEEDED`) con el hold liberado y sin liquidar.
     `gateway` solo aplica a `INTERBANK_TRANSFER` (reanudacion del envio;
     por defecto rige la fabrica por entorno). El reintento con la misma
     firma tras el exito es replay (retorna la operacion sin duplicar
@@ -803,8 +832,52 @@ def authorize_transaction(
         raise
     logger.info("biometric autorizacion superada")
     return _continue_after_authorized(
-        session, authorized, balance_port=balance_port, gateway=gateway
+        session,
+        authorized,
+        balance_port=balance_port,
+        gateway=gateway,
+        daily_limit_reader=daily_limit_reader,
     )
+
+
+def reject_if_daily_limit_exceeded(
+    session: Session,
+    tx: Transaction,
+    *,
+    balance_port: Any = None,
+    daily_limit_reader: DailyLimitReader | None = None,
+) -> Transaction | None:
+    """Re-chequea el limite diario al autorizar (E2-T36, HU08 CA-03).
+
+    Calcula `acumulado(exclude_tx_id=tx.id) + total > limite_del_perfil`
+    con el perfil del titular (best-effort via `resolve_risk_profile`;
+    sin titular no se evalua, ruta legacy). Si excede, la operacion queda
+    `REJECTED` (`DAILY_LIMIT_EXCEEDED`, negocio, sin liquidar): fija las
+    marcas (`mark_rejected`), libera/compensa el hold con el asiento
+    `HOLD_RELEASE` ya existente e idempotente (`release_pending_holds`;
+    0 holds en la ruta atomica propia) y transiciona a `REJECTED` (actor
+    `SYSTEM`, permitido desde `AUTHORIZED`; motivo `DAILY_LIMIT_REASON`).
+    Retorna la tx rechazada, o `None` si cabe en el limite (el llamante
+    continua el flujo normal). No emite `auth.failed_attempt` (no es un
+    fallo de factor). `flush` sin `commit`.
+    """
+    user_id = tx.initiator_user_id
+    if user_id is None:
+        return None
+    read_limit = daily_limit_reader or default_daily_limit_reader
+    profile = resolve_risk_profile(session, user_id)
+    limit = int(read_limit(session, profile))
+    total = int(tx.amount_minor) + int(tx.fee_minor or 0)
+    accumulated = daily_accumulated_minor(session, user_id, exclude_tx_id=tx.id)
+    if (accumulated + total) <= limit:
+        return None
+    mark_rejected(session, tx, DAILY_LIMIT_EXCEEDED)
+    release_pending_holds(session, tx, balance_port=balance_port)
+    rejected = tx_repository.transition_transaction(
+        session, tx.id, "REJECTED", actor="SYSTEM", reason=DAILY_LIMIT_REASON
+    )
+    logger.info("biometric rechazo por limite diario al autorizar")
+    return rejected
 
 
 def _continue_after_authorized(
@@ -813,19 +886,35 @@ def _continue_after_authorized(
     *,
     balance_port: Any = None,
     gateway: Any = None,
+    daily_limit_reader: DailyLimitReader | None = None,
 ) -> Transaction:
     """Continua el flujo tras el reto superado (firma o PIN, identico).
 
-    `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` reutilizando el hold
-    previo sin duplicar asiento; `INTERBANK_TRANSFER` reanuda su saga
-    (`resume_after_authorization`). `flush` sin `commit`.
+    Antes de mover nada re-chequea el limite diario con el acumulado a
+    ese instante (E2-T36): si `acumulado + total > limite`, la operacion
+    queda `REJECTED` (`DAILY_LIMIT_EXCEEDED`) con el hold liberado y sin
+    liquidar. En caso contrario `AUTHORIZED -> FUNDS_HELD -> POSTED ->
+    SETTLED` reutilizando el hold previo sin duplicar asiento;
+    `INTERBANK_TRANSFER` reanuda su saga (`resume_after_authorization`,
+    que repite el mismo re-chequeo por defensa). `flush` sin `commit`.
     """
+    rejected = reject_if_daily_limit_exceeded(
+        session, authorized, balance_port=balance_port, daily_limit_reader=daily_limit_reader
+    )
+    if rejected is not None:
+        return rejected
     if authorized.type == "INTERBANK_TRANSFER":
         from app.modules.transactions.service.interbank import (
             resume_after_authorization as _resume_interbank,
         )
 
-        return _resume_interbank(session, authorized.id, balance_port=balance_port, gateway=gateway)
+        return _resume_interbank(
+            session,
+            authorized.id,
+            balance_port=balance_port,
+            gateway=gateway,
+            daily_limit_reader=daily_limit_reader,
+        )
     from app.modules.transactions.service import continue_from_authorized as _continue
 
     resume = (get_block(authorized) or {}).get("resume") or {}
@@ -858,6 +947,7 @@ def authorize_transaction_with_pin(
     now: datetime | None = None,
     max_attempts_reader: MaxAttemptsReader | None = None,
     pin_verifier: PinVerifier | None = None,
+    daily_limit_reader: DailyLimitReader | None = None,
 ) -> Transaction:
     """Autoriza una operacion en `PENDING_AUTHORIZATION` con el PIN del titular.
 
@@ -866,8 +956,10 @@ def authorize_transaction_with_pin(
     generico ante cualquier desajuste, sin enumeracion ni oraculo) y, en
     exito, avanza a `AUTHORIZED` (actor `USER`) y continua el flujo
     identico a la firma (hold reutilizado sin duplicar;
-    `FUNDS_HELD -> POSTED -> SETTLED`). `gateway` solo aplica a
-    `INTERBANK_TRANSFER` (igual que la firma).
+    `FUNDS_HELD -> POSTED -> SETTLED`). Al continuar re-chequea el limite
+    diario (E2-T36, igual que la firma): si ya no cabe, `REJECTED`
+    (`DAILY_LIMIT_EXCEEDED`) con el hold liberado y sin liquidar.
+    `gateway` solo aplica a `INTERBANK_TRANSFER` (igual que la firma).
 
     El PIN incorrecto usa exactamente el mismo contador/bloqueo preventivo
     CA-02 que la firma (`_fail_attempt` + `auth.failed_attempt` sin motivo;
@@ -950,7 +1042,11 @@ def authorize_transaction_with_pin(
         raise
     logger.info("biometric autorizacion superada")
     return _continue_after_authorized(
-        session, authorized, balance_port=balance_port, gateway=gateway
+        session,
+        authorized,
+        balance_port=balance_port,
+        gateway=gateway,
+        daily_limit_reader=daily_limit_reader,
     )
 
 
@@ -987,6 +1083,7 @@ __all__ = [
     "get_block",
     "mark_rejected",
     "new_challenge_block",
+    "reject_if_daily_limit_exceeded",
     "release_pending_holds",
     "request_biometric_challenge",
     "resolve_risk_profile",

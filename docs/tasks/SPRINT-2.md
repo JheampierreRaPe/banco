@@ -192,6 +192,17 @@ tope (**`Hecho`**, brief `docs/tasks/E2-T33.md`).
 > Sin migracion; valores `100000`/`500000` intactos. La semantica acumulada del umbral de
 > `E2-T17` queda superada (nota al inicio de `docs/tasks/archive/E2-T17.md`).
 
+## Cierre del bypass del limite diario (correccion del dueno 2026-10-09) - `transactions`
+
+`E2-T36` Cerrar el bypass del limite diario: contar `PENDING_AUTHORIZATION` en el acumulado
+(`EXCLUDED_ACCUMULATED_STATUSES = (REJECTED, FAILED, REVERSED)`) + re-chequear `acumulado + total >
+daily_limit` en `PENDING_AUTHORIZATION -> AUTHORIZED` (firma/PIN/interbancaria), rechazando
+`REJECTED`/`DAILY_LIMIT_EXCEEDED` sin mover dinero y liberando el hold (`HOLD_RELEASE` existente)
+(brief `docs/tasks/E2-T36.md`).
+
+> Dependencias: `E2-T34`, `E2-T17`, `E2-T18`, `E2-T19`, `E2-T31`, `E2-T33` (todas `Hecho`).
+> Sin migracion; valores `100000`/`500000` intactos. Gap `G48` registrado en `docs/18#9`.
+
 ## Movimientos reales en home e historial (bug del dueno 2026-10-09) - `accounts`/`ledger`/`frontend`
 
 `E2-T35` Concepto contable `entry_type` en `ledger.entry.posted` (solo payload),

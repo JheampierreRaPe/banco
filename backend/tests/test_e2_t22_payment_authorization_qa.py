@@ -602,8 +602,11 @@ def test_expired_nonce_counts_attempt_keeps_hold_and_feeds_risk(
 
 # ------------------ Parametro cambiado a mitad de operacion (consistencia)
 def test_param_change_mid_operation_leaves_consistent_state(qa_session, hmac_identity, monkeypatch):
-    """Una pendiente no se corrompe si el umbral/limite cambian en caliente:
-    autoriza igual (sin recalculo); las NUEVAS operaciones usan lo vigente."""
+    """E2-T36 (adapta la semantica derogada "sin recalculo"): si el limite
+    diario baja en caliente por debajo de la pendiente, el `authorize`
+    re-chequea (`acumulado + total > limite`) y la rechaza
+    (`REJECTED`/`DAILY_LIMIT_EXCEEDED`, hold liberado, sin liquidar);
+    las NUEVAS operaciones usan lo vigente (rechazo en la iniciacion)."""
     from app.modules.shared.config import parameters as params
 
     session, a1, b1 = qa_session["session"], qa_session["a1"], qa_session["b1"]
@@ -624,15 +627,18 @@ def test_param_change_mid_operation_leaves_consistent_state(qa_session, hmac_ide
             key=_key(),
         )
         assert done.status_code == 200, done.text
-        assert done.json()["data"]["status"] == "SETTLED"
+        assert done.json()["data"]["status"] == "REJECTED"
+        assert done.json()["data"]["failure_code"] == "DAILY_LIMIT_EXCEEDED"
         fresh_op = _transfer(client, a1, b1, 5_000)  # rige el limite nuevo
         assert fresh_op.status_code == 201, fresh_op.text
         assert fresh_op.json()["data"]["status"] == "REJECTED"
         assert fresh_op.json()["data"]["failure_code"] == "DAILY_LIMIT_EXCEEDED"
     session.expire_all()
-    assert _entry_types(session, tx_id) == ["TRANSFER_HOLD", "TRANSFER_SETTLE"]
-    assert _avail(session, a1) == 100_000 - 5_000
-    assert _avail(session, b1) == 50_000 + 5_000
+    assert _entry_types(session, tx_id) == ["HOLD_RELEASE", "TRANSFER_HOLD"]
+    holds = _holds(session, tx_id)
+    assert len(holds) == 1 and holds[0].status == "RELEASED"
+    assert _avail(session, a1) == 100_000  # hold devuelto, sin liquidar
+    assert _avail(session, b1) == 50_000  # destino nunca tocado
 
 
 # ---------------------------- Idempotencia del alta (doble POST, una op)

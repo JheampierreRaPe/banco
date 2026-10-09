@@ -297,9 +297,21 @@ eventos (`outbox`/`inbox`).
   valida avanza `AUTHORIZED` y continua (`FUNDS_HELD -> POSTED -> SETTLED`) reutilizando el
   hold sin duplicar asiento (replay por digest de firma). **CA-02** bloqueo preventivo:
   tras `auth.max_failed_attempts` fallos libera el hold, deja `REJECTED` con
-  `BIOMETRIC_PREVENTIVE_BLOCK` y emite `auth.failed_attempt` (`blocked:true`) para
-  `risk`/`E2-T20`. **CA-03** limite diario por perfil: `acumulado + amount + fee > limite`
-  -> `REJECTED` con `DAILY_LIMIT_EXCEEDED` sin hold. Todo intento fallido emite
+   `BIOMETRIC_PREVENTIVE_BLOCK` y emite `auth.failed_attempt` (`blocked:true`) para
+   `risk`/`E2-T20`. **CA-03** limite diario por perfil: `acumulado + total > limite`
+   -> `REJECTED` con `DAILY_LIMIT_EXCEEDED` sin hold (el limite diario SIGUE siendo
+   acumulado). El acumulado del dia suma `amount_minor + fee_minor` del titular
+   excluyendo `REJECTED`/`FAILED` (negocio fallido) y `REVERSED` (fondos devueltos);
+   **`PENDING_AUTHORIZATION` SI cuenta** (E2-T36: las pendientes retienen fondos con
+   hold y excluirlas permitia encolar N operaciones sobre el umbral y evadir el
+   limite). **Re-chequeo al autorizar** (E2-T36): en `PENDING_AUTHORIZATION ->
+   AUTHORIZED` (firma, PIN e interbancaria; punto unico `_continue_after_authorized` /
+   `resume_after_authorization`) se re-evalua `acumulado + total > limite` con el
+   acumulado a ese instante (`exclude_tx_id`); si excede, la operacion queda `REJECTED`
+   con `DAILY_LIMIT_EXCEEDED` sin liquidar y con el hold liberado mediante el asiento
+   `HOLD_RELEASE` ya existente (idempotente; sin asientos nuevos, sin
+   `auth.failed_attempt`).
+  Todo intento fallido emite
   `auth.failed_attempt` (CA-04), sin filtrar el motivo (sin oraculo). El `risk_profile` del
   titular lo aporta el llamante (por defecto rige el generico/`STANDARD`);
   `E2-T19` lo resuelve end-to-end en el router (`resolve_risk_profile`, cierra OBS-1).
@@ -326,9 +338,11 @@ eventos (`outbox`/`inbox`).
   `POST /transactions/{id}/authorize` (Bearer, `Idempotency-Key` obligatoria)
   recibe `{nonce, signature, device_id}`, valida titular y firma/binding por la
   fachada `identity` (D-03), consume el `nonce` de un solo uso (TTL) y continua
-  `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` sin duplicar asiento; estado
-  distinto -> `409`, firma/ajena -> `403` generico (sin oraculo), `nonce`
-  vencido/reutilizado -> `EXPIRED_NONCE`. No recalcula el umbral.
+   `AUTHORIZED -> FUNDS_HELD -> POSTED -> SETTLED` sin duplicar asiento; estado
+   distinto -> `409`, firma/ajena -> `403` generico (sin oraculo), `nonce`
+   vencido/reutilizado -> `EXPIRED_NONCE`. No recalcula el umbral. Con el factor
+   valido pero el limite diario ya excedido a ese instante, rechaza `REJECTED` con
+   `DAILY_LIMIT_EXCEEDED` (hold liberado, sin liquidar; re-chequeo E2-T36).
 - **Autorizacion por PIN (E2-T31, HU08):** el mismo
   `POST /transactions/{id}/authorize` admite `{pin}` (PIN del titular) como
   factor alternativo, mutuamente excluyente con `{device_id, signature[, nonce]}`

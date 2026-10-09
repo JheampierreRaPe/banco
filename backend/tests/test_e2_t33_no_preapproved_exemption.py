@@ -13,12 +13,12 @@ dinero de juguete (UUIDs sinteticos y numeros de cuenta de prueba con DV
 valido, sin PII), SQLite en memoria + schemas ATTACH, sin red, sin `float`.
 
 Mapeo brief -> test:
-- beneficiario + `effective > threshold` -> `PENDING_AUTHORIZATION`,
+- beneficiario + `total > threshold` -> `PENDING_AUTHORIZATION`,
   sin `preapproved_exemption` en `meta` ni exencion en el evento
   (CA-01) ................................. `test_over_threshold_requires_biometry`
-- beneficiario + `effective <= threshold` -> `SETTLED` directo
+- beneficiario + `total <= threshold` -> `SETTLED` directo
   (CA-02) ................................. `test_under_threshold_settles_directly`
-- `effective > daily_limit` -> `REJECTED`/`DAILY_LIMIT_EXCEEDED`
+- `acumulado + total > daily_limit` -> `REJECTED`/`DAILY_LIMIT_EXCEEDED`
   (el limite diario manda, CA-02) ......... `test_daily_limit_still_rejects`
 - `POST`/`PUT /beneficiaries` con el campo historico -> 2xx
   (ignorado) y respuesta sin el campo (CA-03)
@@ -193,7 +193,7 @@ def _initiated_payloads(session, tx_id):
 
 
 def test_over_threshold_requires_biometry(t33_session):
-    """CA-01: con beneficiario y `effective > threshold` se exige
+    """CA-01: con beneficiario y `total > threshold` se exige
     autorizacion (`PENDING_AUTHORIZATION`); nunca se omite por tope."""
     from app.modules.transactions import repository as tx_repository
     from app.modules.transactions.service import biometric as bio_svc
@@ -212,7 +212,7 @@ def test_over_threshold_requires_biometry(t33_session):
 
 
 def test_under_threshold_settles_directly(t33_session):
-    """CA-02: con beneficiario y `effective <= threshold` se autoriza
+    """CA-02: con beneficiario y `total <= threshold` se autoriza
     directo (`SETTLED`), como siempre."""
     session = t33_session["session"]
     tx = _third_party(session, t33_session["src"], 1_000, beneficiary_id=t33_session["agenda"])
@@ -222,8 +222,8 @@ def test_under_threshold_settles_directly(t33_session):
 
 
 def test_daily_limit_still_rejects(t33_session):
-    """CA-02: el limite diario sigue mandando (`effective > daily_limit`
-    -> `REJECTED`/`DAILY_LIMIT_EXCEEDED`), con beneficiario o sin el."""
+    """CA-02: el limite diario sigue mandando (`acumulado + total >
+    daily_limit` -> `REJECTED`/`DAILY_LIMIT_EXCEEDED`), con beneficiario o sin el."""
     session = t33_session["session"]
     tx = _third_party(session, t33_session["src"], 600_000, beneficiary_id=t33_session["agenda"])
     session.commit()

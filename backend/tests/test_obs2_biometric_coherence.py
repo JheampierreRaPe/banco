@@ -3,7 +3,7 @@
 Sin el fix (`transfer.biometric_threshold_minor = 1000000` >
 `transfer.daily_limit_minor` /
 `transfer.daily_limit_STANDARD_minor = 500000`), `evaluate_gate`
-(`requires_biometry = (not exceeded) and (effective > threshold)`) jamas
+(`requires_biometry = (not exceeded) and (total > threshold)`, E2-T34) jamas
 puede exigir biometria: todo monto sobre el umbral ya excedio el limite
 diario (`DAILY_LIMIT_EXCEEDED`). El reto (`PENDING_AUTHORIZATION`) es
 inalcanzable.

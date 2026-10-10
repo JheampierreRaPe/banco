@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="390" height="1520" viewBox="0 0 390 1520">
+  <g>
+    <rect width="390" height="1520" fill="#FBF9F4"/>
+    <g>
+      <rect width="390" height="64" fill="#152A1F"/>
+      <g transform="translate(16, 20)">
+        <text x="0" y="20" font-family="Inter" font-size="20" fill="#FFFFFF">‹</text>
+      </g>
+      <g transform="translate(131, 22.5)">
+        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Solicitar crédito</text>
+      </g>
+      <g transform="translate(360, 22.5)">
+        <text x="0" y="16" font-family="Inter" font-size="16" fill="#FFFFFF">···</text>
+      </g>
+    </g>
+    <g transform="translate(0, 64)">
+      <g transform="translate(16, 16)">
+        <g>
+          <text x="0" y="24" font-family="Inter" font-size="24" font-weight="600" fill="#152A1F">Tu solicitud</text>
+        </g>
+        <g transform="translate(0, 33)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#6B7268">Revisamos tus datos y te damos un dictamen en minutos.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 99)">
+        <rect width="358" height="116" rx="16" ry="16" fill="#F5F3EE"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">VIENES DE SIMULAR</text>
+        </g>
+        <g transform="translate(20, 39)">
+          <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#152A1F">Personal • S/ 10,000 • 12 m • S/ 927.50/mes</text>
+        </g>
+        <g transform="translate(20, 81)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#9B5F12">Ajustar simulación</text>
+        </g>
+      </g>
+      <g transform="translate(16, 231)">
+        <rect width="358" height="501" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Datos de la solicitud</text>
+        </g>
+        <g transform="translate(20, 49)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Documento</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <rect width="318" height="52" rx="12" ry="12" fill="#F0EEE9" stroke="#C2C8C2" stroke-width="1"/>
+            <g transform="translate(14, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" fill="#424844">DNI •••• 4521 (verificado)</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(20, 134)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Ingreso mensual neto (S/)</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <rect width="318" height="52" rx="12" ry="12" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+            <g transform="translate(14, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">3,500.00</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(20, 219)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Cuenta de desembolso</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <rect width="318" height="52" rx="12" ry="12" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+            <g transform="translate(14, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Ahorros •••• 4521</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(20, 304)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Monto solicitado (S/)</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <rect width="318" height="52" rx="12" ry="12" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+            <g transform="translate(14, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">10,000.00</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(20, 389)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Plazo (meses)</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <rect width="318" height="52" rx="12" ry="12" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+            <g transform="translate(14, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">12</text>
+            </g>
+          </g>
+          <g transform="translate(0, 77)">
+            <text x="0" y="12" font-family="Inter" font-size="12" fill="#BA1A1A">Si falta un dato verás aquí el aviso antes de enviar.</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 748)">
+        <rect width="358" height="76" rx="16" ry="16" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <rect width="24" height="24" rx="4" ry="4" fill="#152A1F"/>
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#FFFFFF">✓</text>
+          </g>
+        </g>
+        <g transform="translate(56, 20)">
+          <g>
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Autorizo la consulta de riesgo *</text>
+          </g>
+          <g transform="translate(0, 21)">
+            <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Obligatorio. Sin esto no se puede enviar.</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 840)">
+        <rect width="358" height="52" rx="12" ry="12" fill="#152A1F"/>
+        <g transform="translate(119.5, 16.5)">
+          <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Enviar solicitud</text>
+        </g>
+      </g>
+      <g transform="translate(16, 908)">
+        <rect width="358" height="43" rx="12" ry="12" fill="#F5F3EE"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#424844">Sin consentimiento, el envío queda bloqueado.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 967)">
+        <rect width="358" height="43" rx="12" ry="12" fill="#FFDAD6"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#93000A">Error 422: aquí se indica qué corregir.</text>
+        </g>
+      </g>
+    </g>
+    <g transform="translate(0, 1090)">
+      <rect width="390" height="72" fill="#FFFFFF" stroke="#E4E2DD" stroke-width="1"/>
+      <g transform="translate(32, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Inicio</text>
+      </g>
+      <g transform="translate(122.67, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#152A1F">Créditos</text>
+      </g>
+      <g transform="translate(232.33, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Pagos</text>
+      </g>
+      <g transform="translate(328, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Perfil</text>
+      </g>
+    </g>
+  </g>
+</svg>

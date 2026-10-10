@@ -18,6 +18,11 @@ construye una pantalla sabe que imagen seguir, sin que se lo expliquen.
 | (fig `pantallas.fig`, pagina `dash` `0:3057`, root `0:3058`: topbar `0:3059`, hero-saldo `0:3070`, quick-actions `0:3082`, sec-cuentas `0:3108`, sec-mov `0:3130`, banner-seg `0:3160`, bottom-nav `0:3168`) | Dashboard redisenado (topbar con saludo/avatar, SALDO TOTAL del servidor, quick-actions, cuentas, movimientos, banner, bottom-nav) | HU05 | `F-T54` | hecho |
 | (fig `pantallas.fig`, pagina `opciones-usuario` `0:2903`, root `0:2904`) | Opciones de usuario / Mi perfil (topbar, hero, secciones, switch biometria, cerrar sesion, bottom-nav) | HU03 | `F-T52` | hecho |
 | (design system, sin imagen) | Tokens "Eucalipto y Ocre" (`docs/20` §3-§6) | transversal | `F-T34` | hecho |
+| `creditos-simulador.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Simulador` `0:6486`, root `0:6490`) | Simulador de crédito (producto, monto, plazo, desgravamen, cuota, TEA/TCEA, cronograma, CTAs) | HU09 | `E3-T04` | hecho |
+| `creditos-solicitud.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Solicitud` `0:6487`, root `0:6574`) | Solicitud + consentimiento bureau obligatorio | HU10 | `E3-T09` | pendiente |
+| `creditos-estado.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Estado` `0:6488`, root `0:6627`) | Estado del expediente (evaluando/aprobado/rechazado/en revisión) | HU10 | `E3-T09` | pendiente |
+| `creditos-analista.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Analista` `0:6489`, root `0:6669`, desktop 1280) | Panel analista: bandeja IN_REVIEW, detalle enmascarado, dictamen | HU10 | `E3-T10` | pendiente |
+| Spec de contenido de las 4 pantallas | `docs/design/creditos-pantallas.md` | HU09, HU10 | `E3-T04`, `E3-T09`, `E3-T10` | hecho |
 | | | | | |
 
 ## Como agregar un mockup

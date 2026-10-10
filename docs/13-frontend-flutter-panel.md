@@ -90,6 +90,9 @@ equipo prefiere un solo lenguaje (menos adecuado para grillas densas).
 ### 2.4 Tareas
 
 - `F-T12` Base del panel, autenticacion y RBAC por rol. *Frontend/Backend.*
+  (Nota E3-T10, 2026-10-10: bootstrap mínimo acotado a crédito ya existe en
+  `admin-web/` —Vite + React + TS + TanStack Query, solo vista de Analista—;
+  F-T12 conserva la base general y el resto de vistas sin duplicar; ver `docs/18` G52.)
 - `F-T13` Pantallas de operaciones/conciliacion. *Frontend.*
 - `F-T14` Pantallas de fraude. *Frontend.*
 - `F-T15` Pantallas de cumplimiento. *Frontend.*

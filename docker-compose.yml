@@ -120,7 +120,7 @@ services:
   admin-web:
     build:
       context: .
-      dockerfile: infra/docker/Dockerfile.panel
+      dockerfile: admin-web/Dockerfile
     restart: unless-stopped
     ports:
       - "${ADMIN_WEB_PORT:-8080}:80"

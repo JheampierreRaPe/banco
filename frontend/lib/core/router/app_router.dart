@@ -9,6 +9,7 @@ import '../../features/beneficiaries/beneficiaries_routes.dart';
 import '../../features/beneficiaries/data/beneficiaries_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
 import '../../features/credits/credits_routes.dart';
+import '../../features/credits/data/credit_applications_service.dart';
 import '../../features/credits/data/credits_service.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
@@ -126,6 +127,11 @@ GoRouter buildRouter(
   // `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*` exige
   // sesion).
   creditsServiceFactory = () => CreditsService(api: client);
+  // Expediente de credito (E3-T09, solicitud + estado): mismo patron, solo
+  // cableado con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/credits*` exige sesion).
+  creditApplicationsServiceFactory =
+      () => CreditApplicationsService(api: client);
   // Reto biometrico de pago (E2-T21): mismo patron, solo cableado con el
   // `ApiClient` compartido + sesion + lector del SO + `device_id` vigente;
   // la guarda F-T37 no se toca (`/payments/*` exige sesion).

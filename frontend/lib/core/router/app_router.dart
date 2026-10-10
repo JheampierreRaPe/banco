@@ -8,6 +8,8 @@ import '../../features/activation/activation_service.dart';
 import '../../features/beneficiaries/beneficiaries_routes.dart';
 import '../../features/beneficiaries/data/beneficiaries_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
+import '../../features/credits/credits_routes.dart';
+import '../../features/credits/data/credits_service.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
 import '../../features/kyc/camera_frame_source.dart';
@@ -120,6 +122,10 @@ GoRouter buildRouter(
   // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
   // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
   transfersServiceFactory = () => TransfersService(api: client);
+  // Simulador de creditos (E3-T04): mismo patron, solo cableado con el
+  // `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*` exige
+  // sesion).
+  creditsServiceFactory = () => CreditsService(api: client);
   // Reto biometrico de pago (E2-T21): mismo patron, solo cableado con el
   // `ApiClient` compartido + sesion + lector del SO + `device_id` vigente;
   // la guarda F-T37 no se toca (`/payments/*` exige sesion).
@@ -206,6 +212,7 @@ GoRouter buildRouter(
       ...accountsRoutes,
       ...beneficiariesRoutes,
       ...transfersRoutes,
+      ...creditsRoutes,
       ...paymentAuthorizationRoutes,
       ...movementsRoutes,
       ...homeRoutes,

@@ -621,6 +621,46 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | GET | `/credits/loans` | Prestamos del cliente. |
 | GET | `/credits/loans/{id}/schedule` | Cronograma definitivo. |
 | POST | `/credits/loans/{id}/pay` | Pago de cuota. |
+| POST | `/credits/simulate/export` | PDF del cronograma simulado (E3-T03; gap G21 cerrado). |
+
+> Detalle del simulador (E3-T03 `Hecho`, 2026-10-09; HU09 CA-01..CA-04).
+> Auth: `Authorization: Bearer <jwt>` en las tres rutas (401 `NOT_AUTHENTICATED`
+> sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON; el export
+> devuelve `application/pdf` (`attachment; filename="simulacion-credito-<code>.pdf"`).
+>
+> - `GET /credits/products` -> `200 {"data": [producto], "meta": {"total": n}}`
+>   (solo `enabled`, ordenados por `code`). Producto: `id`, `code`, `name`,
+>   `tcea`/`tea`/`insurance_rate` (**strings decimales exactos**, `NUMERIC(18,8)`
+>   sin perdida en JSON), `min_amount_minor`/`max_amount_minor` (centimos `int`),
+>   `min_term_months`/`max_term_months`, `allowed_terms` (`null` = solo rango),
+>   `enabled`.
+> - `POST /credits/simulate` (cuerpo `{product_id?, amount_minor, term_months,
+>   tcea?, insurance? = false}`; exactamente uno de `product_id`/`tcea`, sin
+>   `float`) -> `200 {"data": {product? (id/code/name), amount_minor,
+>   term_months, insurance, tea, tcea (strings), payment_minor (cuota base
+>   francesa), total_principal_minor, total_interest_minor,
+>   total_insurance_minor, total_paid_minor, schedule[]}, "meta": {}}`.
+>   Fila = `installment_no`, `due_date: null` (efimero, sin desembolso),
+>   `principal_minor`, `interest_minor`, `insurance_minor`, `total_minor`,
+>   `balance_minor` (forma de `03b#84` + saldo posterior, sin persistir).
+> - Reglas: con `product_id` la tasa manda del catalogo (`tea`, o su `tcea` si
+>   `tea` es `NULL`) y monto/plazo respetan topes + `allowed_terms`; sin
+>   producto se acepta `tcea` explicita en `0..5` (500% anual), monto
+>   `1..10^12` centimos, plazo `1..360` meses, desgravamen `0`.
+>   El desgravamen usa `insurance_rate` del producto (o `0`).
+> - `POST` con `200` (no `201`): **no crea recurso** (calculo puro y efimero:
+>   no genera `loan_applications`, no toca `transactions`/`ledger`, no emite
+>   eventos), por eso **no exige `Idempotency-Key`** (cabeceras `05#3` no
+>   aplican a operaciones que no mueven dinero).
+> - `POST /credits/simulate/export`: mismo cuerpo y validaciones que
+>   `simulate`; devuelve el mismo cronograma en PDF (titulo + parametros +
+>   tabla, sin PII). Sin backend PDF (`reportlab`/`fpdf2`/`weasyprint`) ->
+>   `501 EXPORT_FORMAT_NOT_SUPPORTED` sin romper `simulate`.
+> - Codigos: `404 NOT_FOUND` (producto), `422 VALIDATION_ERROR` (monto/plazo
+>   fuera de rango, plazo no permitido, tasa negativa o fuera de tope, cuerpo
+>   incompleto o con ambas fuentes de tasa), `422` de esquema Pydantic,
+>   `501 EXPORT_FORMAT_NOT_SUPPORTED` (solo export).
+>
 
 ### 6.5 Billetera, QR y servicios (`wallet`) - HU13-HU16
 

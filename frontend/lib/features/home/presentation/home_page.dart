@@ -27,9 +27,9 @@ import '../data/profile_service.dart';
 ///   **El cliente NUNCA suma saldos** (cliente delgado, `docs/19` §4/§8): el
 ///   monto se muestra tal cual responde el servidor; el ojo solo oculta el
 ///   texto en pantalla (estado local, sin recalcular ni llamar al servidor).
-/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers`
-///   (Sprint 2); `Pagar`/`Cobrar QR`/`Recargar` y `Analizar`/campana siguen
-///   visuales -> "Proximamente". Bottom-nav: `Operar` (1) -> `/transfers`,
+/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers` y
+///   `Credito` a `/credits` (Sprint 2); `Cobrar QR`/`Recargar` y
+///   `Analizar`/campana siguen visuales -> "Proximamente". Bottom-nav: `Operar` (1) -> `/transfers`,
 ///   `Perfil` (3) -> `/profile`; `Inicio`/`Tarjetas` visuales.
 /// - `MIS CUENTAS` (`0:3108`, de `GET /accounts`, pull-to-refresh) +
 ///   `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta,
@@ -592,16 +592,29 @@ class _TotalsHeroState extends State<_TotalsHero> {
 
 /// Fila de accesos rapidos del `dash` (`0:3082`).
 ///
-/// `Transferir` navega a `/transfers` (Sprint 2); el resto sigue siendo
-/// visual ("Proximamente"). `Cobrar QR` va destacado en ocre.
+/// `Transferir` navega a `/transfers` y `Credito` a `/credits` (Sprint 2);
+/// el resto sigue siendo visual ("Proximamente"). `Cobrar QR` va destacado
+/// en ocre.
 class _QuickActions extends StatelessWidget {
   const _QuickActions();
 
   static const _items = [
-    (Icons.compare_arrows_outlined, 'Transferir', false, 'qa-transferir'),
-    (Icons.receipt_outlined, 'Pagar', false, 'qa-pagar'),
-    (Icons.qr_code_2_outlined, 'Cobrar QR', true, 'qa-qr'),
-    (Icons.smartphone_outlined, 'Recargar', false, 'qa-recargar'),
+    (
+      Icons.compare_arrows_outlined,
+      'Transferir',
+      false,
+      'qa-transferir',
+      '/transfers',
+    ),
+    (
+      Icons.request_quote_outlined,
+      'Crédito',
+      false,
+      'qa-creditos',
+      '/credits',
+    ),
+    (Icons.qr_code_2_outlined, 'Cobrar QR', true, 'qa-qr', null),
+    (Icons.smartphone_outlined, 'Recargar', false, 'qa-recargar', null),
   ];
 
   @override
@@ -621,9 +634,7 @@ class _QuickActions extends StatelessWidget {
               tileColor: item.$3
                   ? scheme.secondaryContainer
                   : AppColors.surfaceContainerLowest,
-              onTap: item.$4 == 'qa-transferir'
-                  ? () => context.push('/transfers')
-                  : null,
+              onTap: item.$5 == null ? null : () => context.push(item.$5!),
             ),
           ),
       ],
@@ -649,7 +660,7 @@ class _QuickAction extends StatelessWidget {
   final Color iconColor;
   final Color tileColor;
 
-  /// Accion real de navegacion (solo `Transferir` la define; `null` =
+  /// Accion real de navegacion (`Transferir`/`Credito` la definen; `null` =
   /// visual con "Proximamente").
   final VoidCallback? onTap;
 

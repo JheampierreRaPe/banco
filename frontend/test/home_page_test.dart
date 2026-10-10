@@ -238,7 +238,7 @@ void main() {
     expect(find.text('Ver todas las cuentas'), findsOneWidget);
     // Quick-actions del `dash` (0:3082) y bottom-nav (F-T55).
     expect(find.text('Transferir'), findsOneWidget);
-    expect(find.text('Pagar'), findsOneWidget);
+    expect(find.text('Crédito'), findsOneWidget);
     expect(find.text('Cobrar QR'), findsOneWidget);
     expect(find.text('Recargar'), findsOneWidget);
     expect(find.byKey(const Key('bottomNav')), findsOneWidget);
@@ -329,7 +329,9 @@ void main() {
     await tester.pumpWidget(_okHarness());
     await tester.pumpAndSettle();
 
-    for (final key in ['qa-pagar', 'qa-qr', 'qa-recargar']) {
+    // `qa-pagar` se retiró al reemplazar `Pagar` por `Crédito` (`qa-creditos`
+    // navega a `/credits`): solo `qa-qr`/`qa-recargar` siguen visuales.
+    for (final key in ['qa-qr', 'qa-recargar']) {
       await tester.tap(find.byKey(Key(key)));
       await tester.pump();
       expect(find.text('Próximamente'), findsOneWidget);
@@ -362,6 +364,35 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Transferencias (fake)'), findsOneWidget);
+    expect(find.text('Próximamente'), findsNothing);
+  });
+
+  testWidgets('quick-action Crédito navega a /credits', (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/credits',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Créditos (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('qa-creditos')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Créditos (fake)'), findsOneWidget);
     expect(find.text('Próximamente'), findsNothing);
   });
 

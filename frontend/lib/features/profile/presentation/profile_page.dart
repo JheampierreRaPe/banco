@@ -16,7 +16,7 @@ import '../data/biometric_consent_service.dart';
 /// Replica la estructura del fig (`pantallas.fig`, page `0:2903`, root
 /// `FRAME opciones-usuario 0:2904`): topbar, hero, secciones y bottom-nav con
 /// los textos del mockup y tokens del design system "Eucalipto y Ocre".
-/// Solo dos acciones son funcionales:
+/// Tres acciones son funcionales:
 ///
 /// - Switch de biometria (fila `0:2959`, `Key('biometric-switch')`): valor
 ///   inicial de `SessionIdentityStore.biometricEnabled` (F-T49); al cambiar
@@ -26,6 +26,8 @@ import '../data/biometric_consent_service.dart';
 /// - "Cerrar sesion" (`0:3032`, `Key('profile-logout')`): ejecuta [onLogout]
 ///   (en produccion `SessionService.logout()`, F-T02) y la guarda del router
 ///   redirige a `/login` o `/welcome`.
+/// - "Créditos preaprobados" (`Key('profile-credits')`): navega a `/credits`
+///   (punto de entrada a Créditos; la ruta exige sesión por la guarda F-T37).
 ///
 /// Todo lo demas (ayuda, editar, resto de filas, bottom-nav) es visual y no
 /// dispara navegacion, endpoint ni cambio de estado (CA-06). Excepcion
@@ -254,10 +256,12 @@ class _ProfilePageState extends State<ProfilePage> {
                           ),
                         ),
                         const Divider(height: 1),
-                        const _StaticRow(
+                        _StaticRow(
                           icon: Icons.payments_outlined,
                           title: 'Créditos preaprobados',
                           subtitle: 'Línea disponible de hasta S/ 15,000',
+                          tapKey: const Key('profile-credits'),
+                          onTap: () => context.push('/credits'),
                         ),
                         const Divider(height: 1),
                         const _StaticRow(
@@ -586,7 +590,10 @@ class _AgendaRow extends StatelessWidget {
   }
 }
 
-/// Fila estatica del fig (visual, sin `onTap`: CA-06).
+/// Fila estatica del fig (visual, sin `onTap`: CA-06), salvo la de
+/// "Créditos preaprobados" que navega a `/credits` (punto de entrada
+/// declarado: usa [onTap]/[tapKey] y se envuelve en `InkWell` con el mismo
+/// estilo/padding que el resto).
 class _StaticRow extends StatelessWidget {
   const _StaticRow({
     required this.icon,
@@ -595,6 +602,8 @@ class _StaticRow extends StatelessWidget {
     this.iconBackground = AppColors.successContainer,
     this.iconColor,
     this.trailing,
+    this.onTap,
+    this.tapKey,
   });
 
   final IconData icon;
@@ -604,10 +613,17 @@ class _StaticRow extends StatelessWidget {
   final Color? iconColor;
   final Widget? trailing;
 
+  /// Destino tappable (solo "Créditos preaprobados" lo define); `null` =
+  /// fila visual sin navegacion.
+  final VoidCallback? onTap;
+
+  /// `Key` del `InkWell` tappable (p. ej. `profile-credits` para tests).
+  final Key? tapKey;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
+    final content = Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
       child: Row(
         children: [
@@ -654,6 +670,14 @@ class _StaticRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+    final tap = onTap;
+    if (tap == null) return content;
+    return InkWell(
+      key: tapKey,
+      onTap: tap,
+      borderRadius: BorderRadius.circular(AppRadii.md - 2),
+      child: content,
     );
   }
 }

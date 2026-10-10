@@ -10,6 +10,7 @@ import 'package:banca_online/features/profile/profile_routes.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 /// Fake del consentimiento (seam `BiometricConsentServiceBase`): registra la
 /// intencion y devuelve el valor "del servidor" (`serverValue`) o lanza
@@ -279,13 +280,14 @@ void main() {
       await tester.pumpWidget(_harness(_page()));
       await tester.pumpAndSettle();
 
+      // `Créditos preaprobados` ya no es visual: navega a `/credits`
+      // (punto de entrada a Créditos), por eso sale de esta lista.
       for (final label in [
         'Editar información de contacto',
         'Bloquear tarjeta temporalmente',
         'Cambiar PIN y contraseñas',
         'Cuentas asociadas',
         'Bonificaciones y beneficios',
-        'Créditos preaprobados',
         'Educación financiera',
         'Tarjetas',
         'Operar',
@@ -303,6 +305,34 @@ void main() {
       expect(find.text('Mi perfil'), findsOneWidget);
       expect(find.byKey(const Key('biometric-switch')), findsOneWidget);
       expect(find.text('Reintentar'), findsNothing);
+    });
+
+    testWidgets('fila Créditos preaprobados navega a /credits',
+        (tester) async {
+      _tallViewport(tester);
+      final router = GoRouter(
+        initialLocation: '/profile',
+        routes: [
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => _page(),
+          ),
+          GoRoute(
+            path: '/credits',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Créditos (fake)')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Créditos preaprobados'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('profile-credits')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Créditos (fake)'), findsOneWidget);
     });
   });
 

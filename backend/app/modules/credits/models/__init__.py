@@ -14,6 +14,10 @@ referencia a otros modulos.
 `sa.JSON()` para SQLite (mismo truco que `risk.models` para
 `usual_hours`); en Postgres rige `ARRAY` (sin drift en `alembic check`).
 
+Expediente `credits.loan_applications` (E3-T08, HU10): `LoanApplication`
+(`docs/03b#82`). El enum `loan_application_status` (`docs/03b#1`) se
+aplica como `CHECK` sobre `VARCHAR(20)` (no como enum Postgres: evita
+drift y es portable a SQLite en pruebas).
 """
 
 from __future__ import annotations
@@ -90,3 +94,93 @@ class LoanProduct(Base):
         server_default=sa.func.now(),
         nullable=False,
     )
+
+
+#: Estados del expediente (`docs/03b#1`, enum `loan_application_status`).
+LOAN_APPLICATION_STATUSES: tuple[str, ...] = (
+    "DRAFT",
+    "SUBMITTED",
+    "IN_EVALUATION",
+    "APPROVED",
+    "REJECTED",
+    "IN_REVIEW",
+    "EXPIRED",
+)
+
+#: Estados con dictamen final (no reevaluables, E3-T08).
+DECIDED_STATUSES: frozenset[str] = frozenset({"APPROVED", "REJECTED"})
+
+
+class LoanApplication(Base):
+    """Expediente de solicitud de credito (`docs/03b#82`, E3-T08 HU10).
+
+    `user_id` es UUID logico (REF `identity.users` solo a nivel
+    aplicacion, regla de oro 4); `product_id` es FK fisica al catalogo
+    del mismo schema (`credits.loan_products`). Dinero entero en
+    centimos; `dti_ratio` es `NUMERIC(12,4)` (`Decimal`, nunca `float`).
+
+    `dti_ratio` es solo informativo (el dictamen lo decide el motor de
+    reglas E3-T07 con el DTI exacto): el repositorio lo acota a
+    `±99999999.9999` antes de persistir para que un DTI extremo
+    (p.ej. ingreso minimo + deuda maxima) nunca desborde la columna.
+
+    El consentimiento de bureau (`bureau_authorized` +
+    `bureau_authorized_at`) lo estampa el caso de uso al evaluar; sin el
+    no hay dictamen (HU10 CA-01).
+    """
+
+    __tablename__ = "loan_applications"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["product_id"],
+            ["credits.loan_products.id"],
+            name="fk_loan_applications_product",
+        ),
+        sa.CheckConstraint(
+            "requested_amount_minor > 0",
+            name="ck_loan_applications_amount_pos",
+        ),
+        sa.CheckConstraint("term_months > 0", name="ck_loan_applications_term_pos"),
+        sa.CheckConstraint(
+            "status IN "
+            "('DRAFT','SUBMITTED','IN_EVALUATION','APPROVED','REJECTED','IN_REVIEW','EXPIRED')",
+            name="ck_loan_applications_status",
+        ),
+        sa.Index("ix_loan_applications_user_id", "user_id"),
+        sa.Index("ix_loan_applications_status", "status"),
+        sa.Index("ix_loan_applications_created_at", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    requested_amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    term_months: Mapped[int] = mapped_column(sa.SmallInteger(), nullable=False)
+    status: Mapped[str] = mapped_column(
+        sa.String(20), nullable=False, default="SUBMITTED", server_default="SUBMITTED"
+    )
+    bureau_authorized: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=False, server_default=sa.false()
+    )
+    bureau_authorized_at: Mapped[datetime | None] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    score: Mapped[int | None] = mapped_column(sa.Integer(), nullable=True)
+    dti_ratio: Mapped[Decimal | None] = mapped_column(sa.Numeric(12, 4), nullable=True)
+    total_income_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    total_debt_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)

@@ -616,6 +616,8 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | POST | `/credits/simulate` | Simulacion de cuota/cronograma. |
 | POST | `/credits/applications` | Solicitud + autorizacion de bureau. |
 | GET | `/credits/applications/{id}` | Estado del expediente. |
+| GET | `/credits/applications?status=IN_REVIEW` | Bandeja en revision (analista). |
+| POST | `/credits/applications/{id}/review` | Dictamen manual del analista. |
 | POST | `/credits/applications/{id}/contract` | Genera contrato. |
 | POST | `/credits/applications/{id}/sign` | Firma con biometria. |
 | GET | `/credits/loans` | Prestamos del cliente. |
@@ -661,6 +663,50 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   incompleto o con ambas fuentes de tasa), `422` de esquema Pydantic,
 >   `501 EXPORT_FORMAT_NOT_SUPPORTED` (solo export).
 >
+> Detalle del expediente (E3-T08 `Hecho`, 2026-10-09; HU10 CA-01..CA-04;
+> cierra `docs/18` G21/G25).
+> Auth: `Authorization: Bearer <jwt>` en las cuatro rutas (401 `NOT_AUTHENTICATED`
+> sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON.
+> - `POST /credits/applications` (cuerpo `{product_id, requested_amount_minor
+>   (> 0), term_months, total_income_minor (> 0), total_debt_minor (>= 0),
+>   bureau_authorized (= `true`)}`, montos en centimos `int`, sin `float`;
+>   cabecera `Idempotency-Key` obligatoria) -> `201 {"data": {id, user_id,
+>   product_id, requested_amount_minor, term_months, status
+>   (`APPROVED`/`REJECTED`), bureau_authorized, bureau_authorized_at,
+>   score, dti_ratio (string `NUMERIC(12,4)`, informativo y acotado a
+>   `±99999999.9999` al persistir sin cambiar el dictamen), total_income_minor,
+>   total_debt_minor (= declarada + externa del bureau), decision_reason,
+>   created_at, updated_at, decided_at}, "meta": {"replayed"}}` con dictamen
+>   final, o `202` con la misma forma si se difiere (`IN_REVIEW`).
+>   Un DTI extremo con entrada valida por esquema (p.ej. ingreso minimo +
+>   deuda maxima) nunca es `500`: el motor rechaza por DTI y el expediente
+>   persiste con el `dti_ratio` acotado (`422` solo si el numerico es
+>   invalido; red de seguridad `DataError -> VALIDATION_ERROR`).
+>   Sin `bureau_authorized=true` -> `422 VALIDATION_ERROR` sin evaluar ni
+>   consultar al bureau; monto/plazo fuera del producto -> `422`;
+>   producto inexistente -> `404 NOT_FOUND`; sin `Idempotency-Key` -> `422`;
+>   misma clave + distinto cuerpo -> `409 IDEMPOTENCY_CONFLICT`; misma clave
+>   + mismo cuerpo -> replay (`meta.replayed=true`) sin duplicar expediente
+>   ni notificacion. Bureau caido tras reintentos -> `202 IN_REVIEW` (no
+>   error 500). Flujo `SUBMITTED -> IN_EVALUATION ->
+>   {APPROVED|REJECTED|IN_REVIEW}`; decidido no se reevalua (`409 CONFLICT`
+>   en revision). Eventos por `outbox`: `credit.application.submitted` +
+>   `credit.approved` / `credit.rejected` / `credit.review.required`.
+> - `GET /credits/applications/{id}` -> `200 {"data": {expediente}, "meta": {}}`
+>   (solo el titular; ajeno/inexistente -> `404 NOT_FOUND` neutro).
+> - `GET /credits/applications?status=IN_REVIEW` (rol analista de credito
+>   `analyst`/`credit_analyst` en el claim `roles`; `403 NOT_AUTHORIZED`
+>   sin el) -> `200 {"data": [...], "meta": {total, limit, offset}}`
+>   (solo lista `IN_REVIEW`; otro `status` -> `422`).
+> - `POST /credits/applications/{id}/review` (rol analista; cuerpo
+>   `{decision: APPROVED|REJECTED, reason (1..2000)}`) -> `200` con el
+>   expediente resuelto; no `IN_REVIEW` o ya decidido -> `409 CONFLICT`;
+>   el solicitante no puede dictaminar su propio expediente aunque traiga
+>   rol analista (`409 CONFLICT`, separacion de funciones);
+>   inexistente -> `404`. La aprobacion queda separada de la solicitud y
+>   auditada (`credit.application.reviewed`); notificacion push al titular
+>   (plantillas `credit_application_approved` / `..._rejected` /
+>   `credit_review_required`, sin PII ni cifras).
 
 ### 6.5 Billetera, QR y servicios (`wallet`) - HU13-HU16
 

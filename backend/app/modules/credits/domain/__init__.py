@@ -1,4 +1,4 @@
-"""Dominio puro de credits (E3-T01): motor financiero sin BD ni I/O."""
+"""Dominio puro de credits (E3-T01/E3-T07): motores sin BD ni I/O."""
 
 from app.modules.credits.domain.financial import (
     FinancialValidationError,
@@ -13,14 +13,52 @@ from app.modules.credits.domain.financial import (
     simulate,
     with_insurance,
 )
+from app.modules.credits.domain.rules import (
+    APPROVED,
+    DEFAULT_MAX_AMOUNT_MINOR,
+    DEFAULT_MAX_DEBT_MINOR,
+    DEFAULT_MAX_DTI_RATIO,
+    DEFAULT_MIN_SCORE,
+    DEFAULT_REVIEW_MARGIN,
+    IN_REVIEW,
+    LOAN_MAX_AMOUNT_MINOR_KEY,
+    LOAN_MAX_AMOUNT_PROFILE_TEMPLATE,
+    LOAN_MAX_DEBT_MINOR_KEY,
+    LOAN_MAX_DTI_RATIO_KEY,
+    LOAN_MIN_SCORE_KEY,
+    LOAN_REVIEW_MARGIN_KEY,
+    REJECTED,
+    CreditDecision,
+    CreditRulesValidationError,
+    compute_dti,
+    evaluate,
+)
 
 __all__ = [
+    "APPROVED",
+    "DEFAULT_MAX_AMOUNT_MINOR",
+    "DEFAULT_MAX_DEBT_MINOR",
+    "DEFAULT_MAX_DTI_RATIO",
+    "DEFAULT_MIN_SCORE",
+    "DEFAULT_REVIEW_MARGIN",
+    "IN_REVIEW",
+    "LOAN_MAX_AMOUNT_MINOR_KEY",
+    "LOAN_MAX_AMOUNT_PROFILE_TEMPLATE",
+    "LOAN_MAX_DEBT_MINOR_KEY",
+    "LOAN_MAX_DTI_RATIO_KEY",
+    "LOAN_MIN_SCORE_KEY",
+    "LOAN_REVIEW_MARGIN_KEY",
+    "REJECTED",
+    "CreditDecision",
+    "CreditRulesValidationError",
     "FinancialValidationError",
     "LoanSimulation",
     "ScheduleRow",
     "annual_rate_from_monthly",
     "build_schedule",
+    "compute_dti",
     "compute_tcea",
+    "evaluate",
     "french_payment",
     "monthly_rate_from_annual",
     "schedule_cashflows",

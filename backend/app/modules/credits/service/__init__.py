@@ -13,6 +13,14 @@ directa, sin cache en proceso): no requiere despliegue (regla de oro 6).
 Errores: `NOT_FOUND` (producto inexistente), `VALIDATION_ERROR`
 (selector ausente/duplicado o `product_id` malformado). Re-exporta los
 errores del repositorio para los consumidores.
+
+Evaluacion crediticia (E3-T07, HU10): `evaluate_application` une el motor
+puro (`credits.domain.rules`) con los parametros vigentes (`loan.*` via
+`shared/config`, sin cache). Solo lectura: no persiste ni emite eventos.
+
+Expediente (E3-T08, HU10): `applications` (`submit_application`,
+`review_application`, ...) orquesta catalogo + bureau + reglas,
+persiste el dictamen, emite por `outbox`, audita y notifica.
 """
 
 from __future__ import annotations
@@ -31,14 +39,28 @@ from app.modules.credits.repository import (
     LoanProductNotFoundError,
     LoanProductValidationError,
 )
+from app.modules.credits.service.applications import (
+    get_own_application,
+    list_review_queue,
+    review_application,
+    submit_application,
+    submit_application_idempotent,
+)
+from app.modules.credits.service.evaluation import evaluate_application
 
 __all__ = [
     "LoanProductConflictError",
     "LoanProductError",
     "LoanProductNotFoundError",
     "LoanProductValidationError",
+    "evaluate_application",
+    "get_own_application",
     "get_product",
     "list_products",
+    "list_review_queue",
+    "review_application",
+    "submit_application",
+    "submit_application_idempotent",
     "to_dict",
 ]
 

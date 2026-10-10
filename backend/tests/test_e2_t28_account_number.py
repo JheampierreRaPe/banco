@@ -374,12 +374,13 @@ def test_migration_file_chain():
     assert len("0024_accounts_numeric_backfill") <= 32  # limite de alembic_version
 
 
-def test_single_head_is_0028():
-    # E2-T37: la cabeza avanza con la migracion 0028_backfill_entry_type
-    # (backfill de accounts.movements_view.entry_type; sin reescribir 0027).
+def test_single_head_is_0030():
+    # Fix validador sprint-2 (2026-10-09): la cabeza avanza con la migracion
+    # 0032_credits_dti_wider (dti_ratio NUMERIC(12,4); un solo head
+    # encadenado tras 0031).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0028_backfill_entry_type",)
+    assert get_head_revisions() == ("0032_credits_dti_wider",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

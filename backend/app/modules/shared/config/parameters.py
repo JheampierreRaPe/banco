@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -44,6 +46,27 @@ DEFAULT_BIOMETRIC_THRESHOLD_MINOR = 100_000
 DEFAULT_DAILY_LIMIT_MINOR = 500_000
 DEFAULT_MAX_FAILED_ATTEMPTS = 5
 
+#: Claves del motor de reglas de credito (E3-T07, HU10, modulo `credits`).
+LOAN_MAX_DTI_RATIO_KEY = "loan.max_dti_ratio"
+LOAN_MAX_AMOUNT_MINOR_KEY = "loan.max_amount_minor"
+LOAN_MIN_SCORE_KEY = "loan.min_score"
+LOAN_REVIEW_MARGIN_KEY = "loan.review_margin"
+LOAN_MAX_DEBT_MINOR_KEY = "loan.max_debt_minor"
+
+#: Patron de tope de monto por perfil (`{profile}` en MAYUSCULAS; espejo
+#: del patron de limite diario `transfer.daily_limit_{profile}_minor`).
+LOAN_MAX_AMOUNT_PROFILE_TEMPLATE = "loan.max_amount_{profile}_minor"
+
+#: Defaults = semillas (`0001` para `loan.max_dti_ratio`; `0030` para el
+#: resto): mismos valores que las migraciones siembran, asi migrar no
+#: cambia la conducta del motor (el motor los usa como fallback cuando la
+#: clave falta o el valor almacenado es invalido).
+DEFAULT_LOAN_MAX_DTI_RATIO = Decimal("0.4")
+DEFAULT_LOAN_MAX_AMOUNT_MINOR = 5_000_000
+DEFAULT_LOAN_MIN_SCORE = 650
+DEFAULT_LOAN_REVIEW_MARGIN = Decimal(50)
+DEFAULT_LOAN_MAX_DEBT_MINOR = 10_000_000
+
 #: Perfiles con clave propia sembrada por migracion (`0023`).
 SEEDED_PROFILES: tuple[str, ...] = ("STANDARD",)
 
@@ -56,6 +79,16 @@ _SPECS: dict[str, tuple[int, int]] = {
     BIOMETRIC_THRESHOLD_KEY: (DEFAULT_BIOMETRIC_THRESHOLD_MINOR, 0),
     DAILY_LIMIT_KEY: (DEFAULT_DAILY_LIMIT_MINOR, 0),
     AUTH_MAX_FAILED_ATTEMPTS_KEY: (DEFAULT_MAX_FAILED_ATTEMPTS, 1),
+    LOAN_MAX_AMOUNT_MINOR_KEY: (DEFAULT_LOAN_MAX_AMOUNT_MINOR, 0),
+    LOAN_MIN_SCORE_KEY: (DEFAULT_LOAN_MIN_SCORE, 0),
+    LOAN_MAX_DEBT_MINOR_KEY: (DEFAULT_LOAN_MAX_DEBT_MINOR, 0),
+}
+
+#: (default, minimo, maximo) por clave decimal conocida (`None` = sin
+#: cota). Los ratios van como `Decimal`, nunca `float` (regla de oro 3).
+_DECIMAL_SPECS: dict[str, tuple[Decimal, Decimal | None, Decimal | None]] = {
+    LOAN_MAX_DTI_RATIO_KEY: (DEFAULT_LOAN_MAX_DTI_RATIO, Decimal(0), None),
+    LOAN_REVIEW_MARGIN_KEY: (DEFAULT_LOAN_REVIEW_MARGIN, Decimal(0), None),
 }
 
 
@@ -105,7 +138,20 @@ def _spec_for_key(key: str) -> tuple[int, int] | None:
         token = key[len("transfer.daily_limit_") : -len("_minor")]
         if token and _PROFILE_TOKEN.fullmatch(token) is not None:
             return (DEFAULT_DAILY_LIMIT_MINOR, 0)
+    if (
+        key.startswith("loan.max_amount_")
+        and key.endswith("_minor")
+        and key not in (LOAN_MAX_AMOUNT_MINOR_KEY,)
+    ):
+        token = key[len("loan.max_amount_") : -len("_minor")]
+        if token and _PROFILE_TOKEN.fullmatch(token) is not None:
+            return (DEFAULT_LOAN_MAX_AMOUNT_MINOR, 0)
     return None
+
+
+def _decimal_spec_for_key(key: str) -> tuple[Decimal, Decimal | None, Decimal | None] | None:
+    """`(default, minimo, maximo)` de una clave decimal (`None` si no la es)."""
+    return _DECIMAL_SPECS.get(key)
 
 
 def _try_coerce_int(raw: object, minimum: int) -> int | None:
@@ -131,6 +177,60 @@ def _try_coerce_int(raw: object, minimum: int) -> int | None:
 def _coerce_int(raw: object, default: int, minimum: int) -> int:
     """Entero validado (`default` si no es entero o es `< minimum`)."""
     candidate = _try_coerce_int(raw, minimum)
+    return candidate if candidate is not None else default
+
+
+def _try_coerce_decimal(
+    raw: object,
+    minimum: Decimal | None = None,
+    maximum: Decimal | None = None,
+) -> Decimal | None:
+    """Decimal validado (`None` si no es numerico o viola las cotas).
+
+    Acepta `Decimal`, `int` y `str` numerico: la semilla `0001` guardo
+    `loan.max_dti_ratio` como texto `"0.4"` y debe leerse igual que el
+    numero `0.4`. Tambien acepta `float` finito (asi llega un numero JSON
+    por `psycopg`), convertido via `str()` para no arrastrar artefactos
+    binarios. `bool`, `NaN`/`inf` y cualquier otro tipo -> `None` (rige
+    el default, sin lanzar).
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, Decimal):
+        candidate = raw
+    elif isinstance(raw, int):
+        candidate = Decimal(raw)
+    elif isinstance(raw, float):
+        if not math.isfinite(raw):
+            return None
+        candidate = Decimal(str(raw))
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            candidate = Decimal(text)
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    if candidate.is_nan() or candidate.is_infinite():
+        return None
+    if minimum is not None and candidate < minimum:
+        return None
+    if maximum is not None and candidate > maximum:
+        return None
+    return candidate
+
+
+def _coerce_decimal(
+    raw: object,
+    default: Decimal,
+    minimum: Decimal | None = None,
+    maximum: Decimal | None = None,
+) -> Decimal:
+    """Decimal validado (`default` si no es numerico o viola las cotas)."""
+    candidate = _try_coerce_decimal(raw, minimum, maximum)
     return candidate if candidate is not None else default
 
 
@@ -206,6 +306,104 @@ def get_max_failed_attempts(session: Session) -> int:
     return get_int_parameter(session, AUTH_MAX_FAILED_ATTEMPTS_KEY, default, minimum)
 
 
+def get_decimal_parameter(
+    session: Session,
+    key: str,
+    default: Decimal,
+    minimum: Decimal | None = None,
+    maximum: Decimal | None = None,
+) -> Decimal:
+    """Decimal de `config.parameters.<key>` o `default` (nunca lanza).
+
+    Valor ausente, ilegible, no numerico o fuera de cotas -> `default`.
+    Acepta el numero JSON (`0.4`), su forma texto (`"0.4"`, semilla `0001`
+    de `loan.max_dti_ratio`), enteros y `Decimal`; jamas `float` en la
+    salida (regla de oro 3).
+    """
+    base = default if isinstance(default, Decimal) else Decimal(0)
+    if not isinstance(key, str) or not key.strip():
+        return base
+    return _coerce_decimal(_fetch_raw(session, key.strip()), base, minimum, maximum)
+
+
+def loan_amount_key_for_profile(profile: str | None) -> str | None:
+    """Clave de tope de monto por perfil (`None` si el perfil no es valido).
+
+    Espejo de `daily_limit_key_for_profile` (E2-T18): nunca lanza; un
+    perfil inesperado retorna `None` y el llamante usa el tope generico.
+    """
+    if not isinstance(profile, str):
+        return None
+    token = profile.strip().upper()
+    if not token or _PROFILE_TOKEN.fullmatch(token) is None:
+        return None
+    return LOAN_MAX_AMOUNT_PROFILE_TEMPLATE.format(profile=token)
+
+
+def get_loan_max_dti_ratio(session: Session) -> Decimal:
+    """Relacion deuda/ingreso maxima del motor de credito (E3-T07)."""
+    default, minimum, maximum = _DECIMAL_SPECS[LOAN_MAX_DTI_RATIO_KEY]
+    return get_decimal_parameter(session, LOAN_MAX_DTI_RATIO_KEY, default, minimum, maximum)
+
+
+def get_loan_max_amount_minor(session: Session, profile: str | None = None) -> int:
+    """Tope de monto solicitado en centimos, con override por perfil (E3-T07).
+
+    Cadena: clave por perfil -> clave generica -> constante. Igual que
+    `get_daily_limit_minor`; nunca lanza.
+    """
+    key = loan_amount_key_for_profile(profile)
+    if key is not None:
+        raw = _fetch_raw(session, key)
+        if raw is not None and raw is not _MISSING:
+            candidate = _try_coerce_int(raw, 0)
+            if candidate is not None:
+                return candidate
+    default, minimum = _SPECS[LOAN_MAX_AMOUNT_MINOR_KEY]
+    return get_int_parameter(session, LOAN_MAX_AMOUNT_MINOR_KEY, default, minimum)
+
+
+def get_loan_min_score(session: Session) -> int:
+    """Score minimo del bureau para aprobar (E3-T07)."""
+    default, minimum = _SPECS[LOAN_MIN_SCORE_KEY]
+    return get_int_parameter(session, LOAN_MIN_SCORE_KEY, default, minimum)
+
+
+def get_loan_review_margin(session: Session) -> Decimal:
+    """Margen sobre el minimo que manda a revision manual (E3-T07)."""
+    default, minimum, maximum = _DECIMAL_SPECS[LOAN_REVIEW_MARGIN_KEY]
+    return get_decimal_parameter(session, LOAN_REVIEW_MARGIN_KEY, default, minimum, maximum)
+
+
+def get_loan_max_debt_minor(session: Session) -> int:
+    """Deuda total maxima del solicitante en centimos (E3-T07)."""
+    default, minimum = _SPECS[LOAN_MAX_DEBT_MINOR_KEY]
+    return get_int_parameter(session, LOAN_MAX_DEBT_MINOR_KEY, default, minimum)
+
+
+def get_loan_params(session: Session) -> dict[str, object]:
+    """Foto generica de los parametros del motor de credito (E3-T07).
+
+    La consume la fachada de evaluacion (`credits.service.evaluation`):
+    lectura por llamada, sin cache (un cambio se refleja de inmediato).
+    El override por perfil lo resuelve el llamante con
+    `loan_amount_key_for_profile` + `get_parameter`. Nunca lanza.
+    """
+    return {
+        LOAN_MAX_DTI_RATIO_KEY: get_loan_max_dti_ratio(session),
+        LOAN_MAX_AMOUNT_MINOR_KEY: get_int_parameter(
+            session, LOAN_MAX_AMOUNT_MINOR_KEY, *_SPECS[LOAN_MAX_AMOUNT_MINOR_KEY]
+        ),
+        LOAN_MIN_SCORE_KEY: get_int_parameter(
+            session, LOAN_MIN_SCORE_KEY, *_SPECS[LOAN_MIN_SCORE_KEY]
+        ),
+        LOAN_REVIEW_MARGIN_KEY: get_loan_review_margin(session),
+        LOAN_MAX_DEBT_MINOR_KEY: get_int_parameter(
+            session, LOAN_MAX_DEBT_MINOR_KEY, *_SPECS[LOAN_MAX_DEBT_MINOR_KEY]
+        ),
+    }
+
+
 def _coerce_updated_by(updated_by: uuid.UUID | str | None) -> uuid.UUID | None:
     if updated_by is None:
         return None
@@ -219,17 +417,57 @@ def _coerce_updated_by(updated_by: uuid.UUID | str | None) -> uuid.UUID | None:
         ) from exc
 
 
+def _store_decimal(
+    session: Session,
+    clean_key: str,
+    candidate: Decimal,
+    updated_by: uuid.UUID | str | None,
+) -> Decimal:
+    """Persiste un decimal como numero JSON (`flush`, sin `commit`).
+
+    `format(candidate, "f")` evita notacion cientifica: `CAST('0.4' AS
+    jsonb)` guarda el numero `0.4` (no el texto `"0.4"` que sembro
+    `0001`). En SQLite el `CAST` degrada a texto y la lectura lo acepta
+    igual (ver `_try_coerce_decimal`). Exige fila existente (`NOT_FOUND`
+    si no hay fila).
+    """
+    actor = _coerce_updated_by(updated_by)
+    result = session.execute(
+        sa.text(
+            "UPDATE config.parameters SET value_json = CAST(:value AS jsonb), "
+            "updated_at = :updated_at"
+            + (", updated_by = :updated_by" if actor is not None else "")
+            + " WHERE key = :key"
+        ),
+        {
+            "value": format(candidate, "f"),
+            "updated_at": _utcnow(),
+            **({"updated_by": str(actor)} if actor is not None else {}),
+            "key": clean_key,
+        },
+    )
+    session.flush()
+    if (result.rowcount or 0) == 0:
+        raise ParameterNotFoundError(f"clave inexistente: {clean_key!r}")
+    return candidate
+
+
 def set_parameter(
     session: Session,
     *,
     key: str,
-    value: int,
+    value: int | Decimal | str,
     updated_by: uuid.UUID | str | None = None,
-) -> int:
+) -> int | Decimal:
     """Actualiza el valor de una clave existente (`flush`, sin `commit`).
 
-    - Valida tipo/rango segun la clave (`VALIDATION_ERROR` si no es
-      entero o viola el minimo; `bool` se rechaza).
+    - Claves enteras: `value` debe ser `int` (no `bool`) dentro del rango
+      (`VALIDATION_ERROR` si no cumple; comportamiento E2-T18 intacto).
+    - Claves decimales (`loan.max_dti_ratio`, `loan.review_margin`,
+      E3-T07): `value` acepta `Decimal`, `int` o `str` numerico (se
+      almacena como numero JSON; `float` se rechaza para no arrastrar
+      artefactos binarios: pasar `"0.4"`, no `0.4`); fuera de cotas ->
+      `VALIDATION_ERROR`.
     - Exige fila existente (`NOT_FOUND` si la clave no esta sembrada:
       el espacio de claves lo gobiernan las migraciones).
     - Idempotente por `key` UQ: es un `UPDATE` (repetir no duplica;
@@ -237,11 +475,30 @@ def set_parameter(
     - Trazable: fija `updated_at` y `updated_by` (solo si se informa;
       nunca guarda PII: es el UUID del operador).
 
-    Retorna el entero almacenado. Nunca crea claves ni tablas.
+    Retorna el valor almacenado (`int` o `Decimal`). Nunca crea claves
+    ni tablas.
     """
     if not isinstance(key, str) or not key.strip():
         raise ParameterNotFoundError(f"clave inexistente: {key!r}")
     clean_key = key.strip()
+    decimal_spec = _decimal_spec_for_key(clean_key)
+    if decimal_spec is not None:
+        _, minimum, maximum = decimal_spec
+        if isinstance(value, float):
+            raise ParameterValidationError(
+                f"{clean_key} no acepta float (artefactos binarios): "
+                f"pasar Decimal o texto, recibido: {value!r}"
+            )
+        candidate = _try_coerce_decimal(value, minimum, maximum)
+        if candidate is None:
+            raise ParameterValidationError(
+                f"{clean_key} debe ser decimal numerico"
+                + (f" >= {minimum}" if minimum is not None else "")
+                + (f" <= {maximum}" if maximum is not None else "")
+                + f", recibido: {value!r}"
+            )
+        stored = _store_decimal(session, clean_key, candidate, updated_by)
+        return stored
     spec = _spec_for_key(clean_key)
     if spec is None:
         raise ParameterNotFoundError(f"clave inexistente: {clean_key!r}")

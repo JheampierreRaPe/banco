@@ -129,7 +129,19 @@
 `transfer.daily_limit_minor`, `qr.express_limit_minor`, `otp.ttl_seconds`,
 `otp.max_resends`, `auth.max_failed_attempts`, `session.inactivity_seconds`,
 `kyc.match_threshold`, `kyc.max_attempts`, `loan.max_dti_ratio`,
+`loan.max_amount_minor`, `loan.min_score`, `loan.review_margin`,
+`loan.max_debt_minor`,
 `fx.quote_ttl_seconds`, `fx.spread_base`, `fx.spread_volume_step`, `pocket.yield_rate`.
+
+> Motor de credito (E3-T07, HU10): `loan.max_dti_ratio` (`0.4`, semilla
+> `0001` como texto `"0.4"`, normalizado a numero por `0030`),
+> `loan.max_amount_minor` (`5000000`, tope generico en centimos),
+> `loan.min_score` (`650`), `loan.review_margin` (`50`, puntos de score;
+> banda de revision `[min, min + margin)`), `loan.max_debt_minor`
+> (`10000000`, deuda total maxima en centimos). Semillas `0030`
+> (idempotentes). Opcional por perfil: `loan.max_amount_{PERFIL}_minor`
+> (override del tope generico, mismo patron que
+> `transfer.daily_limit_{PERFIL}_minor`).
 
 ## 4. Schema `identity`
 
@@ -508,7 +520,7 @@ Indices: `(account_id, created_at DESC)`.
 | bureau_authorized | BOOLEAN | No | false | | Consentimiento. |
 | bureau_authorized_at | TIMESTAMPTZ | Si | - | | - |
 | score | INTEGER | Si | - | | Score interno/bureau. |
-| dti_ratio | NUMERIC(6,4) | Si | - | | Deuda/ingreso. |
+| dti_ratio | NUMERIC(12,4) | Si | - | | Deuda/ingreso (informativo; se acota a ±99999999.9999 al persistir, el dictamen usa el DTI exacto). |
 | total_income_minor | BIGINT | Si | - | | - |
 | total_debt_minor | BIGINT | Si | - | | - |
 | decision_reason | TEXT | Si | - | | Justificacion. |

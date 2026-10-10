@@ -391,8 +391,31 @@ eventos (`outbox`/`inbox`).
 - **Responsabilidad:** simulacion, solicitud, evaluacion, contrato, desembolso y cuotas.
 - **Dueno de:** `loan_products`, `loan_applications`, `loans`, `loan_schedules`, `loan_payments`,
   `contracts`.
-- **Expone:** `/credits/*`; eventos `credit.approved`, `credit.disbursed`, `loan.installment.paid`.
+- **Expone:** `/credits/*`; eventos `credit.application.submitted`,
+  `credit.approved`, `credit.rejected`, `credit.review.required`,
+  `credit.disbursed`, `loan.installment.paid`.
+- **Motor de reglas (E3-T07, HU10 CA-03 parte reglas):** `credits/domain/rules.py`
+  (`evaluate(...) -> CreditDecision`) puro y determinista: DTI
+  (`total_debt / total_income > loan.max_dti_ratio` -> `RECHAZADO`), tope
+  por perfil (`requested > loan.max_amount[_PERFIL]_minor` -> `RECHAZADO`),
+  tope de deuda (`total_debt > loan.max_debt_minor` -> `RECHAZADO`), score
+  (`< loan.min_score` -> `RECHAZADO`; banda `[min, min + review_margin)` o
+  bureau caido -> `EN_REVISION`; resto -> `APROBADO`), siempre con `reason`
+  para `decision_reason`. Fachada `credits/service/evaluation.py`
+  (`evaluate_application`) une el motor con `loan.*` vigentes via
+  `shared/config` (sin cache; `params_override` para previsualizar).
 - **Consume:** `bureau.score.received` (adaptador).
+- **Expediente y solicitud (E3-T08, HU10 CA-01..CA-04):** `loan_applications`
+  (`docs/03b#82`, migracion `0031`) con flujo `SUBMITTED -> IN_EVALUATION ->
+  {APPROVED|REJECTED|IN_REVIEW}`; `POST /credits/applications`
+  (`Idempotency-Key` obligatoria, snapshot sin PII, `201`/`202`),
+  `GET /credits/applications/{id}` (titular, `404` neutro), bandeja
+  `GET /credits/applications?status=IN_REVIEW` + dictamen
+  `POST .../{id}/review` (rol `analyst`/`credit_analyst`, aprobacion
+  separada y auditada). Consentimiento de bureau explicito obligatorio;
+  bureau caido -> `IN_REVIEW` (no 500); notificacion push best-effort por
+  la fachada `send(...)` (plantillas `credit_application_approved`,
+  `credit_application_rejected`, `credit_review_required`).
 - **Puede llamar a:** `transactions` (desembolso/cuota), `identity` (firma), `risk`, `notifications`,
   `audit`.
 - **Prohibido:** acreditar dinero sin pasar por el motor.
@@ -503,8 +526,18 @@ eventos (`outbox`/`inbox`).
   lanza), escritura transaccional (`flush`), idempotente por `key` UQ y auditada
   (`updated_at`/`updated_by`, sin PII). Claves y **valores sembrados coherentes**:
   `transfer.biometric_threshold_minor` (**100000**, S/ 1,000; semilla `0001` corregida por
-  `0025`), `transfer.daily_limit_minor` (500000, S/ 5,000), `transfer.daily_limit_{PERFIL}_minor`
+  `0025`), `transfer.daily_limit_minor` (500000, S/ 5,000),   `transfer.daily_limit_{PERFIL}_minor`
   (`STANDARD` sembrado en `0023` con 500000) y `auth.max_failed_attempts` (5).
+  **Claves del motor de credito (E3-T07, HU10):** `loan.max_dti_ratio`
+  (`Decimal("0.4")`; semilla `0001` como texto `"0.4"`, normalizada a
+  numero por `0030`), `loan.max_amount_minor` (`5000000`),
+  `loan.min_score` (`650`), `loan.review_margin` (`Decimal("50")`) y
+  `loan.max_debt_minor` (`10000000`) —semillas `0030`, idempotentes—.
+  Lectura con `get_loan_*` / `get_loan_params` (ratios `Decimal`, nunca
+  `float`) y escritura con `set_parameter` (acepta `Decimal`/`int`/`str`
+  numerico en claves decimales; `float` se rechaza); opcional
+  `loan.max_amount_{PERFIL}_minor` (override por perfil, mismo patron que
+  el limite diario).
   **Invariante (OBS-2, migracion `0025_biometric_coherence`):** el umbral biometrico queda
   estrictamente por debajo de cada limite diario (`100000 < 500000`) para que el reto
   (`PENDING_AUTHORIZATION`) sea alcanzable en la banda `(100000, 500000]`; por encima del limite

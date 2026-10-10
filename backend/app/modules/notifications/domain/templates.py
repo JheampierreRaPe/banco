@@ -60,6 +60,35 @@ BASE_TEMPLATES: dict[str, dict] = {
             "fallidos el {at}. Si no fuiste tu, contacta a tu banco."
         ),
     },
+    # Dictamen de credito (E3-T08, HU10 CA-03/CA-04): un canal natural por
+    # codigo (push). Cuerpo generico sin PII ni cifras (el detalle vive en
+    # el expediente, que solo consulta el titular).
+    "credit_application_approved": {
+        "code": "credit_application_approved",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu solicitud de credito fue aprobada. Revisa el detalle en tu expediente."
+        ),
+    },
+    "credit_application_rejected": {
+        "code": "credit_application_rejected",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu solicitud de credito fue evaluada y no fue aprobada. "
+            "Revisa el detalle en tu expediente."
+        ),
+    },
+    "credit_review_required": {
+        "code": "credit_review_required",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu solicitud de credito quedo en revision por un analista. "
+            "Te avisaremos el dictamen final."
+        ),
+    },
 }
 
 _SCALAR_TYPES = (str, int, bool, type(None))

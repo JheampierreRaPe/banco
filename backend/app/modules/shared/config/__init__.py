@@ -18,6 +18,15 @@ Claves de esta tarea (regla de oro 6: regla variable = parametro):
   (E6-T03/E6-T04) siguiendo el mismo patron (ver frontera abajo).
 - `auth.max_failed_attempts` (default `5`): intentos fallidos antes del
   bloqueo temporal; la regla de bloqueo la aplica E2-T17.
+- Motor de credito (E3-T07, HU10, modulo `credits`): `loan.max_dti_ratio`
+  (`Decimal("0.4")`), `loan.max_amount_minor` (`5000000`),
+  `loan.min_score` (`650`), `loan.review_margin` (`Decimal("50")`) y
+  `loan.max_debt_minor` (`10000000`). Lectura con `get_loan_*` /
+  `get_loan_params` (los ratios son `Decimal`, nunca `float`); escritura
+  con `set_parameter` (acepta `Decimal`/`int`/`str` numerico en claves
+  decimales y los guarda como numero JSON). Semillas: `0001`
+  (`loan.max_dti_ratio`, como texto `"0.4"`, normalizado a numero por
+  `0030`) y `0030` (el resto, idempotente).
 
 Semantica:
 
@@ -51,7 +60,18 @@ from app.modules.shared.config.parameters import (
     DAILY_LIMIT_PROFILE_TEMPLATE,
     DEFAULT_BIOMETRIC_THRESHOLD_MINOR,
     DEFAULT_DAILY_LIMIT_MINOR,
+    DEFAULT_LOAN_MAX_AMOUNT_MINOR,
+    DEFAULT_LOAN_MAX_DEBT_MINOR,
+    DEFAULT_LOAN_MAX_DTI_RATIO,
+    DEFAULT_LOAN_MIN_SCORE,
+    DEFAULT_LOAN_REVIEW_MARGIN,
     DEFAULT_MAX_FAILED_ATTEMPTS,
+    LOAN_MAX_AMOUNT_MINOR_KEY,
+    LOAN_MAX_AMOUNT_PROFILE_TEMPLATE,
+    LOAN_MAX_DEBT_MINOR_KEY,
+    LOAN_MAX_DTI_RATIO_KEY,
+    LOAN_MIN_SCORE_KEY,
+    LOAN_REVIEW_MARGIN_KEY,
     SEEDED_PROFILES,
     ParameterError,
     ParameterNotFoundError,
@@ -59,9 +79,17 @@ from app.modules.shared.config.parameters import (
     daily_limit_key_for_profile,
     get_biometric_threshold_minor,
     get_daily_limit_minor,
+    get_decimal_parameter,
     get_int_parameter,
+    get_loan_max_amount_minor,
+    get_loan_max_debt_minor,
+    get_loan_max_dti_ratio,
+    get_loan_min_score,
+    get_loan_params,
+    get_loan_review_margin,
     get_max_failed_attempts,
     get_parameter,
+    loan_amount_key_for_profile,
     set_parameter,
 )
 
@@ -72,7 +100,18 @@ __all__ = [
     "DAILY_LIMIT_PROFILE_TEMPLATE",
     "DEFAULT_BIOMETRIC_THRESHOLD_MINOR",
     "DEFAULT_DAILY_LIMIT_MINOR",
+    "DEFAULT_LOAN_MAX_AMOUNT_MINOR",
+    "DEFAULT_LOAN_MAX_DEBT_MINOR",
+    "DEFAULT_LOAN_MAX_DTI_RATIO",
+    "DEFAULT_LOAN_MIN_SCORE",
+    "DEFAULT_LOAN_REVIEW_MARGIN",
     "DEFAULT_MAX_FAILED_ATTEMPTS",
+    "LOAN_MAX_AMOUNT_MINOR_KEY",
+    "LOAN_MAX_AMOUNT_PROFILE_TEMPLATE",
+    "LOAN_MAX_DEBT_MINOR_KEY",
+    "LOAN_MAX_DTI_RATIO_KEY",
+    "LOAN_MIN_SCORE_KEY",
+    "LOAN_REVIEW_MARGIN_KEY",
     "SEEDED_PROFILES",
     "ParameterError",
     "ParameterNotFoundError",
@@ -80,8 +119,16 @@ __all__ = [
     "daily_limit_key_for_profile",
     "get_biometric_threshold_minor",
     "get_daily_limit_minor",
+    "get_decimal_parameter",
     "get_int_parameter",
+    "get_loan_max_amount_minor",
+    "get_loan_max_debt_minor",
+    "get_loan_max_dti_ratio",
+    "get_loan_min_score",
+    "get_loan_params",
+    "get_loan_review_margin",
     "get_max_failed_attempts",
     "get_parameter",
+    "loan_amount_key_for_profile",
     "set_parameter",
 ]

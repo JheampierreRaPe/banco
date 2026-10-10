@@ -1,5 +1,12 @@
-"""Esquemas Pydantic de credits (E3-T03 simulador)."""
+"""Esquemas Pydantic de credits (E3-T03 simulador, E3-T08 expediente)."""
 
+from app.modules.credits.schemas.applications import (
+    ApplicationCreateRequest,
+    ApplicationData,
+    ApplicationResponse,
+    ApplicationsListResponse,
+    ReviewRequest,
+)
 from app.modules.credits.schemas.simulation import (
     ProductOut,
     ProductsListResponse,
@@ -10,8 +17,13 @@ from app.modules.credits.schemas.simulation import (
 )
 
 __all__ = [
+    "ApplicationCreateRequest",
+    "ApplicationData",
+    "ApplicationResponse",
+    "ApplicationsListResponse",
     "ProductOut",
     "ProductsListResponse",
+    "ReviewRequest",
     "ScheduleRowOut",
     "SimulateData",
     "SimulateRequest",

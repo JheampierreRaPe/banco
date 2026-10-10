@@ -19,5 +19,12 @@ FRAUD_ALERT_RAISED = "fraud.alert.raised"
 # `identity.service.device_login.AUDIT_FAILED_ATTEMPT`).
 AUTH_FAILED_ATTEMPT = "auth.failed_attempt"
 CREDIT_DISBURSED = "credit.disbursed"
+# Expediente de credito (E3-T08, HU10; cierra `docs/18` G25): el
+# dictamen se emite por `outbox` con payload sin PII
+# (`application_id`, `user_id`, `product_id`, `status`).
+CREDIT_APPLICATION_SUBMITTED = "credit.application.submitted"
+CREDIT_APPROVED = "credit.approved"
+CREDIT_REJECTED = "credit.rejected"
+CREDIT_REVIEW_REQUIRED = "credit.review.required"
 QR_PAYMENT_CONFIRMED = "qr.payment.confirmed"
 RECONCILIATION_EXCEPTION = "reconciliation.exception"

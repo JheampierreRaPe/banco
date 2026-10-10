@@ -216,3 +216,9 @@ def export_simulation_pdf(
 
 
 __all__ = ["get_current_user_id", "router"]
+
+# Expediente (E3-T08, HU10): se incluye al final para que
+# `applications` reutilice `get_current_user_id` sin ciclo.
+from app.modules.credits.api import applications as _applications
+
+router.include_router(_applications.router)

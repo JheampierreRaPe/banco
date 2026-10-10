@@ -1,5 +1,5 @@
 // Cliente HTTP del panel (E3-T10).
-// - Base URL: `VITE_API_BASE_URL` (defecto `http://localhost:8000/api/v1`).
+// - Base URL: `VITE_API_BASE_URL` (defecto same-origin `/api/v1` via proxy nginx).
 // - Auth: `Authorization: Bearer <jwt>` de la sesión del analista
 //   (sesión separada de la app móvil, docs/13#2.3).
 // - Envoltorio `docs/05#4` (`{"data", "meta"}`) y errores problem+json
@@ -20,7 +20,7 @@ export class ApiError extends Error {
 
 export function apiBaseUrl(): string {
   const fromEnv = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  return (fromEnv ?? "http://localhost:8000/api/v1").replace(/\/$/, "");
+  return (fromEnv ?? "/api/v1").replace(/\/$/, "");
 }
 
 interface BackendError {

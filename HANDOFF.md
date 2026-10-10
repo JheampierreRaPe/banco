@@ -1,57 +1,54 @@
-# HANDOFF — Orquestador → Sprint 2 (créditos) · actualizado 2026-10-08
+# HANDOFF — Orquestador → Sprint 2 (créditos) · actualizado 2026-10-10
 
-Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 2026-09-26 (Sprint 1).
+Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 2026-10-08 (Sprint 2, HU06/HU07/HU08).
 
 ## 1. Dónde estamos
 
-- Rama de trabajo: **`sprint-2`** (creada desde `kyc-ux-24-08-2026`), HEAD **`8a5e091`**.
-- `origin` = https://github.com/JheampierreRaPe/banco . `gh` **no está instalado** (PR por push + URL web). La rama **no se ha pusheado** (`sprint-2` sin upstream).
-- **Backend:** `1152 passed + 1 skipped` (desde `backend/` con `.venv`), `ruff`/`black` limpios, `alembic check` limpio, head de migración **`0025_biometric_coherence`**.
-- **Frontend:** `712/712` (`flutter test`), `flutter analyze` limpio.
-- **Stack Docker:** `healthy` (postgres/redis en loopback, backend `:8000`, worker, admin-web `:8080`). Microservicio KYC `kyc-facial-service-8001` (`:8001`, healthy).
-- **Dispositivo:** adb TLS `adb-KJSGAUYHSCB6HUSS-yIJZve._adb-tls-connect._tcp` (modelo `2311DRK48G`). A veces aparece **duplicado** con sufijo ` (2)` → hacer `adb disconnect "<serial (2)>"` para dejar uno.
+- Rama de trabajo: **`sprint-2`** (creada desde `kyc-ux-24-08-2026`).
+- `origin` = https://github.com/JheampierreRaPe/banco . `gh` **no está instalado** (PR por push + URL web). La rama **sigue sin pushear** (`sprint-2` sin upstream).
+- **Commits locales de la fase de créditos (HU09/HU10):** `64383ad` (motor financiero y catálogo de productos, E3-T01/T02), `b961c72` (API de simulación + UI del simulador + QA, E3-T03/T04/T05), `fa3b1df` (adaptador de buró, reglas y solicitud, E3-T06/T07/T08), `2532480` (UI de solicitud, panel de analista y QA, E3-T09/T10/T11).
+- **Commits locales de esta fase (2026-10-10):** `4c61201` (acceso a Créditos desde el home y el perfil), `30243a9` (panel `admin-web` conectado por same-origin, nginx `/api`), `c190618` (token de analista + guía de acceso al panel web) y el commit de este handoff. **Sin push.**
+- **Backend:** `1403 passed + 1 skipped` (desde `backend/` con `.venv`), `ruff`/`black` limpios (370 archivos sin cambios), `alembic check` limpio, head de migración **`0032_credits_dti_wider`**.
+- **Frontend:** `772/772` (`flutter test`), `flutter analyze` limpio.
+- **Panel `admin-web`:** `18/18` (`npm test`), `build`/`lint` limpios (`tsc --noEmit`); sirve en `:8080` con **proxy same-origin** `/api/` → `backend:8000` (nginx).
+- **Stack Docker:** **5/5 `healthy`** (`backend`, `worker`, `admin-web`, `postgres`, `redis`). Microservicio KYC `kyc-facial-service-8001` (`:8001`) sigue existiendo aparte del compose.
+- **Dispositivo:** adb TLS `adb-KJSGAUYHSCB6HUSS-yIJZve._adb-tls-connect._tcp` (modelo `2311DRK48G`). Aparece **duplicado** con sufijo ` (2)` → hacer `adb disconnect "<serial (2)>"` para dejar uno.
 - **APK debug** instalado: paquete `com.bancaonline.banca_online.refactorui` (v0.1.0), apunta a `http://192.168.1.20:8000` (IP LAN estática del PC). App vieja `com.bancaonline.banca_online` intacta.
 - **Config clave sembrada:** `transfer.biometric_threshold_minor` = **100000** (S/ 1,000); `transfer.daily_limit_*_minor` = **500000** (S/ 5,000). (Si cambia la IP del PC, reconstruir el APK con la nueva `API_BASE_URL`.)
 
-## 2. Qué se hizo (Sprint 2 — HU06/HU07/HU08 + operaciones + mejoras de destino)
+## 2. Qué se hizo (Sprint 2 — HU09/HU10 créditos COMPLETO + accesos + panel web)
 
-**HU06 transferencias / HU07 beneficiarios / HU08 pagos sensibles — COMPLETO (backend + frontend + QA):**
-- `E2-T07` transferencias propias (asiento atómico **sin hold**) y a tercero (hold+settle; comisión a `4100`). `E2-T08` adaptador titular/CCI (mock determinista + HTTP). `E2-T09` saga interbancaria (polling, timeout, compensación, exclusión por tx). `E2-T10` comprobante PDF con nº de operación `OP-<12hex>`. `E2-T11` frontend de transferencias + formulario interbancario CCI (4 estados). `E2-T12` QA E2E.
-- `E2-T13` beneficiarios (AES-256-GCM en reposo, índice ciego, unicidad parcial `0022`). `E2-T14` tope pre-aprobado. `E2-T15` frontend de agenda/alta. `E2-T16` QA.
-- `E2-T17` gate biométrico (`PENDING_AUTHORIZATION` + hold, `nonce` TTL 120 s), bloqueo preventivo CA-02 y límite diario CA-03. `E2-T18` fachada de parámetros + `risk.risk_profiles` (`0023`). `E2-T19` `POST /transactions/{id}/authorize` + perfil de riesgo end-to-end. `E2-T20` evento a `risk` + notificación (sin mover dinero). `E2-T21` UI del reto + 6 estados de error. `E2-T22` QA.
-- **Operaciones:** `E2-T23` cableado de `movements_view` por `ledger.entry.posted`; `E2-T24` `GET /transactions` (listado + filtros); `E2-T25` `POST /transactions/{id}/reverse` (asiento inverso, 409 no reversible); `E2-T26` `GET/PUT /admin/parameters` (guard rol admin).
+**HU09 (simulador) / HU10 (solicitud y evaluación) — COMPLETO (E3-T01..T11, backend + frontend + QA):**
+- `E3-T01` **motor financiero francés** (TEA/TCEA; `shared/config` para decimales) y `E3-T02` **catálogo `loan_products`** (migración `0029_credits_loan_products`).
+- `E3-T03` **`POST /credits/simulate`** + `E3-T04` **PDF** del plan de pagos; `E3-T05` QA del simulador.
+- `E3-T06` **adaptador `CreditBureau`** (mock determinista + HTTP) y `E3-T07` **motor de reglas DTI/score** (parámetros en `loan.*`, `shared/config` decimal; migración `0030_credits_loan_rule_params`); `E3-T08` **solicitud** (`loan_applications`, eventos outbox; migración `0031_credits_loan_applications`).
+- `E3-T09` **UI Flutter de solicitud/estado**, `E3-T10` **panel de analista** (`admin-web`) y `E3-T11` QA de punta a punta. `E3-T12`+ aún no.
+- Migración `0032_credits_dti_wider` (head actual).
+- **Acceso a Créditos** desde el home (quick-action "Crédito", `qa-creditos` → `/credits`) y desde el perfil (fila "Créditos preaprobados", `profile-credits` → `/credits`). La ruta exige sesión (guarda F-T37).
 
-**Mejoras de destino (decisiones del dueño):**
-- `E2-T28` **número de cuenta numérico real**: 14 dígitos con **dígito verificador** (prefijo `001`, módulo 11) + **backfill** de cuentas existentes (migración `0024`). `E2-T27` **lookup previo** `POST /transfers/third-party/resolve-target` por DNI/celular (anti-enumeración: `TARGET_NOT_FOUND` 404 neutro, `TARGET_AMBIGUOUS` 409). `E2-T29` UI de cuenta 14+DV y modo DNI/celular.
+**Panel web (`admin-web`):**
+- Vista de **analista de crédito**: bandeja `IN_REVIEW` + detalle enmascarado + dictamen (`Aprobar`/`Rechazar` con motivo obligatorio). Backend decide por rol (`analyst`/`credit_analyst`), no la UI.
+- **Conectividad same-origin:** nginx proxea `/api/` → `backend:8000`; base URL relativa `/api/v1` (antes absoluta `http://localhost:8000` → rompía desde otra IP).
+- **Token de analista:** `backend/scripts/mint_demo_token.py` (firma local con el `JWT_SECRET` vigente; no es backdoor; pruebas en `backend/tests/test_mint_demo_token.py`). **Guía:** `docs/guia-acceso-panel-web.md`.
 
-**Fixes posteriores (bugs reportados por el dueño):**
-- `E2-T30` transferir a un **beneficiario de la agenda** resuelve su **cuenta real** (antes enviaba `beneficiary.id` → 404).
-- `E2-T31` **autorizar por PIN** real (el reto sobre el umbral ya no es un callejón: hay campo de PIN en el flujo; verificación por fachada de `identity`; sin filtrar el PIN en respuestas/logs).
-- `E2-T32` **tope pre-aprobado = techo absoluto sin biometría** (monto ≤ tope ⇒ sin biometría aunque supere el umbral; > tope ⇒ gate normal; el límite diario manda).
-- Observabilidad: el backend **registra el detalle del `422`** (campos+motivo, sin PII) y **sanea** el `detail` (nunca expone `input`).
-- Infra: **version skew** (ver §9) — causa del `422 target_account_id: missing`.
-- UX comprobante/seguimiento: **sin botón back**, CTA **"Volver al inicio"** → `/home`.
-- `E2-T23` cableado de proyección; `OBS-2` (umbral < límite diario) cerrada con `0025`.
+**Recap previo (HU06/HU07/HU08 — ya cerrado):** transferencias propias/tercero/interbancarias (hold+settle, saga con compensación, comprobante `OP-…`+PDF), beneficiarios (AES-256-GCM, unicidad parcial), gate biométrico (umbral + PIN + límite diario), cuenta de 14 dígitos con DV + lookup DNI/celular, `/movements` con reverso, `/admin/parameters`. Detalle en el handoff del 2026-10-08 y `docs/tasks/archive/`.
 
 ## 3. Qué funciona de verdad (verificado)
 
-- Flujo completo en la app: hub `/transfers` → destino (propia/tercero/interbancaria) → monto/motivo → confirmación → **reto biométrico** si supera el umbral (con **fallback a PIN**) → comprobante (`OP-…` + PDF) → "Volver al inicio".
-- Destino por **cuenta de 14 dígitos** o por **DNI/celular** (lookup previo con titular enmascarado).
-- **Tope pre-aprobado** de un beneficiario exime biometría hasta el tope.
-- `/movements` (historial + filtros + **reverso**), `/beneficiaries` (agenda + alta/edición/tope), `/admin/parameters` (web).
-- Backend: motor/ledger cuadran; saga interbancaria sin pérdida de fondos; idempotencia por titular.
+- **Créditos (HU09/HU10):** simulador (motor francés TEA/TCEA con catálogo `loan_products`, `/credits/simulate` + PDF, UI Flutter); solicitud/evaluación (adaptador `CreditBureau` mock+HTTP, motor de reglas DTI/score, expediente `loan_applications`, eventos outbox, UI Flutter de solicitud/estado). Acceso a `/credits` desde el **home** (botón "Crédito") y el **perfil**.
+- **Panel web del analista:** bandeja `IN_REVIEW` → detalle → dictamen con motivo obligatorio; sale de la bandeja y queda auditado; funciona desde cualquier host/IP por el proxy same-origin.
+- Flujo de transferencias (propia/tercero/interbancaria) con reto biométrico (fallback PIN), comprobante y "Volver al inicio"; destino por cuenta de 14 dígitos o DNI/celular; tope pre-aprobado exime biometría hasta el tope.
+- `/movements` (historial + filtros + reverso), `/beneficiaries`, `/admin/parameters` (web). Backend: motor/ledger cuadran; saga interbancaria sin pérdida de fondos; idempotencia por titular.
 
 ## 4. Pendientes
 
-- **BLOQUE PRINCIPAL — Créditos (HU09/HU10):** briefs `E3-T01..T11` ya creados en `docs/tasks/` (**sin implementar**). Simulador (`E3-T01..T05`) + solicitud/evaluación (`E3-T06..T11`). Ver `docs/08-epica-3-creditos.md` y `docs/tasks/SPRINT-2.md`.
-- **Drift de papeleo:** los briefs `E2-T11`, `E2-T15`, `E2-T21`, `E2-T23` **siguen `Pendiente`** en `docs/tasks/` aunque ya están implementados y commiteados (`a79016f`, `631b90a`, `89610f2`, `b3c5805`). Al cerrar, pasarlos a `Hecho`/`archive/`.
-- **Errores nuevos del dueño (sin especificar):** reportó "unos errores" que corregirá más tarde; pendiente de reproducir/describir.
+- **Créditos (resto de la épica 3):** **HU11 (firma de contrato)** `E3-T12..T16` y **HU12 (desembolso/cuotas)** `E3-T17..T22` **sin briefs ni implementación**. Ver `docs/08-epica-3-creditos.md` y `docs/tasks/SPRINT-2.md`.
 - **Observaciones abiertas (`docs/18` §9):**
   - **OBS-3:** el contador de fallos biométricos (`save_block`) no usa CAS por `version` (dos fallos concurrentes pueden subcontar) y depende de que el llamante haga commit.
   - **OBS-4:** `nonce` reintentable tras fallo; tests de concurrencia serializados (evidencia débil); `resolve_risk_profile` lee `identity.users` por SQL directo (fuera de la fachada D-03); etc.
-- **QA de fases posteriores:** `Q-T03` (seguridad), `Q-T07` (observabilidad), `Q-T08` (escaneo de deps/secretos), `Q-T09` (guion demo) — sin brief.
-- **Frontend no implementado:** `F-T06..F-T18` (créditos/wallet-QR/divisas/panel admin).
-- **Papeleo de cierre:** documentar/cerrar `G40..G45` (ya cerrados) y cualquier gap nuevo en `docs/18`.
+- **QA de fases posteriores:** `Q-T03` (seguridad), `Q-T07` (observabilidad), `Q-T08` (escaneo de deps/secretos), `Q-T09` (guion demo) — **sin brief**.
+- **Frontend no implementado:** `F-T06..F-T18` (créditos/wallet-QR/divisas/panel admin) y **HU13–HU16** (wallet/QR). **Panel admin general:** `F-T12`.
+- **Gaps / deuda a cerrar (`docs/18`):** **G26** (`PUT /admin/parameters` sin decimales), **G52** (detalle de expediente para el analista), **H5 de E3-T06** (registrar env vars en `docs/02` #9). Cerrar/documentar gaps nuevos en `docs/18`.
 
 ## 5. Riesgos / decisiones abiertas
 
@@ -60,11 +57,12 @@ De `docs/17-riesgos-y-decisiones-abiertas.md` (varios siguen abiertos) + notas n
 - **PIN authorize:** contrato nuevo (`pin` mutuamente excluyente con firma) — el PIN **no** debe persistirse ni reflejarse en respuestas (ya saneado el `422`).
 - **Tope como techo:** cambia la semántica previa de `E2-T14` ("sin saltarse el umbral global"); documentado en `docs/modules/README.md` y `docs/18` G45.
 - **Idempotencia:** UQ global `(key, user_id)` **sin `endpoint`** → el mismo `Idempotency-Key` en `transfer` y `authorize` daba `409`. Mitigado en frontend (clave `<borrador>-auth`); a futuro podría incluir `endpoint` en la UQ (requiere migración).
+- **Token de analista (dev):** `mint_demo_token.py` firma local y solo emite `analyst`/`credit_analyst`; nunca imprime el secreto. Es herramienta dev/demo, no un backdoor.
 
 ## 6. Notas de trabajo
 
 - Notas del dueño (`*.txt` en la raíz): **no commitearlas** (`.gitignore`). `frontend/android/build/` y `frontend/build/` también ignorados.
-- `.opencode/agent/diseno-frontend.md` queda untracked a propósito (excluido de commits).
+- `.opencode/agent/diseno-frontend.md` y `eliminar-movements.jpeg` quedan untracked a propósito (excluidos de commits).
 - Subagentes: `planificador` (briefs), `worker` (una tarea), `fixer` (solo defectos indicados + regresión), `validador` (solo lectura, dictamen), `diseno-frontend` (figma `pantallas.fig` + Flutter), `explore`/`general` (investigación).
 - Fix de agentes (2026-09-26): `planificador`/`validador` ya **no** fijan `model:` (heredan el default). `worker`/`fixer`/`diseno-frontend` usan `opencode-go/muse-spark-1.3-contributor`.
 - Briefs `Hecho` archivados en `docs/tasks/archive/`. `docs/tasks/SPRINT-2.md` es el índice del Sprint 2.
@@ -73,13 +71,16 @@ De `docs/17-riesgos-y-decisiones-abiertas.md` (varios siguen abiertos) + notas n
 
 ```powershell
 # Backend (desde backend/)
-.venv\Scripts\python.exe -m pytest tests/ -q        # 1152 passed + 1 skipped
+.venv\Scripts\python.exe -m pytest tests/ -q        # 1403 passed + 1 skipped
 .venv\Scripts\python.exe -m ruff check .
 .venv\Scripts\python.exe -m black --check .
-.venv\Scripts\alembic.exe check ; .venv\Scripts\alembic.exe current   # head 0025
+.venv\Scripts\alembic.exe check ; .venv\Scripts\alembic.exe heads   # head 0032_credits_dti_wider
 
 # Frontend (desde frontend/)
-flutter analyze ; flutter test                       # 712/712
+flutter analyze ; flutter test                       # 772/772
+
+# Panel admin-web (desde admin-web/)
+npm test ; npm run lint ; npm run build              # 18/18; tsc; build limpio
 
 # Stack
 docker compose ps                                    # 5 servicios healthy
@@ -94,7 +95,7 @@ curl http://localhost:8000/health/ready              # {"status":"ok","database"
 ## 8. Reglas de trabajo (vigentes)
 
 - El orquestador **delega** (no implementa ni verifica ni ejecuta pruebas directamente): briefs al `planificador`/`general`; implementación, builds e instalaciones al `worker`; defectos al `fixer`; verificación al `explore`/`validador`; pantallas al `diseno-frontend`.
-- **No commitear/pushear sin autorización** del dueño. Commits por bloque temático; excluir `.opencode/` y los `.txt`.
+- **No commitear/pushear sin autorización** del dueño. Commits por bloque temático; excluir `.opencode/`, `eliminar-movements.jpeg` y `node_modules/`.
 - No tocar `kyc-service/`. Sin PII/secretos en logs ni respuestas. Cliente delgado (el frontend no calcula saldos/comisiones). No borrar pruebas para pasar.
 - Antes de avanzar: contrastar con `docs/01` (decisiones) y la doc canónica; si algo contradice, manda `docs/01` y se corrige.
 

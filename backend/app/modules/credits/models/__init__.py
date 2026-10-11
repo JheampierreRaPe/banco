@@ -184,3 +184,77 @@ class LoanApplication(Base):
         nullable=False,
     )
     decided_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
+#: Documentos del juego contractual (E3-T12, HU11 CA-01): decision del
+#: dueno (tres documentos separados, cada uno con su `doc_ref`/`doc_hash`).
+CONTRACT_DOC_TYPES: tuple[str, ...] = ("CONTRATO", "PAGARE", "RESUMEN")
+
+#: `slug` de archivo por tipo documental (sin PII en el `doc_ref`).
+CONTRACT_DOC_SLUGS: dict[str, str] = {
+    "CONTRATO": "contrato",
+    "PAGARE": "pagare",
+    "RESUMEN": "hoja-resumen",
+}
+
+#: Estados del contrato (`docs/03b#86`, enum `contract_status`).
+CONTRACT_STATUSES: tuple[str, ...] = ("GENERATED", "SIGNED", "VOID")
+
+
+class Contract(Base):
+    """Documento contractual (`docs/03b#86`, E3-T12 HU11).
+
+    Un juego = tres filas por expediente (`CONTRATO` + `PAGARE` +
+    `RESUMEN`, UQ por `(application_id, doc_type)`); cada fila con su
+    propio `doc_ref` (ruta/almacen logica) y `doc_hash` (SHA-256 del
+    contenido canonico, reproducible).
+
+    `application_id` es FK fisica al expediente del mismo schema
+    (`credits.loan_applications`). `loan_id` es UUID **logico sin FK
+    fisica** (`NULL` en HU11; lo puebla HU12 al desembolsar, pues
+    `loans` aun no existe): sin `UQ` propia porque las tres filas del
+    juego comparten el prestamo logico.
+    """
+
+    __tablename__ = "contracts"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["application_id"],
+            ["credits.loan_applications.id"],
+            name="fk_contracts_application",
+        ),
+        sa.CheckConstraint(
+            "doc_type IN ('CONTRATO','PAGARE','RESUMEN')",
+            name="ck_contracts_doc_type",
+        ),
+        sa.CheckConstraint(
+            "status IN ('GENERATED','SIGNED','VOID')",
+            name="ck_contracts_status",
+        ),
+        sa.UniqueConstraint(
+            "application_id",
+            "doc_type",
+            name="uq_contracts_application_doc_type",
+        ),
+        sa.Index("ix_contracts_application_id", "application_id"),
+        sa.Index("ix_contracts_status", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    application_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    loan_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    doc_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
+    doc_ref: Mapped[str] = mapped_column(sa.Text(), nullable=False)
+    doc_hash: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    signature_token_hash: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        sa.String(15), nullable=False, default="GENERATED", server_default="GENERATED"
+    )
+    signed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )

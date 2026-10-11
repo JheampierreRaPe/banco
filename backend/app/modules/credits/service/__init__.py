@@ -21,6 +21,11 @@ puro (`credits.domain.rules`) con los parametros vigentes (`loan.*` via
 Expediente (E3-T08, HU10): `applications` (`submit_application`,
 `review_application`, ...) orquesta catalogo + bureau + reglas,
 persiste el dictamen, emite por `outbox`, audita y notifica.
+
+Juego contractual (E3-T12, HU11): `documents` (`generate_contracts`,
+`get_contract_set`, `download_contract_pdf`) copia las condiciones del
+expediente aprobado + producto + motor, persiste las tres filas
+`GENERATED` y emite `credit.contract.generated` por `outbox`.
 """
 
 from __future__ import annotations
@@ -46,6 +51,12 @@ from app.modules.credits.service.applications import (
     submit_application,
     submit_application_idempotent,
 )
+from app.modules.credits.service.documents import (
+    download_contract_pdf,
+    generate_contracts,
+    generate_contracts_idempotent,
+    get_contract_set,
+)
 from app.modules.credits.service.evaluation import evaluate_application
 
 __all__ = [
@@ -53,7 +64,11 @@ __all__ = [
     "LoanProductError",
     "LoanProductNotFoundError",
     "LoanProductValidationError",
+    "download_contract_pdf",
     "evaluate_application",
+    "generate_contracts",
+    "generate_contracts_idempotent",
+    "get_contract_set",
     "get_own_application",
     "get_product",
     "list_products",

@@ -26,5 +26,9 @@ CREDIT_APPLICATION_SUBMITTED = "credit.application.submitted"
 CREDIT_APPROVED = "credit.approved"
 CREDIT_REJECTED = "credit.rejected"
 CREDIT_REVIEW_REQUIRED = "credit.review.required"
+# Juego contractual generado (E3-T12, HU11; `docs/18`): un evento por
+# expediente via `outbox` (payload sin PII: `contract_ids`,
+# `application_id`, `user_id`, `status`).
+CREDIT_CONTRACT_GENERATED = "credit.contract.generated"
 QR_PAYMENT_CONFIRMED = "qr.payment.confirmed"
 RECONCILIATION_EXCEPTION = "reconciliation.exception"

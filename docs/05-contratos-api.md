@@ -707,6 +707,40 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   auditada (`credit.application.reviewed`); notificacion push al titular
 >   (plantillas `credit_application_approved` / `..._rejected` /
 >   `credit_review_required`, sin PII ni cifras).
+>
+> > Detalle del juego contractual (E3-T12 `Hecho`, 2026-10-11; HU11 CA-01;
+> > decision del dueno: **tres documentos separados**, no un PDF combinado).
+> > Auth: `Authorization: Bearer <jwt>` en ambas rutas (401 `NOT_AUTHENTICATED`
+> > sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON; la
+> > descarga devuelve `application/pdf` (`attachment`).
+> > - `POST /credits/applications/{id}/contract` (sin cuerpo: las condiciones
+> >   se copian del expediente `APPROVED` + producto + motor E3-T01;
+> >   cabecera `Idempotency-Key` obligatoria) -> `201 {"data":
+> >   {application_id, status ("GENERATED"), documents: [{contract_id,
+> >   doc_type (`CONTRATO`/`PAGARE`/`RESUMEN`), doc (`contrato`/`pagare`/
+> >   `resumen`), doc_ref, doc_hash, status}]}, "meta": {"replayed"}}` con el
+> >   juego generado, o `200` con la misma forma si ya existia (idempotente
+> >   por naturaleza via UQ `(application_id, doc_type)`: otra clave sobre el
+> >   mismo expediente devuelve el existente sin duplicar filas ni eventos).
+> >   `doc_hash` = SHA-256 del contenido canonico (monto/plazo/TEA/TCEA/
+> >   cronograma + motivo, reproducible). Evento por `outbox` (uno por
+> >   expediente): `credit.contract.generated` (`contract_ids`,
+> >   `application_id`, `user_id`, `status`, sin PII); auditoria best-effort
+> >   `credit.contract.generated`. **No mueve dinero** (sin `loans`/
+> >   `loan_schedules`, sin asientos; el desembolso es HU12).
+> > - `GET /credits/applications/{id}/contract` (solo lectura, sin
+> >   `Idempotency-Key`; no genera ni emite) -> `200` con los metadatos del
+> >   juego (`?format=json`, defecto) o `200 application/pdf` con
+> >   `?format=pdf&doc=contrato|pagare|resumen` (defecto `contrato`;
+> >   re-render determinista desde las condiciones aprobadas).
+> > - Codigos: `404 NOT_FOUND` (expediente inexistente/ajeno o sin juego,
+> >   neutro), `409 CONFLICT` (expediente no `APPROVED`),
+> >   `409 IDEMPOTENCY_CONFLICT` (misma clave con otro expediente),
+> >   `422 VALIDATION_ERROR` (sin `Idempotency-Key`, `format`/`doc`
+> >   invalidos), `501 EXPORT_FORMAT_NOT_SUPPORTED` (solo descarga sin
+> >   backend PDF; la generacion/persistencia sigue intacta, patron
+> >   E3-T03/E2-T10).
+> >
 
 ### 6.5 Billetera, QR y servicios (`wallet`) - HU13-HU16
 

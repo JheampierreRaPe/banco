@@ -375,12 +375,12 @@ def test_migration_file_chain():
 
 
 def test_single_head_is_0030():
-    # Fix validador sprint-2 (2026-10-09): la cabeza avanza con la migracion
-    # 0032_credits_dti_wider (dti_ratio NUMERIC(12,4); un solo head
-    # encadenado tras 0031).
+    # E3-T12 (2026-10-11): la cabeza avanza con la migracion
+    # 0033_credits_contracts (juego contractual; un solo head
+    # encadenado tras 0032).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0032_credits_dti_wider",)
+    assert get_head_revisions() == ("0033_credits_contracts",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

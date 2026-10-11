@@ -3,11 +3,12 @@
 Contrato y fronteras: ver `docs/modules/README.md#credits`.
 
 Estado: catalogo `loan_products` (E3-T02, HU09), simulador (E3-T03),
-motor de reglas (E3-T07) y expediente + solicitud + revision del
-analista (E3-T08, HU10) implementados — modelos, repositorios,
-servicios, endpoints, eventos por `outbox`, notificacion y auditoria
-(migraciones `0029`/`0030`/`0031`). `loans`/cronogramas/contratos son
-del Sprint 3.
+motor de reglas (E3-T07), expediente + solicitud + revision del
+analista (E3-T08, HU10) y juego contractual (E3-T12, HU11)
+implementados — modelos, repositorios, servicios, endpoints, eventos
+por `outbox`, notificacion y auditoria (migraciones
+`0029`/`0030`/`0031`/`0032`/`0033`). `loans`/cronogramas definitivos
+son del resto del Sprint 3 (HU12).
 
 ## Motor financiero puro (E3-T01, HU09)
 
@@ -93,3 +94,35 @@ transiciones con `CONFLICT`), `schemas/applications.py` (Pydantic),
 - Revision separada: solo `IN_REVIEW -> APPROVED|REJECTED` con
   justificacion y rol analista (`analyst`/`credit_analyst`); decidido no
   se reevalua (`409`); `GET` ajeno -> `404` neutro.
+
+## Juego contractual (E3-T12, HU11 CA-01)
+
+`models/` (`Contract`, `docs/03b#86` + `application_id`/`doc_type`;
+migracion `0033_credits_contracts`), `repository/contracts.py` (una
+fila por documento, UQ `(application_id, doc_type)`),
+`schemas/contracts.py` (Pydantic), `service/documents.py` (contenido
+canonico + hash + PDF) y `api/contracts.py` (`POST` genera /
+`GET` metadatos o descarga).
+
+- Tres documentos separados (decision del dueno): `CONTRATO` +
+  `PAGARE` + `HOJA RESUMEN`, cada uno con su `doc_ref` (ruta logica
+  `credits/contracts/<app>/<slug>.pdf`, sin PII) y su `doc_hash`
+  (SHA-256 del contenido canonico: mismas condiciones -> mismo hash).
+- Condiciones copiadas del expediente `APPROVED` + producto + motor
+  E3-T01 (tasa = `tea` o su `tcea`; desgravamen = `insurance_rate` si
+  > 0; cronograma sin fechas: el desembolso es HU12). Otro estado ->
+  `409`; ajeno/inexistente -> `404` neutro.
+- `POST` con `Idempotency-Key` obligatoria (`201` / `200` replay) e
+  idempotente por naturaleza (la UQ absorbe carreras y reintentos con
+  otra clave); un solo evento `credit.contract.generated` por `outbox`
+  + auditoria best-effort (`credit.contract.generated`).
+- `GET ?format=json` (metadatos) o `?format=pdf&doc=contrato|pagare|
+  resumen` (descarga, re-render determinista); sin backend PDF ->
+  `501 EXPORT_FORMAT_NOT_SUPPORTED` sin romper la generacion
+  (patron E3-T03/E2-T10).
+- `loan_id` UUID logico sin FK (`NULL` en HU11; lo puebla HU12).
+- **No mueve dinero**: sin `loans`/`loan_schedules`, sin
+  `transactions`/`ledger`, sin asientos.
+- Contrato detallado en `docs/05-contratos-api.md#64-creditos-credits---hu09-hu12`;
+  gaps en `docs/18` (G53/G54/G55).
+

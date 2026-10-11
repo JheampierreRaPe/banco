@@ -1,4 +1,5 @@
-"""Esquemas Pydantic de credits (E3-T03 simulador, E3-T08 expediente)."""
+"""Esquemas Pydantic de credits (E3-T03 simulador, E3-T08 expediente,
+E3-T12 juego contractual)."""
 
 from app.modules.credits.schemas.applications import (
     ApplicationCreateRequest,
@@ -6,6 +7,11 @@ from app.modules.credits.schemas.applications import (
     ApplicationResponse,
     ApplicationsListResponse,
     ReviewRequest,
+)
+from app.modules.credits.schemas.contracts import (
+    ContractDocument,
+    ContractSetData,
+    ContractSetResponse,
 )
 from app.modules.credits.schemas.simulation import (
     ProductOut,
@@ -21,6 +27,9 @@ __all__ = [
     "ApplicationData",
     "ApplicationResponse",
     "ApplicationsListResponse",
+    "ContractDocument",
+    "ContractSetData",
+    "ContractSetResponse",
     "ProductOut",
     "ProductsListResponse",
     "ReviewRequest",

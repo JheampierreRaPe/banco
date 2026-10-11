@@ -416,6 +416,21 @@ eventos (`outbox`/`inbox`).
   bureau caido -> `IN_REVIEW` (no 500); notificacion push best-effort por
   la fachada `send(...)` (plantillas `credit_application_approved`,
   `credit_application_rejected`, `credit_review_required`).
+- **Juego contractual (E3-T12, HU11 CA-01):** `contracts`
+  (`docs/03b#86`, migracion `0033`) con **tres filas por expediente**
+  (`CONTRATO`/`PAGARE`/`RESUMEN`, UQ por `(application_id, doc_type)`,
+  cada una con su `doc_ref`/`doc_hash`; decision del dueno, `docs/18`
+  G53); `POST /credits/applications/{id}/contract`
+  (`Idempotency-Key` obligatoria, `201`/`200` replay, idempotente por
+  naturaleza) y `GET .../contract` (metadatos `?format=json` o descarga
+  `?format=pdf&doc=contrato|pagare|resumen`, re-render determinista).
+  `doc_hash` = SHA-256 del contenido canonico (reproducible); evento
+  `credit.contract.generated` por `outbox` (uno por expediente, sin
+  PII) + auditoria best-effort. `loan_id` logico sin FK (`NULL` en
+  HU11; lo puebla HU12, `docs/18` G54); `application_id` (FK mismo
+  schema) como vinculo operativo. Sin backend PDF -> `501` solo en
+   descarga (la generacion/persistencia sigue intacta, patron E3-T03).
+   **No mueve dinero** (sin `loans`/`loan_schedules`, sin asientos).
 - **Puede llamar a:** `transactions` (desembolso/cuota), `identity` (firma), `risk`, `notifications`,
   `audit`.
 - **Prohibido:** acreditar dinero sin pasar por el motor.

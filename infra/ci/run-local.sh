@@ -40,12 +40,33 @@ else
   docker build -f "$ROOT/infra/ci/Dockerfile.worker" -t banca-worker:ci "$ROOT"
 fi
 
-echo "==> [5/5] escaneo de dependencias"
+echo "==> [5/5] escaneo (pip-audit + npm audit admin-web + bandit + secretos)"
 if command -v pip-audit >/dev/null 2>&1; then
   pip-audit
 else
   echo "pip-audit no instalado; instalalo con: pip install pip-audit"
   exit 1
+fi
+# Paridad con el job `scan` de CI: audita solo las dependencias de produccion
+# del panel (las que se despliegan); falla ante high/critical.
+if command -v npm >/dev/null 2>&1; then
+  (cd "$ROOT/admin-web" && npm audit --omit=dev --audit-level=high)
+else
+  echo "npm no instalado; el audit de admin-web se valida en CI (job scan)."
+  exit 1
+fi
+# Q-T08: SAST con el mismo umbral que CI (HIGH severidad + HIGH confianza).
+if python -m bandit --version >/dev/null 2>&1; then
+  python -m bandit --severity-level high --confidence-level high -r "$ROOT/backend/app"
+else
+  echo "bandit no instalado; instalalo con: pip install -e ./backend[dev]"
+  exit 1
+fi
+bash "$ROOT/infra/ci/secrets-check.sh"
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks detect --source "$ROOT" --no-banner
+else
+  echo "gitleaks no instalado localmente; se valida en CI (job scan)."
 fi
 
 echo "CI local OK: todo verde."

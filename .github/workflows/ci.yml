@@ -1,10 +1,12 @@
 name: CI
 
 # Q-T05: lint, pruebas, migraciones (up/down en base limpia), build y escaneo.
+# Q-T12: cobertura con umbral en `test` + jobs de frontend (Flutter) y panel
+# (admin-web); `ci-success` agrega todos los jobs.
 # Cualquier error hace fallar el pipeline (sin `continue-on-error` en ningun job).
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "sprint-*"]
   pull_request:
     branches: [main]
 
@@ -70,11 +72,14 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - name: Instalar dependencias dev
         run: pip install -e "./backend[dev]"
-      - name: Pytest
-        # Sin BD las pruebas de integracion hacen skip; con el servicio
-        # Postgres levantado deben correr de verdad. Un test fallido
-        # retorna codigo != 0 y tiñe el pipeline de rojo.
-        run: pytest backend/tests -v
+      - name: Pytest con cobertura (umbral 80 %)
+        working-directory: backend
+        # Umbral justificado en Q-T12: medido 86 % (2026-10-11, 1484 passed);
+        # umbral 80 = redondeo a la baja a multiplo de 5 con ~6 pp de margen.
+        # Alcance `--cov=app` (= [tool.coverage.run] source; excluye tests/ y
+        # migrations/). Sin `continue-on-error`: si la cobertura baja del
+        # umbral o un test falla, pytest retorna != 0 y tiñe el job de rojo.
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=80 -q
 
   migrations:
     name: migraciones (up/down en base limpia)
@@ -130,7 +135,7 @@ jobs:
           tags: banca-worker:ci
 
   scan:
-    name: escaneo (dependencias + secretos)
+    name: escaneo (dependencias + SAST + secretos)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -153,15 +158,80 @@ jobs:
           pip install pip-audit
       - name: pip-audit (falla ante vulnerabilidades conocidas)
         run: pip-audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin-web/package-lock.json
+      - name: npm audit admin-web (solo dependencias de produccion; falla ante high/critical)
+        working-directory: admin-web
+        # Audita las dependencias de produccion, que son las que se despliegan
+        # (las criticas detectadas eran devDependencies). Sin `continue-on-error`:
+        # con --audit-level=high, npm retorna != 0 ante vulnerabilidades altas o
+        # criticas en produccion y tiñe el pipeline de rojo.
+        run: npm audit --omit=dev --audit-level=high
+      - name: Bandit SAST (falla ante HIGH severidad y HIGH confianza)
+        # Umbral explicito: severidad HIGH + confianza HIGH. Sin `continue-on-error`:
+        # cualquier hallazgo >= umbral retorna != 0 y tiñe el pipeline de rojo.
+        run: bandit --severity-level high --confidence-level high -r backend/app
       - name: Gitleaks (falla ante secretos en el historial)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  frontend:
+    name: frontend (flutter analyze + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          # Pin verificado en local (Q-T12): Flutter 3.47.1 / Dart 3.13.1,
+          # compatible con `sdk ^3.13.1` de frontend/pubspec.yaml.
+          flutter-version: "3.47.1"
+          channel: stable
+          cache: true
+      - name: Dependencias (pubspec.lock, reproducible)
+        working-directory: frontend
+        run: flutter pub get
+      - name: Analyze (falla ante cualquier issue)
+        working-directory: frontend
+        # Sin `continue-on-error`: cualquier issue retorna != 0 y tiñe el job.
+        run: flutter analyze
+      - name: Test
+        working-directory: frontend
+        run: flutter test
+
+  panel:
+    name: panel admin-web (lint + test + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Paridad con el entorno verificado en local (Q-T12): Node 22.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin-web/package-lock.json
+      - name: Instalar dependencias (lockfile, reproducible)
+        working-directory: admin-web
+        run: npm ci
+      - name: Lint (tsc --noEmit)
+        working-directory: admin-web
+        run: npm run lint
+      - name: Test (vitest run)
+        working-directory: admin-web
+        run: npm test
+      - name: Build (tsc + vite build)
+        working-directory: admin-web
+        run: npm run build
+
   ci-success:
     name: ci-success
     runs-on: ubuntu-latest
-    needs: [lint, test, migrations, build, scan]
+    needs: [lint, test, migrations, build, scan, frontend, panel]
     if: always()
     steps:
       - name: Verificar que todo estuvo verde
@@ -172,7 +242,7 @@ jobs:
           failed = {k: v for k, v in needs.items() if v["result"] != "success"}
           if failed:
               raise SystemExit(f"CI rojo: {failed}")
-          print("CI verde: lint, test, migrations, build y scan en success.")
+          print("CI verde: lint, test, migrations, build, scan, frontend y panel en success.")
           EOF
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}

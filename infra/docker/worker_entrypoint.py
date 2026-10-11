@@ -28,7 +28,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 - firma del handler
+    def log_message(self, format: str, *args) -> None:
         return
 
 

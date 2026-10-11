@@ -431,6 +431,36 @@ eventos (`outbox`/`inbox`).
   schema) como vinculo operativo. Sin backend PDF -> `501` solo en
    descarga (la generacion/persistencia sigue intacta, patron E3-T03).
    **No mueve dinero** (sin `loans`/`loan_schedules`, sin asientos).
+- **Firma del juego (E3-T13, HU11 CA-02/CA-03):** `domain/signing.py`
+  (sello puro: `seal_for`/`verify_seal` + `token_hash_for[_pin]`) y
+  `service/signing.py` (`request_signature_challenge` con `nonce` de un
+  solo uso reutilizando `identity.domain.nonce`, TTL 120 s; `sign_contract`
+  por biometria del dispositivo + `sign_contract_with_pin` como fallback,
+  decision del dueno, patron E2-T19/E2-T31). Verificacion solo por fachada
+  de `identity` (D-03: `device_login.verify_signature` +
+  `get_device_binding`, `pin_authorization.verify_holder_pin`; sin importar
+  sus modelos); desajuste -> `NOT_AUTHORIZED` generico (sin oraculo),
+  TTL agotado -> `EXPIRED_NONCE`. Sella las tres filas (`SIGNED` +
+  `signed_at` del servidor + `signature_token_hash`; sello **derivado**,
+  sin migracion, `docs/18` G56) con regla de no reutilizacion del token
+   (`find_by_token_hash`); evento `credit.contract.signed` por `outbox`
+   (payload sin PII) + auditoria best-effort. Sin router propio (endpoints
+   en E3-T14). **No mueve dinero**.
+- **Firma idempotente + copia por correo (E3-T14, HU11 CA-02/CA-03/CA-04):**
+  `api/signing.py` (`POST .../{id}/sign/challenge` sin `Idempotency-Key`,
+  solo rotacion del `nonce`, patron G39; `POST .../{id}/sign` con
+  `Idempotency-Key` obligatoria, doble via `signature`/`pin` mutuamente
+  excluyente, patron E2-T31), `schemas/signing.py` (Pydantic) y
+  `service/contract_signing.py` (orquesta `signing` +
+  `notifications.send(channel="email",
+  template_code="credit_contract_signed")` best-effort con el sender
+  vigente —real `GmailNotificationSender` con `EMAIL_PROVIDER=gmail`— en
+  la misma transaccion). Misma clave + mismo cuerpo = replay (una firma
+  y un correo); fallo del factor snapshotteado (reintento real con clave
+  nueva tras rotar el reto); snapshot sin PII (solo digests).
+  Destinatario por la fachada nueva de solo lectura
+  `identity.service.holder_contact.get_holder_email` (D-03, `docs/18`
+  G57). **No mueve dinero**.
 - **Puede llamar a:** `transactions` (desembolso/cuota), `identity` (firma), `risk`, `notifications`,
   `audit`.
 - **Prohibido:** acreditar dinero sin pasar por el motor.
@@ -498,6 +528,12 @@ eventos (`outbox`/`inbox`).
 - **Plantillas de seguridad (E2-T20, HU08):** `auth_failed_attempt` (intento
   biometrico fallido) y `auth_blocked` (bloqueo preventivo), canal push,
   invocadas por la fachada `send(...)` desde el consumidor `risk` sin PII.
+- **Copia del contrato firmado (E3-T14, HU11 CA-04):** `credit_contract_signed`,
+  canal `email` (asunto + aviso con referencia del expediente e instante de
+  firma, sin PII ni cifras; el PDF se descarga en `GET .../contract`), invocada
+  por la fachada `send(...)` desde `credits` (best-effort). Envio real por
+  `GmailNotificationSender` con `EMAIL_PROVIDER=gmail` + `GMAIL_USER`/
+  `GMAIL_APP_PASSWORD` (solo `.env`); `mock` por defecto.
 - **Consume:** practicamente todos los eventos de negocio.
 - **Puede llamar a:** adaptador de notificaciones; `audit`.
 - **Prohibido:** depender de modulos de negocio.

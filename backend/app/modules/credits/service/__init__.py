@@ -26,6 +26,16 @@ Juego contractual (E3-T12, HU11): `documents` (`generate_contracts`,
 `get_contract_set`, `download_contract_pdf`) copia las condiciones del
 expediente aprobado + producto + motor, persiste las tres filas
 `GENERATED` y emite `credit.contract.generated` por `outbox`.
+
+Firma del juego (E3-T13, HU11): `signing` (`request_signature_challenge`,
+`sign_contract` por biometria del dispositivo, `sign_contract_with_pin`
+como fallback) verifica el factor por fachada de `identity` (D-03),
+sella las filas (`SIGNED` + `signed_at` + `signature_token_hash`) y
+emite `credit.contract.signed` por `outbox`. Sin router propio.
+
+Firma idempotente + copia por correo (E3-T14, HU11): `contract_signing`
+(`sign_contract_idempotent`) orquesta `signing` + `notifications.send`
+(`channel="email"`, best-effort) con `Idempotency-Key` obligatoria.
 """
 
 from __future__ import annotations
@@ -51,6 +61,13 @@ from app.modules.credits.service.applications import (
     submit_application,
     submit_application_idempotent,
 )
+from app.modules.credits.service.contract_signing import (
+    EMAIL_TEMPLATE_CODE as SIGN_EMAIL_TEMPLATE_CODE,
+)
+from app.modules.credits.service.contract_signing import (
+    IDEMPOTENCY_ENDPOINT as SIGN_IDEMPOTENCY_ENDPOINT,
+)
+from app.modules.credits.service.contract_signing import sign_contract_idempotent
 from app.modules.credits.service.documents import (
     download_contract_pdf,
     generate_contracts,
@@ -58,8 +75,19 @@ from app.modules.credits.service.documents import (
     get_contract_set,
 )
 from app.modules.credits.service.evaluation import evaluate_application
+from app.modules.credits.service.signing import (
+    ContractNonceExpiredError,
+    ContractNotAuthorizedError,
+    request_signature_challenge,
+    sign_contract,
+    sign_contract_with_pin,
+)
 
 __all__ = [
+    "SIGN_EMAIL_TEMPLATE_CODE",
+    "SIGN_IDEMPOTENCY_ENDPOINT",
+    "ContractNonceExpiredError",
+    "ContractNotAuthorizedError",
     "LoanProductConflictError",
     "LoanProductError",
     "LoanProductNotFoundError",
@@ -73,7 +101,11 @@ __all__ = [
     "get_product",
     "list_products",
     "list_review_queue",
+    "request_signature_challenge",
     "review_application",
+    "sign_contract",
+    "sign_contract_idempotent",
+    "sign_contract_with_pin",
     "submit_application",
     "submit_application_idempotent",
     "to_dict",

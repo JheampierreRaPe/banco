@@ -15,11 +15,16 @@ CREDIT_REVIEW_REQUIRED = "credit.review.required"
 # `outbox` una vez por expediente (payload sin PII: solo
 # `contract_ids`, `application_id`, `user_id` y `status`).
 CREDIT_CONTRACT_GENERATED = "credit.contract.generated"
+# Juego contractual firmado (E3-T13, HU11; `docs/18`): se emite por
+# `outbox` al sellar (payload sin PII: `contract_ids`,
+# `application_id`, `user_id`, `status=SIGNED` y `signed_at`).
+CREDIT_CONTRACT_SIGNED = "credit.contract.signed"
 
 __all__ = [
     "CREDIT_APPLICATION_SUBMITTED",
     "CREDIT_APPROVED",
     "CREDIT_CONTRACT_GENERATED",
+    "CREDIT_CONTRACT_SIGNED",
     "CREDIT_REJECTED",
     "CREDIT_REVIEW_REQUIRED",
 ]

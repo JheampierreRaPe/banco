@@ -741,6 +741,37 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > >   backend PDF; la generacion/persistencia sigue intacta, patron
 > >   E3-T03/E2-T10).
 > >
+> > Detalle de la firma + copia por correo (E3-T14 `Hecho`, 2026-10-11;
+> > HU11 CA-02/CA-03/CA-04; decision del dueno: biometria + fallback PIN).
+> > Auth: `Authorization: Bearer <jwt>` en ambas rutas (401 `NOT_AUTHENTICATED`
+> > sin token valido). Envoltorio `05#4` (`{"data", "meta"}`).
+> > - `POST /credits/applications/{id}/sign/challenge` (cuerpo opcional
+> >   `{device_id?}`; **sin** `Idempotency-Key`: solo rota el reto, no
+> >   mueve dinero, patron G39) -> `200 {"data": {application_id, nonce,
+> >   expires_in (120 s), status ("GENERATED")}, "meta": {"request_id"}}`.
+> >   Repetir reemite el reto. Sin juego -> `404 NOT_FOUND` neutro; ya
+> >   `SIGNED` -> `409 CONFLICT`; `device_id` malformado -> `422`.
+> > - `POST /credits/applications/{id}/sign` (dos vias mutuamente
+> >   excluyentes: `{device_id, signature[, nonce]}` o `{pin}`; exactamente
+> >   un factor o `422`; cabecera `Idempotency-Key` obligatoria) ->
+> >   `200 {"data": {application_id, contract_id, status ("SIGNED"),
+> >   signed_at, via ("device"|"pin"), documents: [{contract_id, doc_type,
+> >   doc, doc_ref, doc_hash, status, signed_at, seal}]}, "meta":
+> >   {"request_id", "replayed"}}`. Misma clave + mismo cuerpo = replay
+> >   (una firma y **un** correo); misma clave + cuerpo distinto ->
+> >   `409 IDEMPOTENCY_CONFLICT`. El fallo del factor se snapshottea
+> >   (reintento identico = mismo error; reintento real = reto rotado +
+> >   clave nueva, patron E2-T21). Tras el exito se encola la copia por
+> >   correo (`notifications.send(channel="email",
+> >   template_code="credit_contract_signed")`, best-effort: un fallo del
+> >   proveedor deja la firma `SIGNED` y la notificacion `FAILED`).
+> > - Codigos: `403 NOT_AUTHORIZED` (firma/binding/PIN invalido, generico
+> >   sin oraculo), `400 EXPIRED_NONCE` (reto vencido/reutilizado fuera de
+> >   ventana), `404 NOT_FOUND` (ajeno/inexistente, neutro), `409 CONFLICT`
+> >   (no `GENERATED`/ya `SIGNED`), `422 VALIDATION_ERROR` (sin
+> >   `Idempotency-Key`, esquema o ambos/ningun factor; el `422` sanitario
+> >   no refleja el cuerpo, el PIN nunca fuga). **No mueve dinero** (sin
+> >   `loans`, sin asientos; el desembolso es HU12).
 
 ### 6.5 Billetera, QR y servicios (`wallet`) - HU13-HU16
 

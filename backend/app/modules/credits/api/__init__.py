@@ -221,6 +221,8 @@ __all__ = ["get_current_user_id", "router"]
 # `applications` reutilice `get_current_user_id` sin ciclo.
 from app.modules.credits.api import applications as _applications
 from app.modules.credits.api import contracts as _contracts
+from app.modules.credits.api import signing as _signing
 
 router.include_router(_applications.router)
 router.include_router(_contracts.router)
+router.include_router(_signing.router)

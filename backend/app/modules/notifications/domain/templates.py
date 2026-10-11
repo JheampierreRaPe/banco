@@ -89,6 +89,21 @@ BASE_TEMPLATES: dict[str, dict] = {
             "Te avisaremos el dictamen final."
         ),
     },
+    # Copia certificada del contrato firmado (E3-T14, HU11 CA-04): canal
+    # `email` al correo del titular (`users.email`). Cuerpo generico sin
+    # PII ni cifras (la referencia es el prefijo del expediente; el
+    # detalle vive en el juego contractual, que solo descarga el
+    # titular). El sender actual solo transporta `subject`/`body` (sin
+    # adjuntos): el aviso remite al expediente para la descarga.
+    "credit_contract_signed": {
+        "code": "credit_contract_signed",
+        "channel": "email",
+        "subject": "Tu contrato de credito fue firmado",
+        "body_template": (
+            "Tu contrato de credito {application_ref} fue firmado el {signed_at}. "
+            "La copia certificada queda disponible en tu expediente."
+        ),
+    },
 }
 
 _SCALAR_TYPES = (str, int, bool, type(None))

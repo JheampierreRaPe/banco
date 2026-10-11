@@ -30,5 +30,9 @@ CREDIT_REVIEW_REQUIRED = "credit.review.required"
 # expediente via `outbox` (payload sin PII: `contract_ids`,
 # `application_id`, `user_id`, `status`).
 CREDIT_CONTRACT_GENERATED = "credit.contract.generated"
+# Juego contractual firmado (E3-T13, HU11; `docs/18`): al sellar via
+# `outbox` (payload sin PII: `contract_ids`, `application_id`,
+# `user_id`, `status=SIGNED`, `signed_at`).
+CREDIT_CONTRACT_SIGNED = "credit.contract.signed"
 QR_PAYMENT_CONFIRMED = "qr.payment.confirmed"
 RECONCILIATION_EXCEPTION = "reconciliation.exception"

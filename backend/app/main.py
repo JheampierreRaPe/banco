@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -24,7 +25,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.errors import AppError, app_error_handler
 from app.core.health import router as health_router
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, request_id_var
 from app.modules import iter_routers
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,28 @@ def create_app() -> FastAPI:
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.include_router(health_router)
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        """Fija `request_id_var` por request (Q-T07 CA-01, gap real).
+
+        El `ContextVar` existia en `app.core.logging` pero nadie lo asignaba y
+        el log JSON salia siempre con `request_id: "-"`. El middleware respeta
+        `X-Request-Id` (docs/05#3; si no llega, se genera como en `_request_id`
+        de los routers) para el log y lo devuelve en la respuesta para
+        correlacion log <-> request. No muta el scope ni los cuerpos de error
+        (los `_request_id` de cada router y `AppError` siguen mandando en sus
+        respuestas; con cabecera explicita todo converge al mismo id). Sin PII
+        ni secretos (solo el id tecnico).
+        """
+        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers["X-Request-Id"] = request_id
+        return response
 
     for _name, router in iter_routers():
         app.include_router(router, prefix="/api/v1")

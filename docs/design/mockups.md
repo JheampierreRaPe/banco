@@ -22,7 +22,9 @@ construye una pantalla sabe que imagen seguir, sin que se lo expliquen.
 | `creditos-solicitud.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Solicitud` `0:6487`, root `0:6574`) | Solicitud + consentimiento bureau obligatorio | HU10 | `E3-T09` | pendiente |
 | `creditos-estado.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Estado` `0:6488`, root `0:6627`) | Estado del expediente (evaluando/aprobado/rechazado/en revisión) | HU10 | `E3-T09` | pendiente |
 | `creditos-analista.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Analista` `0:6489`, root `0:6669`, desktop 1280) | Panel analista: bandeja IN_REVIEW, detalle enmascarado, dictamen | HU10 | `E3-T10` | pendiente |
-| Spec de contenido de las 4 pantallas | `docs/design/creditos-pantallas.md` | HU09, HU10 | `E3-T04`, `E3-T09`, `E3-T10` | hecho |
+| `creditos-contrato.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Contrato` `0:6716`, root `0:6717`) | Contrato: expediente aprobado + 3 documentos + CTA firma | HU11 | `E3-T15` | hecho |
+| `creditos-firma.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Firma` `0:6760`, root `0:6761`) | Firma con biometría + fallback PIN + éxito | HU11 | `E3-T15` | hecho |
+| Spec de contenido de las 6 pantallas | `docs/design/creditos-pantallas.md` | HU09, HU10, HU11 | `E3-T04`, `E3-T09`, `E3-T10`, `E3-T15` | hecho |
 | | | | | |
 
 ## Como agregar un mockup

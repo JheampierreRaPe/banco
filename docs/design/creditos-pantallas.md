@@ -1,7 +1,7 @@
-# Especificación de contenido — Pantallas de Créditos (HU09 / HU10)
+# Especificación de contenido — Pantallas de Créditos (HU09 / HU10 / HU11)
 
 > Mockups en `pantallas.fig` (páginas `Créditos/Simulador`, `Créditos/Solicitud`,
-> `Créditos/Estado`, `Créditos/Analista`). Imágenes: `docs/design/creditos-*.png`
+> `Créditos/Estado`, `Créditos/Analista`, `Créditos/Contrato`, `Créditos/Firma`). Imágenes: `docs/design/creditos-*.png`
 > (más `.svg` vectoriales homónimos). Sistema de diseño: `docs/20-diseno-ui.md`
 > (tokens "Eucalipto y Ocre", solo modo claro). Sin PII real en los mockups
 > (datos de ejemplo enmascarados).
@@ -11,7 +11,7 @@
 > recomendado es: producto → monto → plazo → desgravamen → cuota → cronograma →
 > nota → CTAs.
 
-## Convenciones comunes (las 4 pantallas)
+## Convenciones comunes (las 6 pantallas)
 
 - TopBar `primary #152A1F`, 64px; título 16/600 blanco; botón atrás `‹`.
 - Fondo `surface #FBF9F4`; cards blancas radio 16, borde `outline-variant #C2C8C2`;
@@ -212,12 +212,145 @@ Mockup: `docs/design/creditos-analista.png` (desktop 1280) · Fig página
 
 ---
 
+## 5. Contrato de crédito (HU11 · E3-T15)
+
+Mockup: `docs/design/creditos-contrato.png` (+ `.svg`) · Fig página
+`Créditos/Contrato` (página `0:6716`, frame raíz `0:6717`).
+
+> Nota: página `0:6716`, frame raíz `Creditos-Contrato` `0:6717`. Los textos del
+> canvas son placeholders cortos; los textos legales completos están abajo.
+
+### Contenido exacto
+
+1. **Header**: TopBar `Contrato de crédito` (mismo patrón que las otras créditos).
+2. **Fila expediente**: `EXPEDIENTE CR-2026-0841` + badge `Aprobado`
+   (fondo `success-container #D0E8D7`, texto `#0B1F15`).
+3. **Hero condiciones** (fondo `surface-container-low`): label
+   `CONDICIONES APROBADAS (servidor)`; valor `S/ 10,000 - 12 meses`;
+   línea `12 cuotas de S/ 927.50 - TCEA 19.80%`;
+   nota `Montos del servidor. El cliente no calcula.`
+4. **Card Documentos (3)** (blanca, radio 16, borde `outline-variant`): una fila
+   por documento (alto mín. 64px, divisores `divider`), cada una con nombre,
+   meta y acción `Abrir` (texto `accent-text #9B5F12`):
+   - `Contrato de crédito` — `12 cláusulas - PDF del servidor` — `Abrir`.
+   - `Pagaré` — `Se firma junto al contrato - PDF` — `Abrir`.
+   - `Hoja resumen` — `Condiciones y cronograma - PDF` — `Abrir`.
+5. **Card Aviso legal**: título `Aviso legal`; texto en canvas
+   `Lee los 3 documentos antes de firmar.` Texto legal completo (en app, con
+   wrap): *"Lee los 3 documentos antes de firmar. Al firmar aceptas las
+   condiciones aprobadas. La copia certificada se enviará a tu correo."*
+6. **CTA primario**: `Firmar contrato` → va a la pantalla Firma.
+7. **CTA secundario**: `Descargar documentos (PDF)` → descarga los 3 PDF del
+   backend; si responde `501`, mensaje `Exportación no disponible por ahora.`
+8. **Nota** (§7): `Cargando, vacío y error (§7). Sin documentos: EmptyView.`
+
+### Comportamiento / validaciones visibles
+
+- Cada documento se abre/descarga individualmente desde
+  `GET /credits/applications/{id}/contract` (el backend expone los 3).
+- 4 estados: cargando (skeleton de la card de documentos), vacío (sin
+  documentos generados → `EmptyView` + `Volver al estado`), error de red con
+  `Reintentar`.
+- Sin `Idempotency-Key` en lectura/descarga (no crea recursos).
+
+### Datos del backend
+
+`GET /credits/applications/{id}/contract` → los 3 documentos (contrato, pagaré,
+resumen en PDF o metadatos) + `{doc_hash, status: GENERATED}`.
+Errores: `NOT_FOUND (404` neutro si es ajeno/inexistente), `CONFLICT (409` si el
+expediente no está `APPROVED)`, `EXPORT_FORMAT_NOT_SUPPORTED (501)`.
+La UI muestra condiciones tal cual; no recalcula ni reinterpreta.
+
+---
+
+## 6. Firma con biometría (HU11 · E3-T15)
+
+Mockup: `docs/design/creditos-firma.png` (+ `.svg`) · Fig página
+`Créditos/Firma` (página `0:6760`, frame raíz `Creditos-Firma` `0:6761`).
+
+> Decisión del dueño: la firma usa **biometría del dispositivo con fallback a
+> PIN** (coherente con `docs/01`, contradicción 8: biometría del dispositivo +
+> PIN de contingencia; liveness solo en HU01).
+
+### Contenido exacto
+
+1. **Fila expediente**: `EXPEDIENTE CR-2026-0841` + badge `Por firmar`
+   (fondo `warning-container #FFDCBC`, texto `on-warning-container #683D00`).
+2. **Card resumen + consentimiento** (fondo `surface-container-low`):
+   label `RESUMEN (del servidor)`; valor
+   `Personal - S/ 10,000 - 12 m - S/ 927.50/mes`;
+   consentimiento explícito (checkbox 24px, obligatorio `*`):
+   `He leído los 3 documentos y acepto firmarlos *`;
+   subtítulo `Obligatorio. Sin esto no se puede firmar.`
+3. **CTA primario**: `Firmar con biometría` (bloqueado hasta marcar el
+   consentimiento).
+4. **Card Reto biométrico**: título `Reto biométrico`; texto en canvas
+   `Toca el sensor para autorizar la firma.`; línea de error
+   (`error #BA1A1A`): `Si se cancela verás Reintentar. No revela el motivo.`
+   Estados visibles: `Esperando biometría…` (reto emitido), `Reintentar`
+   (cancelada/fallida).
+5. **Card Fallback PIN** (borde `primary`): título `Sin biometría? Usa tu PIN`;
+   label `PIN (6 dígitos)` + input enmascarado (`••••••`); CTA secundario
+   `Firmar con PIN`; nota `Contingencia. El PIN nunca se guarda.`
+   Solo se usa si la biometría no está disponible o falla.
+6. **Card éxito** (fondo `success-container`): `Documento firmado!` +
+   texto en canvas `Contrato SIGNED. Copia enviada al correo.` Texto completo:
+   *"Contrato firmado (SIGNED). Copia certificada enviada a j•••@•••.com
+   (correo enmascarado)."* + `Sello doc_hash verificado (no repudio).`
+7. **Card error ejemplo** (fondo `error-container`): `Si algo falla verás esto`
+   + `Reto vencido: se rota y se reintenta solo.` (caso `EXPIRED_NONCE`).
+8. **Nota** (§7): `Cargando, vacío y error (§7) con Reintentar.`
+
+### Comportamiento / validaciones visibles
+
+- Sin marcar el consentimiento → CTA bloqueado (el backend también valida).
+- Sin éxito biométrico **no se envía** la firma y el contrato no se firma.
+- Biometría cancelada/fallida → mensaje genérico + `Reintentar` (sin revelar
+  el motivo exacto del backend).
+- `POST .../sign` usa `ApiClient.postWithIdempotency` (misma
+  `Idempotency-Key` ante reintentos del intento en curso); tras
+  `EXPIRED_NONCE` se rota el reto (`.../sign/challenge`) y se reintenta con
+  **clave nueva**.
+- Tras `SIGNED` se confirma firma certificada + copia remitida; sin prometer
+  desembolso (es HU12).
+
+### Datos del backend
+
+`POST /credits/applications/{id}/sign/challenge` → `{nonce}` (un solo uso) →
+firma local del `nonce` con la clave del dispositivo (tras desbloqueo
+biométrico o PIN) →
+`POST /credits/applications/{id}/sign` (`Idempotency-Key` obligatoria;
+`{nonce, signature, device_id}`) →
+`{contract_id, status: SIGNED, signed_at}`.
+Errores: `NOT_AUTHORIZED` (firma/binding inválido, genérico sin oráculo),
+`EXPIRED_NONCE` (rotar reto y reintentar con clave nueva), `CONFLICT (409`
+ya `SIGNED`), `NOT_FOUND (404` neutro), `VALIDATION_ERROR (422)`.
+
+### Mensajes (español, accionables)
+
+| Caso | Texto |
+|---|---|
+| Éxito | `Contrato firmado. Copia certificada enviada a tu correo.` |
+| Biometría cancelada/fallida | `No pudimos verificar tu biometría. Reintenta o usa tu PIN.` |
+| PIN inválido | `PIN incorrecto. Verifica e intenta de nuevo.` |
+| Reto vencido | `Tu sesión de firma venció. Estamos generando un nuevo reto…` |
+| Ya firmado | `Este contrato ya fue firmado. Revisa tu correo.` |
+| Red | `Sin conexión. Revisa tu red y toca Reintentar.` |
+
+---
+
 ## Chequeo contra `docs/01` (contradicciones)
 
-Ninguna: HU09 (Should, 5 SP, Sprint 2) y HU10 (Must, 8 SP, Sprint 2) figuran en
-alcance (`docs/01-hallazgos-y-decisiones.md`); consentimiento explícito,
-dictamen `APROBADO/RECHAZADO/EN_REVISION` y aprobación separada coinciden con
-`docs/08`. No se introduce lógica nueva en el diseño.
+Ninguna:
+- HU09 (Should, 5 SP, Sprint 2) y HU10 (Must, 8 SP, Sprint 2) figuran en
+  alcance (`docs/01-hallazgos-y-decisiones.md`); consentimiento explícito,
+  dictamen `APROBADO/RECHAZADO/EN_REVISION` y aprobación separada coinciden con
+  `docs/08`. No se introduce lógica nueva en el diseño.
+- HU11 (Must, 8 SP, Sprint 3, `Firma Digital de Contrato`) figura en alcance
+  (`docs/01`, tabla de HUs). Biometría del dispositivo + PIN de contingencia
+  coincide con la contradicción 8 resuelta (`docs/01#2`); liveness queda solo
+  en HU01. Los 3 documentos separados (contrato, pagaré, resumen) y el
+  fallback a PIN son decisiones del dueño, sin choque con `docs/01`.
 
 ## Archivos
 
@@ -227,4 +360,6 @@ dictamen `APROBADO/RECHAZADO/EN_REVISION` y aprobación separada coinciden con
 | `docs/design/creditos-solicitud.png` (+ `.svg`) | Mockup HU10 app |
 | `docs/design/creditos-estado.png` (+ `.svg`) | Mockup HU10 estado |
 | `docs/design/creditos-analista.png` (+ `.svg`) | Mockup HU10 panel |
+| `docs/design/creditos-contrato.png` (+ `.svg`) | Mockup HU11 contrato |
+| `docs/design/creditos-firma.png` (+ `.svg`) | Mockup HU11 firma |
 | `docs/design/creditos-pantallas.md` (este archivo) | Spec de contenido |

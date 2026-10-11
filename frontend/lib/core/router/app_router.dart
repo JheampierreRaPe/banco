@@ -10,6 +10,8 @@ import '../../features/beneficiaries/data/beneficiaries_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
 import '../../features/credits/credits_routes.dart';
 import '../../features/credits/data/credit_applications_service.dart';
+import '../../features/credits/data/credit_contract_service.dart';
+import '../../features/credits/data/credit_sign_controller.dart';
 import '../../features/credits/data/credits_service.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
@@ -138,6 +140,17 @@ GoRouter buildRouter(
   paymentAuthorizationServiceFactory = () =>
       PaymentAuthorizationService(api: client);
   final systemReader = SystemBiometricReader();
+  // Juego contractual + firma (E3-T15, HU11): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*`
+  // exige sesion). El firmador del `nonce` reutiliza `BiometricService`
+  // (F-T03) con el lector del SO y el `device_id` vigente.
+  creditContractServiceFactory = () => CreditContractService(api: client);
+  creditSignDepsFactory = () => CreditSignDeps(
+        service: CreditContractService(api: client),
+        reader: systemReader,
+        session: session,
+        deviceId: identityStore.deviceId ?? '',
+      );
   paymentAuthorizationDepsFactory = () => PaymentAuthorizationDeps(
     service: PaymentAuthorizationService(api: client),
     reader: systemReader,

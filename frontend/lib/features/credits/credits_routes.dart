@@ -3,10 +3,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/widgets/error_view.dart';
 import 'data/credit_applications_service.dart';
+import 'data/credit_contract_service.dart';
+import 'data/credit_sign_controller.dart';
 import 'data/credits_service.dart';
 import 'models/credit.dart';
 import 'models/loan_application.dart';
 import 'presentation/credit_application_page.dart';
+import 'presentation/credit_contract_page.dart';
+import 'presentation/credit_sign_page.dart';
 import 'presentation/credit_status_page.dart';
 import 'presentation/credits_simulator_page.dart';
 
@@ -26,6 +30,12 @@ import 'presentation/credits_simulator_page.dart';
 /// - `/credits/status` -> [CreditStatusPage] (estado del expediente,
 ///   E3-T09): recibe por `extra` el [LoanApplicationResult] del envio o el
 ///   `String` con el id para consultar `GET /credits/applications/{id}`.
+/// - `/credits/contract` -> [CreditContractPage] (lectura del contrato,
+///   E3-T15): recibe por `extra` el [LoanApplicationResult] aprobado (hero
+///   con las condiciones + id) o el `String` con el id.
+/// - `/credits/sign` -> [CreditSignPage] (firma con biometria + fallback
+///   PIN, E3-T15): recibe por `extra` el `String` con el id o un `Map` con
+///   `applicationId` (+ `summary` opcional con la linea del servidor).
 ///
 /// Las paginas reciben los servicios desde las fabricas (cableadas por el
 /// orquestador con el `ApiClient` compartido). Si una fabrica es `null`, la
@@ -55,6 +65,43 @@ final List<GoRoute> creditsRoutes = [
         service: creditApplicationsServiceFactory?.call(),
         applicationId: extra is String ? extra : null,
         initialResult: extra is LoanApplicationResult ? extra : null,
+      );
+    },
+  ),
+  GoRoute(
+    path: '/credits/contract',
+    builder: (context, state) {
+      final extra = state.extra;
+      return CreditContractPage(
+        service: creditContractServiceFactory?.call(),
+        applicationId: extra is String ? extra : null,
+        application: extra is LoanApplicationResult ? extra : null,
+      );
+    },
+  ),
+  GoRoute(
+    path: '/credits/sign',
+    builder: (context, state) {
+      final deps = creditSignDepsFactory?.call();
+      final extra = state.extra;
+      String? applicationId;
+      String? summary;
+      if (extra is String) {
+        applicationId = extra;
+      } else if (extra is LoanApplicationResult) {
+        applicationId = extra.id;
+      } else if (extra is Map) {
+        applicationId = extra['applicationId'] as String?;
+        summary = extra['summary'] as String?;
+      }
+      final controller = deps?.buildController();
+      return CreditSignPage(
+        service: deps?.service ?? creditContractServiceFactory?.call(),
+        reader: deps?.reader,
+        signNonce: controller?.signNonce,
+        deviceId: deps?.deviceId ?? '',
+        applicationId: applicationId,
+        summary: summary,
       );
     },
   ),

@@ -463,6 +463,8 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
   // --CTAs_por_estado---------------------------------------------------------------
 
   List<Widget> _ctas(LoanApplicationStatus status) {
+    // El cronograma definitivo es HU12 (E3-T21, fuera de este brief): sigue
+    // como aviso hasta que exista la pantalla.
     void comingSoon(String feature) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$feature estará disponible próximamente.')),
@@ -471,12 +473,17 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
 
     switch (status) {
       case LoanApplicationStatus.approved:
+        final result = _result;
         return [
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               key: const Key('credit-status-sign-cta'),
-              onPressed: () => comingSoon('La firma del contrato'),
+              // Expediente aprobado -> lectura del contrato (E3-T15, HU11):
+              // se pasa el expediente para el hero de condiciones.
+              onPressed: result == null
+                  ? null
+                  : () => context.push('/credits/contract', extra: result),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(88, 52),
                 shape: RoundedRectangleBorder(

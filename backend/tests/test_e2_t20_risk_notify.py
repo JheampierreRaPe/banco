@@ -192,6 +192,11 @@ def test_preventive_block_emits_once_and_rejects_without_money(session: Session)
     with pytest.raises(bio.NotAuthorizedError):
         _authorize_fail(session, tx.id, signature="mala-1", max_attempts_reader=lambda s: 2)
     session.commit()
+    # OBS-4 (un solo uso estricto): el fallo consume el reto; el 2o intento
+    # exige rotar (`request_biometric_challenge`, preserva `failed_attempts`).
+    # Sin rotar seria reutilizado (generico, sin contar). CA-02 intacto.
+    bio.request_biometric_challenge(session, tx.id)
+    session.commit()
     blocked = _authorize_fail(session, tx.id, signature="mala-2", max_attempts_reader=lambda s: 2)
     session.commit()
 

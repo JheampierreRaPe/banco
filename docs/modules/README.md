@@ -289,7 +289,10 @@ eventos (`outbox`/`inbox`).
   `POST /transactions/{id}/authorize`, `E2-T19`). Si el **monto de la operacion**
   (`total = amount_minor + fee_minor`) supera `transfer.biometric_threshold_minor`
   (fachada `shared.config`, E2-T18), la operacion queda en
-  **`PENDING_AUTHORIZATION`** con un `nonce` de un solo uso (TTL 120 s) en
+   **`PENDING_AUTHORIZATION`** con un `nonce` de un solo uso estricto (TTL 120 s;
+   OBS-4: se consume tambien en el fallo de firma, reutilizarlo se rechaza en
+   generico sin contar de nuevo; el reintento legitimo rota el reto con
+   `.../authorize/challenge`, que preserva `failed_attempts`) en
   `transactions.metadata` (nunca material biometrico) a firmar con el dispositivo; en
   rutas con hold se crea la retencion antes de debitar y la ruta atomica propia
   (`04#7.1`) no retiene nada. La firma/binding se verifican por **fachada de `identity`**
@@ -298,7 +301,8 @@ eventos (`outbox`/`inbox`).
   hold sin duplicar asiento (replay por digest de firma). **CA-02** bloqueo preventivo:
   tras `auth.max_failed_attempts` fallos libera el hold, deja `REJECTED` con
    `BIOMETRIC_PREVENTIVE_BLOCK` y emite `auth.failed_attempt` (`blocked:true`) para
-   `risk`/`E2-T20`. **CA-03** limite diario por perfil: `acumulado + total > limite`
+   `risk`/`E2-T20`. El conteo de fallos es CAS por `version` con reintento
+   (OBS-3: `save_block` nunca last-writer-wins; dos fallos concurrentes suman). **CA-03** limite diario por perfil: `acumulado + total > limite`
    -> `REJECTED` con `DAILY_LIMIT_EXCEEDED` sin hold (el limite diario SIGUE siendo
    acumulado). El acumulado del dia suma `amount_minor + fee_minor` del titular
    excluyendo `REJECTED`/`FAILED` (negocio fallido) y `REVERSED` (fondos devueltos);
@@ -349,10 +353,11 @@ eventos (`outbox`/`inbox`).
   (exactamente uno; `422` si ambos o ninguno). El PIN se verifica por la fachada
   `identity.service.pin_authorization.verify_holder_pin` (comparacion en tiempo
   constante; sin credencial/sin PIN -> rama ciega) y, en exito, continua el mismo
-  flujo con hold reutilizado; el fallo usa el contador/bloqueo preventivo `CA-02`
-  de `E2-T17` (no el lockout de login). El PIN nunca se persiste (solo su `sha256`
-  en el snapshot de idempotencia) ni se refleja en respuestas/logs (`422` con
-  `loc`/`type`/`msg`). Sin endpoints ni eventos nuevos.
+   flujo con hold reutilizado; el fallo usa el contador/bloqueo preventivo `CA-02`
+   de `E2-T17` (no el lockout de login). El PIN nunca se persiste (solo su
+   HMAC-SHA256 con el secreto del servidor en el snapshot de idempotencia,
+   G58) ni se refleja en respuestas/logs (`422` con
+   `loc`/`type`/`msg`). Sin endpoints ni eventos nuevos.
 - **Listado del titular (E2-T24, HU06/HU15/HU17):** `GET /transactions`
   (Bearer, solo lectura) pagina (`page`/`page_size`, default 20, max 100) las
   operaciones del `initiator_user_id` del JWT con filtros `date_from`/

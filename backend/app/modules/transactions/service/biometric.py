@@ -58,8 +58,19 @@ Concurrencia/idempotencia:
 - La continuacion reutiliza el hold `ACTIVE` previo (no duplica asiento ni
   hold); el `authorize` repetido con la misma firma es replay (compara el
   digest `sha256` de la firma, nunca la firma en claro dos veces).
-- Las transiciones usan el CAS de `transition_transaction`: el perdedor de
-  una carrera recibe `ConcurrencyError` (E2-T19 lo mapea a reintento).
+- El bloque biometrico se guarda con CAS por `version` (OBS-3,
+  `save_block`, patron `interbank._set_meta`, nunca last-writer-wins):
+  el incremento de `failed_attempts` se reintenta con merge sobre fresco
+  (`_fail_attempt` en `SAVEPOINT`), de modo que dos fallos concurrentes
+  suman en lugar de subcontar. Las transiciones usan el CAS de
+  `transition_transaction`: el perdedor de una carrera recibe
+  `ConcurrencyError` (E2-T19 lo mapea a reintento).
+- El `nonce` es de un solo uso estricto (OBS-4, patron
+  `identity.domain.nonce`): se consume (`used=True`) tambien en el fallo
+  de firma; reutilizarlo se rechaza en generico sin contar de nuevo. La
+  via PIN no consume retos. El reintento legitimo rota el reto
+  (`request_biometric_challenge`, que preserva `failed_attempts` con CAS
+  y reintento).
 """
 
 from __future__ import annotations
@@ -431,17 +442,37 @@ def get_block(tx: Transaction) -> dict[str, Any] | None:
 
 
 def save_block(session: Session, tx: Transaction, block: dict[str, Any]) -> None:
-    """Guarda el bloque biometrico preservando el resto de `meta`.
+    """Guarda el bloque biometrico preservando el resto de `meta` (OBS-3).
 
-    `flush` sin `commit`; el llamante transiciona despues (el CAS de
-    `transition_transaction` relee fresco: llamar siempre antes de
-    transicionar).
+    Compare-and-swap por `version` (patron `interbank._set_meta`, nunca
+    last-writer-wins): el `UPDATE` solo avanza si la fila sigue en la
+    version leida (`WHERE id AND version`) y bumpa a `version+1`. El
+    perdedor de una carrera recibe `ConcurrencyError` y debe releer
+    fresco + fusionar (el incremento del contador se reintenta con merge
+    en `_fail_attempt`). Expira el objeto para que el llamante relea
+    fresco en el siguiente acceso. `flush` implicito del `UPDATE` (el
+    `commit` lo decide el llamante, regla de oro 8).
     """
     meta = dict(tx.meta) if isinstance(tx.meta, dict) else {}
     meta[META_KEY] = dict(block)
-    tx.meta = meta
-    session.add(tx)
-    session.flush()
+    current = int(tx.version)
+    result = session.execute(
+        sa.update(Transaction)
+        .where(Transaction.id == tx.id, Transaction.version == current)
+        .values(meta=dict(meta), version=current + 1, updated_at=_utcnow())
+    )
+    if (result.rowcount or 0) != 1:
+        try:
+            session.expire(tx)
+        except Exception:  # noqa: BLE001, S110 - best-effort
+            pass
+        raise ConcurrencyError(
+            f"bloque biometrico obsoleto para {tx.id} (posible doble procesamiento)"
+        )
+    try:
+        session.expire(tx)
+    except Exception:  # noqa: BLE001, S110 - best-effort
+        pass
 
 
 def failure_markers(code: str) -> dict[str, Any]:
@@ -589,33 +620,49 @@ def request_biometric_challenge(
     La consumira `POST /transactions/{id}/authorize/challenge` (E2-T19):
     exige estado `PENDING_AUTHORIZATION`, rota `nonce` + vencimiento y
     conserva `failed_attempts` (la ventana de N fallos es por operacion).
-    Retorna `{"nonce", "expires_in"}`. `flush` sin `commit`.
+    El guardado es CAS por `version` (OBS-3): ante un incremento
+    concurrente de fallos se reintenta sobre fresco (el perdedor conserva
+    el conteo del ganador, nunca lo pisa). Retorna
+    `{"nonce", "expires_in"}`. `flush` sin `commit`.
     """
     try:
         wanted = tx_id if isinstance(tx_id, uuid.UUID) else uuid.UUID(str(tx_id))
     except (ValueError, AttributeError, TypeError) as exc:
         raise TransactionNotFoundError("transaccion inexistente") from exc
-    tx = tx_repository.get_transaction(session, wanted)
-    if tx is None:
-        raise TransactionNotFoundError("transaccion inexistente")
-    if tx.status != "PENDING_AUTHORIZATION":
-        raise BiometricStateError("la operacion no espera autorizacion biometrica")
-    previous = get_block(tx) or {}
-    clean_device = _require_device_id(
-        device_id if device_id is not None else previous.get("device_id"),
-        allow_none=True,
-    )
-    block, token, expires_at = new_challenge_block(
-        clean_device, nonce=nonce, now=now, ttl_seconds=ttl_seconds
-    )
-    try:
-        block["failed_attempts"] = int(previous.get("failed_attempts") or 0)
-    except (ValueError, TypeError):
-        block["failed_attempts"] = 0
-    save_block(session, tx, block)
-    moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
-    logger.info("biometric challenge emitido")
-    return {"nonce": token, "expires_in": max(0, int((expires_at - moment).total_seconds()))}
+    last_exc: ConcurrencyError | None = None
+    for _ in range(3):
+        tx = tx_repository.get_transaction(session, wanted)
+        if tx is None:
+            raise TransactionNotFoundError("transaccion inexistente")
+        if tx.status != "PENDING_AUTHORIZATION":
+            raise BiometricStateError("la operacion no espera autorizacion biometrica")
+        previous = get_block(tx) or {}
+        clean_device = _require_device_id(
+            device_id if device_id is not None else previous.get("device_id"),
+            allow_none=True,
+        )
+        block, token, expires_at = new_challenge_block(
+            clean_device, nonce=nonce, now=now, ttl_seconds=ttl_seconds
+        )
+        try:
+            block["failed_attempts"] = int(previous.get("failed_attempts") or 0)
+        except (ValueError, TypeError):
+            block["failed_attempts"] = 0
+        try:
+            save_block(session, tx, block)
+        except ConcurrencyError as exc:
+            last_exc = exc
+            continue
+        moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
+        logger.info("biometric challenge emitido")
+        return {"nonce": token, "expires_in": max(0, int((expires_at - moment).total_seconds()))}
+    assert last_exc is not None  # solo si agota reintentos
+    raise last_exc
+
+
+#: Reintentos del incremento CAS del contador de fallos (OBS-3, patron
+#: `interbank._save_block_merging`).
+_FAIL_BUMP_RETRIES = 8
 
 
 def _fail_attempt(
@@ -627,8 +674,28 @@ def _fail_attempt(
     error: BiometricError,
     balance_port: Any = None,
     max_attempts_reader: MaxAttemptsReader | None = None,
+    consume_nonce: bool = True,
+    retries: int = _FAIL_BUMP_RETRIES,
 ) -> Transaction:
     """Registra un intento fallido; si alcanza N, bloquea (CA-02/CA-04).
+
+    CAS por `version` con reintento y merge (OBS-3): el incremento de
+    `failed_attempts` se guarda con `save_block` (compare-and-swap); ante
+    `ConcurrencyError` se reintenta sobre fresco (el perdedor suma sobre
+    el conteo del ganador, nunca lo pisa ni lo pierde). Cada intento corre
+    en `SAVEPOINT`: el conflicto revierte solo ese intento y el `commit`
+    final lo decide el llamante (regla de oro 8; a nivel HTTP el fallo
+    queda commiteado antes de responder el error, ver `api`).
+
+    Un solo uso estricto (OBS-4, patron `identity.domain.nonce`): en la
+    via de firma (`consume_nonce=True`) el fallo consume el reto
+    (`used=True`); reintentar con el mismo `nonce` se rechaza como
+    reutilizado (generico, sin contar de nuevo y sin oraculo). La via PIN
+    (`consume_nonce=False`) no consume retos (el `nonce` no aplica a esa
+    via) y conserva su ventana de N intentos sobre el mismo contador. La
+    rotacion legitima (`request_biometric_challenge`, p. ej. tras
+    `EXPIRED_NONCE`) emite un reto nuevo con `used=False` preservando
+    `failed_attempts`.
 
     Retorna la tx `REJECTED` cuando se activa el bloqueo (el llamante la
     retorna sin completar el pago); si no, lanza `error` (intento
@@ -636,40 +703,63 @@ def _fail_attempt(
     """
     read_max = max_attempts_reader or default_max_attempts_reader
     max_attempts = int(read_max(session))
-    attempts = int(block.get("failed_attempts") or 0) + 1
-    block["failed_attempts"] = attempts
-    expected_device = block.get("device_id")
-    device_hint = (
-        expected_device if isinstance(expected_device, str) and expected_device.strip() else None
-    )
-    if attempts >= max_attempts:
-        release_pending_holds(session, tx, balance_port=balance_port)
-        mark_rejected(session, tx, PREVENTIVE_BLOCK)
-        save_block(session, tx, block)
-        fresh = tx_repository.transition_transaction(
-            session, tx.id, "REJECTED", reason=BLOCKED_REASON
-        )
-        _publish_security_event(
-            session,
-            fresh,
-            attempt=attempts,
-            blocked=True,
-            reason="blocked",
-            device_id=device_hint,
-        )
-        logger.info("biometric bloqueo preventivo")
-        return fresh
-    save_block(session, tx, block)
-    fresh = tx_repository.get_transaction(session, tx.id)
-    _publish_security_event(
-        session,
-        fresh if fresh is not None else tx,
-        attempt=attempts,
-        blocked=False,
-        reason=reason,
-        device_id=device_hint,
-    )
-    raise error
+    last_exc: ConcurrencyError | None = None
+    for _ in range(max(1, int(retries))):
+        try:
+            with session.begin_nested():
+                fresh_tx = tx_repository.get_transaction(session, tx.id)
+                if fresh_tx is None:  # pragma: no cover - defensivo
+                    raise TransactionNotFoundError("transaccion inexistente")
+                if fresh_tx.status != "PENDING_AUTHORIZATION":
+                    raise BiometricStateError("la operacion no espera autorizacion biometrica")
+                fresh_block = get_block(fresh_tx) or {}
+                if consume_nonce and fresh_block.get("used") is True:
+                    # Reto ya consumido por un intento anterior (un solo
+                    # uso estricto): generico sin contar de nuevo.
+                    raise error
+                attempts = int(fresh_block.get("failed_attempts") or 0) + 1
+                fresh_block["failed_attempts"] = attempts
+                if consume_nonce:
+                    fresh_block["used"] = True
+                expected_device = fresh_block.get("device_id")
+                device_hint = (
+                    expected_device
+                    if isinstance(expected_device, str) and expected_device.strip()
+                    else None
+                )
+                if attempts >= max_attempts:
+                    release_pending_holds(session, fresh_tx, balance_port=balance_port)
+                    mark_rejected(session, fresh_tx, PREVENTIVE_BLOCK)
+                    save_block(session, fresh_tx, fresh_block)
+                    blocked = tx_repository.transition_transaction(
+                        session, fresh_tx.id, "REJECTED", reason=BLOCKED_REASON
+                    )
+                    _publish_security_event(
+                        session,
+                        blocked,
+                        attempt=attempts,
+                        blocked=True,
+                        reason="blocked",
+                        device_id=device_hint,
+                    )
+                    logger.info("biometric bloqueo preventivo")
+                    return blocked
+                save_block(session, fresh_tx, fresh_block)
+                counted = tx_repository.get_transaction(session, fresh_tx.id)
+                _publish_security_event(
+                    session,
+                    counted if counted is not None else fresh_tx,
+                    attempt=attempts,
+                    blocked=False,
+                    reason=reason,
+                    device_id=device_hint,
+                )
+        except ConcurrencyError as exc:
+            last_exc = exc
+            continue
+        raise error
+    assert last_exc is not None  # solo si agota reintentos
+    raise last_exc
 
 
 def authorize_transaction(
@@ -688,19 +778,26 @@ def authorize_transaction(
 ) -> Transaction:
     """Autoriza una operacion en `PENDING_AUTHORIZATION` con firma valida.
 
-    Verifica el `nonce` (un solo uso, TTL corto) contra el binding vigente
-    por fachada de `identity` (D-03, generico ante cualquier desajuste) y,
-    en exito, avanza a `AUTHORIZED` (actor `USER`) y continua el flujo
-    (hold reutilizado sin duplicar; `FUNDS_HELD -> POSTED -> SETTLED`).
+    Verifica el `nonce` (un solo uso estricto, TTL corto, OBS-4) contra el
+    binding vigente por fachada de `identity` (D-03, generico ante
+    cualquier desajuste) y, en exito, avanza a `AUTHORIZED` (actor `USER`)
+    y continua el flujo (hold reutilizado sin duplicar;
+    `FUNDS_HELD -> POSTED -> SETTLED`).
+    El `nonce` se consume tambien en el fallo (`used=True`): reintentarlo
+    con otra clave se rechaza como reutilizado (generico, sin contar de
+    nuevo); el reintento legitimo rota el reto (`EXPIRED_NONCE` ->
+    `request_biometric_challenge`, que preserva `failed_attempts`).
     Al continuar re-chequea el limite diario (E2-T36): si el acumulado a
     ese instante ya no deja sitio, la operacion queda `REJECTED`
     (`DAILY_LIMIT_EXCEEDED`) con el hold liberado y sin liquidar.
     `gateway` solo aplica a `INTERBANK_TRANSFER` (reanudacion del envio;
     por defecto rige la fabrica por entorno). El reintento con la misma
     firma tras el exito es replay (retorna la operacion sin duplicar
-    asientos). Fallos: `NotAuthorizedError` (generico), `ExpiredNonceError`,
+    asientos). Fallos: `NotAuthorizedError` (generico, incluye `nonce`
+    reutilizado), `ExpiredNonceError`,
     `BiometricStateError`, `TransactionNotFoundError`; tras N fallos
     retorna la operacion `REJECTED` (bloqueo preventivo, CA-02).
+    El conteo de fallos es CAS con reintento (OBS-3, ver `_fail_attempt`).
     `flush` sin `commit`.
     """
     if (
@@ -964,9 +1061,14 @@ def authorize_transaction_with_pin(
     El PIN incorrecto usa exactamente el mismo contador/bloqueo preventivo
     CA-02 que la firma (`_fail_attempt` + `auth.failed_attempt` sin motivo;
     tras N fallos `REJECTED` con `BIOMETRIC_PREVENTIVE_BLOCK` y hold
-    liberado). No se usa el lockout de login del PIN. El `nonce` no aplica
-    a esta via (el llamante lo ignora; tampoco hay `EXPIRED_NONCE` aqui:
-    ese error es solo de la firma). El PIN jamas se persiste en el bloque
+    liberado), con CAS y reintento ante carreras (OBS-3). No se usa el
+    lockout de login del PIN. El `nonce` no aplica a esta via (el llamante
+    lo ignora; tampoco hay `EXPIRED_NONCE` aqui: ese error es solo de la
+    firma): el fallo de PIN no consume el reto (`consume_nonce=False`,
+    OBS-4), de modo que el PIN conserva su ventana de N intentos y sigue
+    disponible tras un fallo de firma (el `used` de un `nonce` consumido
+    no bloquea esta via; el exito previo queda cubierto por el chequeo de
+    estado `PENDING_AUTHORIZATION`). El PIN jamas se persiste en el bloque
     (solo marcas `authorized`/`authorized_via`). `flush` sin `commit`.
     """
     presented = pin.strip() if isinstance(pin, str) else ""
@@ -995,8 +1097,11 @@ def authorize_transaction_with_pin(
                 raise TransactionNotFoundError("transaccion inexistente")
             return replayed
         raise BiometricStateError("la operacion no espera autorizacion biometrica")
-    if block.get("used") is True:
-        raise NotAuthorizedError(NOT_AUTHORIZED_MESSAGE)
+    # OBS-4: sin chequeo de `used` aqui a proposito. El `nonce` no aplica
+    # a la via PIN: un reto consumido por un fallo de firma no bloquea el
+    # fallback por PIN (cada via cuenta sobre el mismo contador CA-02).
+    # El exito previo (firma o PIN) ya no esta `PENDING_AUTHORIZATION` y
+    # cae en el `BiometricStateError`/replay de arriba.
     verify = pin_verifier or default_pin_verifier
     try:
         valid = bool(verify(session, tx.initiator_user_id, presented))
@@ -1011,6 +1116,7 @@ def authorize_transaction_with_pin(
             error=NotAuthorizedError(NOT_AUTHORIZED_MESSAGE),
             balance_port=balance_port,
             max_attempts_reader=max_attempts_reader,
+            consume_nonce=False,
         )
     moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
     block["used"] = True

@@ -787,6 +787,13 @@ def test_preventive_block_persists_and_releases_hold(t19_session, hmac_identity,
         first = client.post(
             f"/api/v1/transactions/{tx.id}/authorize", json=bad, headers=_auth_headers("k-b1")
         )
+        # OBS-4 (un solo uso estricto): el fallo consume el reto, asi que el
+        # 2o intento exige rotar (`.../authorize/challenge`, que preserva
+        # `failed_attempts`); reintentar el mismo `nonce` seria reutilizado
+        # (403 generico, sin contar). La ventana de N fallos (CA-02) sigue
+        # intacta a traves de la rotacion.
+        rotated = client.post(f"/api/v1/transactions/{tx.id}/authorize/challenge")
+        assert rotated.status_code == 200, rotated.text
         second = client.post(
             f"/api/v1/transactions/{tx.id}/authorize", json=bad, headers=_auth_headers("k-b2")
         )

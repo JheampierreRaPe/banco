@@ -482,11 +482,20 @@ def test_preventive_block_after_n_failures(svc_session):
     bio.add_binding(USER_A, DEVICE_A)
     tx = _third_party(session, a1, b1, 5_000)
     session.commit()
+    # OBS-4 (un solo uso estricto): cada fallo de firma consume el reto, por
+    # lo que entre intentos se rota (`request_biometric_challenge`, que
+    # preserva `failed_attempts`). Sin rotar, el 2o intento seria `usado`
+    # (generico, sin contar). La ventana de N fallos por operacion (CA-02)
+    # queda intacta a traves de las rotaciones.
     with pytest.raises(bio_svc.NotAuthorizedError):
         _authorize(session, tx.id, bio=bio, signature="mala-1")
     session.commit()
+    bio_svc.request_biometric_challenge(session, tx.id)
+    session.commit()
     with pytest.raises(bio_svc.NotAuthorizedError):
         _authorize(session, tx.id, bio=bio, signature="mala-2")
+    session.commit()
+    bio_svc.request_biometric_challenge(session, tx.id)
     session.commit()
     blocked = _authorize(session, tx.id, bio=bio, signature="mala-3")
     session.commit()

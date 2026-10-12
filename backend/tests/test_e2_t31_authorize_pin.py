@@ -575,11 +575,18 @@ def test_pin_idempotency_replay_and_no_pin_in_snapshot(t31_session, monkeypatch)
     snapshot_raw = json.dumps(row.response_snapshot, ensure_ascii=False)
     assert PIN not in snapshot_raw
     assert WRONG_PIN not in snapshot_raw
+    # G58: el digest es HMAC con el secreto del servidor, no `sha256` en
+    # claro (reversible por fuerza bruta en un PIN corto).
+    from app.modules.transactions.api import _pin_digest as _api_pin_digest
+
     expected_payload = {
         "transaction_id": str(tx.id),
-        "pin_digest": hashlib.sha256(PIN.encode("utf-8")).hexdigest(),
+        "pin_digest": _api_pin_digest(PIN),
     }
     assert row.request_hash == compute_request_hash(expected_payload)
+    assert row.request_hash != hashlib.sha256(PIN.encode("utf-8")).hexdigest()
+    assert _api_pin_digest(PIN) != hashlib.sha256(PIN.encode("utf-8")).hexdigest()
+    assert _api_pin_digest(PIN) != _api_pin_digest(WRONG_PIN)
 
 
 def test_pin_idempotency_conflict_on_different_pin(t31_session, monkeypatch):

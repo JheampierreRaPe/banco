@@ -38,6 +38,7 @@ y autorizacion (E2-T19, HU08).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import uuid
 from datetime import datetime
@@ -818,15 +819,39 @@ def _spoil_signature(signature: str) -> str:
     return clean[:-1] + ("0" if last != "0" else "1")
 
 
+#: Contexto del HMAC del PIN (separa este dominio de otros usos del secreto,
+#: mismo criterio que `credits.service.contract_signing`).
+_PIN_HMAC_CONTEXT = b"transactions-authorize-pin/v1:"
+
+#: Fallback solo para `local`/pruebas cuando no hay secreto configurado
+#: (nunca se loguea; fuera de `local` el arranque ya exige `jwt_secret`).
+_DEV_PIN_HMAC_KEY = "banca-online-dev-pin-hmac"
+
+
+def _pin_hmac_key() -> bytes:
+    """Secreto de servidor para el digest del PIN (jamas se persiste ni se loguea)."""
+    from app.core.config import get_settings
+
+    secret = str(get_settings().jwt_secret or "")
+    if not secret.strip():
+        secret = _DEV_PIN_HMAC_KEY
+    return secret.encode("utf-8")
+
+
 def _pin_digest(pin: str) -> str:
-    """Digest del PIN para el snapshot de idempotencia (E2-T31).
+    """Digest HMAC del PIN para el snapshot de idempotencia (G58).
 
     El PIN jamas queda en el snapshot de `idempotency_keys` (es un
-    secreto): se usa su `sha256` hex, que distingue un PIN de otro
-    (mismo PIN + misma clave = replay; PIN distinto + misma clave = `409`,
-    igual que la firma) sin exponer el valor.
+    secreto): solo su HMAC-SHA256 hex con el secreto del servidor, que
+    distingue un PIN de otro (mismo PIN + misma clave = replay; PIN
+    distinto + misma clave = `409`, igual que la firma) sin ser
+    reversible por fuerza bruta (un SHA-256 sin sal de un PIN de 6
+    digitos si lo era, mismo criterio ya aplicado en
+    `credits.service.contract_signing`).
     """
-    return hashlib.sha256(pin.strip().encode("utf-8")).hexdigest()
+    return hmac.new(
+        _pin_hmac_key(), _PIN_HMAC_CONTEXT + pin.strip().encode("utf-8"), hashlib.sha256
+    ).hexdigest()
 
 
 @router.post(
@@ -858,9 +883,14 @@ def authorize_transaction(
     `Idempotency-Key` obligatoria (mueve dinero): misma clave + mismo cuerpo
     = misma respuesta (`meta.replayed=true`, sin re-liquidar ni contar otro
     intento); misma clave + cuerpo distinto = `409`. El PIN nunca queda en
-    el snapshot (solo su digest). Los fallos del factor se persisten ANTES
-    de responder el error (OBS-3: el conteo/evento queda commiteado aunque
-    el HTTP sea 4xx) y su snapshot hace idempotente el reintento identico.
+    el snapshot (solo su digest HMAC, G58). El `nonce` de firma es de un
+    solo uso estricto (OBS-4): consumido en el fallo, reutilizarlo con otra
+    clave se rechaza en generico sin contar de nuevo; el reintento legitimo
+    rota el reto (`.../authorize/challenge`) y usa clave NUEVA. Los fallos
+    del factor se persisten ANTES de responder el error (OBS-3: el
+    conteo/evento queda commiteado aunque el HTTP sea 4xx, con CAS por
+    `version` y reintento ante carreras) y su snapshot hace idempotente el
+    reintento identico.
     Las validaciones de titular/estado no consumen la clave (revertidas,
     reintentables).
     Errores: `401 NOT_AUTHENTICATED`, `422 VALIDATION_ERROR` (sin clave,
@@ -1076,6 +1106,13 @@ def rotate_biometric_challenge(
         raise AppError(
             code="CONFLICT",
             message="la operacion no espera autorizacion biometrica",
+            status_code=409,
+        ) from exc
+    except ConcurrencyError as exc:
+        db.rollback()
+        raise AppError(
+            code="CONFLICT",
+            message="conflicto de concurrencia, reintente la rotacion del reto",
             status_code=409,
         ) from exc
     except (biometric_service.BiometricError, ValueError, TypeError) as exc:

@@ -541,8 +541,9 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > CONFLICT` (estado distinto de `PENDING_AUTHORIZATION` o misma clave con cuerpo
 > distinto). Bloqueo preventivo -> `200` con `status=REJECTED` +
 > `failure_code=BIOMETRIC_PREVENTIVE_BLOCK`. **El PIN nunca se refleja en
-> respuestas ni logs**: el snapshot de idempotencia guarda solo su `sha256`
-> (`pin_digest`), no el valor, y el handler de `422` devuelve `detail` con solo
+> respuestas ni logs**: el snapshot de idempotencia guarda solo su HMAC-SHA256
+> con el secreto del servidor (`pin_digest`, G58), no el valor, y el handler
+> de `422` devuelve `detail` con solo
 > `loc`/`type`/`msg` (sin `input` ni `ctx`, que expondrian el body crudo).
 >
 > Contrato reintento tras `EXPIRED_NONCE`

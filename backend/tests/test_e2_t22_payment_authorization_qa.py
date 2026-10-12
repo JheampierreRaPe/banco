@@ -488,7 +488,14 @@ def test_preventive_block_releases_hold_restores_and_feeds_risk(
         nonce = _nonce_of(session, tx_id)
         bad = {"device_id": DEVICE_A, "signature": "00" * 32}
         first = _authorize(client, tx_id, bad, key=_key())
+        # OBS-4 (un solo uso estricto): cada fallo de firma consume el reto;
+        # entre intentos se rota (`.../authorize/challenge`, que preserva
+        # `failed_attempts`). Reintentar el mismo `nonce` seria reutilizado
+        # (403 generico, sin contar). La ventana de N fallos (CA-02) sigue
+        # intacta a traves de las rotaciones.
+        assert client.post(f"/api/v1/transactions/{tx_id}/authorize/challenge").status_code == 200
         second = _authorize(client, tx_id, bad, key=_key())
+        assert client.post(f"/api/v1/transactions/{tx_id}/authorize/challenge").status_code == 200
         third = _authorize(client, tx_id, bad, key=_key())
     assert first.status_code == 403, first.text
     assert second.status_code == 403, second.text

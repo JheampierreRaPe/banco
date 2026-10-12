@@ -60,7 +60,13 @@ class ReviewRequest(BaseModel):
 
 
 class ApplicationData(BaseModel):
-    """Vista del expediente (estado visible, HU10 CA-04)."""
+    """Vista del expediente (estado visible, HU10 CA-04).
+
+    `contract_signed` se deriva de `credits.contracts` (`True` solo si
+    el expediente tiene filas y todas estan `SIGNED`): el estado del
+    expediente no cambia con la firma, asi la pantalla de Estado
+    distingue el aprobado-por-firmar del ya-firmado sin migracion.
+    """
 
     model_config = ConfigDict(from_attributes=False)
 
@@ -70,6 +76,7 @@ class ApplicationData(BaseModel):
     requested_amount_minor: int
     term_months: int
     status: str
+    contract_signed: bool = False
     bureau_authorized: bool
     bureau_authorized_at: str | None = None
     score: int | None = None

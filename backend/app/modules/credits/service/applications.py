@@ -92,8 +92,15 @@ def _coerce_owner(owner_user_id: uuid.UUID | str) -> uuid.UUID:
         ) from exc
 
 
-def to_view(row: LoanApplication) -> dict[str, Any]:
-    """Vista del expediente para respuestas API (solo el titular/analista)."""
+def to_view(row: LoanApplication, *, contract_signed: bool = False) -> dict[str, Any]:
+    """Vista del expediente para respuestas API (solo el titular/analista).
+
+    `contract_signed` se deriva de `credits.contracts` (`True` solo si
+    el expediente tiene filas y todas estan `SIGNED`); el estado del
+    expediente no cambia con la firma. El llamante lo resuelve con
+    `apps_repo.signed_flags_by_application` (sin duplicar logica); por
+    defecto `False` (al crear/revisar aun no hay juego firmado).
+    """
 
     def _iso(value: datetime | None) -> str | None:
         return value.isoformat() if value is not None else None
@@ -105,6 +112,7 @@ def to_view(row: LoanApplication) -> dict[str, Any]:
         "requested_amount_minor": int(row.requested_amount_minor),
         "term_months": int(row.term_months),
         "status": row.status,
+        "contract_signed": bool(contract_signed),
         "bureau_authorized": bool(row.bureau_authorized),
         "bureau_authorized_at": _iso(row.bureau_authorized_at),
         "score": None if row.score is None else int(row.score),
@@ -479,13 +487,16 @@ def get_own_application(
     """Estado del expediente del titular (HU10 CA-04).
 
     Inexistente o ajeno -> `NOT_FOUND` neutro (mismo cuerpo, sin
-    oraculo de existencia).
+    oraculo de existencia). Incluye `contract_signed` derivado de
+    `credits.contracts` via `signed_flags_by_application` (misma
+    derivacion que el listado: filas existentes y todas `SIGNED`).
     """
     owner = _coerce_owner(owner_user_id)
     row = apps_repo.get_application(session, application_id)  # type: ignore[arg-type]
     if row is None or row.user_id != owner:
         raise ApplicationNotFoundError("expediente inexistente")
-    return to_view(row)
+    signed = apps_repo.signed_flags_by_application(session, [row.id]).get(str(row.id), False)
+    return to_view(row, contract_signed=signed)
 
 
 def list_review_queue(

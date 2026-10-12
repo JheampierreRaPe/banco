@@ -421,6 +421,57 @@ void main() {
       );
     });
 
+    testWidgets('fila firmada: badge Firmado sin CTA de firma', (tester) async {
+      final fake = FakeMyCreditsService(items: [
+        const OwnCreditApplication(
+          id: 'app-signed-1',
+          productId: 'p1',
+          productName: 'Personal',
+          requestedAmountMinor: 1000000,
+          termMonths: 12,
+          status: LoanApplicationStatus.approved,
+          contractSigned: true,
+          createdAt: '2026-10-10T10:00:00Z',
+        ),
+        const OwnCreditApplication(
+          id: 'app-pending-2',
+          productId: 'p2',
+          productName: 'Vehicular',
+          requestedAmountMinor: 2000000,
+          termMonths: 24,
+          status: LoanApplicationStatus.approved,
+          createdAt: '2026-10-09T09:00:00Z',
+        ),
+      ]);
+      await _pumpSection(tester, fake);
+
+      // Firmada: badge `Firmado`, estado intacto y SIN re-firma.
+      expect(
+        find.byKey(const Key('my-credits-signed-app-signed-1')),
+        findsOneWidget,
+      );
+      expect(find.text('Firmado'), findsOneWidget);
+      expect(find.text('Aprobado'), findsNWidgets(2));
+      expect(
+        find.byKey(const Key('my-credits-sign-app-signed-1')),
+        findsNothing,
+      );
+      // Aprobada sin firmar: mantiene `Continuar a la firma`.
+      expect(
+        find.byKey(const Key('my-credits-sign-app-pending-2')),
+        findsOneWidget,
+      );
+      // Ambas conservan `Ver estado ›`.
+      expect(
+        find.byKey(const Key('my-credits-status-app-signed-1')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('my-credits-status-app-pending-2')),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('estado vacío con CTA al simulador', (tester) async {
       var wentToSimulator = false;
       await tester.pumpWidget(

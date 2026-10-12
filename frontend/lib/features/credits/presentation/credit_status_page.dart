@@ -180,7 +180,7 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
           const SizedBox(height: AppSpacing.stackMd),
           _progressCard(result.status),
           const SizedBox(height: AppSpacing.stackMd),
-          ..._ctas(result.status),
+          ..._ctas(result),
           const SizedBox(height: AppSpacing.stackSm),
           Text(
             'Cargando (skeleton), vacío (sin expediente) y error con '
@@ -197,6 +197,9 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
   // --fila_expediente_+_badge----------------------------------------------------
 
   Widget _expedientRow(LoanApplicationResult result) {
+    final signed =
+        result.status == LoanApplicationStatus.approved &&
+        result.contractSigned;
     return Row(
       children: [
         Expanded(
@@ -209,6 +212,24 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
           ),
         ),
         _badge(result.status),
+        if (signed) ...[
+          const SizedBox(width: 8),
+          Container(
+            key: const Key('credit-status-signed-badge'),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.successContainer,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              'Firmado',
+              style: AppTypography.labelMd.copyWith(
+                color: AppColors.onSuccessContainer,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -462,7 +483,13 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
 
   // --CTAs_por_estado---------------------------------------------------------------
 
-  List<Widget> _ctas(LoanApplicationStatus status) {
+  List<Widget> _ctas(LoanApplicationResult result) {
+    final status = result.status;
+    // Contrato ya firmado (el servidor lo deriva de `credits.contracts`):
+    // un `APPROVED` firmado deja de ser re-firmable (mismo criterio que
+    // "Mis créditos": sin CTA de firma, solo lectura).
+    final signed =
+        status == LoanApplicationStatus.approved && result.contractSigned;
     // El cronograma definitivo es HU12 (E3-T21, fuera de este brief): sigue
     // como aviso hasta que exista la pantalla.
     void comingSoon(String feature) {
@@ -473,7 +500,39 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
 
     switch (status) {
       case LoanApplicationStatus.approved:
-        final result = _result;
+        if (signed) {
+          return [
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: const Key('credit-status-contract-cta'),
+                // Solo lectura: el juego ya está firmado, no se re-firma.
+                onPressed: () =>
+                    context.push('/credits/contract', extra: result.id),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Ver contrato'),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.stackSm),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: const Key('credit-status-home-cta'),
+                onPressed: () => context.go('/home'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                ),
+                child: const Text('Volver al inicio'),
+              ),
+            ),
+          ];
+        }
+        final current = _result;
         return [
           SizedBox(
             width: double.infinity,
@@ -481,9 +540,9 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
               key: const Key('credit-status-sign-cta'),
               // Expediente aprobado -> lectura del contrato (E3-T15, HU11):
               // se pasa el expediente para el hero de condiciones.
-              onPressed: result == null
+              onPressed: current == null
                   ? null
-                  : () => context.push('/credits/contract', extra: result),
+                  : () => context.push('/credits/contract', extra: current),
               style: FilledButton.styleFrom(
                 minimumSize: const Size(88, 52),
                 shape: RoundedRectangleBorder(

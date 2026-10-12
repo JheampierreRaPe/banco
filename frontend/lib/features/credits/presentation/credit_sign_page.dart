@@ -31,6 +31,8 @@ import '../models/credit_contract.dart';
 ///   el PIN nunca se guarda).
 /// - Card éxito (`SIGNED` + copia enviada al correo + sello `doc_hash`) y
 ///   card error (`EXPIRED_NONCE` se rota y reintenta solo, con clave nueva).
+/// - En éxito: botón `Volver al inicio` (→ `/home`, misma jerarquía que los
+///   CTA existentes).
 /// - 4 estados (`docs/20` §7) con `LoadingView`/`EmptyView`/`ErrorView` y
 ///   mensajes en espanol accionables.
 ///
@@ -333,6 +335,18 @@ class _CreditSignPageState extends State<CreditSignPage> {
         const SizedBox(height: AppSpacing.stackMd),
         if (_signed != null) ...[
           _successCard(),
+          const SizedBox(height: AppSpacing.stackSm),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              key: const Key('sign-home-cta'),
+              onPressed: () => context.go('/home'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(88, 52),
+              ),
+              child: const Text('Volver al inicio'),
+            ),
+          ),
           const SizedBox(height: AppSpacing.stackMd),
         ],
         if (_isErrorVisible) ...[

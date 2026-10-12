@@ -102,6 +102,7 @@ class LoanApplicationResult {
     this.bureauAuthorized,
     this.bureauAuthorizedAt,
     this.decidedAt,
+    this.contractSigned = false,
   });
 
   final String id;
@@ -119,11 +120,24 @@ class LoanApplicationResult {
   final String? bureauAuthorizedAt;
   final String? decidedAt;
 
+  /// Contrato ya firmado (derivado del servidor desde `credits.contracts`:
+  /// `true` solo si todas las filas del juego están `SIGNED`). El estado
+  /// del expediente no cambia con la firma: un `APPROVED` firmado deja de
+  /// ofrecer "Continuar a la firma" y muestra `Firmado`.
+  final bool contractSigned;
+
   static int? _minorOf(Object? value) {
     if (value == null) return null;
     if (value is int) return value;
     if (value is num) return value.toInt();
     return int.tryParse(value.toString());
+  }
+
+  static bool _boolOf(Object? value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) return value.toLowerCase() == 'true';
+    return false;
   }
 
   factory LoanApplicationResult.fromJson(Map<String, dynamic> json) {
@@ -142,6 +156,7 @@ class LoanApplicationResult {
           : null,
       bureauAuthorizedAt: json['bureau_authorized_at']?.toString(),
       decidedAt: json['decided_at']?.toString(),
+      contractSigned: _boolOf(json['contract_signed']),
     );
   }
 

@@ -266,7 +266,12 @@ def get_credit_application(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Estado visible del expediente (HU10 CA-04, solo el titular)."""
+    """Estado visible del expediente (HU10 CA-04, solo el titular).
+
+    Incluye `contract_signed` (derivado de `credits.contracts`: todas
+    las filas `SIGNED`) para que la pantalla de Estado no ofrezca
+    re-firmar un expediente ya firmado.
+    """
     try:
         view = apps_service.get_own_application(db, user_id, application_id)
     except (

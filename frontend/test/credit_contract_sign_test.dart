@@ -8,6 +8,7 @@ import 'package:banca_online/features/credits/presentation/credit_contract_page.
 import 'package:banca_online/features/credits/presentation/credit_sign_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 /// Fake contractual (seam `CreditContractServiceBase`): sin red, con shapes
 /// `docs/05` §6.4 (`{data, meta}` ya parseados a modelos). El dictamen y los
@@ -585,6 +586,61 @@ void main() {
         findsOneWidget,
       );
       expect(fake.bioCalls, 0);
+    });
+
+    testWidgets('exito muestra Volver al inicio', (tester) async {
+      final fake = FakeCreditContractService();
+      final reader = FakeBiometricReader();
+      await _pumpSign(
+        tester,
+        fake: fake,
+        reader: reader,
+        challenge: const SignChallenge(
+          applicationId: 'app-1',
+          nonce: '',
+          expiresIn: 0,
+          status: 'SIGNED',
+        ),
+      );
+
+      await _scrollToEnd(tester);
+      expect(find.byKey(const Key('sign-success')), findsOneWidget);
+      expect(find.byKey(const Key('sign-home-cta')), findsOneWidget);
+      expect(find.text('Volver al inicio'), findsOneWidget);
+    });
+
+    testWidgets('Volver al inicio navega a /home', (tester) async {
+      const signedChallenge = SignChallenge(
+        applicationId: 'app-1',
+        nonce: '',
+        expiresIn: 0,
+        status: 'SIGNED',
+      );
+      final router = GoRouter(
+        initialLocation: '/sign',
+        routes: [
+          GoRoute(
+            path: '/sign',
+            builder: (context, state) => const CreditSignPage(
+              applicationId: 'app-1',
+              summary: 'Personal - S/ 10,000 - 12 m',
+              initialChallenge: signedChallenge,
+            ),
+          ),
+          GoRoute(
+            path: '/home',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Inicio')),
+          ),
+        ],
+      );
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      await _tapRevealed(tester, find.byKey(const Key('sign-home-cta')));
+
+      expect(find.text('Inicio'), findsOneWidget);
+      expect(find.byKey(const Key('sign-success')), findsNothing);
     });
 
     testWidgets('error del reto con Reintentar', (tester) async {

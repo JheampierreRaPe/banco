@@ -6,6 +6,7 @@ from app.modules.credits.schemas.applications import (
     ApplicationData,
     ApplicationResponse,
     ApplicationsListResponse,
+    OwnApplicationData,
     ReviewRequest,
 )
 from app.modules.credits.schemas.contracts import (
@@ -42,6 +43,7 @@ __all__ = [
     "ContractDocument",
     "ContractSetData",
     "ContractSetResponse",
+    "OwnApplicationData",
     "ProductOut",
     "ProductsListResponse",
     "ReviewRequest",

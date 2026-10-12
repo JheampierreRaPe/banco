@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.modules.credits.models import (
     DECIDED_STATUSES,
     LOAN_APPLICATION_STATUSES,
+    Contract,
     LoanApplication,
 )
 
@@ -285,6 +286,32 @@ def list_in_review(session: Session, *, limit: int = 50, offset: int = 0) -> lis
     return list(session.scalars(stmt).all())
 
 
+def list_by_user(
+    session: Session, user_id: uuid.UUID | str, *, limit: int = 50, offset: int = 0
+) -> list[LoanApplication]:
+    """Listado del titular: sus expedientes, mas reciente primero (E3-T23).
+
+    Filtra por `user_id` en la consulta (aislamiento: jamas entrega
+    expedientes ajenos) y ordena `created_at DESC, id DESC`
+    (determinista para paginar). Sin PII en logs (solo conteos).
+    """
+    owner = _coerce_uuid(user_id, "user_id")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ApplicationValidationError("limit debe estar en 1..100")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ApplicationValidationError("offset debe ser >= 0")
+    stmt = (
+        sa.select(LoanApplication)
+        .where(LoanApplication.user_id == owner)
+        .order_by(LoanApplication.created_at.desc(), LoanApplication.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = list(session.scalars(stmt).all())
+    logger.debug("loan_applications listado propio count=%d", len(rows))
+    return rows
+
+
 def count_by_user(session: Session, user_id: uuid.UUID | str) -> int:
     """Conteo de expedientes del titular (trazabilidad/idempotencia)."""
     owner = _coerce_uuid(user_id, "user_id")
@@ -296,6 +323,47 @@ def count_by_user(session: Session, user_id: uuid.UUID | str) -> int:
     return int(session.scalar(stmt) or 0)
 
 
+def signed_flags_by_application(
+    session: Session, application_ids: list[uuid.UUID | str]
+) -> dict[str, bool]:
+    """Firma del contrato por expediente (E3-T23 mejora "Mis creditos").
+
+    Deriva de `credits.contracts` (mismo schema, sin migracion): un
+    expediente esta firmado solo si tiene filas de contrato y **todas**
+    estan `SIGNED` (el juego se firma completo o no se firma). Sin
+    filas -> `False` (no firmado / juego aun no generado). Retorna
+    `{str(application_id): firmado}` solo para los expedientes con
+    filas; el llamante interpreta la ausencia como `False`.
+
+    Solo lectura de estados (sin PII: ni `doc_ref` ni `doc_hash`).
+
+    Si la tabla no existe en el entorno (humo SQLite minimo sin el
+    juego contractual), retorna `{}` (no firmado) en vez de romper la
+    lectura del expediente.
+    """
+    ids: list[uuid.UUID] = []
+    for raw in application_ids:
+        try:
+            aid = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        ids.append(aid)
+    if not ids:
+        return {}
+    stmt = sa.select(Contract.application_id, Contract.status).where(
+        Contract.application_id.in_(ids)
+    )
+    try:
+        rows = session.execute(stmt).all()
+    except sa.exc.SQLAlchemyError:
+        logger.debug("contracts no legibles: se asume no firmado")
+        return {}
+    seen: dict[str, set[str]] = {}
+    for app_id, status in rows:
+        seen.setdefault(str(app_id), set()).add(str(status))
+    return {key: statuses == {"SIGNED"} for key, statuses in seen.items()}
+
+
 __all__ = [
     "ApplicationConflictError",
     "ApplicationError",
@@ -305,8 +373,10 @@ __all__ = [
     "count_by_user",
     "create_application",
     "get_application",
+    "list_by_user",
     "list_in_review",
     "set_decision",
     "set_evaluating",
     "set_manual_decision",
+    "signed_flags_by_application",
 ]

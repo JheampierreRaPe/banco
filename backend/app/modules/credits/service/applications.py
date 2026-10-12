@@ -33,6 +33,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.adapters.credit_bureau import (
@@ -45,7 +46,7 @@ from app.adapters.credit_bureau import (
 from app.modules.credits import events as credit_events
 from app.modules.credits import repository as credits_repo
 from app.modules.credits.domain import rules
-from app.modules.credits.models import LoanApplication
+from app.modules.credits.models import LoanApplication, LoanProduct
 from app.modules.credits.repository import applications as apps_repo
 from app.modules.credits.repository.applications import (
     ApplicationConflictError,
@@ -494,6 +495,80 @@ def list_review_queue(
     return [to_view(row) for row in apps_repo.list_in_review(session, limit=limit, offset=offset)]
 
 
+def to_own_view(
+    row: LoanApplication,
+    *,
+    product_name: str | None = None,
+    contract_signed: bool = False,
+) -> dict[str, Any]:
+    """Vista minima del expediente para "Mis creditos" (E3-T23, HU10/HU11).
+
+    Solo lo que la UI necesita (id, producto, monto `*_minor`, plazo,
+    estado, motivo y fechas, mas `contract_signed` derivado de
+    `credits.contracts`: `True` solo si todas las filas del juego estan
+    `SIGNED`); sin ingresos/deuda/score/consentimiento ni `user_id`
+    (regla de oro 7; el `user_id` nunca viaja desde el cliente y no
+    hace falta devolverlo). La UI muestra `status` y
+    `decision_reason` TAL CUAL (cliente delgado). La bandeja del
+    analista no usa esta vista (expediente completo intacto).
+    """
+
+    def _iso(value: datetime | None) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    return {
+        "id": str(row.id),
+        "product_id": str(row.product_id),
+        "product_name": product_name,
+        "requested_amount_minor": int(row.requested_amount_minor),
+        "term_months": int(row.term_months),
+        "status": row.status,
+        "contract_signed": bool(contract_signed),
+        "decision_reason": row.decision_reason,
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "decided_at": _iso(row.decided_at),
+    }
+
+
+def list_own_applications(
+    session: Session, owner_user_id: uuid.UUID | str, *, limit: int = 50, offset: int = 0
+) -> tuple[list[dict[str, Any]], int]:
+    """Listado de expedientes del titular (E3-T23, HU10 CA-04 visible).
+
+    Filtra por el `user_id` del JWT en la consulta (aislamiento por
+    titular; sin `user_id` del cliente), orden `created_at DESC, id`
+    (mas reciente primero), paginado con `limit`/`offset`. Retorna
+    `(items_minimos, total)`: `total` es el conteo del titular (para
+    `meta.total`; titular sin expedientes -> `([], 0)`, no `404`).
+    Solo lectura: sin eventos, sin notificaciones, sin PII en logs.
+    `contract_signed` se deriva de `credits.contracts` (todas las filas
+    `SIGNED` => firmado; sin filas o mezcla => no firmado): el estado
+    del expediente no cambia con la firma, asi "Mis creditos" distingue
+    aprobado-por-firmar de ya-firmado sin migracion.
+    """
+    owner = _coerce_owner(owner_user_id)
+    rows = apps_repo.list_by_user(session, owner, limit=limit, offset=offset)
+    total = apps_repo.count_by_user(session, owner)
+    names: dict[str, str] = {}
+    missing = {row.product_id for row in rows}
+    if missing:
+        stmt = sa.select(LoanProduct).where(LoanProduct.id.in_(list(missing)))
+        for product in session.scalars(stmt).all():
+            names[str(product.id)] = product.name
+    signed = apps_repo.signed_flags_by_application(session, [row.id for row in rows])
+    items = [
+        to_own_view(
+            row,
+            product_name=names.get(str(row.product_id)),
+            contract_signed=signed.get(str(row.id), False),
+        )
+        for row in rows
+    ]
+    logger.debug("credit own applications listed count=%d", len(items))
+    return items, total
+
+
 def review_application(
     session: Session,
     *,
@@ -543,9 +618,11 @@ __all__ = [
     "IdempotencyKeyConflictError",
     "get_own_application",
     "http_status_for",
+    "list_own_applications",
     "list_review_queue",
     "review_application",
     "submit_application",
     "submit_application_idempotent",
+    "to_own_view",
     "to_view",
 ]

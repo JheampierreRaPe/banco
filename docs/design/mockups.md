@@ -24,6 +24,8 @@ construye una pantalla sabe que imagen seguir, sin que se lo expliquen.
 | `creditos-analista.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Analista` `0:6489`, root `0:6669`, desktop 1280) | Panel analista: bandeja IN_REVIEW, detalle enmascarado, dictamen | HU10 | `E3-T10` | pendiente |
 | `creditos-contrato.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Contrato` `0:6716`, root `0:6717`) | Contrato: expediente aprobado + 3 documentos + CTA firma | HU11 | `E3-T15` | hecho |
 | `creditos-firma.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Firma` `0:6760`, root `0:6761`) | Firma con biometría + fallback PIN + éxito | HU11 | `E3-T15` | hecho |
+| `creditos-mis-creditos.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Mis créditos`, root `Creditos-MisCreditos` `0:6810`) | "Mis créditos": segmentos Simulador/Mis créditos + filas por estado (Aprobado con CTA firma) + vacío/carga/error | HU10, HU11 | `E3-T23` | pendiente |
+| `creditos-simulador.png` (+ `.svg`; fig `pantallas.fig`, pagina `Créditos/Simulador` `0:6486`) — actualizado E3-T23: TopBar `Créditos` + segmentos | Simulador de crédito (producto, monto, plazo, desgravamen, cuota, TEA/TCEA, cronograma, CTAs) | HU09 | `E3-T04` | hecho |
 | Spec de contenido de las 6 pantallas | `docs/design/creditos-pantallas.md` | HU09, HU10, HU11 | `E3-T04`, `E3-T09`, `E3-T10`, `E3-T15` | hecho |
 | | | | | |
 

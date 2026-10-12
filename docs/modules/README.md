@@ -409,7 +409,10 @@ eventos (`outbox`/`inbox`).
   (`docs/03b#82`, migracion `0031`) con flujo `SUBMITTED -> IN_EVALUATION ->
   {APPROVED|REJECTED|IN_REVIEW}`; `POST /credits/applications`
   (`Idempotency-Key` obligatoria, snapshot sin PII, `201`/`202`),
-  `GET /credits/applications/{id}` (titular, `404` neutro), bandeja
+  `GET /credits/applications/{id}` (titular, `404` neutro), listado
+  "Mis créditos" `GET /credits/applications` (sin `status`: solo lo
+  propio, vista minima + `product_name`, `created_at DESC`; E3-T23),
+  bandeja
   `GET /credits/applications?status=IN_REVIEW` + dictamen
   `POST .../{id}/review` (rol `analyst`/`credit_analyst`, aprobacion
   separada y auditada). Consentimiento de bureau explicito obligatorio;

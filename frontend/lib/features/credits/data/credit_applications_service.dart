@@ -1,6 +1,8 @@
 import '../../../core/errors/api_exception.dart';
 import '../../../core/http/api_client.dart';
 import '../models/loan_application.dart';
+import '../models/own_application.dart';
+import 'my_credits_service.dart';
 
 /// Contrato del expediente de credito (seam para tests con fake).
 ///
@@ -29,7 +31,13 @@ abstract class CreditApplicationsServiceBase {
 }
 
 /// Servicio del expediente sobre [ApiClient] (E3-T09, `docs/05` §6.4).
-class CreditApplicationsService implements CreditApplicationsServiceBase {
+///
+/// Además implementa [MyCreditsServiceBase] (E3-T23): el listado del titular
+/// vive en la misma ruta (`GET /credits/applications` sin `status`) y el
+/// orquestador ya cablea esta fábrica, así el feature no toca
+/// `app_router.dart`.
+class CreditApplicationsService
+    implements CreditApplicationsServiceBase, MyCreditsServiceBase {
   CreditApplicationsService({required this.api});
 
   final ApiClient api;
@@ -59,6 +67,23 @@ class CreditApplicationsService implements CreditApplicationsServiceBase {
   Future<LoanApplicationResult> getApplication(String id) async {
     final resp = await api.get('/credits/applications/$id');
     return LoanApplicationResult.fromJson(_dataEnvelope(resp.data));
+  }
+
+  @override
+  Future<OwnApplicationsPage> listMine({int? limit, int? offset}) async {
+    final query = <String, dynamic>{};
+    if (limit != null) query['limit'] = limit;
+    if (offset != null) query['offset'] = offset;
+    final resp = await api.get(
+      '/credits/applications',
+      queryParameters: query.isEmpty ? null : query,
+    );
+    final body = resp.data;
+    if (body is Map<String, dynamic>) return OwnApplicationsPage.fromJson(body);
+    if (body is Map) {
+      return OwnApplicationsPage.fromJson(Map<String, dynamic>.from(body));
+    }
+    throw const FormatException('Respuesta del listado inválida');
   }
 }
 

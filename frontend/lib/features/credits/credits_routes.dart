@@ -6,13 +6,14 @@ import 'data/credit_applications_service.dart';
 import 'data/credit_contract_service.dart';
 import 'data/credit_sign_controller.dart';
 import 'data/credits_service.dart';
+import 'data/my_credits_service.dart';
 import 'models/credit.dart';
 import 'models/loan_application.dart';
 import 'presentation/credit_application_page.dart';
 import 'presentation/credit_contract_page.dart';
 import 'presentation/credit_sign_page.dart';
 import 'presentation/credit_status_page.dart';
-import 'presentation/credits_simulator_page.dart';
+import 'presentation/credits_home_page.dart';
 
 /// Rutas del feature `credits` (E3-T04 / HU09 + E3-T09 / HU10).
 ///
@@ -22,8 +23,9 @@ import 'presentation/credits_simulator_page.dart';
 /// `creditApplicationsServiceFactory`, igual que
 /// `transfersServiceFactory`).
 ///
-/// - `/credits` -> [CreditsSimulatorPage] (simulador: producto, monto,
-///   plazo, desgravamen, cuota, cronograma, CTAs).
+/// - `/credits` -> [CreditsHomePage] (E3-T23: dos secciones con
+///   `SegmentedButton`: `Simulador` (el simulador actual, embebido) +
+///   `Mis créditos` (listado del titular)).
 /// - `/credits/apply` -> [CreditApplicationPage] (solicitud +
 ///   consentimiento, E3-T09): recibe el [SimulationDraft] por `extra` y lo
 ///   pre-carga (producto/monto/plazo/insurance + cuota del servidor).
@@ -43,9 +45,18 @@ import 'presentation/credits_simulator_page.dart';
 final List<GoRoute> creditsRoutes = [
   GoRoute(
     path: '/credits',
-    builder: (context, state) => CreditsSimulatorPage(
-      service: creditsServiceFactory?.call(),
-    ),
+    builder: (context, state) {
+      // E3-T23: la misma ruta monta las dos secciones. El listado reusa la
+      // fábrica ya cableada por el orquestador (el servicio concreto
+      // implementa `MyCreditsServiceBase`): sin tocar `app_router.dart`.
+      final apps = creditApplicationsServiceFactory?.call();
+      return CreditsHomePage(
+        simulatorService: creditsServiceFactory?.call(),
+        myCreditsService: apps is MyCreditsServiceBase
+            ? apps as MyCreditsServiceBase
+            : myCreditsServiceFactory?.call(),
+      );
+    },
   ),
   GoRoute(
     path: '/credits/apply',

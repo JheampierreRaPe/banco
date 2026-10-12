@@ -1,7 +1,8 @@
 # Especificación de contenido — Pantallas de Créditos (HU09 / HU10 / HU11)
 
 > Mockups en `pantallas.fig` (páginas `Créditos/Simulador`, `Créditos/Solicitud`,
-> `Créditos/Estado`, `Créditos/Analista`, `Créditos/Contrato`, `Créditos/Firma`). Imágenes: `docs/design/creditos-*.png`
+> `Créditos/Estado`, `Créditos/Analista`, `Créditos/Contrato`, `Créditos/Firma`,
+> `Créditos/Mis créditos`). Imágenes: `docs/design/creditos-*.png`
 > (más `.svg` vectoriales homónimos). Sistema de diseño: `docs/20-diseno-ui.md`
 > (tokens "Eucalipto y Ocre", solo modo claro). Sin PII real en los mockups
 > (datos de ejemplo enmascarados).
@@ -10,6 +11,11 @@
 > final por una limitación del reemplazo de nodo; al implementar, el orden
 > recomendado es: producto → monto → plazo → desgravamen → cuota → cronograma →
 > nota → CTAs.
+>
+> Nota E3-T23: la pantalla `/credits` tiene pestañas/segmentos arriba
+> (`Simulador` | `Mis créditos`, decisión del dueño). El mockup del simulador
+> muestra la pestaña `Simulador` activa; el mockup `Créditos/Mis créditos`
+> muestra la pestaña `Mis créditos` activa con el listado.
 
 ## Convenciones comunes (las 6 pantallas)
 
@@ -339,6 +345,78 @@ ya `SIGNED`), `NOT_FOUND (404` neutro), `VALIDATION_ERROR (422)`.
 
 ---
 
+## 7. E3-T23 — Mis créditos (HU10/HU11 · listado del titular)
+
+Mockup: `docs/design/creditos-mis-creditos.png` (+ `.svg`) · Fig página
+`Créditos/Mis créditos` (frame raíz `Creditos-MisCreditos`). La pantalla
+`/credits` lleva pestañas/segmentos arriba (`Simulador` | `Mis créditos`,
+decisión del dueño); el mockup del simulador (`creditos-simulador.png`) se
+actualizó con el mismo segmento (pestaña `Simulador` activa, TopBar `Créditos`).
+
+### Contenido exacto
+
+1. **Header**: título `Mis créditos` (24/600 `primary`); subtítulo
+   `Tus expedientes. El estado lo decide el servidor.` (14, `secondary-text`).
+2. **SegmentedButton** (fondo `surface-container-high #EAE8E3`, radio full,
+   segmentos 40px, texto 14/600): segmento activo fondo `primary`, texto blanco;
+   segmento inactivo texto `primary`. Aquí activo = `Mis créditos`.
+3. **Fila de expediente** (card blanca, radio 16, borde `outline-variant`,
+   padding 16; la fila `Aprobado` lleva borde `primary` para destacarla):
+   - Línea 1: `{Producto} • {Monto} • {plazo} m` (14/600 `primary`,
+     ej. `Personal • S/ 10,000 • 12 m`) + **badge de estado** (pill, 12/600).
+    - Línea 2: `EXPEDIENTE {id} • {fecha}` (12, `secondary-text`,
+      ej. `EXPEDIENTE a1b2c3d4e5f6 • 2026-10-11`). IDs reales (UUID, se
+      muestran los primeros 12 caracteres), fecha = día de `created_at`.
+      Sin antigüedad relativa ni cuota: la cuota queda **fuera de alcance
+      del listado** (el endpoint no la entrega; cliente delgado, `docs/19`).
+      El mockup conserva un texto ilustrativo anterior; vale lo descrito aquí.
+   - Acciones: fila `Aprobado` → CTA primario `Continuar a la firma`
+     (52px, → `/credits/contract` con el id) + link `Ver estado ›`
+     (`accent-text`, → `/credits/status` con el id). Filas no aprobadas →
+     solo `Ver estado ›`, **sin CTA de firma**.
+4. **Badges de estado** (mismo set que §3 Estado):
+   | Etiqueta | Fondo | Texto |
+   |---|---|---|
+   | `Evaluando` | `surface-container-highest #E4E2DD` | `on-surface-variant #424844` |
+   | `En revisión` | `warning-container #FFDCBC` | `on-warning-container #683D00` |
+   | `Aprobado` | `success-container #D0E8D7` | `#0B1F15` |
+   | `Rechazado` | `error-container #FFDAD6` | `#93000A` |
+   | `Vencido` | `surface-container-highest #E4E2DD` | `on-surface-variant #424844` |
+   Mapeo servidor → etiqueta: `DRAFT|SUBMITTED|IN_EVALUATION → Evaluando`,
+   `IN_REVIEW → En revisión`, `APPROVED → Aprobado`, `REJECTED → Rechazado`,
+   `EXPIRED → Vencido`. La UI muestra el `status` tal cual (cliente delgado).
+5. **Estado vacío** (card blanca): título `Aún no tienes solicitudes`;
+   subtítulo `Simula un crédito y envía tu primera solicitud.`; CTA secundario
+   `Ir al simulador` (cambia a la pestaña Simulador).
+6. **Carga**: skeleton de filas (barras `surface-container-highest`).
+   **Error**: mensaje en español accionable + Reintentar
+   (ej. `Sin conexión. Revisa tu red y toca Reintentar.`).
+7. **Nota**: `Orden: más reciente primero. Pull para actualizar. Sin PII en
+   la lista.`
+
+### Comportamiento / validaciones visibles
+
+- Orden: `created_at DESC` (más reciente primero); pull-to-refresh.
+- `Continuar a la firma` solo existe si el servidor marcó `APPROVED`
+  (nunca se infiere en el cliente).
+- El `decision_reason` **no** se muestra en la fila (para no saturarla);
+  vive en la pantalla de estado (§3).
+- Sin `Idempotency-Key` (lectura, no mueve dinero).
+
+### Datos del backend
+
+`GET /credits/applications` (titular autenticado, `Authorization: Bearer <jwt>`;
+`user_id` del JWT, nunca del cliente) →
+`200 {"data": [{id, product_id, product_name?, requested_amount_minor,
+term_months, status, decision_reason, created_at, updated_at, decided_at}],
+"meta": {total, limit?, offset?}}`, orden `created_at DESC, id`.
+Sin expedientes → `data: []` (no `404`). Errores: `401 NOT_AUTHENTICATED`,
+`422 VALIDATION_ERROR`. La fila usa `product_name ?? product_id`, monto
+(`*_minor`, céntimos), `term_months`, `status` y fechas; sin ingresos, deuda,
+score ni documento (regla de oro 7).
+
+---
+
 ## Chequeo contra `docs/01` (contradicciones)
 
 Ninguna:
@@ -362,4 +440,6 @@ Ninguna:
 | `docs/design/creditos-analista.png` (+ `.svg`) | Mockup HU10 panel |
 | `docs/design/creditos-contrato.png` (+ `.svg`) | Mockup HU11 contrato |
 | `docs/design/creditos-firma.png` (+ `.svg`) | Mockup HU11 firma |
+| `docs/design/creditos-mis-creditos.png` (+ `.svg`) | Mockup E3-T23 "Mis créditos" (HU10/HU11) |
+| `docs/design/creditos-simulador.png` (+ `.svg`) | Mockup HU09 (actualizado E3-T23: TopBar `Créditos` + segmentos) |
 | `docs/design/creditos-pantallas.md` (este archivo) | Spec de contenido |

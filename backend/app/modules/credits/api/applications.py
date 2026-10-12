@@ -5,8 +5,10 @@
   difiere a revision).
 - `GET /credits/applications/{id}` (estado del expediente, solo el
   titular; ajeno/inexistente -> `404` neutro).
-- `GET /credits/applications?status=IN_REVIEW` (bandeja del analista) y
-  `POST /credits/applications/{id}/review` (dictamen manual; rol
+- `GET /credits/applications` (doble modo E3-T23: sin `status` lista
+  "Mis creditos" del titular; `?status=IN_REVIEW` es la bandeja del
+  analista) y
+- `POST /credits/applications/{id}/review` (dictamen manual; rol
   analista de credito; rutas no listadas en `docs/05#64`, gap
   registrado en `docs/18`).
 
@@ -192,29 +194,55 @@ def create_credit_application(
 @router.get(
     "/credits/applications",
     response_model=ApplicationsListResponse,
-    summary="Bandeja de expedientes en revision (analista)",
+    response_model_exclude_unset=True,
+    summary="Mis creditos (titular) o bandeja en revision (analista)",
     responses={
-        200: {"description": "Expedientes `IN_REVIEW` (`data` + `meta.total`)"},
+        200: {"description": "Expedientes (`data` + `meta.total/limit/offset`)"},
         401: {"description": "`NOT_AUTHENTICATED` (sin JWT valido)"},
-        403: {"description": "`NOT_AUTHORIZED` (sin rol analista)"},
-        422: {"description": "`VALIDATION_ERROR` (solo se lista `IN_REVIEW`)"},
+        403: {"description": "`NOT_AUTHORIZED` (bandeja sin rol analista)"},
+        422: {"description": "`VALIDATION_ERROR` (otro `status` o paginacion invalida)"},
     },
 )
-def list_review_queue(
-    status: str = Query(default="IN_REVIEW", description="Solo IN_REVIEW"),
+def list_applications(
+    status: str | None = Query(
+        default=None,
+        description="Sin valor: propios del titular. Solo IN_REVIEW (bandeja analista)",
+    ),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    analyst: AnalystContext = Depends(get_analyst_context),
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Bandeja del analista (rol analista; HU10 aprobacion separada)."""
-    _ = analyst  # El rol solo gates el acceso (401/403 sin analista).
+    """Mis creditos del titular o bandeja del analista (E3-T23, HU10/HU11).
+
+    Doble modo sobre la misma ruta (decision 1 de E3-T23): sin `status`
+    lista los expedientes **del titular autenticado** (`sub` del JWT;
+    `user_id` nunca del cliente; ajenos invisibles; `data: []` si no
+    tiene; vista minima sin ingresos/deuda/score, con `contract_signed`
+    derivado de `credits.contracts` —todas las filas `SIGNED`— para que
+    "Mis creditos" distinga el aprobado-por-firmar del ya-firmado). Con
+    `?status=IN_REVIEW` es la **bandeja del analista** (rol
+    `analyst`/`credit_analyst`; `403` sin rol; intacta). Otro `status`
+    -> `422`. Lectura sin `Idempotency-Key` (no crea recurso).
+    """
+    if status is None:
+        user_id = get_current_user_id(authorization)
+        try:
+            items, total = apps_service.list_own_applications(
+                db, user_id, limit=limit, offset=offset
+            )
+        except (apps_service.ApplicationValidationError, ValueError, TypeError) as exc:
+            db.rollback()
+            raise _to_app_error(exc) from exc
+        return {"data": items, "meta": {"total": total, "limit": limit, "offset": offset}}
     if status != "IN_REVIEW":
         raise AppError(
             code="VALIDATION_ERROR",
             message="la bandeja solo lista status=IN_REVIEW",
             status_code=422,
         )
+    analyst = get_analyst_context(authorization)
+    _ = analyst  # El rol solo gates el acceso (401/403 sin analista).
     try:
         items = apps_service.list_review_queue(db, limit=limit, offset=offset)
     except (apps_service.ApplicationValidationError, ValueError, TypeError) as exc:

@@ -616,6 +616,7 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | POST | `/credits/simulate` | Simulacion de cuota/cronograma. |
 | POST | `/credits/applications` | Solicitud + autorizacion de bureau. |
 | GET | `/credits/applications/{id}` | Estado del expediente. |
+| GET | `/credits/applications` | Mis créditos del titular (sin `status`). |
 | GET | `/credits/applications?status=IN_REVIEW` | Bandeja en revision (analista). |
 | POST | `/credits/applications/{id}/review` | Dictamen manual del analista. |
 | POST | `/credits/applications/{id}/contract` | Genera contrato. |
@@ -694,6 +695,23 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   `credit.approved` / `credit.rejected` / `credit.review.required`.
 > - `GET /credits/applications/{id}` -> `200 {"data": {expediente}, "meta": {}}`
 >   (solo el titular; ajeno/inexistente -> `404 NOT_FOUND` neutro).
+> - `GET /credits/applications` (E3-T23 backend `Hecho`, 2026-10-11;
+>   HU10/HU11 "Mis créditos") -> `200 {"data": [{id, product_id,
+>   product_name, requested_amount_minor, term_months, status,
+>   decision_reason, created_at, updated_at, decided_at}],
+>   "meta": {total, limit, offset}}` con los expedientes **del titular
+>   autenticado** (`sub` del JWT; el `user_id` nunca viaja en el
+>   request), orden `created_at DESC, id`; titular sin expedientes ->
+>   `data: []` (no `404`). Vista minima: sin ingresos/deuda/score/
+>   consentimiento/documento (regla de oro 7); la UI muestra `status`/
+>   `decision_reason` TAL CUAL (cliente delgado). Paginacion
+>   `limit` (1..100, defecto 50) / `offset` (defecto 0); `total` es el
+>   conteo del titular. Sin `Authorization` -> `401 NOT_AUTHENTICATED`;
+>   paginacion invalida -> `422`. Lectura sin `Idempotency-Key` (no
+>   crea recurso ni mueve dinero). Comparte ruta con la bandeja por
+>   decision 1 de E3-T23 (`docs/18` G59): **sin `status` -> titular**;
+>   `?status=IN_REVIEW` -> analista (rol, `403` sin el; otro `status`
+>   -> `422`); la bandeja devuelve el expediente completo intacto.
 > - `GET /credits/applications?status=IN_REVIEW` (rol analista de credito
 >   `analyst`/`credit_analyst` en el claim `roles`; `403 NOT_AUTHORIZED`
 >   sin el) -> `200 {"data": [...], "meta": {total, limit, offset}}`

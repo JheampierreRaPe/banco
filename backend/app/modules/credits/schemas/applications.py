@@ -21,6 +21,7 @@ __all__ = [
     "ApplicationData",
     "ApplicationResponse",
     "ApplicationsListResponse",
+    "OwnApplicationData",
     "ReviewRequest",
 ]
 
@@ -88,8 +89,43 @@ class ApplicationResponse(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
-class ApplicationsListResponse(BaseModel):
-    """Bandeja del analista (`{"data": [...], "meta": {total}}`)."""
+class OwnApplicationData(BaseModel):
+    """Vista minima del expediente para "Mis creditos" (HU10/HU11, E3-T23).
 
-    data: list[ApplicationData]
+    Solo lo que la UI necesita: id, producto (`product_id` +
+    `product_name`), monto en centimos (`int`, regla de oro 3), plazo,
+    estado, `contract_signed` (derivado de `credits.contracts`: `True`
+    solo si todas las filas del juego estan `SIGNED`; el estado del
+    expediente no cambia con la firma), motivo y fechas. Sin
+    ingresos/deuda/score/consentimiento (regla de oro 7).
+    `extra="allow"` para que la misma envoltorio sirva a la bandeja
+    del analista (expediente completo intacto).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    product_id: str
+    product_name: str | None = None
+    requested_amount_minor: int
+    term_months: int
+    status: str
+    contract_signed: bool = False
+    decision_reason: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    decided_at: str | None = None
+
+
+class ApplicationsListResponse(BaseModel):
+    """Listado de expedientes (`{"data": [...], "meta": {total}}`, E3-T23).
+
+    Doble modo sobre `GET /credits/applications`: sin `status` lista
+    los expedientes **del titular** (vista minima `OwnApplicationData`:
+    sin ingresos/deuda/score/documento); con `?status=IN_REVIEW` es la
+    bandeja del analista (expediente completo: los extras se permiten
+    y se serializan tal cual).
+    """
+
+    data: list[OwnApplicationData]
     meta: dict = Field(default_factory=dict)

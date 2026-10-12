@@ -7,10 +7,10 @@
       <g transform="translate(16, 20)">
         <text x="0" y="20" font-family="Inter" font-size="20" fill="#FFFFFF">‹</text>
       </g>
-      <g transform="translate(112, 22.5)">
-        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Simulador de crédito</text>
+      <g transform="translate(112, 22)">
+        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Créditos</text>
       </g>
-      <g transform="translate(360, 22.5)">
+      <g transform="translate(360, 22)">
         <text x="0" y="16" font-family="Inter" font-size="16" fill="#FFFFFF">···</text>
       </g>
     </g>
@@ -24,6 +24,20 @@
         </g>
       </g>
       <g transform="translate(16, 82)">
+        <rect width="358" height="48" rx="9999" ry="9999" fill="#EAE8E3"/>
+        <g transform="translate(4, 4)">
+          <rect width="173" height="40" rx="9999" ry="9999" fill="#152A1F"/>
+          <g transform="translate(52, 10)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#FFFFFF">Simulador</text>
+          </g>
+        </g>
+        <g transform="translate(177, 4)">
+          <g transform="translate(45, 10)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Mis créditos</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 146)">
         <rect width="358" height="127" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
         <g transform="translate(20, 20)">
           <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Producto</text>
@@ -52,7 +66,7 @@
           <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">TEA referencial del producto elegido.</text>
         </g>
       </g>
-      <g transform="translate(16, 225)">
+      <g transform="translate(16, 289)">
         <rect width="358" height="96" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
         <g transform="translate(20, 20)">
           <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Monto: S/ 10,000</text>
@@ -70,7 +84,7 @@
           </g>
         </g>
       </g>
-      <g transform="translate(16, 337)">
+      <g transform="translate(16, 401)">
         <rect width="358" height="96" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
         <g transform="translate(20, 20)">
           <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Plazo: 12 meses</text>
@@ -102,7 +116,7 @@
           </g>
         </g>
       </g>
-      <g transform="translate(16, 449)">
+      <g transform="translate(16, 513)">
         <rect width="358" height="74" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
         <g transform="translate(20, 20)">
           <g>
@@ -117,7 +131,7 @@
           <rect width="24" height="24" rx="9999" ry="9999" fill="#FFFFFF"/>
         </g>
       </g>
-      <g transform="translate(16, 539)">
+      <g transform="translate(16, 603)">
         <rect width="358" height="130" rx="16" ry="16" fill="#FDAA47"/>
         <g transform="translate(20, 20)">
           <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#6E4100">CUOTA MENSUAL (del servidor)</text>
@@ -129,31 +143,31 @@
           <text x="0" y="12" font-family="Inter" font-size="12" font-weight="500" fill="#6E4100">TEA 18.50%  •  TCEA 19.80%  •  Francesa</text>
         </g>
       </g>
-      <g transform="translate(16, 685)">
+      <g transform="translate(16, 749)">
         <rect width="358" height="43" rx="12" ry="12" fill="#F5F3EE"/>
         <g transform="translate(14, 14)">
           <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Simulación sin registro crediticio. Sin compromiso.</text>
         </g>
       </g>
-      <g transform="translate(16, 744)">
+      <g transform="translate(16, 808)">
         <rect width="358" height="52" rx="12" ry="12" fill="#152A1F"/>
-        <g transform="translate(99.5, 16.5)">
+        <g transform="translate(0, 16)">
           <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Solicitar este crédito</text>
         </g>
       </g>
-      <g transform="translate(16, 812)">
+      <g transform="translate(16, 876)">
         <rect width="358" height="52" rx="12" ry="12" fill="#FBF9F4" stroke="#152A1F" stroke-width="1"/>
-        <g transform="translate(71.5, 16.5)">
+        <g transform="translate(0, 16)">
           <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#152A1F">Descargar simulación (PDF)</text>
         </g>
       </g>
-      <g transform="translate(16, 880)">
+      <g transform="translate(16, 944)">
         <rect width="358" height="43" rx="12" ry="12" fill="#F5F3EE"/>
         <g transform="translate(14, 14)">
           <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">Estados: cargando, vacío, error con Reintentar.</text>
         </g>
       </g>
-      <g transform="translate(16, 939)">
+      <g transform="translate(16, 1003)">
         <rect width="358" height="181" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
         <g transform="translate(20, 20)">
           <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Cronograma resumido</text>
@@ -222,7 +236,7 @@
         </g>
       </g>
     </g>
-    <g transform="translate(0, 1200)">
+    <g transform="translate(0, 1264)">
       <rect width="390" height="72" fill="#FFFFFF" stroke="#E4E2DD" stroke-width="1"/>
       <g transform="translate(32, 28.5)">
         <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Inicio</text>

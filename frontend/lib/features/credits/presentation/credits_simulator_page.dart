@@ -39,10 +39,16 @@ import '../utils/format.dart';
 /// [service] es inyectable para tests; la ruta lo resuelve desde
 /// `creditsServiceFactory` (cableada por el orquestador). `null` degrada a
 /// un error accionable en vez de romper.
+///
+/// [embedded] (E3-T23): cuando la home `/credits` la monta como pestaña
+/// `Simulador`, no crea su propio `Scaffold`/`AppBar` (la home ya aporta el
+/// TopBar `Créditos` + el `SegmentedButton`); por defecto es `false` y la
+/// página se comporta igual que antes.
 class CreditsSimulatorPage extends StatefulWidget {
-  const CreditsSimulatorPage({super.key, this.service});
+  const CreditsSimulatorPage({super.key, this.service, this.embedded = false});
 
   final CreditsServiceBase? service;
+  final bool embedded;
 
   @override
   State<CreditsSimulatorPage> createState() => _CreditsSimulatorPageState();
@@ -83,42 +89,44 @@ class _CreditsSimulatorPageState extends State<CreditsSimulatorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final content = FutureBuilder<List<LoanProduct>>(
+      future: _productsFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const LoadingView(
+            key: Key('credits-loading'),
+            message: 'Cargando productos...',
+          );
+        }
+        if (snapshot.hasError) {
+          final error = snapshot.error;
+          return ErrorView(
+            key: const Key('credits-error'),
+            message: error is ApiException
+                ? creditUserMessage(error)
+                : 'Ocurrió un error al consultar el servidor.',
+            onRetry: _retry,
+          );
+        }
+        final products = snapshot.data ?? const <LoanProduct>[];
+        if (products.isEmpty) {
+          return const EmptyView(
+            key: Key('credits-empty'),
+            message: 'Aún no hay productos de crédito disponibles.',
+          );
+        }
+        return _SimulatorBody(
+          key: const Key('credits-simulator'),
+          products: products,
+          service: widget.service!,
+        );
+      },
+    );
+    if (widget.embedded) return content;
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(title: const Text('Simulador de crédito')),
-      body: FutureBuilder<List<LoanProduct>>(
-        future: _productsFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const LoadingView(
-              key: Key('credits-loading'),
-              message: 'Cargando productos...',
-            );
-          }
-          if (snapshot.hasError) {
-            final error = snapshot.error;
-            return ErrorView(
-              key: const Key('credits-error'),
-              message: error is ApiException
-                  ? creditUserMessage(error)
-                  : 'Ocurrió un error al consultar el servidor.',
-              onRetry: _retry,
-            );
-          }
-          final products = snapshot.data ?? const <LoanProduct>[];
-          if (products.isEmpty) {
-            return const EmptyView(
-              key: Key('credits-empty'),
-              message: 'Aún no hay productos de crédito disponibles.',
-            );
-          }
-          return _SimulatorBody(
-            key: const Key('credits-simulator'),
-            products: products,
-            service: widget.service!,
-          );
-        },
-      ),
+      body: content,
     );
   }
 }

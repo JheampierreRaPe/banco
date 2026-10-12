@@ -175,9 +175,13 @@ jobs:
         # cualquier hallazgo >= umbral retorna != 0 y tiñe el pipeline de rojo.
         run: bandit --severity-level high --confidence-level high -r backend/app
       - name: Gitleaks (falla ante secretos en el historial)
+        # Usa la allowlist versionada del repo: solo ignora los fixtures
+        # ficticios de tests documentados en `.gitleaks.toml`; cualquier otro
+        # hallazgo sigue fallando el job.
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
 
   frontend:
     name: frontend (flutter analyze + test)

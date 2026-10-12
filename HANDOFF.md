@@ -1,18 +1,22 @@
-# HANDOFF — Orquestador → continuación (post-cierre del Sprint 2) · actualizado 2026-10-11
+# HANDOFF — Orquestador → continuación (cierre final del Sprint 2) · actualizado 2026-10-12
 
 Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 2026-10-10
-(cierre previo de créditos + panel web). El **Sprint 2 quedó CERRADO** (papeleo incluido); el
-índice y el cierre oficial están en `docs/tasks/SPRINT-2.md#cierre-del-sprint-2-2026-10-11`.
+(cierre previo de créditos + panel web). El **Sprint 2 quedó CERRADO** (papeleo incluido) y la
+rama **`sprint-2` está pusheada con CI verde**; el índice y el cierre oficial están en
+`docs/tasks/SPRINT-2.md#cierre-del-sprint-2-2026-10-11`.
 
 ## 1. Dónde estamos
 
-- Rama de trabajo: **`sprint-2`**, HEAD actual **`28640d3`**. `origin` =
-  https://github.com/JheampierreRaPe/banco . La rama **sigue SIN pushear** (`sprint-2` sin
-  upstream; `gh` no está instalado → PR por push + URL web).
+- Rama de trabajo: **`sprint-2`**, HEAD actual **`835078c`**, **YA PUSHEADA**
+  (`sprint-2` con upstream `origin/sprint-2`). `origin` =
+  https://github.com/JheampierreRaPe/banco . **CI verde**: run #14, **8/8 jobs `success`**
+  (`lint`, `test`, `migrations`, `build`, `scan`, `frontend`, `panel`, `ci-success`) →
+  https://github.com/JheampierreRaPe/banco/actions/runs/38255962404 . (`gh` no está instalado →
+  PR vía push + URL web.)
 - **Stack Docker:** **5/5 `healthy`** (`postgres`, `redis`, `backend`, `worker`, `admin-web`).
   El microservicio KYC vive aparte del compose (contenedor `kyc-facial-service-8001`, `:8001`,
   `healthy`).
-- **Commits recientes relevantes** (rama sin push):
+- **Commits recientes relevantes** (rama pusheada):
   - **Créditos HU09/HU10 (E3-T01..T11):** `64383ad` (motor financiero + catálogo),
     `b961c72` (API simulador + UI + QA), `fa3b1df` (adaptador de buró + reglas + solicitud),
     `2532480` (UI solicitud + panel analista + QA).
@@ -22,16 +26,22 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
     `fbd38ce` (Q-T08 escaneo + Q-T12 cobertura/CI).
   - **E3-T23 "Mis créditos":** `dd3d6fe` (listado + pestañas), `b64e763` (contrato get-or-create
     al abrir la firma), `13cdeca` (Firmado no re-firmable + volver al inicio).
-  - **Papeleo:** `dfdbaf7` (sesión 2026-10-11), `276ad5d` (guion demo Q-T09),
-    `28640d3` (cierre del Sprint 2).
+  - **Papeleo/cierre:** `dfdbaf7` (sesión 2026-10-11), `276ad5d` (guion demo Q-T09),
+    `28640d3` (cierre del Sprint 2), `7bb160d` (estado tras cierre).
+  - **Cierre de deuda técnica:** `9076546` (`G58` HMAC del PIN en `transactions` + `OBS-3` CAS
+    del contador de fallos + `OBS-4` nonce de un solo uso), `c809518` (`G26` decimales en
+    `PUT /admin/parameters` + `H5` env vars del buró en `docs/02#9`).
+  - **CI endurecido:** `835078c` (el test de carga mide el camino de **escritura** en
+    `backend/tests/load/harness.py`; `.gitleaks.toml` con allowlist a falsos positivos de
+    fixtures de test).
 - **Dispositivo adb:** `adb devices -l` puede mostrar duplicados con sufijo ` (2)` (p.ej.
   `adb-KJSGAUYHSCB6HUSS-yIJZve (2)._adb-tls-connect._tcp`, modelo `2311DRK48G`) →
   `adb disconnect "<serial (2)>"` para dejar uno.
 
-## 2. Estado de suites / migraciones (verificado 2026-10-11)
+## 2. Estado de suites / migraciones (verificado 2026-10-12)
 
-- **Backend (`pytest`, desde `backend/` con `.venv`):** **1540 passed + 1 skipped**,
-  cobertura **86.53%** (comando del CI con `--cov-fail-under=80`;
+- **Backend (`pytest`, desde `backend/` con `.venv`):** **1553 passed + 1 skipped**,
+  cobertura **86%** (≥ 80, comando del CI con `--cov-fail-under=80`;
   `.github/workflows/ci.yml:82`). `ruff check .` limpio; `black --check .` (391 archivos sin
   cambios); `alembic check` → "No new upgrade operations detected". **Head de migración:
   `0033_credits_contracts`** (`backend/migrations/versions/0033_credits_contracts.py`).
@@ -43,10 +53,11 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
   `flutter test` → **829/829**.
 - **Panel `admin-web` (desde `admin-web/`):** `npm test` → **18/18** (vitest, 3 archivos);
   `npm run lint` (`tsc --noEmit`) y `npm run build` limpios.
-- **CI (GitHub Actions, `.github/workflows/ci.yml`):** **7 jobs** (`lint`, `test`,
-  `migrations`, `build`, `scan`, `frontend`, `panel`) + agregador `ci-success`. Dispara en
-  `push` a `main`, `feature/**` y **`sprint-*`** (`.github/workflows/ci.yml:9`) y en PR a `main`.
-  **El CI NO corre en local**: solo se ejecuta en GitHub al pushear.
+- **CI (GitHub Actions, `.github/workflows/ci.yml`):** **8 jobs** (`lint`, `test`,
+  `migrations`, `build`, `scan`, `frontend`, `panel`) + agregador `ci-success`; **run #14 →
+  8/8 `success`** (`835078c`). Dispara en `push` a `main`, `feature/**` y **`sprint-*`**
+  (`.github/workflows/ci.yml:9`) y en PR a `main`. **El CI NO corre en local**: solo se ejecuta
+  en GitHub al pushear.
 
 ## 3. Qué se hizo (por bloques)
 
@@ -77,6 +88,11 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
   `bandit` + `pip-audit` + `npm audit` + gitleaks/secrets-check), `Q-T12` (cobertura con umbral
   `--cov-fail-under=80` + jobs frontend/panel + `ci-success`), `Q-T09` (guion y datos de demo).
   Todos archivados en `docs/tasks/archive/`.
+- **Cierre de deuda técnica (post-cierre):** `9076546` (`G58` HMAC del PIN en `transactions`,
+  `OBS-3` CAS en el contador de fallos, `OBS-4` nonce de un solo uso), `c809518` (`G26`
+  decimales en `PUT /admin/parameters`, `H5` env vars del buró en `docs/02#9`), `835078c` (CI:
+  el test de carga mide el camino de escritura + allowlist gitleaks de fixtures). Con esto el
+  Sprint 2 queda **cerrado y con CI verde**.
 
 ## 4. Qué funciona de verdad (verificado)
 
@@ -98,28 +114,32 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
 
 ## 5. Pendientes (para el que continúe)
 
+> **Estado:** el Sprint 2 está **cerrado**, la rama `sprint-2` está **pusheada** (`origin/sprint-2`,
+> HEAD `835078c`) y el **CI está verde** (run #14, 8/8 `success`). No queda deuda técnica abierta.
+
+- **Vídeo de respaldo del demo (`docs/15`):** **único pendiente real** de papeleo. Lo graba el
+  dueño; el guion está en `docs/demo/guion-demo-sprint-2.md` (`Q-T09` lo pide explícitamente en
+  `docs/15-calidad-seguridad-devops.md:106`).
 - **HU12 (Sprint 3) — desembolso + cuotas** (`E3-T17..E3-T22`): **sin briefs ni código**. Es el
   **siguiente bloque natural**. Referencias conceptuales:
   `docs/08-epica-3-creditos.md:78` (HU12) y los asientos `docs/04-motor-transaccional-y-ledger.md:163`
   (§7.5 desembolso) y `:170` (§7.6 pago de cuota). Requiere crear los briefs antes de implementar.
 - **Sprint 3+:** HU13–HU16 (billetera/QR/servicios), panel general `F-T12`, frontend
   `F-T06..F-T18`.
-- **Deuda técnica (abierta):**
-  - **`G58`** — HMAC del PIN en `transactions` (`docs/18-gestion-de-cambios.md:242`): el motor de
-    dinero aún persiste `sha256(PIN)` sin sal en el `request_hash`; `credits` ya se endureció a
-    HMAC. Replicar en `transactions` cuando se planifique (cuidar
-    `backend/tests/test_e2_t31_authorize_pin.py:580`).
-  - **`OBS-3`** — CAS en `save_block` del contador de fallos (`docs/18-gestion-de-cambios.md:222`).
-  - **`OBS-4`** — `nonce` reintentable tras fallo; no es estrictamente de un solo uso
-    (`docs/18-gestion-de-cambios.md:232`).
-  - ~~**`G26`** — `PUT /admin/parameters` no acepta decimales~~ **CERRADO
-    (2026-10-12, sin commit):** el `PUT` acepta decimales (`loan.max_dti_ratio`,
-    `loan.review_margin`) vía `set_parameter`; regresión en
+- **Deuda técnica — CERRADA (no figura como abierta):**
+  - ~~**`G58`** — HMAC del PIN en `transactions`~~ **CERRADO** (`9076546`): el motor de dinero ya
+    persiste HMAC del PIN (no `sha256` sin sal) en el `request_hash`; regresión en
+    `backend/tests/test_e2_t31_authorize_pin.py`.
+  - ~~**`OBS-3`** — CAS en `save_block` del contador de fallos~~ **CERRADO** (`9076546`).
+  - ~~**`OBS-4`** — `nonce` de un solo uso~~ **CERRADO** (`9076546`): ya no es reintentable tras
+    fallo.
+  - ~~**`G26`** — `PUT /admin/parameters` no acepta decimales~~ **CERRADO** (`c809518`): acepta
+    decimales (`loan.max_dti_ratio`, `loan.review_margin`) vía `set_parameter`; regresión en
     `backend/tests/test_g26_admin_parameters_decimal.py`.
-  - ~~**`H5` (de E3-T06)** — registrar las env vars del buró~~ **CERRADO
-    (2026-10-12, sin commit):** documentadas en `docs/02-arquitectura.md#9`.
-- **Papeleo:** **pushear** `sprint-2` (sigue sin upstream); **video de respaldo** del demo
-  (`Q-T09` lo pide explícitamente en `docs/15-calidad-seguridad-devops.md:106`).
+  - ~~**`H5` (de E3-T06)** — registrar las env vars del buró~~ **CERRADO** (`c809518`):
+    documentadas en `docs/02-arquitectura.md#9`.
+- **Papeleo:** ~~pushear `sprint-2`~~ **HECHO** (`origin/sprint-2` = `835078c`); solo resta el
+  **vídeo de respaldo** del demo.
 
 ## 6. Riesgos abiertos (`docs/17-riesgos-y-decisiones-abiertas.md`)
 
@@ -164,7 +184,7 @@ Protocolo vigente (lo ejecuta un `worker` delegado):
 
 ```powershell
 # Backend (desde backend/)
-.venv\Scripts\python.exe -m pytest --cov=app --cov-fail-under=80 -q   # 1540 passed + 1 skipped, cov 86.53%
+.venv\Scripts\python.exe -m pytest --cov=app --cov-fail-under=80 -q   # 1553 passed + 1 skipped, cov 86%
 .venv\Scripts\python.exe -m ruff check .
 .venv\Scripts\python.exe -m black --check .
 .venv\Scripts\alembic.exe check ; .venv\Scripts\alembic.exe heads      # head 0033_credits_contracts

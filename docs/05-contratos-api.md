@@ -842,11 +842,13 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   (lista vacia -> `200`, no `404`).
 > - `PUT /admin/parameters/{key}` body `{value_json}` -> `200 {"data":
 >   {"key", "value_json", "updated_at"}, "meta": {...}}`; valida el tipo segun
->   la clave (entero `>= 0`, etc.), es idempotente por naturaleza (misma clave
->   + mismo valor = mismo estado) y audita cada cambio (`updated_by` del JWT +
->   `updated_at`, sin PII). No mueve dinero (sin `Idempotency-Key`) y **no**
->   emite `parameter.updated` (decision E2-T18; la trazabilidad la dan las
->   columnas).
+>   la clave (enteros `>= 0` para `*_minor`/`auth.*`; las decimales
+>   `loan.max_dti_ratio`/`loan.review_margin` (G26) aceptan numero o texto
+>   numerico y se responden como texto exacto, sin `float`), es idempotente
+>   por naturaleza (misma clave + mismo valor = mismo estado) y audita cada
+>   cambio (`updated_by` del JWT + `updated_at`, sin PII). No mueve dinero
+>   (sin `Idempotency-Key`) y **no** emite `parameter.updated` (decision
+>   E2-T18; la trazabilidad la dan las columnas).
 > - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol admin);
 >   `404 NOT_FOUND` (clave inexistente al escribir); `422 VALIDATION_ERROR`
 >   (valor de tipo/formato invalido). Cambiar el umbral/topes/limites se

@@ -561,8 +561,10 @@ eventos (`outbox`/`inbox`).
 - **Dueno de:** `role_permissions` (el esquema y ciclo de vida de `config.parameters` es de `shared`/`config`; ver abajo).
 - **Expone:** `/admin/*` (incluye `GET/PUT /admin/parameters` como fachada de lectura/escritura auditada).
 - **Fachada de parametros (E2-T26, HU08/HU20):** `GET /admin/parameters`
-  (listado/consulta con filtros `module`/`prefix`) y `PUT
-  /admin/parameters/{key}` (validacion de tipo) delegan **toda** la
+  (listado/consulta con filtros `module`/`prefix`, incluye las claves
+  `loan.*` del motor de credito) y `PUT
+  /admin/parameters/{key}` (validacion de tipo: enteros y decimales segun
+  la clave, G26) delegan **toda** la
   lectura/escritura en `shared.config` (unico dueno); rol admin exigido desde
   el JWT; cada cambio auditado (`updated_by`/`updated_at`), sin evento
   `parameter.updated` (decision E2-T18). No mueve dinero.

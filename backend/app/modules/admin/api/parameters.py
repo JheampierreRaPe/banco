@@ -22,10 +22,13 @@ Errores de negocio:
 
 - `404 NOT_FOUND`: `PUT` de clave inexistente (el espacio de claves lo
   gobiernan las migraciones; en caliente solo se editan valores).
-- `422 VALIDATION_ERROR`: valor de tipo/formato invalido (p. ej. negativo);
-  no escribe.
-- Los cuerpos malformados (no entero) los rechaza FastAPI con `422` antes
-  de tocar la BD.
+- `422 VALIDATION_ERROR`: valor de tipo/formato invalido para la clave
+  (p. ej. negativo, texto no numerico, booleano); no escribe. Las claves
+  enteras (`*_minor`, `auth.*`) exigen entero; las decimales
+  (`loan.max_dti_ratio`, `loan.review_margin`, G26) aceptan numero o
+  texto numerico (el binario JSON se normaliza via texto, sin `float`).
+- Los cuerpos malformados (campo ausente o `bool`) los rechaza FastAPI
+  con `422` antes de tocar la BD.
 
 El `PUT` es idempotente por naturaleza (misma clave + mismo valor = mismo
 estado) y no mueve dinero: no exige `Idempotency-Key`. No se emite

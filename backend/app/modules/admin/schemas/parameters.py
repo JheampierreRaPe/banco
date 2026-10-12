@@ -9,10 +9,12 @@ Contrato (`docs/05#6.8`, formato `05#4`):
 Reglas:
 
 - Dinero entero en centimos; nunca `float` (regla de oro 3). El cuerpo del
-  `PUT` transporta un numero JSON entero; `bool` se rechaza aqui mismo
-  (Pydantic lax lo aceptaria como `1`/`0` y la fachada lo rechazaria
-  despues: fallar pronto, sin escribir).
-- Los minimos por clave (`>= 0`, `auth.* >= 1`) viven en la fachada duena
+  `PUT` transporta un numero JSON (entero para las claves `*_minor` /
+  `auth.*`; entero, decimal o texto numerico para las claves decimales
+  `loan.max_dti_ratio` / `loan.review_margin`, E3-T07/G26); `bool` se
+  rechaza aqui mismo (Pydantic lax lo aceptaria como `1`/`0` y la fachada
+  lo rechazaria despues: fallar pronto, sin escribir).
+- Los minimos por clave (`>= 0`, `auth.* >= 1`, decimales `>= 0`) viven en la fachada duena
   (`shared/config`, E2-T18): aqui NO se duplican.
 - Sin PII ni secretos: los valores son umbrales/limites operativos, nunca
   se loguean (ver `service/parameters.py`).
@@ -30,15 +32,18 @@ from pydantic import BaseModel, Field, field_validator
 class ParameterUpdateRequest(BaseModel):
     """Cuerpo del `PUT /admin/parameters/{key}`: solo el valor nuevo."""
 
-    value_json: int = Field(..., description="Nuevo valor entero del parametro")
+    value_json: Any = Field(
+        ...,
+        description="Nuevo valor del parametro (entero o decimal segun la clave)",
+    )
 
     @field_validator("value_json", mode="before")
     @classmethod
     def _reject_bool(cls, raw: Any) -> Any:
-        """`True`/`False` no son enteros validos (sin escribir, 422)."""
+        """`True`/`False` no son valores numericos validos (sin escribir, 422)."""
         if isinstance(raw, bool):
             # Pydantic exige ValueError (TypeError escaparia como 500, no 422).
-            raise ValueError("value_json debe ser entero, no booleano")  # noqa: TRY004
+            raise ValueError("value_json debe ser numerico, no booleano")  # noqa: TRY004
         return raw
 
 
@@ -46,7 +51,7 @@ class ParameterItem(BaseModel):
     """Parametro expuesto por `GET /admin/parameters` (solo lectura)."""
 
     key: str
-    value_json: Any = Field(..., description="Valor efectivo (entero si aplica)")
+    value_json: Any = Field(..., description="Valor efectivo (numerico si aplica)")
     module: str
     description: str | None = None
     updated_by: uuid.UUID | None = None

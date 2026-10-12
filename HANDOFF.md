@@ -112,10 +112,12 @@ Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 
   - **`OBS-3`** — CAS en `save_block` del contador de fallos (`docs/18-gestion-de-cambios.md:222`).
   - **`OBS-4`** — `nonce` reintentable tras fallo; no es estrictamente de un solo uso
     (`docs/18-gestion-de-cambios.md:232`).
-  - **`G26`** — `PUT /admin/parameters` no acepta decimales (`docs/18-gestion-de-cambios.md:206`).
-  - **`H5` (de E3-T06)** — registrar las env vars del buró (`CREDIT_BUREAU_PROVIDER`,
-    `CREDIT_BUREAU_BASE_URL`, `CREDIT_BUREAU_API_KEY`, `CREDIT_BUREAU_TIMEOUT_SECONDS`,
-    `CREDIT_BUREAU_MAX_RETRIES`) en `docs/02-arquitectura.md#9`.
+  - ~~**`G26`** — `PUT /admin/parameters` no acepta decimales~~ **CERRADO
+    (2026-10-12, sin commit):** el `PUT` acepta decimales (`loan.max_dti_ratio`,
+    `loan.review_margin`) vía `set_parameter`; regresión en
+    `backend/tests/test_g26_admin_parameters_decimal.py`.
+  - ~~**`H5` (de E3-T06)** — registrar las env vars del buró~~ **CERRADO
+    (2026-10-12, sin commit):** documentadas en `docs/02-arquitectura.md#9`.
 - **Papeleo:** **pushear** `sprint-2` (sigue sin upstream); **video de respaldo** del demo
   (`Q-T09` lo pide explícitamente en `docs/15-calidad-seguridad-devops.md:106`).
 

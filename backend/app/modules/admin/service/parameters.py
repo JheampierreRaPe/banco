@@ -6,10 +6,15 @@ vive en la fachada duena `app.modules.shared.config` (E2-T18):
 
 - Lectura de valores: exclusivamente via sus getters tipados
   (`get_biometric_threshold_minor`, `get_daily_limit_minor`,
-  `get_max_failed_attempts`, `get_parameter`). Lectura por llamada, sin
+  `get_max_failed_attempts`, `get_loan_max_dti_ratio`,
+  `get_loan_max_amount_minor`, `get_loan_min_score`,
+  `get_loan_review_margin`, `get_loan_max_debt_minor`, `get_parameter`).
+  Lectura por llamada, sin
   cache en proceso: un cambio se refleja de inmediato, sin despliegue.
 - Escritura: exclusivamente via `set_parameter` (valida tipo/rango segun
-  la clave, exige fila existente, fija `updated_at`/`updated_by`). Este
+  la clave: enteros para `*_minor`/`auth.*`, decimales para
+  `loan.max_dti_ratio`/`loan.review_margin` via `Decimal`/`int`/`str`;
+  exige fila existente, fija `updated_at`/`updated_by`). Este
   modulo solo confirma la transaccion (`commit`); jamas emite
   `UPDATE`/`INSERT`/`DELETE` contra `config.parameters`.
 
@@ -33,6 +38,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -42,12 +48,22 @@ from app.modules.shared.config import (
     BIOMETRIC_THRESHOLD_KEY,
     DAILY_LIMIT_KEY,
     DAILY_LIMIT_PROFILE_TEMPLATE,
+    LOAN_MAX_AMOUNT_MINOR_KEY,
+    LOAN_MAX_DEBT_MINOR_KEY,
+    LOAN_MAX_DTI_RATIO_KEY,
+    LOAN_MIN_SCORE_KEY,
+    LOAN_REVIEW_MARGIN_KEY,
     SEEDED_PROFILES,
     ParameterNotFoundError,
     ParameterValidationError,
     daily_limit_key_for_profile,
     get_biometric_threshold_minor,
     get_daily_limit_minor,
+    get_loan_max_amount_minor,
+    get_loan_max_debt_minor,
+    get_loan_max_dti_ratio,
+    get_loan_min_score,
+    get_loan_review_margin,
     get_max_failed_attempts,
     get_parameter,
     set_parameter,
@@ -55,19 +71,36 @@ from app.modules.shared.config import (
 
 logger = logging.getLogger(__name__)
 
+#: Claves decimales del motor de credito (E3-T07/G26): aceptan numero o
+#: texto numerico (se guardan como numero JSON via `set_parameter`).
+DECIMAL_KEYS: tuple[str, ...] = (
+    LOAN_MAX_DTI_RATIO_KEY,
+    LOAN_REVIEW_MARGIN_KEY,
+)
+
 #: Claves escalares conocidas (presentacion + fallback de listado).
 KNOWN_KEYS: tuple[str, ...] = (
     BIOMETRIC_THRESHOLD_KEY,
     DAILY_LIMIT_KEY,
     *(DAILY_LIMIT_PROFILE_TEMPLATE.format(profile=p) for p in SEEDED_PROFILES),
     AUTH_MAX_FAILED_ATTEMPTS_KEY,
+    LOAN_MAX_DTI_RATIO_KEY,
+    LOAN_MAX_AMOUNT_MINOR_KEY,
+    LOAN_MIN_SCORE_KEY,
+    LOAN_REVIEW_MARGIN_KEY,
+    LOAN_MAX_DEBT_MINOR_KEY,
 )
 
-#: Modulo presentacional por clave (refleja las semillas `0001`/`0019`/`0023`).
+#: Modulo presentacional por clave (refleja las semillas `0001`/`0019`/`0023`/`0030`).
 _KEY_MODULES: dict[str, str] = {
     BIOMETRIC_THRESHOLD_KEY: "transactions",
     DAILY_LIMIT_KEY: "transactions",
     AUTH_MAX_FAILED_ATTEMPTS_KEY: "identity",
+    LOAN_MAX_DTI_RATIO_KEY: "credits",
+    LOAN_MAX_AMOUNT_MINOR_KEY: "credits",
+    LOAN_MIN_SCORE_KEY: "credits",
+    LOAN_REVIEW_MARGIN_KEY: "credits",
+    LOAN_MAX_DEBT_MINOR_KEY: "credits",
 }
 
 #: Descripcion presentacional por clave (la columna `description` manda si existe).
@@ -75,17 +108,24 @@ _KEY_DESCRIPTIONS: dict[str, str] = {
     BIOMETRIC_THRESHOLD_KEY: "Monto en centimos desde el cual se exige biometria",
     DAILY_LIMIT_KEY: "Limite diario generico en centimos",
     AUTH_MAX_FAILED_ATTEMPTS_KEY: "Intentos fallidos antes del bloqueo temporal",
+    LOAN_MAX_DTI_RATIO_KEY: "Relacion deuda/ingreso maxima del motor de credito",
+    LOAN_MAX_AMOUNT_MINOR_KEY: "Tope generico de monto solicitado del motor de credito (centimos)",
+    LOAN_MIN_SCORE_KEY: "Score minimo del bureau para aprobar (motor de credito)",
+    LOAN_REVIEW_MARGIN_KEY: "Margen sobre el minimo que manda a revision manual (puntos de score)",
+    LOAN_MAX_DEBT_MINOR_KEY: "Deuda total maxima del solicitante del motor de credito (centimos)",
 }
 
 _MISSING: object = object()
 
 
 def _module_for_key(key: str) -> str:
-    """Modulo presentacional de una clave (prefijo `transfer.`/`auth.`)."""
+    """Modulo presentacional de una clave (prefijo `transfer.`/`auth.`/`loan.`)."""
     if key in _KEY_MODULES:
         return _KEY_MODULES[key]
     if key.startswith("transfer.daily_limit_") and key.endswith("_minor"):
         return "transactions"
+    if key.startswith("loan."):
+        return "credits"
     return key.split(".", 1)[0] if "." in key else "config"
 
 
@@ -94,6 +134,8 @@ def _description_for_key(key: str) -> str | None:
         return _KEY_DESCRIPTIONS[key]
     if key.startswith("transfer.daily_limit_") and key.endswith("_minor"):
         return "Limite diario por perfil de riesgo en centimos"
+    if key.startswith("loan.max_amount_") and key.endswith("_minor"):
+        return "Tope de monto solicitado por perfil del motor de credito (centimos)"
     return None
 
 
@@ -170,6 +212,19 @@ def _resolve_value(session: Session, key: str) -> object:
         if profile is not None or token in SEEDED_PROFILES:
             return get_daily_limit_minor(session, token)
         return get_daily_limit_minor(session, token)
+    if key == LOAN_MAX_DTI_RATIO_KEY:
+        return get_loan_max_dti_ratio(session)
+    if key == LOAN_REVIEW_MARGIN_KEY:
+        return get_loan_review_margin(session)
+    if key == LOAN_MAX_AMOUNT_MINOR_KEY:
+        return get_loan_max_amount_minor(session)
+    if key == LOAN_MIN_SCORE_KEY:
+        return get_loan_min_score(session)
+    if key == LOAN_MAX_DEBT_MINOR_KEY:
+        return get_loan_max_debt_minor(session)
+    if key.startswith("loan.max_amount_") and key.endswith("_minor"):
+        token = key[len("loan.max_amount_") : -len("_minor")]
+        return get_loan_max_amount_minor(session, token)
     return _present_raw(get_parameter(session, key, None))
 
 
@@ -259,20 +314,51 @@ def list_parameters(
     return items
 
 
+def _normalize_for_store(clean_key: str, value: object) -> object:
+    """Traduce el JSON del `PUT` al tipo que exige `set_parameter` (G26).
+
+    - Claves decimales (`DECIMAL_KEYS`): el numero JSON llega como entero
+      o binario de red; el binario se convierte via texto a `Decimal`
+      (sin artefactos binarios). `int`/`Decimal`/`str` numerico pasan tal
+      cual y los valida/cota `set_parameter`.
+    - Claves enteras: se preserva la coercion laxa del esquema anterior
+      (`12.0` -> `12`, `"600000"` -> `600000`); lo demas lo rechaza
+      `set_parameter` (`VALIDATION_ERROR`, sin escribir).
+    - `bool` nunca es un valor valido (ni entero ni decimal).
+    """
+    if isinstance(value, bool):
+        raise ParameterValidationError(f"{clean_key} debe ser numerico, recibido: {value!r}")
+    if clean_key in DECIMAL_KEYS:
+        if isinstance(value, float):
+            return Decimal(str(value))
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ParameterValidationError(f"{clean_key} debe ser entero, recibido: {value!r}")
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except (ValueError, AttributeError):
+            return value
+    return value
+
+
 def update_parameter(
     session: Session,
     *,
     key: str,
-    value: int,
+    value: object,
     updated_by: uuid.UUID | str | None = None,
 ) -> dict:
     """Actualiza el valor de una clave existente via la fachada duena.
 
     Delega tipo/rango/existencia a `set_parameter` (`NOT_FOUND` si la clave
     no esta sembrada; `VALIDATION_ERROR` si el valor es invalido) y confirma
-    la transaccion. Idempotente por naturaleza: misma clave + mismo valor =
-    mismo estado (`UPDATE` sobre `key` UQ; concurrencia = ultimo escritor
-    gana, atomico por sentencia).
+    la transaccion. Claves enteras (`*_minor`, `auth.*`) y decimales
+    (`loan.max_dti_ratio`, `loan.review_margin`, G26). Idempotente por
+    naturaleza: misma clave + mismo valor = mismo estado (`UPDATE` sobre
+    `key` UQ; concurrencia = ultimo escritor gana, atomico por sentencia).
 
     Retorna `{key, value_json, updated_at}`. Audita actor/timestamp sin PII
     (los logs llevan solo la clave, jamas el valor).
@@ -283,7 +369,8 @@ def update_parameter(
     actor = _coerce_uuid(updated_by) if updated_by is not None else None
     if updated_by is not None and actor is None:
         raise ParameterValidationError(f"updated_by debe ser UUID, recibido: {updated_by!r}")
-    stored = set_parameter(session, key=clean_key, value=value, updated_by=actor)
+    normalized = _normalize_for_store(clean_key, value)
+    stored = set_parameter(session, key=clean_key, value=normalized, updated_by=actor)
     try:
         session.commit()
     except Exception:

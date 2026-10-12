@@ -8,8 +8,9 @@
 > `docs/tasks/archive/<ID>.md`).
 >
 > **Superado por el cierre de papeleo del Sprint 2 (2026-10-11):** ya **no** queda ningun brief de
-> este indice sin archivar; en `docs/tasks/` solo permanecen los indices/plantilla y `Q-T09`
-> (su propia tarea). Ver "Cierre del Sprint 2" mas abajo.
+> este indice sin archivar; en `docs/tasks/` solo permanecen los indices/plantilla. `Q-T09` (su
+> propia tarea) se archiva tambien en esta fecha (`docs/tasks/archive/Q-T09.md`). Ver "Cierre del
+> Sprint 2" mas abajo.
 >
 > Cierre 2026-09-27: con `E2-T14`/`E2-T19`/`E2-T20`/`E2-T24`/`E2-T25`/`E2-T26` el **bloque
 > backend de HU06-HU08 y de operaciones/administracion queda completo**; solo restan el
@@ -95,10 +96,10 @@ de alcance** por decision de planificacion (gap `G13`): el flujo vigente la supe
   y `Q-T12` (CI con cobertura y jobs de frontend/panel).
 
 ### Pendiente de cierre
-- `Q-T09` (guion y datos de demo): en curso por otra tarea; su brief ya figura `Hecho` y fue
-  commiteado en `276ad5d` (guion `docs/demo/guion-demo-sprint-2.md`). En este cierre de papeleo
-  **no se archiva** (lo cierra su propia tarea); queda como el ultimo item de calidad a validar
-  en la review.
+- `Q-T09` (guion y datos de demo): su brief figura `Hecho` y fue commiteado en `276ad5d` (guion
+  `docs/demo/guion-demo-sprint-2.md`). **Archivado el 2026-10-11** en `docs/tasks/archive/Q-T09.md`
+  (commit del handoff de cierre); con ello no queda ningun brief funcional sin archivar en
+  `docs/tasks/`.
 
 ### Briefs archivados en este cierre
 Movidos a `docs/tasks/archive/` (26): `E2-T33`, `E2-T34`, `E2-T35`, `E2-T36`, `E2-T37`,

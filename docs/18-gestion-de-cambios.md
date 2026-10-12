@@ -167,6 +167,15 @@ Reglas de implementacion:
 > **OBS-2** se cierra despues con la migracion `0025_biometric_coherence` (2026-10-08); se
 > mantienen abiertas **OBS-3** y **OBS-4**.
 
+> **Cierre de papeleo del Sprint 2 (2026-10-11):** los briefs `E3-T04`/`E3-T09` (UI del simulador
+> y de solicitud/estado) se reconcilian a `Hecho` (estaban implementados y commiteados en
+> `b961c72`/`2532480`) y, con el resto del bloque `creditos` (`E3-T01`..`E3-T11`), se archivan en
+> `docs/tasks/archive/`. HU06-HU10 **Hechas**; **HU04 fuera de alcance** (`G13`); correcciones
+> `E2-T33`..`E2-T37` **Hechas**; adelanto de Sprint 3 (`HU11` `E3-T12`..`E3-T16` y `E3-T23`)
+> **Hecho**; calidad `Q-T03`/`Q-T07`/`Q-T08`/`Q-T12` **Hechas** (restan por validar `Q-T09`).
+> Los gaps asociados ya estan registrados/filados en esta tabla (`G40`..`G59`); esta nota no
+> duplica ninguno. Ver el indice `docs/tasks/SPRINT-2.md#cierre-del-sprint-2-2026-10-11`.
+
 | # | Supuesto / gap | Brief que lo resuelve | Doc a actualizar |
 |---|---|---|---|
 | G01 | **RESUELTO (E2-T19 `Hecho`, 2026-09-27):** `docs/05#6.3` fija ahora tambien el contrato de `POST /transactions/{id}/authorize` (request `{nonce, signature, device_id}`, `Idempotency-Key`, estados, `EXPIRED_NONCE`/`CONFLICT` y el `403` generico sin oraculo), completando `/transfers/*`, `GET /transactions/{id}` y `GET /transactions/{id}/receipt` (E2-T07/T09/T10). | `E2-T19` (`Hecho`) | `docs/05` |

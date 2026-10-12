@@ -7,6 +7,10 @@
 > `E2-T19`, `E2-T20`, `E2-T22`, `E2-T24`, `E2-T25` y `E2-T26` ya estan `Hecho` (archivados en
 > `docs/tasks/archive/<ID>.md`).
 >
+> **Superado por el cierre de papeleo del Sprint 2 (2026-10-11):** ya **no** queda ningun brief de
+> este indice sin archivar; en `docs/tasks/` solo permanecen los indices/plantilla y `Q-T09`
+> (su propia tarea). Ver "Cierre del Sprint 2" mas abajo.
+>
 > Cierre 2026-09-27: con `E2-T14`/`E2-T19`/`E2-T20`/`E2-T24`/`E2-T25`/`E2-T26` el **bloque
 > backend de HU06-HU08 y de operaciones/administracion queda completo**; solo restan el
 > frontend (`E2-T11`/`E2-T15`/`E2-T21`) y la QA de cierre de cada HU (`E2-T12`/`E2-T16`/`E2-T22`).
@@ -49,8 +53,9 @@
 > Cierre 2026-10-08 (reconciliacion de papeleo `E2-T11`/`E2-T15`/`E2-T21`/`E2-T23`): los cuatro
 > briefs, que seguian `Pendiente` por drift documental pese a estar implementados y commiteados,
 > se pasan a `Hecho` y se archivan en `docs/tasks/archive/` (`E2-T11` commit `a79016f`,
-> `E2-T15` commit `631b90a`, `E2-T21` commit `89610f2`, `E2-T23` commit `b3c5805`). Con esto, en
-> `docs/tasks/` solo restan los 11 briefs de creditos `E3-T01`..`E3-T11`.
+> `E2-T15` commit `631b90a`, `E2-T21` commit `89610f2`, `E2-T23` commit `b3c5805`).
+> **Nota (superada):** entonces quedaban los 11 briefs de creditos `E3-T01`..`E3-T11`; el cierre
+> de papeleo del **2026-10-11** los archiva junto con el resto (ver "Cierre del Sprint 2" abajo).
 
 Objetivo del sprint: mover dinero a terceros con controles (transferencias propias, a tercero e
 interbancarias), gestionar beneficiarios frecuentes y exigir autorizacion biometrica del
@@ -61,10 +66,46 @@ ledger `E5-T09`..`E5-T14`, cuentas/proyecciones `E2-T01`..`E2-T06`, identidad/KY
 biometria de dispositivo (`F-T03`, `E1-T42`).
 
 Total: **37 briefs** (26 del bloque transferencias/beneficiarios/pagos sensibles + 11 del bloque
-creditos `E3-T01`..`E3-T11`): **11 pendientes + 26 `Hecho`** (`E2-T07`/`E2-T08`/`E2-T09`/
-`E2-T10`/`E2-T11`/`E2-T12`/`E2-T13`/`E2-T14`/`E2-T15`/`E2-T16`/`E2-T17`/`E2-T18`/`E2-T19`/
-`E2-T20`/`E2-T21`/`E2-T22`/`E2-T23`/`E2-T24`/`E2-T25`/`E2-T26`/`E2-T27`/`E2-T28`/`E2-T29`/
-`E2-T30`/`E2-T31`/`E2-T32`, archivados).
+creditos `E3-T01`..`E3-T11`): **los 37 `Hecho`** (archivados en `docs/tasks/archive/`), mas los
+briefs extendidos `E2-T33`..`E2-T37` (correcciones del sprint), `E3-T12`..`E3-T16` y `E3-T23`
+(adelanto de Sprint 3) y `Q-T03`/`Q-T07`/`Q-T08`/`Q-T12` (calidad), tambien `Hecho` (ver
+"Cierre del Sprint 2" abajo).
+
+## Cierre del Sprint 2 (2026-10-11)
+
+**Alcance (`docs/14#3`):** Sprint 2 = **HU04/HU06/HU07/HU08/HU09/HU10** (transferencias,
+beneficiarios, pagos sensibles y ciclo de credito). **HU04 (Recuperacion de cuenta) queda fuera
+de alcance** por decision de planificacion (gap `G13`): el flujo vigente la supera
+(`POST /auth/recovery/request` + `POST /auth/pin-reset`; login en dispositivo nuevo
+`E1-T45`/`E1-T46`). Sin briefs nuevos sin rediseno.
+
+### Funcional
+- **HU06** (transferencias propias/interbancarias), **HU07** (beneficiarios) y **HU08**
+  (autorizacion biometrica de pagos sensibles): **Hechas** (backend + frontend + QA).
+- **HU09** (simulador de creditos) y **HU10** (solicitud y evaluacion crediticia): **Hechas**.
+- Correcciones del sprint `E2-T33`..`E2-T37`: **Hechas** (tope retirado, umbral por operacion,
+  entry_type en movimientos + backfill, cierre del bypass del limite diario).
+- **Adelanto de Sprint 3:** **HU11** (firma digital del contrato) — `E3-T12`..`E3-T16` — y
+  `E3-T23` ("Mis creditos" + dos secciones en `/credits`): **Hechas**.
+
+### Calidad
+- Ya `Hecho`: `Q-T01`/`Q-T02`/`Q-T04`/`Q-T05`/`Q-T06` (Sprint 1).
+- Cerradas: `Q-T03` (QA de seguridad RBAC/idempotencia/rate-limit/inyeccion), `Q-T07`
+  (logs estructurados + `request_id` correlacionado), `Q-T08` (escaneo de dependencias/secretos)
+  y `Q-T12` (CI con cobertura y jobs de frontend/panel).
+
+### Pendiente de cierre
+- `Q-T09` (guion y datos de demo): en curso por otra tarea; su brief ya figura `Hecho` y fue
+  commiteado en `276ad5d` (guion `docs/demo/guion-demo-sprint-2.md`). En este cierre de papeleo
+  **no se archiva** (lo cierra su propia tarea); queda como el ultimo item de calidad a validar
+  en la review.
+
+### Briefs archivados en este cierre
+Movidos a `docs/tasks/archive/` (26): `E2-T33`, `E2-T34`, `E2-T35`, `E2-T36`, `E2-T37`,
+`E3-T01`, `E3-T02`, `E3-T03`, `E3-T04`, `E3-T05`, `E3-T06`, `E3-T07`, `E3-T08`, `E3-T09`,
+`E3-T10`, `E3-T11`, `E3-T12`, `E3-T13`, `E3-T14`, `E3-T15`, `E3-T16`, `E3-T23`, `Q-T03`,
+`Q-T07`, `Q-T08`, `Q-T12`. Con esto, en `docs/tasks/` solo quedan los indices/plantilla y
+`Q-T09`.
 
 > Nota de alcance (decision del dueno 2026-09-26): `E2-T07` **implementa la ruta atomica SIN hold
 > de transferencias entre cuentas propias** (asiento unico `2000-S -> 2000-D`, sin comision) y

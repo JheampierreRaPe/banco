@@ -1,6 +1,9 @@
 // Servicio del juego contractual y la firma (E3-T15, HU11).
 //
 // Contrato (`docs/05` §6.4, detalle E3-T12/E3-T14):
+// - `POST /credits/applications/{id}/contract` (genera el juego si no
+//   existe; con `Idempotency-Key` obligatoria; `201` la primera vez,
+//   `200` con el existente en el replay: get-or-create idempotente).
 // - `GET /credits/applications/{id}/contract` (solo lectura, sin
 //   `Idempotency-Key`; `?format=json` por defecto o
 //   `?format=pdf&doc=contrato|pagare|resumen` para el PDF).
@@ -34,6 +37,17 @@ class ContractPdf {
 abstract class CreditContractServiceBase {
   /// Metadatos del juego (los 3 documentos). Solo lectura.
   Future<ContractBundle> getContract(String applicationId);
+
+  /// Genera el juego contractual si aun no existe (get-or-create
+  /// idempotente: `POST .../contract` con `Idempotency-Key`; `201` la
+  /// primera vez, `200` con el existente en el replay).
+  ///
+  /// [idempotencyKey] reutiliza la clave del intento en curso ante
+  /// reintentos; si es `null`, el cliente genera una nueva.
+  Future<ContractBundle> generateContract(
+    String applicationId, {
+    String? idempotencyKey,
+  });
 
   /// Descarga un documento en PDF (`doc`: `contrato|pagare|resumen`).
   Future<ContractPdf> downloadDocument(String applicationId, String doc);
@@ -88,6 +102,19 @@ class CreditContractService implements CreditContractServiceBase {
   @override
   Future<ContractBundle> getContract(String applicationId) async {
     final resp = await api.get('/credits/applications/$applicationId/contract');
+    return ContractBundle.fromJson(_dataEnvelope(resp.data));
+  }
+
+  @override
+  Future<ContractBundle> generateContract(
+    String applicationId, {
+    String? idempotencyKey,
+  }) async {
+    final resp = await api.postWithIdempotency(
+      '/credits/applications/$applicationId/contract',
+      data: const {},
+      idempotencyKey: idempotencyKey,
+    );
     return ContractBundle.fromJson(_dataEnvelope(resp.data));
   }
 
@@ -198,12 +225,26 @@ String creditContractUserMessage(ApiException error) {
   switch (error.code) {
     case 'EXPIRED_NONCE':
       return 'Tu sesión de firma venció. Estamos generando un nuevo reto…';
+    case 'NOT_AUTHENTICATED':
+      return 'Tu sesión venció. Vuelve a iniciar sesión para continuar.';
     case 'NOT_AUTHORIZED':
       return 'No pudimos verificar tu identidad. '
           'Reintenta o usa tu PIN.';
     case 'CONFLICT':
     case 'IDEMPOTENCY_CONFLICT':
     case 'DUPLICATE_REQUEST':
+      // El mismo 409 cubre dos casos: juego ya firmado (firma) y
+      // expediente no aprobado (generacion: "no admite generacion").
+      // Se discrimina por el mensaje del servidor (sin PII en UI).
+      final server = (error.serverMessage ?? '').toLowerCase();
+      if (server.contains('generacion') ||
+          server.contains('generación') ||
+          server.contains('aprobado') ||
+          server.contains('approved') ||
+          server.contains('estado')) {
+        return 'El contrato se genera cuando el crédito está aprobado. '
+            'Vuelve al estado para verificar la aprobación.';
+      }
       return 'Este contrato ya fue firmado. Revisa tu correo.';
     case 'NOT_FOUND':
       return 'No encontramos el contrato. '

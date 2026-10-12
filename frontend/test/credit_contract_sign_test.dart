@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 class FakeCreditContractService implements CreditContractServiceBase {
   ContractBundle bundle = _bundle();
   ApiException? bundleError;
+  ApiException? generateError;
 
   SignChallenge challenge = const SignChallenge(
     applicationId: 'app-1',
@@ -40,6 +41,7 @@ class FakeCreditContractService implements CreditContractServiceBase {
   );
 
   int getCalls = 0;
+  int generateCalls = 0;
   int challengeCalls = 0;
   int bioCalls = 0;
   int pinCalls = 0;
@@ -86,6 +88,17 @@ class FakeCreditContractService implements CreditContractServiceBase {
   Future<ContractBundle> getContract(String applicationId) async {
     getCalls++;
     final error = bundleError;
+    if (error != null) throw error;
+    return bundle;
+  }
+
+  @override
+  Future<ContractBundle> generateContract(
+    String applicationId, {
+    String? idempotencyKey,
+  }) async {
+    generateCalls++;
+    final error = generateError;
     if (error != null) throw error;
     return bundle;
   }
@@ -286,17 +299,16 @@ void main() {
     });
 
     testWidgets('error con Reintentar y luego contenido', (tester) async {
+      final networkError = ApiException.network();
       final fake = FakeCreditContractService()
-        ..bundleError = ApiException(
-          code: 'NOT_FOUND',
-          message: 'No encontramos el contrato.',
-        );
+        ..bundleError = networkError
+        ..generateError = networkError;
       await _pumpContract(tester, fake);
 
       expect(find.byKey(const Key('contract-error')), findsOneWidget);
-      expect(find.textContaining('No encontramos el contrato'), findsOneWidget);
 
       fake.bundleError = null;
+      fake.generateError = null;
       await tester.tap(find.text('Reintentar'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('contract-content')), findsOneWidget);

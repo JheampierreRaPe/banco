@@ -29,7 +29,9 @@ import '../utils/format.dart';
 /// - 4 estados (`docs/20` §7) con `LoadingView`/`EmptyView`/`ErrorView`.
 /// - Sin `Idempotency-Key` en lectura/descarga (no crea recursos).
 ///
-/// La pagina recibe el [applicationId] para `GET .../contract` y, cuando
+/// La pagina recibe el [applicationId] para `GET .../contract` (con
+/// get-or-create: si el juego aun no existe responde 404 y la pagina lo
+/// genera con `POST .../contract` idempotente) y, cuando
 /// viene desde el Estado, el [application] con las condiciones aprobadas
 /// para el hero. Sin id muestra el estado vacio.
 class CreditContractPage extends StatefulWidget {
@@ -99,7 +101,19 @@ class _CreditContractPageState extends State<CreditContractPage> {
       return;
     }
     try {
-      final bundle = await service.getContract(id);
+      ContractBundle bundle;
+      try {
+        bundle = await service.getContract(id);
+      } on ApiException catch (readError) {
+        // Sin juego previo el GET responde 404: get-or-create idempotente
+        // (el POST devuelve 201 si lo crea o 200 con el existente; si el
+        // expediente es ajeno/inexistente el POST tambien da 404 y se
+        // muestra el error accionable). Otro codigo se propaga tal cual.
+        if (readError.code != 'NOT_FOUND' && readError.statusCode != 404) {
+          rethrow;
+        }
+        bundle = await service.generateContract(id);
+      }
       if (!mounted) return;
       setState(() {
         _bundle = bundle;

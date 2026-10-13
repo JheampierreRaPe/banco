@@ -377,6 +377,19 @@ class _LoginPageState extends State<LoginPage> {
                   label: 'Olvidé mi PIN',
                   onPressed: () => context.go('/pin-reset'),
                 ),
+                // Entrada in-app a la activacion (auditoria M1): cuentas
+                // pendientes con `userRef` conocido van a
+                // `/activate?userRef=...` (via de recuperacion; el flujo
+                // feliz del alta usa KYC -> `/pin-setup` y no se toca).
+                if (widget.userRef.isNotEmpty)
+                  AppGhostButton(
+                    key: const Key('login-activate-link'),
+                    label: '¿No activaste tu cuenta? Actívala',
+                    onPressed: () => context.go(
+                      '/activate?userRef='
+                      '${Uri.encodeComponent(widget.userRef)}',
+                    ),
+                  ),
                 AppGhostButton(
                   key: const Key('login-signup-link'),
                   label: '¿Aún no tienes cuenta? Crear cuenta',

@@ -62,7 +62,7 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
 
   BeneficiaryInput? lastCreated;
   String? lastUpdatedId;
-  BeneficiaryInput? lastUpdated;
+  BeneficiaryPatch? lastUpdated;
   String? lastRemovedId;
   int removeCalls = 0;
 
@@ -122,7 +122,7 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
   }
 
   @override
-  Future<Beneficiary> update(String id, BeneficiaryInput input) async {
+  Future<Beneficiary> update(String id, BeneficiaryPatch input) async {
     if (saveError != null) throw saveError!;
     lastUpdatedId = id;
     lastUpdated = input;
@@ -132,7 +132,7 @@ class FakeBeneficiariesService implements BeneficiariesServiceBase {
       accountMasked: '•••• 0012',
       bankCode: input.bankCode ?? '',
       holderName: '••••',
-      currency: input.currency,
+      currency: input.currency ?? 'PEN',
     );
   }
 
@@ -509,6 +509,137 @@ void main() {
       // La lista solo expone enmascarados.
       expect(find.textContaining('00112345678908'), findsNothing);
       expect(find.text('•••• 7744 · Cuenta Soles'), findsOneWidget);
+    });
+
+    testWidgets('m9: editar solo el alias no exige cuenta ni documento',
+        (tester) async {
+      final fake = FakeBeneficiariesService();
+      await tester.pumpWidget(_harness(fake));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('beneficiary-options-b1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar beneficiario'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Editar Beneficiario'), findsOneWidget);
+      // Cuenta/documento vacios = "sin cambios" (el backend no los devuelve
+      // en claro, asi que no se precargan): el formulario lo indica.
+      expect(find.text('Vacío = se conserva la actual'), findsOneWidget);
+      expect(find.text('Vacío = se conserva'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('beneficiary-alias')),
+        'Mamá Lima Editada',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('beneficiary-save')));
+      await tester.pumpAndSettle();
+
+      // Guarda sin re-validar ni re-teclear: el PUT omite los no cambiados.
+      expect(fake.lastUpdatedId, 'b1');
+      expect(fake.lastUpdated, isNotNull);
+      expect(fake.lastUpdated!.alias, 'Mamá Lima Editada');
+      expect(fake.lastUpdated!.accountOrCci, isNull);
+      expect(fake.lastUpdated!.holderDoc, isNull);
+      expect(
+        fake.lastUpdated!.toJson().containsKey('account_or_cci'),
+        isFalse,
+      );
+      expect(fake.lastUpdated!.toJson().containsKey('holder_doc'), isFalse);
+      // Vuelve a la agenda tras guardar.
+      expect(find.text('Agenda de Beneficiarios'), findsOneWidget);
+    });
+
+    testWidgets('m9: editar con cuenta re-tecleada si la envia', (
+      tester,
+    ) async {
+      final fake = FakeBeneficiariesService();
+      await tester.pumpWidget(_harness(fake));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('beneficiary-options-b1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Editar beneficiario'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('beneficiary-account')),
+        '00112345678908',
+      );
+      await tester.tap(find.byKey(const Key('beneficiary-save')));
+      await tester.pumpAndSettle();
+
+      // El alias se guarda aunque el documento siga "sin cambios".
+      expect(fake.lastUpdatedId, 'b1');
+      expect(fake.lastUpdated!.accountOrCci, '00112345678908');
+      expect(fake.lastUpdated!.holderDoc, isNull);
+    });
+
+    testWidgets('m9: ver existente navega a editar el duplicado',
+        (tester) async {
+      final fake = FakeBeneficiariesService()
+        ..saveError = ApiException(
+          code: 'DUPLICATE_BENEFICIARY',
+          message: 'Duplicado.',
+        );
+      await pumpNew(tester, fake);
+      await tester.enterText(
+        find.byKey(const Key('beneficiary-alias')),
+        'Duplicado',
+      );
+      await tester.enterText(
+        find.byKey(const Key('beneficiary-doc-number')),
+        '42891044',
+      );
+      // CCI de 20 que termina en 7744 (= b1 'Mamá Lima', unico candidato).
+      await tester.enterText(
+        find.byKey(const Key('beneficiary-account')),
+        '12345678901234567744',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('beneficiary-save')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('duplicate-banner')), findsOneWidget);
+      await tester.ensureVisible(
+        find.byKey(const Key('duplicate-view-existing')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('duplicate-view-existing')));
+      await tester.pumpAndSettle();
+
+      // Navega a la edicion del existente con su alias precargado.
+      expect(find.text('Editar Beneficiario'), findsOneWidget);
+      expect(find.text('Mamá Lima'), findsWidgets);
+    });
+
+    testWidgets('m9: ver existente sin candidato va a la agenda con aviso',
+        (tester) async {
+      final fake = FakeBeneficiariesService()
+        ..saveError = ApiException(
+          code: 'DUPLICATE_BENEFICIARY',
+          message: 'Duplicado.',
+        );
+      await pumpNew(tester, fake);
+      await fillValidForm(tester);
+
+      await tester.tap(find.byKey(const Key('beneficiary-save')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('duplicate-banner')), findsOneWidget);
+      await tester.ensureVisible(
+        find.byKey(const Key('duplicate-view-existing')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('duplicate-view-existing')));
+      await tester.pumpAndSettle();
+
+      // Sin candidato unico (terminacion no registrada): agenda + aviso.
+      expect(find.text('Agenda de Beneficiarios'), findsOneWidget);
+      expect(
+        find.textContaining('No pudimos identificar el registro existente'),
+        findsOneWidget,
+      );
     });
   });
 

@@ -15,6 +15,10 @@ import 'my_credits_section.dart';
 /// (embebido, sin su propio `AppBar`); la pestaña Mis créditos monta el
 /// listado del titular. El TopBar es `Créditos`.
 ///
+/// m9: las dos pestañas viven en un `IndexedStack` para CONSERVAR el estado
+/// del simulador al volver (antes el ternario desmontaba la rama oculta y
+/// el simulador se re-simulaba de cero).
+///
 /// [simulatorService] y [myCreditsService] son inyectables para tests; la
 /// ruta los resuelve desde `creditsServiceFactory` y
 /// `creditApplicationsServiceFactory` (sin tocar `app_router.dart`).
@@ -80,15 +84,22 @@ class _CreditsHomePageState extends State<CreditsHomePage> {
           ),
           const SizedBox(height: AppSpacing.stackSm),
           Expanded(
-            child: _tab == _CreditsTab.simulator
-                ? CreditsSimulatorPage(
-                    service: widget.simulatorService,
-                    embedded: true,
-                  )
-                : MyCreditsSection(
-                    service: widget.myCreditsService,
-                    onGoSimulator: _goSimulator,
-                  ),
+            // m9: `IndexedStack` (no ternario): la pestaña oculta sigue
+            // montada y el simulador conserva productos, controles y
+            // resultado al volver.
+            child: IndexedStack(
+              index: _tab == _CreditsTab.simulator ? 0 : 1,
+              children: [
+                CreditsSimulatorPage(
+                  service: widget.simulatorService,
+                  embedded: true,
+                ),
+                MyCreditsSection(
+                  service: widget.myCreditsService,
+                  onGoSimulator: _goSimulator,
+                ),
+              ],
+            ),
           ),
         ],
       ),

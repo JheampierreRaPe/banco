@@ -534,7 +534,7 @@ class _CreditSignPageState extends State<CreditSignPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Sin biometría? Usa tu PIN',
+            '¿Sin biometría? Usa tu PIN',
             style: AppTypography.labelMd.copyWith(
               fontWeight: FontWeight.w700,
               color: AppColors.primary,

@@ -77,18 +77,32 @@ class _MovementDetailPageState extends State<MovementDetailPage> {
       backgroundColor: AppColors.surfaceContainerLow,
       appBar: AppBar(
         backgroundColor: AppColors.surfaceContainerLow,
-        title: const Text('Transaction Details'),
+        title: const Text('Detalle de movimiento'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.canPop() ? context.pop() : null,
         ),
-        actions: const [
+        actions: [
           Padding(
-            padding: EdgeInsets.only(right: 16),
-            child: CircleAvatar(
-              radius: 16,
-              backgroundColor: AppColors.primary,
-              child: Icon(Icons.person_outline, size: 18, color: Colors.white),
+            padding: const EdgeInsets.only(right: 8),
+            child: SizedBox(
+              width: 48,
+              height: 48,
+              child: IconButton(
+                key: const Key('movement-detail-avatar'),
+                onPressed: () => context.push('/profile'),
+                padding: EdgeInsets.zero,
+                tooltip: 'Mi perfil',
+                icon: const CircleAvatar(
+                  radius: 16,
+                  backgroundColor: AppColors.primary,
+                  child: Icon(
+                    Icons.person_outline,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -415,9 +429,10 @@ class _HeroCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text(
-                'PEN',
-                style: TextStyle(
+              // Auditoria m2: moneda real del detalle, nunca "PEN" fijo.
+              Text(
+                d.currency.toUpperCase(),
+                style: const TextStyle(
                   fontWeight: FontWeight.w600,
                   color: AppColors.secondaryText,
                 ),
@@ -434,7 +449,7 @@ class _HeroCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          _HeroStatusPill(status: d.status),
+          _HeroStatusPill(status: d.status, isCce: _isCce(d)),
           const SizedBox(height: 8),
           Text(
             _dateLabel(d),
@@ -549,8 +564,47 @@ String _counterparty(MovementDetail d) {
   return typeLabel(d.type);
 }
 
-String _counterpartySub(MovementDetail d) =>
-    '${typeLabel(d.type)} · Transferencia CCE';
+/// Subtitulo de contraparte (auditoria m2): "Transferencia CCE" solo para
+/// `INTERBANK_TRANSFER`; el resto muestra su descripcion real.
+String _counterpartySub(MovementDetail d) {
+  if (d.type.toUpperCase() == 'INTERBANK_TRANSFER') {
+    return '${typeLabel(d.type)} · Transferencia CCE';
+  }
+  return typeLabel(d.type);
+}
+
+/// Etiqueta de riel/red (auditoria m2): "Interbancaria diferida" solo para
+/// CCE; el resto describe su operacion real sin inventar red.
+String _railLabel(String type) {
+  switch (type.toUpperCase()) {
+    case 'INTERBANK_TRANSFER':
+      return 'Interbancaria diferida';
+    case 'OWN_TRANSFER':
+      return 'Entre cuentas propias';
+    case 'THIRD_PARTY_TRANSFER':
+      return 'Transferencia directa';
+    case 'REVERSAL':
+      return 'Reverso';
+    default:
+      return typeLabel(type);
+  }
+}
+
+/// `true` si el detalle viaja por CCE (auditoria m2): solo entonces se
+/// exhiben etiquetas/comisiones/tracking CCE.
+bool _isCce(MovementDetail d) =>
+    d.type.toUpperCase() == 'INTERBANK_TRANSFER';
+
+/// Codigo de seguimiento CCE real (`tracking` del servidor); vacio si no hay.
+/// No usa el fallback a `external_ref` (ese ya tiene su propia fila).
+String _cceTrackingOf(MovementDetail d) {
+  final tracking = d.tracking;
+  for (final key in const ['cce_tracking', 'tracking_code']) {
+    final value = tracking[key]?.toString().trim() ?? '';
+    if (value.isNotEmpty) return value;
+  }
+  return '';
+}
 
 String _dateLabel(MovementDetail d) {
   final date = d.createdAt;
@@ -569,9 +623,12 @@ String _dateLabel(MovementDetail d) {
 
 /// Pildora de estado del hero (mockups Reverso 1-4).
 class _HeroStatusPill extends StatelessWidget {
-  const _HeroStatusPill({required this.status});
+  const _HeroStatusPill({required this.status, required this.isCce});
 
   final String status;
+
+  /// Solo con CCE se rotula "Liquidado CCE"/"En Compensación".
+  final bool isCce;
 
   @override
   Widget build(BuildContext context) {
@@ -585,7 +642,7 @@ class _HeroStatusPill extends StatelessWidget {
         bg = const Color(0xFFEAE8E3);
         fg = AppColors.primary;
         dot = AppColors.success;
-        label = 'SETTLED · Liquidado CCE';
+        label = isCce ? 'SETTLED · Liquidado CCE' : 'SETTLED · Liquidado';
       case 'POSTED':
       case 'CONCILIATED':
         bg = const Color(0xFFEAE8E3);
@@ -598,7 +655,7 @@ class _HeroStatusPill extends StatelessWidget {
         bg = AppColors.warningContainer;
         fg = AppColors.onWarningContainer;
         dot = AppColors.secondary;
-        label = 'PENDING · En Compensación';
+        label = isCce ? 'PENDING · En Compensación' : 'PENDING · Pendiente';
       case 'REVERSED':
         bg = AppColors.surfaceContainerHighest;
         fg = AppColors.primary;
@@ -662,10 +719,10 @@ class _BreakdownCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          const Row(
+          Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
+              const Text(
                 'DESGLOSE DE LA OPERACIÓN',
                 style: TextStyle(
                   fontSize: 12,
@@ -673,9 +730,10 @@ class _BreakdownCard extends StatelessWidget {
                   color: AppColors.primary,
                 ),
               ),
+              // Auditoria m2: riel real segun `type` (CCE solo interbancario).
               Text(
-                'Interbancaria diferida',
-                style: TextStyle(
+                _railLabel(d.type),
+                style: const TextStyle(
                   fontSize: 11,
                   color: AppColors.onSurfaceVariant,
                 ),
@@ -685,7 +743,9 @@ class _BreakdownCard extends StatelessWidget {
           const SizedBox(height: 10),
           _Row(label: 'Cuenta de origen', value: 'Cuenta ${d.sourceMasked}'),
           _Row(label: 'Destinatario', value: 'Cuenta ${d.targetMasked}'),
-          const _Row(label: 'DNI', value: '••• masked •••'),
+          // Auditoria m2: sin fila DNI. El detalle (`GET /transactions/{id}`)
+          // no trae documento del titular y mostrar un placeholder fijo para
+          // todo tipo inventa datos.
           _Row(
             label: 'Tipo de operación',
             value: typeLabel(d.type),
@@ -707,7 +767,8 @@ class _BreakdownCard extends StatelessWidget {
             ),
           ),
           _Row(
-            label: 'Comisión servicio CCE',
+            // Auditoria m2: "servicio CCE" solo para interbancarias.
+            label: _isCce(d) ? 'Comisión servicio CCE' : 'Comisión del servicio',
             value: formatMoneyMinor(d.feeMinor, d.currency),
           ),
           Row(
@@ -728,7 +789,11 @@ class _BreakdownCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          if (d.trackingCode.isNotEmpty)
+          // Auditoria m2: el tracking CCE solo existe para interbancarias
+          // con `tracking` real del servidor (`cce_tracking`/`tracking_code`).
+          // Sin el, no se rotula nada como CCE (el `external_ref` ya tiene su
+          // propia fila "Núm. operación").
+          if (_cceTrackingOf(d).isNotEmpty)
             Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -748,7 +813,7 @@ class _BreakdownCard extends StatelessWidget {
                   ),
                   Flexible(
                     child: Text(
-                      d.trackingCode,
+                      _cceTrackingOf(d),
                       style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -1082,7 +1147,10 @@ String _actionLabel(MovementDetail detail) {
 
 String _caption(MovementDetail detail) {
   if (detail.isReversible) {
-    return 'Canalizado por protocolo CCE 24/7 sin penalidad.';
+    // Auditoria m2: protocolo CCE solo para interbancarias.
+    return _isCce(detail)
+        ? 'Canalizado por protocolo CCE 24/7 sin penalidad.'
+        : 'Reverso inmediato sin penalidad dentro de las 72 h.';
   }
   switch (detail.status.toUpperCase()) {
     case 'PENDING':

@@ -396,16 +396,28 @@ void main() {
     expect(find.text('Próximamente'), findsNothing);
   });
 
-  testWidgets('bottom-nav: Tarjetas sigue visual (Proximamente)',
+  testWidgets('bottom-nav: Tarjetas es visual sin SnackBar enganoso',
       (tester) async {
     await tester.pumpWidget(_okHarness());
     await tester.pumpAndSettle();
 
-    // El segundo SnackBar reemplaza/encola al primero: se asienta y se
-    // verifica el visible (el de Tarjetas).
+    // Auditoria M5: Tarjetas (2) queda visual sin prometer accion: no hay
+    // SnackBar y se sigue en el home.
     await tester.tap(find.byKey(const Key('bottomNav-tarjetas')));
     await tester.pumpAndSettle();
-    expect(find.text('Próximamente'), findsOneWidget);
+    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byKey(const Key('homeHero')), findsOneWidget);
+  });
+
+  testWidgets('bottom-nav: Inicio es no-op sin SnackBar', (tester) async {
+    await tester.pumpWidget(_okHarness());
+    await tester.pumpAndSettle();
+
+    // Auditoria M5: Inicio (0) no dispara "Próximamente": se sigue en home.
+    await tester.tap(find.byKey(const Key('bottomNav-inicio')));
+    await tester.pumpAndSettle();
+    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byKey(const Key('homeHero')), findsOneWidget);
   });
 
   testWidgets('bottom-nav Operar navega a /transfers', (tester) async {

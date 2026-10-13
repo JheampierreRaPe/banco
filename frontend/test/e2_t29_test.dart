@@ -75,7 +75,7 @@ class _FakeBeneficiaries implements BeneficiariesServiceBase {
       const <Beneficiary>[];
 
   @override
-  Future<Beneficiary> update(String id, BeneficiaryInput input) =>
+  Future<Beneficiary> update(String id, BeneficiaryPatch input) =>
       throw UnimplementedError();
 
   @override

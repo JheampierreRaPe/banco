@@ -226,6 +226,12 @@ class _TrackingPageState extends State<TrackingPage> {
                   ),
                 ),
                 const SizedBox(height: 24),
+                // m6: indicador DINAMICO segun el estado real del
+                // seguimiento (fase + nro. de consulta + ultimo estado
+                // del servidor). Antes era una checklist fija
+                // ("Validando fondos ✓ / Registrando… / Notificando…")
+                // que nunca cambiaba: progreso falso. Ahora solo se
+                // muestra lo que se sabe de verdad.
                 Container(
                   width: 280,
                   padding: const EdgeInsets.all(20),
@@ -234,21 +240,39 @@ class _TrackingPageState extends State<TrackingPage> {
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Column(
-                    children: const [
-                      _CheckRow(
-                        label: 'Validando fondos',
-                        done: true,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: AppColors.secondaryContainer,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _trackingStatusLine(),
+                              key: const Key('tracking-status-line'),
+                              style: AppTypography.bodyMd.copyWith(
+                                color: AppColors.onPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 16),
-                      _CheckRow(
-                        label: 'Registrando la operación',
-                        loading: true,
-                      ),
-                      SizedBox(height: 16),
-                      _CheckRow(
-                        label: 'Notificando al destinatario',
-                        pending: true,
-                      ),
+                      if (_detail != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Último estado: ${_statusLabel(_detail!.status)}',
+                          style: AppTypography.bodyMd.copyWith(
+                            fontSize: 12,
+                            color: AppColors.onPrimaryContainer,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -544,6 +568,18 @@ class _TrackingPageState extends State<TrackingPage> {
     );
   }
 
+  /// Linea honesta del seguimiento: fase real + nro. de consulta.
+  ///
+  /// m6: nunca inventa sub-pasos ("validando fondos", "notificando"):
+  /// solo refleja si aun no hubo consulta, cuantas van y que el
+  /// reintento es solo lectura (GET, sin doble debito).
+  String _trackingStatusLine() {
+    if (_phase == _Phase.loading && _attempts == 0) {
+      return 'Iniciando el seguimiento…';
+    }
+    return 'Consultando el estado… (consulta $_attempts)';
+  }
+
   String _statusLabel(String status) {
     switch (status.toUpperCase()) {
       case 'SETTLED':
@@ -559,57 +595,5 @@ class _TrackingPageState extends State<TrackingPage> {
       default:
         return status.toUpperCase();
     }
-  }
-}
-
-class _CheckRow extends StatelessWidget {
-  const _CheckRow({this.label = '', this.done = false, this.loading = false, this.pending = false});
-
-  final String label;
-  final bool done;
-  final bool loading;
-  final bool pending;
-
-  @override
-  Widget build(BuildContext context) {
-    final Widget icon;
-    if (loading) {
-      icon = const SizedBox.square(
-        dimension: 20,
-        child: CircularProgressIndicator(
-          strokeWidth: 2.5,
-          color: AppColors.secondaryContainer,
-        ),
-      );
-    } else if (done) {
-      icon = const Icon(
-        Icons.check_circle,
-        size: 20,
-        color: AppColors.secondaryContainer,
-      );
-    } else {
-      icon = Icon(
-        Icons.circle_outlined,
-        size: 20,
-        color: AppColors.onPrimary.withValues(alpha: 0.45),
-      );
-    }
-    return Row(
-      children: [
-        icon,
-        const SizedBox(width: 8),
-        Expanded(
-          child: Opacity(
-            opacity: pending ? 0.45 : 1,
-            child: Text(
-              label,
-              style: AppTypography.bodyMd.copyWith(
-                color: AppColors.onPrimary,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
   }
 }

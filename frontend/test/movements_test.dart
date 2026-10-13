@@ -217,6 +217,11 @@ Widget _listHarness(FakeMovementsService fake) {
           service: fake,
         ),
       ),
+      GoRoute(
+        path: '/profile',
+        builder: (context, state) =>
+            const Scaffold(body: Text('Perfil (fake)')),
+      ),
     ],
   );
   return MaterialApp.router(routerConfig: router);
@@ -476,6 +481,150 @@ void main() {
 
       expect(fake.receiptCalls, 1);
       expect(find.textContaining('constancia-tx-settled-1.pdf'), findsOneWidget);
+    });
+
+    testWidgets('m5: avatar del historial navega a /profile', (tester) async {
+      final fake = FakeMovementsService();
+      await tester.pumpWidget(_listHarness(fake));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('movements-avatar')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('movements-avatar')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Perfil (fake)'), findsOneWidget);
+    });
+
+    testWidgets('m5: avatar del detalle navega a /profile', (tester) async {
+      final fake = FakeMovementsService();
+      await tester.pumpWidget(_listHarness(fake));
+      await tester.pumpAndSettle();
+
+      // Entrar al detalle tocando la primera tarjeta y luego al avatar.
+      await tester.tap(find.byKey(const Key('movement-card-tx-settled-1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('movement-detail-avatar')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('movement-detail-avatar')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Perfil (fake)'), findsOneWidget);
+    });
+  });
+
+  group('Auditoria M6/M7/M8/m2 (copys honestos + datos reales)', () {
+    testWidgets('m8: titulo en español y cabecera con datos reales',
+        (tester) async {
+      await _pumpList(tester, FakeMovementsService());
+
+      expect(find.text('Historial de movimientos'), findsOneWidget);
+      expect(find.text('Transaction History'), findsNothing);
+      // Cabecera alimentada del primer movimiento (fuente/destino enmascarado
+      // + moneda del servidor), sin datos inventados.
+      expect(find.text('Cuenta •••• 8921'), findsOneWidget);
+      expect(find.text('Soles (PEN)'), findsOneWidget);
+      expect(find.text('Cuenta Principal CuyCash'), findsNothing);
+      expect(find.textContaining('8291'), findsNothing);
+    });
+
+    testWidgets('m8: sin movimientos la cabecera es neutra', (tester) async {
+      await _pumpList(tester, FakeMovementsService(seed: []));
+
+      expect(find.text('Mis movimientos'), findsOneWidget);
+      expect(find.text('Todas las cuentas'), findsOneWidget);
+    });
+
+    testWidgets('m6: extracto no promete correo; indica descarga real',
+        (tester) async {
+      await _pumpList(tester, FakeMovementsService());
+
+      await tester.tap(find.byKey(const Key('movements-extract')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('detalle de tu cuenta'), findsOneWidget);
+      expect(find.textContaining('correo'), findsNothing);
+    });
+
+    testWidgets('m6: reportar no simula envio; remite a soporte',
+        (tester) async {
+      final fake = FakeMovementsService()
+        ..listError = ApiException(
+          code: 'SERVER_ERROR',
+          message: 'Ocurrió un error inesperado. Inténtalo más tarde.',
+          statusCode: 500,
+        );
+      await tester.pumpWidget(_listHarness(fake));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('movements-report')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Si necesitas ayuda con este error'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Reporte enviado'), findsNothing);
+    });
+
+    testWidgets('m7: un solo estado vacio (sin EmptyView duplicado)',
+        (tester) async {
+      await _pumpList(tester, FakeMovementsService(seed: []));
+
+      expect(find.text('No encontramos movimientos'), findsOneWidget);
+      expect(find.text('Limpiar filtros y recargar'), findsOneWidget);
+      expect(find.text('Sin movimientos en este rango.'), findsNothing);
+    });
+
+    testWidgets('m2: propia en USD sin textos CCE; moneda real',
+        (tester) async {
+      final fake = FakeMovementsService();
+      fake.details['tx-own-usd'] = MovementDetail(
+        transactionId: 'tx-own-usd',
+        type: 'OWN_TRANSFER',
+        status: 'SETTLED',
+        amountMinor: -50000,
+        currency: 'USD',
+        createdAt: DateTime.now().subtract(const Duration(hours: 1)),
+        sourceAccountId: 'aaaaaaaa-1111-1111-1111-111111111111',
+        targetAccountId: 'bbbbbbbb-2222-2222-2222-222222222222',
+      );
+      await _pumpDetail(tester, fake, 'tx-own-usd');
+
+      expect(find.text('Detalle de movimiento'), findsOneWidget);
+      expect(find.text('USD'), findsOneWidget);
+      expect(find.text('PEN'), findsNothing);
+      expect(find.text('Transf. propia'), findsWidgets);
+      expect(find.textContaining('Transferencia CCE'), findsNothing);
+      expect(find.text('Interbancaria diferida'), findsNothing);
+      expect(find.text('Comisión servicio CCE'), findsNothing);
+      expect(find.text('Comisión del servicio'), findsOneWidget);
+      expect(find.text('DNI'), findsNothing);
+      expect(find.text('Tracking CCE:'), findsNothing);
+      expect(find.text('SETTLED · Liquidado'), findsOneWidget);
+    });
+
+    testWidgets('m2: interbancaria conserva rotulos CCE', (tester) async {
+      final fake = FakeMovementsService();
+      fake.details['tx-cce-1'] = MovementDetail(
+        transactionId: 'tx-cce-1',
+        type: 'INTERBANK_TRANSFER',
+        status: 'SETTLED',
+        amountMinor: -10000,
+        currency: 'PEN',
+        feeMinor: 50,
+        tracking: const {'cce_tracking': 'CCE-TR-1'},
+        createdAt: DateTime.now().subtract(const Duration(hours: 1)),
+      );
+      await _pumpDetail(tester, fake, 'tx-cce-1');
+
+      expect(find.textContaining('Transferencia CCE'), findsOneWidget);
+      expect(find.text('Interbancaria diferida'), findsOneWidget);
+      expect(find.text('Comisión servicio CCE'), findsOneWidget);
+      expect(find.text('Tracking CCE:'), findsOneWidget);
+      expect(find.text('CCE-TR-1'), findsOneWidget);
+      expect(find.text('SETTLED · Liquidado CCE'), findsOneWidget);
     });
   });
 }

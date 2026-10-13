@@ -43,6 +43,44 @@ class BeneficiaryInput {
       };
 }
 
+/// Parametros de EDICION PARCIAL (`PUT /beneficiaries/{id}`, CA-03/CA-04).
+///
+/// El backend acepta edicion parcial (`BeneficiaryUpdate`: todos los campos
+/// opcionales). Criterio M9: `null` = campo sin cambios y SE OMITE del body
+/// (nunca se envia vacio ni enmascarado). Asi, editar solo el alias no obliga
+/// a re-teclear ni re-validar cuenta/documento — que el backend jamas devuelve
+/// en claro (respuestas solo traen `account_masked` y hash del documento).
+class BeneficiaryPatch {
+  const BeneficiaryPatch({
+    required this.alias,
+    this.accountOrCci,
+    this.bankCode,
+    this.holderDoc,
+    this.currency,
+  });
+
+  final String alias;
+
+  /// Cuenta/CCI en claro (solo si el usuario la re-tecleo; `null` = sin
+  /// cambios, se omite del `PUT`).
+  final String? accountOrCci;
+  final String? bankCode;
+
+  /// Documento en claro (solo si se re-tecleo; `null` = sin cambios).
+  final String? holderDoc;
+  final String? currency;
+
+  Map<String, dynamic> toJson() => {
+        'alias': alias,
+        if (accountOrCci != null && accountOrCci!.isNotEmpty)
+          'account_or_cci': accountOrCci,
+        if (bankCode != null && bankCode!.isNotEmpty) 'bank_code': bankCode,
+        if (holderDoc != null && holderDoc!.isNotEmpty)
+          'holder_doc': holderDoc,
+        if (currency != null && currency!.isNotEmpty) 'currency': currency,
+      };
+}
+
 /// Contrato del servicio de beneficiarios (seam para tests con fake).
 abstract class BeneficiariesServiceBase {
   /// Lista `ACTIVE` del titular; con [query] busca en el servidor (`?q=`).
@@ -51,8 +89,9 @@ abstract class BeneficiariesServiceBase {
   /// Alta con `Idempotency-Key` (docs/05 §6.2: recomendada en el alta).
   Future<Beneficiary> create(BeneficiaryInput input, {String? idempotencyKey});
 
-  /// Edicion parcial (HU07 CA-03).
-  Future<Beneficiary> update(String id, BeneficiaryInput input);
+  /// Edicion parcial (HU07 CA-03): solo viajan los campos no-`null` de
+  /// [patch] (criterio M9).
+  Future<Beneficiary> update(String id, BeneficiaryPatch patch);
 
   /// Soft-delete; exige `confirm=true` y solo tras 2xx se refleja en UI.
   Future<Beneficiary> remove(String id);
@@ -121,9 +160,9 @@ class BeneficiariesService implements BeneficiariesServiceBase {
   }
 
   @override
-  Future<Beneficiary> update(String id, BeneficiaryInput input) async {
+  Future<Beneficiary> update(String id, BeneficiaryPatch patch) async {
     try {
-      final resp = await api.dio.put('/beneficiaries/$id', data: input.toJson());
+      final resp = await api.dio.put('/beneficiaries/$id', data: patch.toJson());
       return _parseOne(resp.data);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);

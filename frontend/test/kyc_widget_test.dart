@@ -271,11 +271,11 @@ void main() {
 
     await _completeStartPage(tester);
     await _captureDocument(tester);
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
 
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
-    expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
 
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
@@ -370,12 +370,12 @@ void main() {
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
     // Sigue en la misma tarea con mensaje de reintento.
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(find.textContaining('misma tarea'), findsOneWidget);
 
     await _tapText(tester, 'Reintentar captura');
     await tester.pumpAndSettle();
-    expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
   });
 
   testWidgets(
@@ -430,7 +430,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.hasDocumentImage, isTrue);
     await _continueDocument(tester);
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
 
     await _tapText(tester, 'Capturar');
     await tester.pumpAndSettle();
@@ -468,7 +468,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // No avanzo: sigue en la misma tarea y muestra paso + motivo traducido.
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(find.byKey(const Key('kycFailedStep')), findsOneWidget);
     expect(
       tester.widget<Text>(find.byKey(const Key('kycFailedStep'))).data,
@@ -482,7 +482,7 @@ void main() {
     // Reintento de la MISMA tarea: ahora pasa y avanza.
     await _tapText(tester, 'Reintentar captura');
     await tester.pumpAndSettle();
-    expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
   });
 
   testWidgets(
@@ -562,7 +562,7 @@ void main() {
     await _completeStartPage(tester);
     await _captureDocument(tester);
 
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(controller.hasDocumentImage, isTrue);
   });
 
@@ -589,7 +589,7 @@ void main() {
 
     // No avanzo: sigue en documento, con los motivos en espanol.
     expect(find.text('Escanea tu DNI'), findsOneWidget);
-    expect(find.textContaining('Paso 1 de 2'), findsNothing);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsNothing);
     expect(find.byKey(const Key('kycDocumentIssues')), findsOneWidget);
     expect(find.textContaining('borrosa'), findsOneWidget);
     expect(controller.hasDocumentImage, isTrue);
@@ -604,7 +604,7 @@ void main() {
     await tester.tap(find.byKey(const Key('captureDocumentButton')));
     await tester.pumpAndSettle();
     await _continueDocument(tester);
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(calls, 2);
   });
 
@@ -629,7 +629,7 @@ void main() {
 
     // Se muestra el error y NO se avanza; la captura sigue en memoria.
     expect(find.textContaining('Sin conexi'), findsOneWidget);
-    expect(find.textContaining('Paso 1 de 2'), findsNothing);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsNothing);
     expect(controller.hasDocumentImage, isTrue);
     final image = controller.documentImage;
 
@@ -638,7 +638,7 @@ void main() {
     await tester.tap(find.text('Reintentar validación'));
     await tester.pumpAndSettle();
     expect(controller.documentImage, image);
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
   });
 }
 

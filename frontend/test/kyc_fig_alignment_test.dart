@@ -343,7 +343,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Reconocimiento facial'), findsOneWidget);
-      expect(find.text('Paso 1 de 2 · Rostro'), findsOneWidget);
+      // Auditoria m1: stepper del flujo de alta (no de sub-tareas liveness).
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(
         find.text('Centra tu rostro en el círculo'),
         findsOneWidget,

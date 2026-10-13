@@ -12,6 +12,14 @@
 // - `Actions`: primaria (`#152A1F`) + secundaria + pie
 //   `Transacción protegida CuyCash`.
 //
+// Auditoria i1 (decision documentada): NO existe pagina/ruta dedicada; solo
+// el widget [PaymentErrorView], que `ConfirmPage` renderiza inline con sus
+// callbacks propios (`_onPaymentPrimary`/`_onPaymentSecondary`). La ruta
+// huerfana `/payments/error` y su envoltorio `PaymentErrorPage` se
+// eliminaron (`payment_authorization_routes.dart`): rutear por `extra`
+// perderia esos callbacks y romperia `ConfirmPage`, asi que el inline es el
+// uso correcto y la ruta muerta no se reutiliza.
+//
 // Mapeo de codigos del backend (docs/05 §4, E2-T17/E2-T19):
 // `INSUFFICIENT_FUNDS`, `DAILY_LIMIT_EXCEEDED`,
 // `BIOMETRIC_PREVENTIVE_BLOCK`, `EXPIRED_NONCE`/sesion expirada,
@@ -20,7 +28,6 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -121,8 +128,12 @@ _Copy _copyFor(PaymentErrorKind kind) {
         icon: Icons.account_balance_wallet_outlined,
         iconColor: AppColors.error,
         iconBackground: AppColors.errorContainer,
-        primaryLabel: 'Recargar cuenta',
-        secondaryLabel: 'Elegir otra cuenta de origen',
+        // M12: acciones reales. La primaria vuelve al formulario (pop en
+        // `ConfirmPage`): ahi se ajusta el monto con la cuenta actual. La
+        // secundaria va a `/home` (ruta real): no se promete elegir otra
+        // cuenta porque ese selector no existe en este flujo.
+        primaryLabel: 'Volver y ajustar el monto',
+        secondaryLabel: 'Volver al inicio',
         primaryIcon: null,
         techCode: 'ERR_INSUFFICIENT_FUNDS_400',
       );
@@ -137,7 +148,10 @@ _Copy _copyFor(PaymentErrorKind kind) {
         icon: Icons.trending_up,
         iconColor: Color(0xFF895200),
         iconBackground: Color(0xFFFFDCBC),
-        primaryLabel: 'Ajustar límites de transferencia',
+        // M12: acciones reales. No hay pantalla de limites en `/profile`:
+        // la primaria consulta el estado en Movimientos (`/movements`) y
+        // la secundaria va a `/home`. Nada promete ajustar limites.
+        primaryLabel: 'Ver movimientos',
         secondaryLabel: 'Volver al inicio',
         primaryIcon: null,
         techCode: 'ERR_DAILY_LIMIT_EXCEEDED_422',
@@ -153,8 +167,11 @@ _Copy _copyFor(PaymentErrorKind kind) {
         icon: Icons.shield_outlined,
         iconColor: AppColors.error,
         iconBackground: AppColors.errorContainer,
-        primaryLabel: 'Verificar identidad con DNI',
-        secondaryLabel: 'Hablar con asesor (WhatsApp)',
+        // M12: acciones reales. Con sesion activa `/login` redirige a
+        // `/home` (no verifica nada) y no hay WhatsApp: la primaria va a
+        // Movimientos (`/movements`) y la secundaria a `/home`.
+        primaryLabel: 'Ver movimientos',
+        secondaryLabel: 'Volver al inicio',
         primaryIcon: null,
         techCode: 'ERR_BIOMETRIC_PREVENTIVE_BLOCK_403',
       );
@@ -586,50 +603,6 @@ class _TechDetail extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Pagina de error de pago (ruta `/payments/error`, mockups 1..6).
-class PaymentErrorPage extends StatelessWidget {
-  const PaymentErrorPage({
-    super.key,
-    required this.args,
-    this.onPrimary,
-    this.onSecondary,
-  });
-
-  final PaymentErrorArgs args;
-  final VoidCallback? onPrimary;
-  final VoidCallback? onSecondary;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.surface,
-      appBar: AppBar(
-        leading: IconButton(
-          key: const Key('payment-error-close'),
-          icon: const Icon(Icons.close),
-          onPressed: () => context.pop(),
-        ),
-        title: Text('Estado del pago · ${args.kind.position} de 6'),
-        actions: const [
-          Padding(
-            padding: EdgeInsets.only(right: 16),
-            child: CircleAvatar(
-              radius: 16,
-              backgroundColor: AppColors.primary,
-              child: Icon(Icons.person_outline, size: 18, color: Colors.white),
-            ),
-          ),
-        ],
-      ),
-      body: PaymentErrorView(
-        args: args,
-        onPrimary: onPrimary ?? () => context.pop(),
-        onSecondary: onSecondary ?? () => context.go('/home'),
       ),
     );
   }

@@ -25,7 +25,8 @@ import '../utils/format.dart';
 /// - Card Documentos (3): contrato, pagare y hoja resumen, cada uno con
 ///   `Abrir` (descarga el PDF del backend).
 /// - Card Aviso legal (texto legal completo) + CTA `Firmar contrato` (va a
-///   `/credits/sign`) + CTA `Descargar documentos (PDF)`.
+///   `/credits/sign`; M11: si el juego ya esta firmado se reemplaza por
+///   `Volver al inicio`) + CTA `Descargar documentos (PDF)`.
 /// - 4 estados (`docs/20` §7) con `LoadingView`/`EmptyView`/`ErrorView`.
 /// - Sin `Idempotency-Key` en lectura/descarga (no crea recursos).
 ///
@@ -247,26 +248,45 @@ class _CreditContractPageState extends State<CreditContractPage> {
           const SizedBox(height: AppSpacing.stackMd),
           _legalCard(),
           const SizedBox(height: AppSpacing.stackMd),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              key: const Key('contract-sign-cta'),
-              onPressed: () => context.push(
-                '/credits/sign',
-                extra: {
-                  'applicationId': _applicationId,
-                  'summary': _summaryLine(),
-                },
-              ),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size(88, 52),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadii.md),
+          // M11: un contrato firmado NO ofrece firmar de nuevo. Si
+          // `bundle.isSigned`, el CTA se reemplaza por "Volver al inicio"
+          // (`/home`, ruta real); si no, "Firmar contrato" (`/credits/sign`).
+          if (bundle.isSigned)
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: const Key('contract-home-cta'),
+                onPressed: () => context.go('/home'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
                 ),
+                child: const Text('Volver al inicio'),
               ),
-              child: const Text('Firmar contrato'),
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: const Key('contract-sign-cta'),
+                onPressed: () => context.push(
+                  '/credits/sign',
+                  extra: {
+                    'applicationId': _applicationId,
+                    'summary': _summaryLine(),
+                  },
+                ),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Firmar contrato'),
+              ),
             ),
-          ),
           const SizedBox(height: AppSpacing.stackSm),
           SizedBox(
             width: double.infinity,

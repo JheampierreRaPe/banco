@@ -40,13 +40,22 @@ import '../utils/format.dart';
 /// [service] es inyectable para tests; la ruta lo resuelve desde
 /// `creditApplicationsServiceFactory`. `null` no rompe la pantalla: el
 /// formulario se muestra igual y el error aparece al enviar.
+///
+/// M10: [documentMasked]/[disburseAccountMasked] son SOLO lectura y la
+/// ruta NO los inyecta (no hay fuente real: `GET /me` solo trae
+/// nombre/apellido, sin documento ni cuentas; ver `profile_service.dart`).
+/// Por eso el constructor trae valores de EJEMPLO y [isExampleData] (default
+/// `true`) los etiqueta en la UI como "Dato de ejemplo". Cuando exista una
+/// fuente real, la ruta la inyectara con `isExampleData: false` y el aviso
+/// desaparece. Jamas se presentan como verificados ni viajan al backend.
 class CreditApplicationPage extends StatefulWidget {
   const CreditApplicationPage({
     super.key,
     this.draft,
     this.service,
-    this.documentMasked = 'DNI •••• 4521 (verificado)',
+    this.documentMasked = 'DNI •••• 4521',
     this.disburseAccountMasked = 'Ahorros •••• 4521',
+    this.isExampleData = true,
   });
 
   final SimulationDraft? draft;
@@ -57,6 +66,10 @@ class CreditApplicationPage extends StatefulWidget {
 
   /// Cuenta de desembolso YA enmascarada (solo lectura; informativa).
   final String disburseAccountMasked;
+
+  /// `true` = los valores de arriba son de ejemplo (sin fuente real) y la
+  /// UI lo declara. `false` = vienen de una fuente real del titular.
+  final bool isExampleData;
 
   @override
   State<CreditApplicationPage> createState() => _CreditApplicationPageState();
@@ -389,6 +402,10 @@ class _CreditApplicationPageState extends State<CreditApplicationPage> {
             label: 'Documento',
             valueKey: const Key('credit-apply-document'),
             value: widget.documentMasked,
+            // M10: sin fuente real, aviso honesto de dato de ejemplo.
+            caption: widget.isExampleData
+                ? 'Dato de ejemplo: aún no recibimos tu documento.'
+                : null,
           ),
           const SizedBox(height: AppSpacing.stackMd),
           _moneyField(
@@ -411,6 +428,10 @@ class _CreditApplicationPageState extends State<CreditApplicationPage> {
             label: 'Cuenta de desembolso',
             valueKey: const Key('credit-apply-account'),
             value: widget.disburseAccountMasked,
+            // M10: sin fuente real, aviso honesto de dato de ejemplo.
+            caption: widget.isExampleData
+                ? 'Dato de ejemplo: aún no recibimos tu cuenta.'
+                : null,
           ),
           const SizedBox(height: AppSpacing.stackMd),
           _moneyField(
@@ -440,11 +461,13 @@ class _CreditApplicationPageState extends State<CreditApplicationPage> {
   }
 
   /// Fila solo lectura enmascarada (documento / cuenta): se muestra tal cual,
-  /// nunca en claro.
+  /// nunca en claro. [caption] (M10) declara el dato de ejemplo cuando no
+  /// hay fuente real del titular.
   Widget _readonlyField({
     required String label,
     required Key valueKey,
     required String value,
+    String? caption,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -474,6 +497,17 @@ class _CreditApplicationPageState extends State<CreditApplicationPage> {
             ),
           ),
         ),
+        if (caption != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            caption,
+            style: AppTypography.bodyMd.copyWith(
+              fontSize: 12,
+              color: AppColors.secondaryText,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
       ],
     );
   }

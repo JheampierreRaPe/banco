@@ -161,7 +161,7 @@ class _PinResetIdentityPageState extends State<PinResetIdentityPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Crea un nuevo PIN',
+                'Confirma tu identidad',
                 style: AppTypography.headlineMd.copyWith(
                   color: AppColors.onSurface,
                 ),

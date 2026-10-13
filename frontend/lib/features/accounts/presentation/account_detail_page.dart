@@ -634,6 +634,13 @@ class _MovementTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // DECISION m3 (auditoria): las filas NO navegan a `/movements/:id`.
+    // El `Movement` de cuentas solo expone `journalEntryId` (id del asiento
+    // contable, `GET /accounts/{id}/movements`) mientras que la ruta de
+    // detalle exige `transaction_id` (`GET /transactions/{id}`). Son
+    // espacios de ids distintos sin mapeo en el cliente: navegar con el
+    // `journalEntryId` caeria en `NOT_FOUND` ("No encontramos ese
+    // movimiento"). No se inventa un id; la fila queda informativa.
     final scheme = Theme.of(context).colorScheme;
     final credit = movement.isCredit;
     final color = credit ? AppColors.success : scheme.error;

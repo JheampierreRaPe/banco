@@ -44,6 +44,11 @@ import '../utils/format.dart';
 /// `Simulador`, no crea su propio `Scaffold`/`AppBar` (la home ya aporta el
 /// TopBar `Créditos` + el `SegmentedButton`); por defecto es `false` y la
 /// página se comporta igual que antes.
+///
+/// i3 (auditoría): la rama `embedded: false` (standalone con `Scaffold`
+/// propio) NO es código muerto: es el modo que ejercitan los tests de
+/// widget (`test/credits_simulator_test.dart` la montan sin `embedded`) y
+/// queda disponible para una ruta directa del simulador. Se conserva.
 class CreditsSimulatorPage extends StatefulWidget {
   const CreditsSimulatorPage({super.key, this.service, this.embedded = false});
 

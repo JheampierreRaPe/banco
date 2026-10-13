@@ -485,14 +485,14 @@ void main() {
 
       router.push('/kyc/task');
       await tester.pumpAndSettle();
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('kycBackButton')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('kycBackConfirmDialog')), findsOneWidget);
       await tester.tap(find.byKey(const Key('kycBackCancelButton')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(c.challenge, isNotNull);
 
       await tester.tap(find.byKey(const Key('kycBackButton')));
@@ -670,9 +670,9 @@ void main() {
       await completeStartPage(tester);
       await captureDocumentAndContinue(tester);
       await tapTaskButton(tester, 'Capturar');
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       await tapTaskButton(tester, 'Reintentar captura');
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       await tapTaskButton(tester, 'Reintentar captura');
 
       // Tercer intento agotado: reinicio silencioso, sin folio ni popup.

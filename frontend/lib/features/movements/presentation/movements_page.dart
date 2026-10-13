@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 import '../../../core/errors/api_exception.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
-import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../data/movements_service.dart';
 import '../models/movement.dart';
@@ -148,6 +147,32 @@ class _MovementsPageState extends State<MovementsPage> {
     });
   }
 
+  /// Cabecera con datos reales (auditoria M8): usa la cuenta/moneda del
+  /// primer movimiento cargado; sin datos, texto neutro (jamas inventado).
+  String _stripTitle() {
+    if (_items.isEmpty) return 'Mis movimientos';
+    final first = _items.first;
+    final masked = (first.sourceMasked ?? '').trim().isNotEmpty
+        ? first.sourceMasked!.trim()
+        : (first.targetMasked ?? '').trim();
+    if (masked.isEmpty) return 'Mis movimientos';
+    return 'Cuenta $masked';
+  }
+
+  /// Moneda del primer movimiento (`Soles (PEN)`/`Dólares (USD)`); neutro
+  /// sin datos. Solo exhibe lo que el servidor ya devolvio enmascarado.
+  String _stripSubtitle() {
+    if (_items.isEmpty) return 'Todas las cuentas';
+    switch (_items.first.currency.toUpperCase()) {
+      case 'USD':
+        return 'Dólares (USD)';
+      case 'PEN':
+        return 'Soles (PEN)';
+      default:
+        return _items.first.currency.toUpperCase();
+    }
+  }
+
   void _clearFilters() {
     _searchController.clear();
     setState(() {
@@ -192,18 +217,32 @@ class _MovementsPageState extends State<MovementsPage> {
       backgroundColor: AppColors.surfaceContainerLow,
       appBar: AppBar(
         backgroundColor: AppColors.surfaceContainerLow,
-        title: const Text('Transaction History'),
+        title: const Text('Historial de movimientos'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.canPop() ? context.pop() : null,
         ),
-        actions: const [
+        actions: [
           Padding(
-            padding: EdgeInsets.only(right: 16),
-            child: CircleAvatar(
-              radius: 16,
-              backgroundColor: AppColors.primary,
-              child: Icon(Icons.person_outline, size: 18, color: Colors.white),
+            padding: const EdgeInsets.only(right: 8),
+            child: SizedBox(
+              width: 48,
+              height: 48,
+              child: IconButton(
+                key: const Key('movements-avatar'),
+                onPressed: () => context.push('/profile'),
+                padding: EdgeInsets.zero,
+                tooltip: 'Mi perfil',
+                icon: const CircleAvatar(
+                  radius: 16,
+                  backgroundColor: AppColors.primary,
+                  child: Icon(
+                    Icons.person_outline,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -213,7 +252,10 @@ class _MovementsPageState extends State<MovementsPage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            const _AccountStrip(),
+            _AccountStrip(
+              title: _stripTitle(),
+              subtitle: _stripSubtitle(),
+            ),
             const SizedBox(height: 12),
             _SearchBox(
               controller: _searchController,
@@ -235,9 +277,15 @@ class _MovementsPageState extends State<MovementsPage> {
               _MovementsError(
                 error: _error!,
                 onRetry: _reload,
+                // Auditoria M6: sin promesas falsas. No existe endpoint de
+                // "reportar error": el boton conserva ayuda honesta (contactar
+                // a soporte) en vez de simular un envio con aviso por correo.
                 onReport: () => ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('Reporte enviado. Te avisaremos por correo.'),
+                    content: Text(
+                      'Si necesitas ayuda con este error, '
+                      'contacta a Soporte CuyCash 24/7.',
+                    ),
                   ),
                 ),
               )
@@ -381,8 +429,18 @@ String _dateLabel(MovementDatePreset preset) {
 }
 
 /// Franja de cuenta + boton Extracto (mockup Historial 1, `AccountStrip`).
+///
+/// Auditoria M6/M8: el historial global (`GET /transactions`) no tiene
+/// cuenta seleccionada ni rango, asi que no puede llamar a
+/// `AccountsService.exportMovements` (exige `accountId` + `dateFrom`/`dateTo`
+/// de `GET /accounts/{id}/movements/export`). El boton NO promete envio por
+/// correo: indica la descarga real (detalle de cuenta -> Exportar CSV).
+/// Titulo/subtitulo con datos reales del primer movimiento o texto neutro.
 class _AccountStrip extends StatelessWidget {
-  const _AccountStrip();
+  const _AccountStrip({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -402,29 +460,33 @@ class _AccountStrip extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        const Expanded(
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Cuenta Principal CuyCash',
-                style: TextStyle(
+                title,
+                style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primary,
                 ),
               ),
               Text(
-                'CCI •••• 8291 · Soles (PEN)',
-                style: TextStyle(fontSize: 11, color: AppColors.outline),
+                subtitle,
+                style: const TextStyle(fontSize: 11, color: AppColors.outline),
               ),
             ],
           ),
         ),
         FilledButton.tonal(
+          key: const Key('movements-extract'),
           onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Tu extracto llegará a tu correo registrado.'),
+              content: Text(
+                'El extracto se descarga desde el detalle de tu cuenta '
+                '(Exportar CSV).',
+              ),
             ),
           ),
           style: FilledButton.styleFrom(
@@ -1177,13 +1239,6 @@ class _MovementsEmpty extends StatelessWidget {
         // El EmptyView base existe, pero el mockup pide link ocre:
         // se usa TextButton para no duplicar dependencia.
         const _HelpLink(),
-        const SizedBox(height: 8),
-        // Cobertura del widget base (convencion F-T01 §3).
-        EmptyView(
-          message: 'Sin movimientos en este rango.',
-          actionLabel: 'Recargar',
-          onAction: onClear,
-        ),
       ],
     );
   }
@@ -1319,6 +1374,7 @@ class _MovementsError extends StatelessWidget {
                   SizedBox(
                     height: 44,
                     child: FilledButton(
+                      key: const Key('movements-report'),
                       onPressed: onReport,
                       style: FilledButton.styleFrom(
                         backgroundColor:

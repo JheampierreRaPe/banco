@@ -6,9 +6,11 @@ import '../../../core/session/session_identity_store.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/widgets/app_bottom_nav.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../accounts/data/accounts_service.dart';
 import '../../biometrics/biometric_reader.dart';
+import '../../home/data/profile_service.dart';
 import '../data/biometric_consent_service.dart';
 
 /// Pantalla `opciones-usuario` ("Mi perfil", F-T52, HU03).
@@ -16,7 +18,7 @@ import '../data/biometric_consent_service.dart';
 /// Replica la estructura del fig (`pantallas.fig`, page `0:2903`, root
 /// `FRAME opciones-usuario 0:2904`): topbar, hero, secciones y bottom-nav con
 /// los textos del mockup y tokens del design system "Eucalipto y Ocre".
-/// Tres acciones son funcionales:
+/// Cinco acciones son funcionales:
 ///
 /// - Switch de biometria (fila `0:2959`, `Key('biometric-switch')`): valor
 ///   inicial de `SessionIdentityStore.biometricEnabled` (F-T49); al cambiar
@@ -28,11 +30,25 @@ import '../data/biometric_consent_service.dart';
 ///   redirige a `/login` o `/welcome`.
 /// - "Créditos preaprobados" (`Key('profile-credits')`): navega a `/credits`
 ///   (punto de entrada a Créditos; la ruta exige sesión por la guarda F-T37).
+/// - "Cambiar PIN y contraseñas" (`Key('profile-pin-reset')`, auditoria M2):
+///   navega a `/pin-reset` (restablecimiento con email+DNI+OTP, F-T43).
+/// - "Cuentas asociadas" (`Key('profile-accounts')`, auditoria M2): navega
+///   a `/accounts` (lista del servidor, sin inventar datos).
+/// - Bottom-nav (auditoria M4): `AppBottomNav` compartido con el home
+///   (activo = Perfil): Inicio -> `/home`, Operar -> `/transfers`.
 ///
-/// Todo lo demas (ayuda, editar, resto de filas, bottom-nav) es visual y no
-/// dispara navegacion, endpoint ni cambio de estado (CA-06). Excepcion
-/// declarada: el "volver" del topbar (`Key('profile-back')`) es cromo
-/// navegable (`context.pop()`) y no cuenta como fila visual.
+/// La ayuda del topbar (`Key('profile-help')`) y el editar del hero
+/// (`Key('profile-edit')`) son adornos visuales SIN affordance de boton
+/// (auditoria M2): no hay destino real y no se dejan como botones activos.
+/// Todo lo demas (resto de filas) es visual y no dispara navegacion,
+/// endpoint ni cambio de estado (CA-06). Excepcion declarada: el "volver"
+/// del topbar (`Key('profile-back')`) es cromo navegable (`context.pop()`)
+/// y no cuenta como fila visual.
+///
+/// El hero muestra la identidad REAL de `GET /me` (auditoria M3, mismo
+/// servicio que `home_page.dart`): nombre e iniciales del servidor; sin
+/// fuente se muestra el placeholder honesto "Tu perfil" (sin nombre falso
+/// ni ID inventado) y sin monto fijo en "Créditos preaprobados".
 ///
 /// [consentService], [identity], [reader] y [onLogout] son inyectables para
 /// tests. Sin servicio de consentimiento el switch muestra un error neutro.
@@ -43,6 +59,10 @@ import '../data/biometric_consent_service.dart';
 /// para copiarlo (compartir con otros). El cliente nunca desenmascara ni
 /// reconstruye el numero completo (docs/16 §2.9, cliente delgado): se copia
 /// el enmascarado. Sin servicio no se muestra nada (compat con tests/F-T52).
+///
+/// [profileService] es opcional (auditoria M3): fuente de la identidad real
+/// (`GET /me`, mismo servicio que consume `home_page.dart`). Sin servicio
+/// el hero muestra un placeholder honesto ("Tu perfil", sin nombre falso).
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
     super.key,
@@ -51,6 +71,7 @@ class ProfilePage extends StatefulWidget {
     this.reader,
     this.onLogout,
     this.accountsService,
+    this.profileService,
   });
 
   final BiometricConsentServiceBase? consentService;
@@ -60,6 +81,9 @@ class ProfilePage extends StatefulWidget {
 
   /// Fuente del numero enmascarado (`GET /accounts`); `null` = sin tarjeta.
   final AccountsServiceBase? accountsService;
+
+  /// Fuente de la identidad real (`GET /me`); `null` = placeholder honesto.
+  final ProfileServiceBase? profileService;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -160,7 +184,7 @@ class _ProfilePageState extends State<ProfilePage> {
               child: ListView(
                 padding: const EdgeInsets.all(AppSpacing.marginMobile),
                 children: [
-                  const _HeroCard(),
+                  _HeroCard(profileService: widget.profileService),
                   const SizedBox(height: AppSpacing.stackMd),
                   _AccountNumberCard(service: widget.accountsService),
                   const SizedBox(height: AppSpacing.stackMd),
@@ -212,17 +236,21 @@ class _ProfilePageState extends State<ProfilePage> {
                           onRetry: () => _setConsent(_lastIntent),
                         ),
                         const Divider(height: 1),
-                        const _StaticRow(
+                        _StaticRow(
                           icon: Icons.lock_outline,
                           title: 'Cambiar PIN y contraseñas',
                           subtitle: 'Clave digital y código de 4 dígitos',
+                          tapKey: const Key('profile-pin-reset'),
+                          onTap: () => context.push('/pin-reset'),
                         ),
                         const Divider(height: 1),
-                        const _StaticRow(
+                        _StaticRow(
                           icon: Icons.people_outline,
                           iconBackground: AppColors.secondaryFixed,
                           title: 'Cuentas asociadas',
                           subtitle: 'Cuentas bancarias del usuario',
+                          tapKey: const Key('profile-accounts'),
+                          onTap: () => context.push('/accounts'),
                         ),
                       ],
                     ),
@@ -259,7 +287,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         _StaticRow(
                           icon: Icons.payments_outlined,
                           title: 'Créditos preaprobados',
-                          subtitle: 'Línea disponible de hasta S/ 15,000',
+                          subtitle: 'Consulta tu línea disponible',
                           tapKey: const Key('profile-credits'),
                           onTap: () => context.push('/credits'),
                         ),
@@ -302,10 +330,36 @@ class _ProfilePageState extends State<ProfilePage> {
                 ],
               ),
             ),
-            const _BottomNav(),
+            _ProfileBottomNav(),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Bottom-nav del perfil (auditoria M4): reutiliza el [AppBottomNav]
+/// compartido con el home (mismo patron de `home_page.dart`): Perfil activo
+/// (3); Inicio -> `/home`, Operar -> `/transfers`; la pestana activa es
+/// no-op. Sin SnackBar ni destinos muertos.
+class _ProfileBottomNav extends StatelessWidget {
+  const _ProfileBottomNav();
+
+  @override
+  Widget build(BuildContext context) {
+    return AppBottomNav(
+      activeIndex: 3,
+      onSelect: (index) {
+        if (index == 3) return; // Perfil activo: no-op.
+        if (index == 0) {
+          context.go('/home');
+          return;
+        }
+        if (index == 1) {
+          context.push('/transfers');
+        }
+        // Tarjetas (2): visual sin accion prometida (igual que el home).
+      },
     );
   }
 }
@@ -344,12 +398,12 @@ class _TopBar extends StatelessWidget {
               ),
             ),
           ),
-          // Ayuda del fig (`btn-ayuda 0:2910`): visual, sin accion (CA-06).
-          _CircleIconButton(
+          // Ayuda del fig (`btn-ayuda 0:2910`): adorno visual SIN affordance
+          // de boton (auditoria M2: no hay destino real de ayuda y no se
+          // deja como boton activo). Se conserva la `Key` para tests.
+          _CircleVisual(
             key: const Key('profile-help'),
             icon: Icons.help_outline,
-            tooltip: 'Ayuda',
-            onPressed: () {},
           ),
         ],
       ),
@@ -390,13 +444,90 @@ class _CircleIconButton extends StatelessWidget {
   }
 }
 
-/// Hero del fig (`hero 0:2915`): avatar, nombre verificado e ID (visual).
-class _HeroCard extends StatelessWidget {
-  const _HeroCard();
+/// Adorno circular SIN affordance de boton (auditoria M2).
+///
+/// Mantiene el aspecto del fig pero NO es tappable: sin destino real no se
+/// deja como boton activo. Excluye `Semantics` de boton para lectores.
+class _CircleVisual extends StatelessWidget {
+  const _CircleVisual({
+    super.key,
+    required this.icon,
+  });
+
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    return ExcludeSemantics(
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: scheme.onPrimary.withValues(alpha: 0.15),
+        ),
+        alignment: Alignment.center,
+        child: Icon(icon, size: 20, color: scheme.onPrimary),
+      ),
+    );
+  }
+}
+
+/// Hero del fig (`hero 0:2915`): avatar, nombre verificado y estado.
+///
+/// Auditoria M3: la identidad es REAL (`GET /me` via [profileService], mismo
+/// servicio que `home_page.dart`): nombre e iniciales del servidor. Sin
+/// fuente (servicio `null`, cargando o error) se muestra el placeholder
+/// honesto "Tu perfil" con icono generico: jamas un nombre/ID falso ni un
+/// monto fijo. No hay linea de ID: `GET /me` no devuelve identificador
+/// visible y no se inventa ninguno (sin PII ficticia).
+class _HeroCard extends StatelessWidget {
+  const _HeroCard({required this.profileService});
+
+  final ProfileServiceBase? profileService;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final service = profileService;
+    if (service == null) {
+      return _HeroContent(
+        scheme: scheme,
+        displayName: 'Tu perfil',
+        initials: '',
+      );
+    }
+    return FutureBuilder<Profile>(
+      future: service.getProfile(),
+      builder: (context, snapshot) {
+        final profile = snapshot.data;
+        final name = (profile?.displayName ?? '').trim();
+        final initials = (profile?.initials ?? '').trim();
+        return _HeroContent(
+          scheme: scheme,
+          displayName: name.isEmpty ? 'Tu perfil' : name,
+          initials: initials,
+        );
+      },
+    );
+  }
+}
+
+/// Contenido visual del hero (avatar + nombre + sello + editar-visual).
+class _HeroContent extends StatelessWidget {
+  const _HeroContent({
+    required this.scheme,
+    required this.displayName,
+    required this.initials,
+  });
+
+  final ColorScheme scheme;
+  final String displayName;
+  final String initials;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(AppSpacing.stackSm + 2),
       decoration: BoxDecoration(
@@ -414,13 +545,19 @@ class _HeroCard extends StatelessWidget {
               color: AppColors.secondaryContainer,
             ),
             alignment: Alignment.center,
-            child: Text(
-              'CM',
-              style: AppTypography.bodyLg.copyWith(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+            child: initials.isEmpty
+                ? Icon(
+                    Icons.person_outline,
+                    size: 24,
+                    color: scheme.primary,
+                  )
+                : Text(
+                    initials,
+                    style: AppTypography.bodyLg.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
           ),
           const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
           Expanded(
@@ -433,7 +570,7 @@ class _HeroCard extends StatelessWidget {
                   children: [
                     Flexible(
                       child: Text(
-                        'Carlos Mendoza',
+                        displayName,
                         overflow: TextOverflow.ellipsis,
                         style: AppTypography.bodyLg.copyWith(
                           color: scheme.onPrimary,
@@ -451,7 +588,7 @@ class _HeroCard extends StatelessWidget {
                 ),
                 const SizedBox(height: AppSpacing.unit / 2),
                 Text(
-                  'ID Cliente 4829-0193',
+                  'Identidad verificada',
                   style: AppTypography.bodyMd.copyWith(
                     color: scheme.onPrimaryContainer,
                   ),
@@ -459,21 +596,24 @@ class _HeroCard extends StatelessWidget {
               ],
             ),
           ),
-          // Editar del fig (`btn-editar 0:2925`): visual, sin accion (CA-06).
-          Container(
-            width: 36,
-            height: 36,
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.primaryContainer,
-            ),
-            child: IconButton(
+          // Editar del fig (`btn-editar 0:2925`): adorno visual SIN
+          // affordance de boton (auditoria M2: no hay destino real de
+          // edicion y no se deja como boton activo). Se conserva la `Key`.
+          ExcludeSemantics(
+            child: Container(
               key: const Key('profile-edit'),
-              onPressed: () {},
-              icon: const Icon(Icons.edit_outlined, size: 16),
-              color: scheme.onPrimary,
-              tooltip: 'Editar',
-              padding: EdgeInsets.zero,
+              width: 36,
+              height: 36,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.primaryContainer,
+              ),
+              alignment: Alignment.center,
+              child: Icon(
+                Icons.edit_outlined,
+                size: 16,
+                color: scheme.onPrimary,
+              ),
             ),
           ),
         ],
@@ -590,10 +730,11 @@ class _AgendaRow extends StatelessWidget {
   }
 }
 
-/// Fila estatica del fig (visual, sin `onTap`: CA-06), salvo la de
-/// "Créditos preaprobados" que navega a `/credits` (punto de entrada
-/// declarado: usa [onTap]/[tapKey] y se envuelve en `InkWell` con el mismo
-/// estilo/padding que el resto).
+/// Fila estatica del fig (visual, sin `onTap`: CA-06), salvo las filas con
+/// destino real (auditoria M2): "Créditos preaprobados" (`/credits`),
+/// "Cambiar PIN y contraseñas" (`/pin-reset`) y "Cuentas asociadas"
+/// (`/accounts`) usan [onTap]/[tapKey] y se envuelven en `InkWell` con el
+/// mismo estilo/padding que el resto.
 class _StaticRow extends StatelessWidget {
   const _StaticRow({
     required this.icon,
@@ -613,8 +754,9 @@ class _StaticRow extends StatelessWidget {
   final Color? iconColor;
   final Widget? trailing;
 
-  /// Destino tappable (solo "Créditos preaprobados" lo define); `null` =
-  /// fila visual sin navegacion.
+  /// Destino tappable (las filas con destino real lo definen:
+  /// `/credits`, `/pin-reset`, `/accounts`); `null` = fila visual sin
+  /// navegacion.
   final VoidCallback? onTap;
 
   /// `Key` del `InkWell` tappable (p. ej. `profile-credits` para tests).
@@ -934,57 +1076,6 @@ class _BiometricRow extends StatelessWidget {
   }
 }
 
-/// Bottom-nav del fig (`bottom-nav 0:3036`, `Perfil` activo): visual (CA-06).
-class _BottomNav extends StatelessWidget {
-  const _BottomNav();
+/// (Eliminado en auditoria M4: se reutiliza `AppBottomNav` via
+/// `_ProfileBottomNav`; ver arriba.)
 
-  @override
-  Widget build(BuildContext context) {
-    const tabs = [
-      (Icons.home_outlined, 'Inicio', false),
-      (Icons.add_circle_outline, 'Operar', false),
-      (Icons.credit_card_outlined, 'Tarjetas', false),
-      (Icons.person_outline, 'Perfil', true),
-    ];
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surfaceContainerLowest,
-        border: Border(top: BorderSide(color: AppColors.divider)),
-      ),
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.marginMobile,
-        vertical: AppSpacing.stackSm,
-      ),
-      child: Row(
-        children: [
-          for (final tab in tabs)
-            Expanded(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    tab.$1,
-                    size: 20,
-                    color: tab.$3
-                        ? AppColors.primary
-                        : AppColors.secondaryText,
-                  ),
-                  const SizedBox(height: AppSpacing.stackXs),
-                  Text(
-                    tab.$2,
-                    style: AppTypography.labelMd.copyWith(
-                      color: tab.$3
-                          ? AppColors.primary
-                          : AppColors.secondaryText,
-                      fontWeight:
-                          tab.$3 ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}

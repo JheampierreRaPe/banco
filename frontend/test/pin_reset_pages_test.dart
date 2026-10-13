@@ -270,8 +270,9 @@ void main() {
       await tester.pumpWidget(MaterialApp.router(routerConfig: router));
       await tester.pumpAndSettle();
 
-      // Paso 1: email + DNI (mockup `pin-reset`).
-      expect(find.text('Crea un nuevo PIN'), findsOneWidget);
+      // Paso 1: email + DNI (mockup `pin-reset`, auditoria m8: el paso de
+      // identidad titula "Confirma tu identidad").
+      expect(find.text('Confirma tu identidad'), findsOneWidget);
       await _submitIdentity(tester);
       uris.add(_currentUri(router));
       expect(backend.requestBodies, [
@@ -352,7 +353,7 @@ void main() {
       await tester.tap(find.byKey(const Key('login-pin-reset-link')));
       await tester.pumpAndSettle();
 
-      expect(find.text('Crea un nuevo PIN'), findsOneWidget);
+      expect(find.text('Confirma tu identidad'), findsOneWidget);
     });
   });
 

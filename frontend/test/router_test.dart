@@ -190,7 +190,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // F-T43: `/pin-reset` es pública pre-login (no abre sesión).
-    expect(find.text('Crea un nuevo PIN'), findsOneWidget);
+    // Auditoria m8: el paso de identidad titula "Confirma tu identidad".
+    expect(find.text('Confirma tu identidad'), findsOneWidget);
     expect(find.text('Tu banco, sin colas ni papeles'), findsNothing);
   });
 
@@ -204,7 +205,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Crea un nuevo PIN'), findsOneWidget);
+    expect(find.text('Confirma tu identidad'), findsOneWidget);
     expect(find.text('Inicia sesión'), findsNothing);
   });
 

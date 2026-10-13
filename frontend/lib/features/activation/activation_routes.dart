@@ -13,10 +13,16 @@ import 'activation_service.dart';
 /// En tests se asigna un fake. Si no está asignada (o falta `userRef`), la
 /// ruta muestra un [ErrorView] de configuración en lugar de fallar.
 ///
-/// PENDIENTE de integración: la guarda actual de `app_router.dart` redirige a
-/// `/login` toda ruta pública sin sesión; al cablear `/activate` hay que
-/// permitirla como ruta pública (igual que `/login`), pues la activación
-/// ocurre ANTES del primer inicio de sesión.
+/// Integracion (auditoria M1, antes "PENDIENTE"): `/activate` YA es ruta
+/// publica en `_isPublicLocation` de `app_router.dart` (la activacion ocurre
+/// ANTES del primer inicio de sesion) y tiene entrada in-app desde el login
+/// (`login-activate-link`: cuentas pendientes con `userRef` conocido van a
+/// `/activate?userRef=...`) ademas del deep-link de la notificacion OTP.
+/// No se inserta en el flujo feliz del alta (KYC -> `/pin-setup`, que crea
+/// el PIN consumiendo el OTP via `POST /auth/pin/setup`): forzar `/activate`
+/// (OTP via `POST /auth/activate`) ahi consumiria el codigo dos veces y
+/// entraria en conflicto; `/activate` queda como via de recuperacion para
+/// cuentas pendientes.
 typedef ActivationServiceFactory = ActivationService Function();
 
 ActivationServiceFactory? activationServiceFactory;

@@ -386,7 +386,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(capture);
       await tester.pumpAndSettle();
-      expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+      // Auditoria m1: el stepper es fijo del flujo (`3 de 4 · Rostro`).
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       expect(

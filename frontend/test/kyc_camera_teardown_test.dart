@@ -223,7 +223,7 @@ void main() {
       await tester.pumpWidget(MaterialApp.router(routerConfig: router));
       await tester.tap(find.byKey(const Key('goTask')));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(created, isNotEmpty,
           reason: 'el preview debe haber abierto la sesion frontal');
       expect(tester.takeException(), isNull);

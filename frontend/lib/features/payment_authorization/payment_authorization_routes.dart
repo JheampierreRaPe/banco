@@ -6,8 +6,12 @@
 // `paymentAuthorizationServiceFactory`, igual que
 // `transfersServiceFactory`).
 //
-// - `/payments/error` -> [PaymentErrorPage] (6 estados, `extra`:
-//   [PaymentErrorArgs]).
+// - Sin rutas propias: la auditoria i1 elimino la ruta huerfana
+//   `/payments/error` (nadie navegaba a ella: `ConfirmPage` renderiza
+//   `PaymentErrorView` inline con sus callbacks `_onPaymentPrimary` /
+//   `_onPaymentSecondary`, que se perderian via `extra`). La lista queda
+//   vacia a proposito: el orquestador sigue haciendo
+//   `...paymentAuthorizationRoutes` sin cambios y `ConfirmPage` no se toca.
 //
 // El reto biometrico vive como bottom sheet ([showBiometricChallengeSheet])
 // dentro del flujo de pago (`ConfirmPage`): no necesita ruta propia.
@@ -20,7 +24,6 @@ import '../biometrics/biometric_reader.dart';
 import '../biometrics/biometric_service.dart';
 import 'data/payment_authorization_service.dart';
 import 'payment_authorization_controller.dart';
-import 'presentation/payment_error_page.dart';
 
 /// Dependencias del reto biometrico, cableadas una vez por el orquestador
 /// (`core/router/app_router.dart`) con el `ApiClient` compartido, la
@@ -58,15 +61,6 @@ typedef PaymentAuthorizationDepsFactory = PaymentAuthorizationDeps Function();
 
 PaymentAuthorizationDepsFactory? paymentAuthorizationDepsFactory;
 
-final List<GoRoute> paymentAuthorizationRoutes = [
-  GoRoute(
-    path: '/payments/error',
-    builder: (context, state) {
-      final extra = state.extra;
-      final args = extra is PaymentErrorArgs
-          ? extra
-          : const PaymentErrorArgs(kind: PaymentErrorKind.timeout);
-      return PaymentErrorPage(args: args);
-    },
-  ),
-];
+/// Sin rutas dedicadas (auditoria i1: `/payments/error` era huerfana).
+/// La lista vacia mantiene el punto de ensamble del orquestador.
+final List<GoRoute> paymentAuthorizationRoutes = [];

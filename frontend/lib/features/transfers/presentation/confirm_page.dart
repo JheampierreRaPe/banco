@@ -706,14 +706,20 @@ class _ConfirmPageState extends State<ConfirmPage> {
   }
 
   /// Acciones de cada estado de error de pago (mockups 1..6).
+  ///
+  /// M12: solo acciones reales. `dailyLimit` y `preventiveBlock` van a
+  /// rutas existentes (`/movements`, `/home`): no hay pantalla de
+  /// limites, ni verificacion por DNI en `/login` (con sesion activa
+  /// redirige a `/home`), ni WhatsApp. `insufficientFunds` vuelve al
+  /// formulario (pop) para ajustar el monto con la cuenta actual.
   void _onPaymentPrimary(PaymentErrorKind kind, String transactionId) {
     switch (kind) {
       case PaymentErrorKind.insufficientFunds:
         context.pop();
       case PaymentErrorKind.dailyLimit:
-        context.go('/profile');
+        context.go('/movements');
       case PaymentErrorKind.preventiveBlock:
-        context.go('/login');
+        context.go('/movements');
       case PaymentErrorKind.sessionExpired:
         setState(() {
           _paymentError = null;
@@ -727,6 +733,9 @@ class _ConfirmPageState extends State<ConfirmPage> {
     }
   }
 
+  /// M12: todas las secundarias van a `/home` (ruta real) con copy
+  /// `Volver al inicio` / `Cancelar y salir` / `Regresar al inicio` /
+  /// `Ir al inicio`: ninguna promete funciones inexistentes.
   void _onPaymentSecondary(PaymentErrorKind kind) {
     switch (kind) {
       case PaymentErrorKind.insufficientFunds:

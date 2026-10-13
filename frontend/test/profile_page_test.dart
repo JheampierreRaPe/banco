@@ -3,6 +3,7 @@ import 'package:banca_online/core/router/app_router.dart';
 import 'package:banca_online/core/session/in_memory_session_repository.dart';
 import 'package:banca_online/core/session/session_identity_store.dart';
 import 'package:banca_online/features/biometrics/biometric_reader.dart';
+import 'package:banca_online/features/home/data/profile_service.dart';
 import 'package:banca_online/features/login/login_routes.dart';
 import 'package:banca_online/features/profile/data/biometric_consent_service.dart';
 import 'package:banca_online/features/profile/presentation/profile_page.dart';
@@ -48,13 +49,24 @@ ProfilePage _page({
   SessionIdentityStore? identity,
   BiometricReader? reader,
   Future<void> Function()? onLogout,
+  ProfileServiceBase? profileService,
 }) {
   return ProfilePage(
     consentService: consent ?? _FakeConsent(),
     identity: identity ?? InMemorySessionIdentityStore(),
     reader: reader ?? FakeBiometricReader(),
     onLogout: onLogout ?? () async {},
+    profileService: profileService,
   );
+}
+
+/// Fake de identidad real (`GET /me`, mismo contrato que el home).
+class _OkProfileFake implements ProfileServiceBase {
+  @override
+  Future<Profile> getProfile() async => const Profile(
+        firstName: 'Ana',
+        lastName: 'Lopez',
+      );
 }
 
 void main() {
@@ -65,8 +77,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Mi perfil'), findsOneWidget);
-      expect(find.text('Carlos Mendoza'), findsOneWidget);
-      expect(find.text('ID Cliente 4829-0193'), findsOneWidget);
+      // Auditoria M3: sin fuente de identidad, placeholder honesto (sin
+      // nombre falso ni ID inventado ni monto fijo).
+      expect(find.text('Tu perfil'), findsOneWidget);
+      expect(find.text('Identidad verificada'), findsOneWidget);
+      expect(find.text('Carlos Mendoza'), findsNothing);
+      expect(find.text('ID Cliente 4829-0193'), findsNothing);
+      expect(find.textContaining('15,000'), findsNothing);
       expect(find.text('TUS DATOS'), findsOneWidget);
       expect(find.text('Editar información de contacto'), findsOneWidget);
       expect(find.text('SEGURIDAD'), findsOneWidget);
@@ -280,25 +297,37 @@ void main() {
       await tester.pumpWidget(_harness(_page()));
       await tester.pumpAndSettle();
 
-      // `Créditos preaprobados` ya no es visual: navega a `/credits`
-      // (punto de entrada a Créditos), por eso sale de esta lista.
+      // `Créditos preaprobados`, `Cambiar PIN y contraseñas` y `Cuentas
+      // asociadas` ya no son visuales: navegan (`/credits`, `/pin-reset`,
+      // `/accounts`, auditoria M2), por eso salen de esta lista.
       for (final label in [
         'Editar información de contacto',
         'Bloquear tarjeta temporalmente',
-        'Cambiar PIN y contraseñas',
-        'Cuentas asociadas',
         'Bonificaciones y beneficios',
         'Educación financiera',
-        'Tarjetas',
-        'Operar',
       ]) {
         await tester.tap(find.text(label));
         await tester.pump();
       }
-      await tester.tap(find.byKey(const Key('profile-help')));
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('profile-edit')));
-      await tester.pump();
+
+      // Auditoria M2: ayuda y editar son adornos SIN affordance de boton
+      // (no hay destino real): siguen visibles pero no son `IconButton`.
+      expect(find.byKey(const Key('profile-help')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('profile-help')),
+          matching: find.byType(IconButton),
+        ),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('profile-edit')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('profile-edit')),
+          matching: find.byType(IconButton),
+        ),
+        findsNothing,
+      );
 
       // Nada navego ni cambio estado: seguimos en "Mi perfil" con el
       // switch intacto y sin errores.
@@ -333,6 +362,139 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Créditos (fake)'), findsOneWidget);
+    });
+
+    testWidgets('hero muestra la identidad real de GET /me (M3)',
+        (tester) async {
+      _tallViewport(tester);
+      await tester.pumpWidget(_harness(_page(profileService: _OkProfileFake())));
+      await tester.pumpAndSettle();
+
+      // Nombre e iniciales del servidor (Ana Lopez -> "AL"), sin PII falsa.
+      expect(find.text('Ana Lopez'), findsOneWidget);
+      expect(find.text('AL'), findsOneWidget);
+      expect(find.text('Identidad verificada'), findsOneWidget);
+      expect(find.text('Tu perfil'), findsNothing);
+      expect(find.text('Carlos Mendoza'), findsNothing);
+    });
+
+    testWidgets('fila Cambiar PIN navega a /pin-reset (M2)',
+        (tester) async {
+      _tallViewport(tester);
+      final router = GoRouter(
+        initialLocation: '/profile',
+        routes: [
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => _page(),
+          ),
+          GoRoute(
+            path: '/pin-reset',
+            builder: (context, state) =>
+                const Scaffold(body: Text('PIN reset (fake)')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Cambiar PIN y contraseñas'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('profile-pin-reset')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('PIN reset (fake)'), findsOneWidget);
+    });
+
+    testWidgets('fila Cuentas asociadas navega a /accounts (M2)',
+        (tester) async {
+      _tallViewport(tester);
+      final router = GoRouter(
+        initialLocation: '/profile',
+        routes: [
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => _page(),
+          ),
+          GoRoute(
+            path: '/accounts',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Cuentas (fake)')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Cuentas asociadas'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('profile-accounts')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Cuentas (fake)'), findsOneWidget);
+    });
+
+    testWidgets('bottom-nav reutiliza AppBottomNav con navegacion (M4)',
+        (tester) async {
+      _tallViewport(tester);
+      final router = GoRouter(
+        initialLocation: '/profile',
+        routes: [
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => _page(),
+          ),
+          GoRoute(
+            path: '/home',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Home (fake)')),
+          ),
+          GoRoute(
+            path: '/transfers',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Transferencias (fake)')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      // Mismo componente compartido con el home, con Perfil activo.
+      expect(find.byKey(const Key('bottomNav')), findsOneWidget);
+      expect(find.byKey(const Key('bottomNav-perfil')), findsOneWidget);
+
+      // Inicio -> /home.
+      await tester.tap(find.byKey(const Key('bottomNav-inicio')));
+      await tester.pumpAndSettle();
+      expect(find.text('Home (fake)'), findsOneWidget);
+    });
+
+    testWidgets('bottom-nav Operar navega a /transfers (M4)',
+        (tester) async {
+      _tallViewport(tester);
+      final router = GoRouter(
+        initialLocation: '/profile',
+        routes: [
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => _page(),
+          ),
+          GoRoute(
+            path: '/transfers',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Transferencias (fake)')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('bottomNav-operar')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Transferencias (fake)'), findsOneWidget);
     });
   });
 

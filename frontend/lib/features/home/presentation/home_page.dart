@@ -29,8 +29,10 @@ import '../data/profile_service.dart';
 ///   texto en pantalla (estado local, sin recalcular ni llamar al servidor).
 /// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers` y
 ///   `Credito` a `/credits` (Sprint 2); `Cobrar QR`/`Recargar` y
-///   `Analizar`/campana siguen visuales -> "Proximamente". Bottom-nav: `Operar` (1) -> `/transfers`,
-///   `Perfil` (3) -> `/profile`; `Inicio`/`Tarjetas` visuales.
+///   `Analizar`/campana siguen visuales -> "Proximamente". Bottom-nav:
+///   `Operar` (1) -> `/transfers`, `Perfil` (3) -> `/profile`; `Inicio` (0)
+///   es no-op (ya estamos en home) y `Tarjetas` (2) queda visual sin
+///   prometer accion (auditoria M5: sin SnackBar enganoso).
 /// - `MIS CUENTAS` (`0:3108`, de `GET /accounts`, pull-to-refresh) +
 ///   `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta,
 ///   `GET /accounts/{id}/movements`, pagina 1, 3 items) + banner
@@ -192,8 +194,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onNavSelect(BuildContext context, int index) {
-    // Operar (1) -> hub de transferencias (Sprint 2, `/transfers`);
-    // Perfil (3) -> `/profile`. El resto sigue siendo visual ("Proximamente").
+    // Auditoria M5: Inicio (0) es no-op (ya estamos en `/home`); Operar
+    // (1) -> `/transfers`; Perfil (3) -> `/profile`. Tarjetas (2) queda
+    // visual sin prometer accion: sin SnackBar enganoso.
+    if (index == 0 || index == 2) return;
     if (index == 1) {
       context.push('/transfers');
       return;
@@ -202,7 +206,6 @@ class _HomePageState extends State<HomePage> {
       context.push('/profile');
       return;
     }
-    _soon(context);
   }
 
   @override
@@ -1084,6 +1087,12 @@ class _MovementRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // DECISION m4 (auditoria, mismo criterio que m3): la fila NO navega al
+    // detalle. El preview usa el `Movement` de cuentas (`journalEntryId`
+    // del asiento) y `/movements/:id` solo resuelve `transaction_id`
+    // (`GET /transactions/{id}`): sin mapeo en el cliente, navegar caeria
+    // en `NOT_FOUND`. La via real al historial es "Ver todos los
+    // movimientos" (`/movements`); no se inventa un id.
     final scheme = Theme.of(context).colorScheme;
     final credit = movement.isCredit;
     final color = credit ? AppColors.success : scheme.error;

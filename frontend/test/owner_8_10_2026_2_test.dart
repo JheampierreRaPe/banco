@@ -45,8 +45,15 @@ class _FakeBeneficiaries implements BeneficiariesServiceBase {
   }
 
   @override
-  Future<Beneficiary> update(String id, BeneficiaryInput input) async =>
-      create(input);
+  Future<Beneficiary> update(String id, BeneficiaryPatch patch) async =>
+      Beneficiary(
+        id: id,
+        alias: patch.alias,
+        accountMasked: '•••• 0012',
+        bankCode: patch.bankCode ?? '',
+        holderName: '••••',
+        currency: patch.currency ?? 'PEN',
+      );
 
   @override
   Future<Beneficiary> remove(String id) async => throw UnimplementedError();

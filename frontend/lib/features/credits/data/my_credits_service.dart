@@ -16,6 +16,12 @@ abstract class MyCreditsServiceBase {
 }
 
 /// Servicio de "Mis créditos" sobre [ApiClient].
+///
+/// i3 (auditoría): NO es código muerto. Es la implementación concreta
+/// standalone (cubierta por `test/credit_mine_test.dart`) y el respaldo
+/// de la ruta `/credits` (`credits_routes.dart`: se usa cuando el
+/// servicio de `creditApplicationsServiceFactory` no implementa
+/// [MyCreditsServiceBase]). Se conserva a propósito.
 class MyCreditsService implements MyCreditsServiceBase {
   MyCreditsService({required this.api});
 
@@ -40,6 +46,10 @@ class MyCreditsService implements MyCreditsServiceBase {
 }
 
 /// Fábrica inyectable (mismo patrón que `creditsServiceFactory`).
+///
+/// i3 (auditoría): NO es código muerto. La usa `credits_routes.dart:57`
+/// como respaldo cuando `creditApplicationsServiceFactory` no aporta el
+/// listado. Se conserva a propósito.
 ///
 /// La asigna el orquestador con el `ApiClient` compartido; `null` = DI no
 /// configurada (la UI degrada a error accionable). Ver nota en

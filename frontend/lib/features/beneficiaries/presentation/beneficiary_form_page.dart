@@ -19,6 +19,10 @@ enum BeneficiaryDocType { dni, ruc }
 /// mockups `Alta Edición Beneficiario` + `Alta 2/3/4/5` en `pantallas.fig`).
 ///
 /// - Alta (`beneficiaryId == null`) o edicion (con [initial] o carga por id).
+/// - Edicion parcial (M9, `PUT` parcial del backend): cuenta/documento vacios
+///   = "sin cambios" (se omiten del request); editar solo el alias no exige
+///   re-teclear ni re-validar. La cuenta/documento jamas se precargan porque
+///   el backend no los devuelve en claro.
 /// - Selector DNI (8 digitos) / RUC (11 digitos) con boton `Validar` y banner
 ///   de formato (mockups `Alta` y `Alta 4 - RUC SUNAT`). La validacion de
 ///   formato es solo longitud/digitos (UI); el backend decide las reglas.
@@ -67,6 +71,7 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
 
   bool _docVerified = false;
   bool _showDuplicate = false;
+  bool _resolvingExisting = false;
   String? _accountError;
   String? _aliasError;
   String? _docError;
@@ -121,6 +126,13 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     throw ApiException(code: 'NOT_FOUND', message: 'No encontramos ese beneficiario.');
   }
 
+  /// Precarga lo editable (criterio M9): alias, banco y moneda.
+  ///
+  /// La cuenta y el documento NO se precargan a proposito: el backend jamas
+  /// los devuelve en claro (la lista solo trae `account_masked` y el
+  /// documento se persiste como hash). Campos vacios en edicion = "sin
+  /// cambios": `_validateLocal`/`_save` los omiten del `PUT` en vez de
+  /// exigir re-teclear y re-validar.
   void _applyInitial(Beneficiary b) {
     _aliasController.text = b.alias;
     _bankCode = b.bankCode.isEmpty ? 'BCP' : b.bankCode.toUpperCase();
@@ -146,7 +158,10 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     });
   }
 
-  bool _validateLocal() {
+  /// Validacion local (criterio M9): en ALTA, cuenta y documento son
+  /// obligatorios; en EDICION, vacios = "sin cambios" y no se validan (el
+  /// servidor conserva los valores vigentes). Solo lo re-tecleado se valida.
+  bool _validateLocal({required bool editing}) {
     var ok = true;
     if (_aliasController.text.trim().isEmpty) {
       _aliasError = 'Ingresa un alias para identificarlo.';
@@ -156,18 +171,27 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     }
     final docDigits = _digits(_docController.text);
     final expected = _docType == BeneficiaryDocType.dni ? 8 : 11;
-    if (docDigits.length != expected) {
+    if (docDigits.isEmpty && editing) {
+      // Sin cambios: se conserva el documento vigente, sin re-validar.
+      _docError = null;
+    } else if (docDigits.length != expected) {
       _docError =
           'Ingresa $expected dígitos para ${_docType == BeneficiaryDocType.dni ? 'DNI' : 'RUC'}.';
       _docVerified = false;
       ok = false;
     }
-    final accountError = accountFormatError(_accountController.text);
-    if (accountError != null) {
-      _accountError = accountError;
-      ok = false;
-    } else {
+    final accountRaw = _accountController.text.trim();
+    if (accountRaw.isEmpty && editing) {
+      // Sin cambios: se conserva la cuenta vigente, sin re-validar.
       _accountError = null;
+    } else {
+      final accountError = accountFormatError(_accountController.text);
+      if (accountError != null) {
+        _accountError = accountError;
+        ok = false;
+      } else {
+        _accountError = null;
+      }
     }
     setState(() {});
     return ok;
@@ -175,7 +199,8 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
 
   Future<void> _save() async {
     if (_saving) return;
-    if (!_validateLocal()) return;
+    final editing = widget.isEditing;
+    if (!_validateLocal(editing: editing)) return;
     final service = widget.service;
     if (service == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -189,19 +214,32 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       _saving = true;
       _showDuplicate = false;
     });
-    final input = BeneficiaryInput(
-      alias: _aliasController.text.trim(),
-      accountOrCci: normalizeAccountOrCci(_accountController.text),
-      bankCode: _bankCode == 'OTRO' ? null : _bankCode,
-      holderDoc: _digits(_docController.text),
-      currency: _currency,
-    );
     try {
-      final editing = widget.isEditing;
       if (editing) {
+        // Edicion parcial (M9): solo viaja lo re-tecleado. Cuenta/documento
+        // vacios = sin cambios (se omiten del `PUT`, el servidor conserva
+        // los vigentes); banco/moneda viajan siempre (selectores con valor).
+        final accountRaw = _accountController.text.trim();
+        final docDigits = _digits(_docController.text);
+        final patch = BeneficiaryPatch(
+          alias: _aliasController.text.trim(),
+          accountOrCci: accountRaw.isEmpty
+              ? null
+              : normalizeAccountOrCci(_accountController.text),
+          bankCode: _bankCode == 'OTRO' ? null : _bankCode,
+          holderDoc: docDigits.isEmpty ? null : docDigits,
+          currency: _currency,
+        );
         final id = widget.initial?.id ?? widget.beneficiaryId ?? '';
-        await service.update(id, input);
+        await service.update(id, patch);
       } else {
+        final input = BeneficiaryInput(
+          alias: _aliasController.text.trim(),
+          accountOrCci: normalizeAccountOrCci(_accountController.text),
+          bankCode: _bankCode == 'OTRO' ? null : _bankCode,
+          holderDoc: _digits(_docController.text),
+          currency: _currency,
+        );
         await service.create(input);
       }
       if (!mounted) return;
@@ -246,6 +284,64 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
     } else {
       context.go('/beneficiaries');
     }
+  }
+
+  /// "Ver existente" del banner de duplicado (M9): navega al beneficiario
+  /// existente en vez de solo cerrar.
+  ///
+  /// El `409 DUPLICATE_BENEFICIARY` no trae el id, asi que se resuelve por
+  /// coincidencia de ultimos 4 digitos entre la cuenta tecleada y los
+  /// `accountMasked` de la agenda (cliente delgado: decide el servidor con
+  /// `list()`; aqui solo se compara la cola enmascarada, sin PII en claro).
+  /// Solo se navega directo a `/beneficiaries/:id` con UN unico candidato;
+  /// con cero o varios se va a la agenda con aviso honesto.
+  Future<void> _viewExisting() async {
+    final service = widget.service;
+    if (service == null || _resolvingExisting) return;
+    setState(() => _resolvingExisting = true);
+    try {
+      final typedTail = _tail4(normalizeAccountOrCci(_accountController.text));
+      final items = await service.list();
+      final candidates = typedTail.isEmpty
+          ? const <Beneficiary>[]
+          : items.where((b) => _tail4(b.accountMasked) == typedTail).toList();
+      if (!mounted) return;
+      setState(() => _resolvingExisting = false);
+      if (candidates.length == 1) {
+        final existing = candidates.single;
+        context.push('/beneficiaries/${existing.id}', extra: existing);
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            candidates.isEmpty
+                ? 'No pudimos identificar el registro existente. '
+                    'Búscalo en tu agenda.'
+                : 'Hay varios registros con esa terminación. '
+                    'Elige el correcto en tu agenda.',
+          ),
+        ),
+      );
+      context.push('/beneficiaries');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _resolvingExisting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No pudimos cargar tu agenda. Inténtalo de nuevo.',
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Ultimos 4 digitos de un valor (cuenta tecleada o mascara del servidor).
+  static String _tail4(String value) {
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+    if (digits.length <= 4) return digits;
+    return digits.substring(digits.length - 4);
   }
 
   Future<void> _delete(Beneficiary target) async {
@@ -318,7 +414,8 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
               children: [
                 if (_showDuplicate) ...[
                   _DuplicateBanner(
-                    onViewExisting: () => _closeWithResult(false),
+                    resolving: _resolvingExisting,
+                    onViewExisting: _viewExisting,
                     onDismiss: () =>
                         setState(() => _showDuplicate = false),
                   ),
@@ -338,7 +435,13 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
                   textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 20),
-                const _SectionLabel(title: 'Documento de identidad *'),
+                // M9: en edicion el documento es opcional (vacio = conservar).
+                _SectionLabel(
+                  title: editing
+                      ? 'Documento de identidad'
+                      : 'Documento de identidad *',
+                  hint: editing ? 'Vacío = se conserva' : null,
+                ),
                 const SizedBox(height: 8),
                 _DocTypeTabs(
                   type: _docType,
@@ -459,9 +562,14 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
                   ],
                 ),
                 const SizedBox(height: 16),
+                // M9: en edicion la cuenta es opcional (vacia = conservar).
                 _SectionLabel(
-                  title: 'Número de Cuenta o CCI *',
-                  hint: '14 dígitos (cuenta) o 20 (CCI)',
+                  title: editing
+                      ? 'Número de Cuenta o CCI'
+                      : 'Número de Cuenta o CCI *',
+                  hint: editing
+                      ? 'Vacío = se conserva la actual'
+                      : '14 dígitos (cuenta) o 20 (CCI)',
                 ),
                 const SizedBox(height: 8),
                 AppTextField(
@@ -706,10 +814,13 @@ class _CurrencyOption extends StatelessWidget {
 /// Banner de duplicado (mockup `Alta 2 - Duplicado`).
 class _DuplicateBanner extends StatelessWidget {
   const _DuplicateBanner({
+    required this.resolving,
     required this.onViewExisting,
     required this.onDismiss,
   });
 
+  /// `true` mientras se resuelve el beneficiario existente (M9).
+  final bool resolving;
   final VoidCallback onViewExisting;
   final VoidCallback onDismiss;
 
@@ -786,11 +897,16 @@ class _DuplicateBanner extends StatelessWidget {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.primaryContainer,
                   ),
-                  onPressed: onViewExisting,
-                  child: const Text(
-                    'Ver existente',
-                    style: TextStyle(fontSize: 12),
-                  ),
+                  onPressed: resolving ? null : onViewExisting,
+                  child: resolving
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text(
+                          'Ver existente',
+                          style: TextStyle(fontSize: 12),
+                        ),
                 ),
               ),
               TextButton(

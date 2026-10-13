@@ -341,7 +341,9 @@ class _DestinationPageState extends State<DestinationPage> {
                     'Aún no tienes cuentas para transferir.\n'
                     'Abre tu primera cuenta para empezar.',
                 actionLabel: 'Ir al inicio',
-                onAction: () => context.pop(),
+                // m7: el copy promete el inicio: navega a `/home` (antes
+                // hacia `pop()`, que solo volvia atras).
+                onAction: () => context.go('/home'),
               ),
             );
           }

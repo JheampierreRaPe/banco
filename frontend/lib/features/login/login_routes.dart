@@ -3,14 +3,16 @@
 // Convencion `features/README.md`: el feature expone
 // `List<GoRoute> loginRoutes` y NUNCA toca `lib/core/router/app_router.dart`.
 //
-// ENSAMBLE (orquestador): esta lista REEMPLAZA al placeholder `/login` de
-// `features/auth/auth_routes.dart`. En `core/router/app_router.dart`:
+// ENSAMBLE (orquestador): esta lista es el login real (E1-T16, HU03).
+// (Auditoria i2: el antiguo placeholder `/login` de
+// `features/auth/auth_routes.dart` se elimino; no montaba nada.)
+//
+// En `core/router/app_router.dart`:
 //
 // ```dart
 // import '../../features/login/login_routes.dart';
 // // ...
 // routes: [
-//   // ...authRoutes,   // <- quitar el placeholder de `/login`
 //   ...loginRoutes,     // <- login real (E1-T16)
 //   ...homeRoutes,
 // ],

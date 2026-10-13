@@ -5,7 +5,14 @@ import '../../features/accounts/accounts_routes.dart';
 import '../../features/accounts/data/accounts_service.dart';
 import '../../features/activation/activation_routes.dart';
 import '../../features/activation/activation_service.dart';
+import '../../features/beneficiaries/beneficiaries_routes.dart';
+import '../../features/beneficiaries/data/beneficiaries_service.dart';
 import '../../features/biometrics/biometric_reader.dart';
+import '../../features/credits/credits_routes.dart';
+import '../../features/credits/data/credit_applications_service.dart';
+import '../../features/credits/data/credit_contract_service.dart';
+import '../../features/credits/data/credit_sign_controller.dart';
+import '../../features/credits/data/credits_service.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
 import '../../features/kyc/camera_frame_source.dart';
@@ -13,11 +20,17 @@ import '../../features/kyc/kyc_dependencies.dart';
 import '../../features/kyc/kyc_routes.dart';
 import '../../features/kyc/kyc_service.dart';
 import '../../features/login/login_routes.dart';
+import '../../features/movements/data/movements_service.dart';
+import '../../features/movements/movements_routes.dart';
+import '../../features/payment_authorization/data/payment_authorization_service.dart';
+import '../../features/payment_authorization/payment_authorization_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
 import '../../features/pin_setup/pin_setup_routes.dart';
 import '../../features/pin_setup/pin_setup_service.dart';
 import '../../features/profile/profile_routes.dart';
 import '../../features/splash/splash_routes.dart';
+import '../../features/transfers/data/transfers_service.dart';
+import '../../features/transfers/transfers_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../http/api_client.dart';
 import '../session/secure_key_value_storage.dart';
@@ -106,6 +119,48 @@ GoRouter buildRouter(
   // compartido, asi que cablea aqui la fabrica que resuelven `homeRoutes`
   // y `accountsRoutes`. Solo cableado: la guarda F-T37 no se toca.
   accountsServiceFactory = () => AccountsService(api: client);
+  // Beneficiarios (E2-T15): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/beneficiaries*` exige sesion).
+  beneficiariesServiceFactory = () => BeneficiariesService(api: client);
+  // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
+  transfersServiceFactory = () => TransfersService(api: client);
+  // Simulador de creditos (E3-T04): mismo patron, solo cableado con el
+  // `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*` exige
+  // sesion).
+  creditsServiceFactory = () => CreditsService(api: client);
+  // Expediente de credito (E3-T09, solicitud + estado): mismo patron, solo
+  // cableado con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/credits*` exige sesion).
+  creditApplicationsServiceFactory =
+      () => CreditApplicationsService(api: client);
+  // Reto biometrico de pago (E2-T21): mismo patron, solo cableado con el
+  // `ApiClient` compartido + sesion + lector del SO + `device_id` vigente;
+  // la guarda F-T37 no se toca (`/payments/*` exige sesion).
+  paymentAuthorizationServiceFactory = () =>
+      PaymentAuthorizationService(api: client);
+  final systemReader = SystemBiometricReader();
+  // Juego contractual + firma (E3-T15, HU11): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*`
+  // exige sesion). El firmador del `nonce` reutiliza `BiometricService`
+  // (F-T03) con el lector del SO y el `device_id` vigente.
+  creditContractServiceFactory = () => CreditContractService(api: client);
+  creditSignDepsFactory = () => CreditSignDeps(
+        service: CreditContractService(api: client),
+        reader: systemReader,
+        session: session,
+        deviceId: identityStore.deviceId ?? '',
+      );
+  paymentAuthorizationDepsFactory = () => PaymentAuthorizationDeps(
+    service: PaymentAuthorizationService(api: client),
+    reader: systemReader,
+    session: session,
+    deviceId: identityStore.deviceId ?? '',
+  );
+  // Historial + reverso (E2-T24/E2-T25): mismo patron, solo cableado con
+  // el `ApiClient` compartido; la guarda F-T37 no se toca (`/movements*`
+  // exige sesion).
+  movementsServiceFactory = () => MovementsService(api: client);
   // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
   // cableado; la guarda F-T37 no se toca.
   homeProfileServiceFactory = () => HttpProfileService(api: client);
@@ -174,6 +229,11 @@ GoRouter buildRouter(
       ...loginRoutes,
       ...pinResetRoutes,
       ...accountsRoutes,
+      ...beneficiariesRoutes,
+      ...transfersRoutes,
+      ...creditsRoutes,
+      ...paymentAuthorizationRoutes,
+      ...movementsRoutes,
       ...homeRoutes,
       ...profileRoutes,
     ],

@@ -190,7 +190,7 @@ void main() {
 
       // Liveness: el preview se re-liga a la lente frontal vigente (nueva
       // generacion), sin placeholder ni superficie del controller anterior.
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(find.byType(CameraPreview), findsOneWidget);
       expect(find.byType(KycPreviewPlaceholder), findsNothing);
       expect(source.previewCalls, contains('front'));
@@ -414,7 +414,7 @@ void main() {
             // El ciclo se completo (documento -> liveness, con captura real de
             // bytes y cambio de generacion/controller): aun asi, sin payload.
             expect(source.generation, greaterThanOrEqualTo(2));
-            expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+            expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
           },
           zoneSpecification: ZoneSpecification(
             print: (self, parent, zone, line) => logs.add(line),

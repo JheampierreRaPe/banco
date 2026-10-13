@@ -12,6 +12,7 @@ import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../accounts/data/accounts_service.dart';
 import '../../accounts/models/account.dart';
+import '../../accounts/models/movement_concept.dart';
 import '../../accounts/utils/format.dart';
 import '../data/profile_service.dart';
 
@@ -26,9 +27,12 @@ import '../data/profile_service.dart';
 ///   **El cliente NUNCA suma saldos** (cliente delgado, `docs/19` §4/§8): el
 ///   monto se muestra tal cual responde el servidor; el ojo solo oculta el
 ///   texto en pantalla (estado local, sin recalcular ni llamar al servidor).
-/// - Quick-actions (`0:3082`) y `Analizar`/campana/bottom-nav
-///   (`Inicio`/`Operar`/`Tarjetas`): visuales -> "Proximamente". Solo
-///   `Perfil` navega (`/profile`, ruta privada ya existente).
+/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers` y
+///   `Credito` a `/credits` (Sprint 2); `Cobrar QR`/`Recargar` y
+///   `Analizar`/campana siguen visuales -> "Proximamente". Bottom-nav:
+///   `Operar` (1) -> `/transfers`, `Perfil` (3) -> `/profile`; `Inicio` (0)
+///   es no-op (ya estamos en home) y `Tarjetas` (2) queda visual sin
+///   prometer accion (auditoria M5: sin SnackBar enganoso).
 /// - `MIS CUENTAS` (`0:3108`, de `GET /accounts`, pull-to-refresh) +
 ///   `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta,
 ///   `GET /accounts/{id}/movements`, pagina 1, 3 items) + banner
@@ -56,6 +60,13 @@ class _HomePageState extends State<HomePage> {
   late Future<List<Account>> _accountsFuture;
   late Future<AccountsTotals> _totalsFuture;
 
+  /// Llave del preview de movimientos: permite recargarlo en
+  /// *pull-to-refresh* y al re-entrar a `/home` (E2-T35).
+  final _previewKey = GlobalKey<_MovementsPreviewCardState>();
+
+  /// Router observado para recargar el preview al volver a `/home`.
+  GoRouter? _listenedRouter;
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +77,46 @@ class _HomePageState extends State<HomePage> {
     // sin suscriptor; los FutureBuilder siguen recibiendo valores/errores.
     _accountsFuture.ignore();
     _totalsFuture.ignore();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Suscripcion al delegate (una sola vez por router): cada navegacion lo
+    // notifica, este o no este `State` en la ruta superior. Sin `GoRouter`
+    // (tests con `MaterialApp` plano) no se observa nada.
+    final router = GoRouter.maybeOf(context);
+    if (!identical(router, _listenedRouter)) {
+      _listenedRouter?.routerDelegate.removeListener(_onRouteChanged);
+      _listenedRouter = router;
+      router?.routerDelegate.addListener(_onRouteChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _listenedRouter?.routerDelegate.removeListener(_onRouteChanged);
+    _listenedRouter = null;
+    super.dispose();
+  }
+
+  /// Al volver a `/home` (p. ej. tras operar en `/transfers`, cuyo CTA
+  /// vuelve con `context.go('/home')`) se recarga el preview sin reiniciar
+  /// la app. La primera carga la hace `initState` (el delegate no notifica
+  /// al montar, asi que no hay doble fetch).
+  void _onRouteChanged() {
+    if (!mounted) return;
+    final router = _listenedRouter;
+    if (router == null) return;
+    String path;
+    try {
+      path = router.state.uri.path;
+    } catch (_) {
+      return;
+    }
+    if (path == '/home') {
+      _previewKey.currentState?.reload();
+    }
   }
 
   Future<List<Account>> _loadAccounts() {
@@ -97,6 +148,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final accounts = _loadAccounts();
     final totals = _loadTotals();
+    // El preview tiene su propio estado: tambien se recarga (E2-T35).
+    final preview = _previewKey.currentState?.reload() ?? Future.value();
     accounts.ignore();
     totals.ignore();
     setState(() {
@@ -112,6 +165,11 @@ class _HomePageState extends State<HomePage> {
       await totals;
     } catch (_) {
       // El hero muestra su estado neutro; no se tumba la pantalla.
+    }
+    try {
+      await preview;
+    } catch (_) {
+      // El preview muestra su propio error/reintento.
     }
   }
 
@@ -136,12 +194,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onNavSelect(BuildContext context, int index) {
-    // F-T54: solo `Perfil (3)` navega; el resto es visual ("Proximamente").
+    // Auditoria M5: Inicio (0) es no-op (ya estamos en `/home`); Operar
+    // (1) -> `/transfers`; Perfil (3) -> `/profile`. Tarjetas (2) queda
+    // visual sin prometer accion: sin SnackBar enganoso.
+    if (index == 0 || index == 2) return;
+    if (index == 1) {
+      context.push('/transfers');
+      return;
+    }
     if (index == 3) {
       context.push('/profile');
       return;
     }
-    _soon(context);
   }
 
   @override
@@ -200,7 +264,10 @@ class _HomePageState extends State<HomePage> {
                         const SizedBox(height: AppSpacing.stackMd),
                         _AccountsCard(accounts: accounts),
                         const SizedBox(height: AppSpacing.stackMd),
+                        const _AgendaCard(),
+                        const SizedBox(height: AppSpacing.stackMd),
                         _MovementsPreviewCard(
+                          key: _previewKey,
                           service: widget.service!,
                           account: accounts.first,
                         ),
@@ -528,16 +595,29 @@ class _TotalsHeroState extends State<_TotalsHero> {
 
 /// Fila de accesos rapidos del `dash` (`0:3082`).
 ///
-/// Presentacion pura: las 4 acciones son visuales ("Proximamente"), sin
-/// navegacion ni operacion real. `Cobrar QR` va destacado en ocre.
+/// `Transferir` navega a `/transfers` y `Credito` a `/credits` (Sprint 2);
+/// el resto sigue siendo visual ("Proximamente"). `Cobrar QR` va destacado
+/// en ocre.
 class _QuickActions extends StatelessWidget {
   const _QuickActions();
 
   static const _items = [
-    (Icons.compare_arrows_outlined, 'Transferir', false, 'qa-transferir'),
-    (Icons.receipt_outlined, 'Pagar', false, 'qa-pagar'),
-    (Icons.qr_code_2_outlined, 'Cobrar QR', true, 'qa-qr'),
-    (Icons.smartphone_outlined, 'Recargar', false, 'qa-recargar'),
+    (
+      Icons.compare_arrows_outlined,
+      'Transferir',
+      false,
+      'qa-transferir',
+      '/transfers',
+    ),
+    (
+      Icons.request_quote_outlined,
+      'Crédito',
+      false,
+      'qa-creditos',
+      '/credits',
+    ),
+    (Icons.qr_code_2_outlined, 'Cobrar QR', true, 'qa-qr', null),
+    (Icons.smartphone_outlined, 'Recargar', false, 'qa-recargar', null),
   ];
 
   @override
@@ -557,6 +637,7 @@ class _QuickActions extends StatelessWidget {
               tileColor: item.$3
                   ? scheme.secondaryContainer
                   : AppColors.surfaceContainerLowest,
+              onTap: item.$5 == null ? null : () => context.push(item.$5!),
             ),
           ),
       ],
@@ -572,6 +653,7 @@ class _QuickAction extends StatelessWidget {
     required this.highlighted,
     required this.iconColor,
     required this.tileColor,
+    this.onTap,
   });
 
   final String storageKey;
@@ -581,18 +663,23 @@ class _QuickAction extends StatelessWidget {
   final Color iconColor;
   final Color tileColor;
 
+  /// Accion real de navegacion (`Transferir`/`Credito` la definen; `null` =
+  /// visual con "Proximamente").
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
     return InkWell(
       key: Key(storageKey),
-      onTap: () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Próximamente'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      },
+      onTap: onTap ??
+          () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Próximamente'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          },
       borderRadius: BorderRadius.circular(AppRadii.md),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
@@ -620,6 +707,68 @@ class _QuickAction extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Acceso a la agenda de beneficiarios (fix alta múltiple Nivel 2).
+///
+/// Punto de entrada a `/beneficiaries` (la agenda ya tiene el botón "Nuevo"
+/// siempre visible): card compacta que no altera el `dash` (`0:3057`) ni las
+/// quick-actions existentes.
+class _AgendaCard extends StatelessWidget {
+  const _AgendaCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppCard(
+      onTap: () => context.push('/beneficiaries'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.successContainer,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            child: Icon(
+              Icons.people_outline,
+              size: 24,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Mis beneficiarios',
+                  key: const Key('home-beneficiaries'),
+                  style: AppTypography.bodyLg.copyWith(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.unit),
+                Text(
+                  'Agenda y contactos frecuentes',
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right,
+            color: AppColors.secondaryText,
+          ),
+        ],
       ),
     );
   }
@@ -729,14 +878,26 @@ class _AccountRow extends StatelessWidget {
 }
 
 /// Card `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta).
-class _MovementsPreviewCard extends StatelessWidget {
+class _MovementsPreviewCard extends StatefulWidget {
   const _MovementsPreviewCard({
+    super.key,
     required this.service,
     required this.account,
   });
 
   final AccountsServiceBase service;
   final Account account;
+
+  @override
+  State<_MovementsPreviewCard> createState() => _MovementsPreviewCardState();
+}
+
+class _MovementsPreviewCardState extends State<_MovementsPreviewCard> {
+  final _latestKey = GlobalKey<_LatestMovementsState>();
+
+  /// Recarga el preview (lo usan el *pull-to-refresh* y la vuelta a
+  /// `/home` desde `HomePage`).
+  Future<void> reload() => _latestKey.currentState?.reload() ?? Future.value();
 
   @override
   Widget build(BuildContext context) {
@@ -753,12 +914,18 @@ class _MovementsPreviewCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppSpacing.stackSm),
-          _LatestMovements(service: service, account: account),
+          _LatestMovements(
+            key: _latestKey,
+            service: widget.service,
+            account: widget.account,
+          ),
           const SizedBox(height: AppSpacing.stackSm),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
-              onPressed: () => context.push('/accounts/${account.id}'),
+              // Historial nuevo (E2-T24, Sprint 2): el detalle por cuenta
+              // sigue vivo tocando cada fila (`_AccountRow` -> `/accounts/:id`).
+              onPressed: () => context.push('/movements'),
               child: const Text('Ver todos los movimientos'),
             ),
           ),
@@ -769,8 +936,17 @@ class _MovementsPreviewCard extends StatelessWidget {
 }
 
 /// Preview de movimientos con sus propios mini-estados (carga/error/vacio).
+///
+/// Filtra por `entry_type` (E2-T35, `movement_concept.dart`): las patas
+/// internas (`TRANSFER_HOLD`/`INTERBANK_HOLD`) no son dinero del usuario y
+/// se ocultan; cada fila visible muestra su etiqueta de negocio (nunca un
+/// UUID). El signo (`+`/`-`) sale de `direction`; no se calcula nada.
 class _LatestMovements extends StatefulWidget {
-  const _LatestMovements({required this.service, required this.account});
+  const _LatestMovements({
+    super.key,
+    required this.service,
+    required this.account,
+  });
 
   final AccountsServiceBase service;
   final Account account;
@@ -780,23 +956,71 @@ class _LatestMovements extends StatefulWidget {
 }
 
 class _LatestMovementsState extends State<_LatestMovements> {
-  late Future<MovementsPage> _future;
+  /// Movimientos visibles que muestra el preview (maximo 3).
+  static const int _targetVisible = 3;
+
+  /// Pagina amplia + hasta 5 paginas: si la primera trae solo patas
+  /// internas, se sigue pidiendo hasta juntar 3 visibles o agotar `total`.
+  static const int _previewPageSize = 100;
+  static const int _previewMaxPages = 5;
+
+  late Future<List<Movement>> _future;
 
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _future = _loadVisible();
   }
 
-  Future<MovementsPage> _load() => widget.service.getMovements(
+  /// Recarga el preview (retorna cuando termina, con error tragado: el
+  /// `FutureBuilder` muestra el estado).
+  Future<void> reload() async {
+    final future = _loadVisible();
+    future.ignore();
+    if (!mounted) return;
+    setState(() {
+      _future = future;
+    });
+    try {
+      await future;
+    } catch (_) {
+      // El FutureBuilder muestra el error con su reintento.
+    }
+  }
+
+  Future<List<Movement>> _loadVisible() async {
+    final visible = <Movement>[];
+    var page = 1;
+    var total = 1 << 30;
+    var fetched = 0;
+    while (visible.length < _targetVisible &&
+        page <= _previewMaxPages &&
+        fetched < total) {
+      final result = await widget.service.getMovements(
         widget.account.id,
-        page: 1,
-        pageSize: 3,
+        page: page,
+        pageSize: _previewPageSize,
       );
+      total = result.total;
+      fetched += result.items.length;
+      for (final movement in result.items) {
+        if (!isInternalMovement(
+          entryType: movement.entryType,
+          description: movement.description,
+        )) {
+          visible.add(movement);
+          if (visible.length >= _targetVisible) break;
+        }
+      }
+      if (result.items.isEmpty) break;
+      page++;
+    }
+    return visible.take(_targetVisible).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<MovementsPage>(
+    return FutureBuilder<List<Movement>>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -825,17 +1049,15 @@ class _LatestMovementsState extends State<_LatestMovements> {
               Expanded(child: Text(message)),
               TextButton(
                 onPressed: () {
-                  setState(() {
-                    _future = _load();
-                  });
+                  reload();
                 },
                 child: const Text('Reintentar'),
               ),
             ],
           );
         }
-        final items = snapshot.data?.items ?? const <Movement>[];
-        if (items.isEmpty) {
+        final visible = snapshot.data ?? const <Movement>[];
+        if (visible.isEmpty) {
           return Text(
             'Aun no tienes movimientos.',
             style: AppTypography.bodyMd.copyWith(
@@ -845,7 +1067,7 @@ class _LatestMovementsState extends State<_LatestMovements> {
         }
         return Column(
           children: [
-            for (final movement in items)
+            for (final movement in visible)
               _MovementRow(
                 movement: movement,
                 accountMasked: widget.account.accountNumberMasked,
@@ -865,11 +1087,23 @@ class _MovementRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // DECISION m4 (auditoria, mismo criterio que m3): la fila NO navega al
+    // detalle. El preview usa el `Movement` de cuentas (`journalEntryId`
+    // del asiento) y `/movements/:id` solo resuelve `transaction_id`
+    // (`GET /transactions/{id}`): sin mapeo en el cliente, navegar caeria
+    // en `NOT_FOUND`. La via real al historial es "Ver todos los
+    // movimientos" (`/movements`); no se inventa un id.
     final scheme = Theme.of(context).colorScheme;
     final credit = movement.isCredit;
     final color = credit ? AppColors.success : scheme.error;
     final signed = '${credit ? '+' : '-'}'
         '${formatMinor(movement.amountMinor, movement.currency)}';
+    // Etiqueta de negocio por `entry_type` (E2-T35): si llega texto tecnico
+    // o un UUID, el helper lo sustituye por un titulo neutro de usuario.
+    final title = conceptForMovement(
+      entryType: movement.entryType,
+      description: movement.description,
+    ).label;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.stackSm),
       child: Row(
@@ -886,9 +1120,7 @@ class _MovementRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  movement.description.isEmpty
-                      ? '(Sin descripcion)'
-                      : movement.description,
+                  title,
                   style: AppTypography.bodyLg.copyWith(
                     color: scheme.onSurface,
                   ),

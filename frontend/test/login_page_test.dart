@@ -151,6 +151,11 @@ class _Harness {
           builder: (context, state) =>
               const Scaffold(body: Text('pin-reset-ok')),
         ),
+        GoRoute(
+          path: '/activate',
+          builder: (context, state) =>
+              const Scaffold(body: Text('activate-ok')),
+        ),
       ],
     );
   }
@@ -340,6 +345,28 @@ void main() {
     await tester.tap(find.byKey(const Key('login-pin-reset-link')));
     await tester.pumpAndSettle();
     expect(find.text('pin-reset-ok'), findsOneWidget);
+  });
+
+  testWidgets('M1: con userRef hay entrada a /activate (cuenta pendiente)',
+      (tester) async {
+    final h = _Harness(reader: FakeBiometricReader(available: false));
+    await _pump(tester, h);
+
+    expect(find.byKey(const Key('login-activate-link')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('login-activate-link')));
+    await tester.tap(find.byKey(const Key('login-activate-link')));
+    await tester.pumpAndSettle();
+    expect(find.text('activate-ok'), findsOneWidget);
+  });
+
+  testWidgets('M1: sin userRef no hay entrada a /activate', (tester) async {
+    final h = _Harness(
+      reader: FakeBiometricReader(available: false),
+      userRef: '',
+    );
+    await _pump(tester, h);
+
+    expect(find.byKey(const Key('login-activate-link')), findsNothing);
   });
 
   testWidgets('F-T49: con consentimiento muestra el boton biometrico',

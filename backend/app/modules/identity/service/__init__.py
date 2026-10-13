@@ -26,6 +26,8 @@ jamas sale en la respuesta del alta (solo viaja en la notificacion).
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
@@ -54,9 +56,80 @@ ACTIVATION_OTP_EMAIL_TEMPLATE = "otp_code_email"
 ACTIVATION_OTP_SMS_CHANNEL = "sms"
 ACTIVATION_OTP_SMS_TEMPLATE = "otp_code"
 
+#: Numero de cuenta CuyCash (E2-T28, HU05/HU06; decision del dueno 2026-10-03):
+#: 14 digitos con digito verificador (DV): `001` (prefijo de entidad, 3) +
+#: cuerpo de 10 digitos + DV (1). `account_number` sigue `String(20)` UQ.
+ACCOUNT_NUMBER_PREFIX = "001"
+ACCOUNT_NUMBER_BODY_LENGTH = 10
+ACCOUNT_NUMBER_LENGTH = 14
+_ACCOUNT_NUMBER_RE = re.compile(r"^001[0-9]{11}$")
+
+#: Reintentos acotados de generacion ante colision con el UNIQUE de
+#: `accounts.accounts.account_number` (regla configurable fuera del codigo
+#: si el negocio lo vuelve variable: hoy es formato, no umbral).
+ACCOUNT_NUMBER_MAX_ATTEMPTS = 10
+
+
+def compute_check_digit(first13: str) -> int:
+    """Calcula el DV modulo 11 (pesos ciclicos 2..7 de derecha a izquierda).
+
+    Dominio puro (E2-T28): sobre los 13 primeros digitos (todo menos el DV):
+    se recorren de derecha a izquierda con pesos `2,3,4,5,6,7,2,3,...`,
+    `dv = 11 - (suma mod 11)`; si `dv` es `10` u `11` -> `0`.
+    """
+    if not isinstance(first13, str) or len(first13) != 13 or not first13.isdigit():
+        raise ValueError("se exigen los 13 primeros digitos para calcular el DV")
+    total = 0
+    weight = 2
+    for digit in reversed(first13):
+        total += int(digit) * weight
+        weight = weight + 1 if weight < 7 else 2
+    remainder = total % 11
+    check = 11 - remainder
+    return 0 if check >= 10 else check
+
+
+def verify_account_number(value: object) -> bool:
+    """Valida un numero de cuenta CuyCash: 14 digitos con prefijo `001` y DV valido.
+
+    Dominio puro (E2-T28): `False` ante cualquier otro formato (longitud,
+    prefijo, no digitos o DV incorrecto); nunca lanza, nunca loguea el valor.
+    """
+    if not isinstance(value, str) or _ACCOUNT_NUMBER_RE.fullmatch(value) is None:
+        return False
+    return compute_check_digit(value[:13]) == int(value[13])
+
 
 def _new_account_number() -> str:
-    return f"001-{uuid.uuid4().hex[:12]}"
+    """Genera un numero de cuenta de 14 digitos con DV (E2-T28).
+
+    `001` + cuerpo aleatorio de 10 digitos (CSPRNG `secrets`, sin PII) + DV
+    modulo 11. La unicidad la garantiza `accounts.accounts.account_number`
+    (UQ); el llamante reintenta ante colision (`_new_unique_account_number`).
+    """
+    body = f"{secrets.randbelow(10**ACCOUNT_NUMBER_BODY_LENGTH):0{ACCOUNT_NUMBER_BODY_LENGTH}d}"
+    first13 = f"{ACCOUNT_NUMBER_PREFIX}{body}"
+    return f"{first13}{compute_check_digit(first13)}"
+
+
+def _new_unique_account_number(session: Session) -> str:
+    """Genera un numero unico (reintento acotado ante colision con el UQ).
+
+    Import perezoso de la fachada `accounts` (regla de oro 4, sin ciclos a
+    nivel top; mismo patron que `onboard_customer`). Si se agotan los
+    intentos (colisiones adversas o espacio saturado) falla controlado con
+    `RuntimeError` sin crear nada (el llamante revierte).
+    """
+    from app.modules.accounts.repository import get_by_number
+
+    for _ in range(ACCOUNT_NUMBER_MAX_ATTEMPTS):
+        candidate = _new_account_number()
+        if get_by_number(session, candidate) is None:
+            return candidate
+    raise RuntimeError(
+        "no se pudo generar un numero de cuenta unico "
+        f"tras {ACCOUNT_NUMBER_MAX_ATTEMPTS} intentos"
+    )
 
 
 def _notify_activation_code(
@@ -201,7 +274,7 @@ def onboard_customer(
         raise ValueError("kyc_result.doc_number_hash es obligatorio")
     number = account_number.strip() if isinstance(account_number, str) else ""
     if not number:
-        number = _new_account_number()
+        number = _new_unique_account_number(session)
 
     # Imports perezosos: `identity` no se deja importar de forma ciclica
     # por `accounts`/`ledger`/`core.outbox` (regla de oro 4, fachadas).
@@ -263,7 +336,13 @@ def onboard_customer(
 
 
 __all__ = [
+    "ACCOUNT_NUMBER_BODY_LENGTH",
+    "ACCOUNT_NUMBER_LENGTH",
+    "ACCOUNT_NUMBER_MAX_ATTEMPTS",
+    "ACCOUNT_NUMBER_PREFIX",
     "KYC_COMPLETED_EVENT",
     "USER_AGGREGATE_TYPE",
+    "compute_check_digit",
     "onboard_customer",
+    "verify_account_number",
 ]

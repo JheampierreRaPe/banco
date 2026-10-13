@@ -288,9 +288,29 @@ def test_happy_path_settles_with_entries_hold_and_history(
     by_type = {c["event_type"] for c in outbox_calls}
     assert domain_events.FUNDS_HELD in by_type
     assert domain_events.TRANSFER_SETTLED in by_type
-    for call in outbox_calls:
-        assert call["aggregate_type"] == "transaction"
+    tx_calls = [c for c in outbox_calls if c["aggregate_type"] == "transaction"]
+    for call in tx_calls:
         assert call["aggregate_id"] == tx.id
+    assert {c["event_type"] for c in tx_calls} == {
+        domain_events.FUNDS_HELD,
+        domain_events.TRANSFER_SETTLED,
+    }
+    # E2-T23: cada asiento (hold + liquidacion) emite `ledger.entry.posted`.
+    entry_calls = [c for c in outbox_calls if c["event_type"] == domain_events.LEDGER_ENTRY_POSTED]
+    assert len(entry_calls) == 2
+    for call in entry_calls:
+        assert call["aggregate_type"] == "journal_entry"
+        # E2-T35: el payload agrega `entry_type` (concepto contable); el
+        # motor (asientos, cuadre, validaciones) no cambia.
+        assert set(call["payload"]) == {
+            "entry_id",
+            "entry_type",
+            "transaction_id",
+            "description",
+            "value_date",
+            "postings",
+        }
+        assert call["payload"]["transaction_id"] == str(tx.id)
     # Bloqueo en orden estable de account_id.
     assert port.lock_order == sorted(port.lock_order)
     # Cuadre por asiento.

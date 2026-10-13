@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 import smtplib
-import subprocess
-import sys
 
 import pytest
 import sqlalchemy as sa
@@ -366,7 +364,11 @@ def test_migracion_0016_es_data_only_y_reversible():
 
 def test_migracion_0016_up_down_en_bd_de_prueba(db_session: Session):
     """`downgrade` elimina la fila y `upgrade` la restaura (idempotente)."""
-    from tests.db_utils import BACKEND_DIR, resolve_test_database_url
+    from tests.db_utils import (
+        downgrade_in_process,
+        resolve_test_database_url,
+        run_migrations_in_process,
+    )
 
     url = resolve_test_database_url()
     bind = db_session.get_bind()
@@ -379,33 +381,15 @@ def test_migracion_0016_up_down_en_bd_de_prueba(db_session: Session):
             )
         ).scalar_one()
 
-    def _alembic(*args: str) -> None:
-        import os
-
-        env = os.environ.copy()
-        env["DATABASE_URL"] = url
-        proc = subprocess.run(
-            [sys.executable, "-m", "alembic", *args],
-            cwd=str(BACKEND_DIR),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-        assert (
-            proc.returncode == 0
-        ), f"alembic {' '.join(args)} fallo:\n{proc.stdout}\n{proc.stderr}"
-
     assert _count() == 1, "0016 debe dejar la plantilla al aplicar head"
     try:
-        _alembic("downgrade", "0015_identity_login")
+        downgrade_in_process(url, "0015_identity_login")
         assert _count() == 0, "downgrade debe eliminar la plantilla"
     finally:
-        _alembic("upgrade", "head")
+        run_migrations_in_process(url, "head")
     assert _count() == 1, "upgrade debe restaurar la plantilla"
 
-    _alembic("upgrade", "head")  # re-aplicar en head es no-op
+    run_migrations_in_process(url, "head")  # re-aplicar en head es no-op
     assert _count() == 1, "re-aplicar no debe duplicar la plantilla"
 
 

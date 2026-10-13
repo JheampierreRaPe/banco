@@ -122,12 +122,195 @@ def is_wired() -> bool:
         return False
 
 
+# ------------------------------------------------- Cableado E2-T23
+# Consumidor `ledger.entry.posted` -> `movements_view` en produccion.
+# `handle_ledger_entry_posted` (retenidos) NO se suscribe: `held` lo
+# sincroniza `AccountsLedgerProjectionAdapter` en la transaccion del
+# asiento; suscribirlo sin reconciliar duplicaria el efecto.
+
+
+def subscribe_accounts_movements(bus: Any | None = None) -> Any:
+    """Suscribe `on_ledger_entry_posted` al bus (E2-T23, HU05).
+
+    Idempotente: si el handler ya esta registrado no lo duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna el
+    handler registrado (el arranque real lo usa; los tests lo verifican).
+    """
+    from app.core import events as domain_events
+    from app.modules.accounts.events import on_ledger_entry_posted
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers = list(getattr(bus, "_handlers", {}).get(domain_events.LEDGER_ENTRY_POSTED, []))
+    if on_ledger_entry_posted not in handlers:
+        bus.subscribe(domain_events.LEDGER_ENTRY_POSTED, on_ledger_entry_posted)
+    return on_ledger_entry_posted
+
+
+def is_movements_wired(bus: Any | None = None) -> bool:
+    """`True` si el consumidor de movimientos ya esta suscrito al bus."""
+    from app.core import events as domain_events
+    from app.modules.accounts.events import on_ledger_entry_posted
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        return bus.handler_count(domain_events.LEDGER_ENTRY_POSTED) > 0 and (
+            on_ledger_entry_posted in bus._handlers.get(domain_events.LEDGER_ENTRY_POSTED, [])
+        )
+    except AttributeError:
+        return False
+
+
+# ------------------------------------------------- Cableado E2-T20
+# Consumidor `auth.failed_attempt` -> `risk` (severidad) + notificacion.
+# Solo registra/sube severidad, audita y notifica: nunca mueve dinero.
+
+
+def subscribe_risk_security(bus: Any | None = None) -> Any:
+    """Suscribe `on_auth_failed_attempt` al bus (E2-T20, HU08 CA-04/CA-02).
+
+    Idempotente: si el handler ya esta registrado no lo duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna el
+    handler registrado (el arranque real lo usa; los tests lo verifican).
+    """
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_auth_failed_attempt
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers = list(getattr(bus, "_handlers", {}).get(domain_events.AUTH_FAILED_ATTEMPT, []))
+    if on_auth_failed_attempt not in handlers:
+        bus.subscribe(domain_events.AUTH_FAILED_ATTEMPT, on_auth_failed_attempt)
+    return on_auth_failed_attempt
+
+
+def is_risk_security_wired(bus: Any | None = None) -> bool:
+    """`True` si el consumidor de seguridad ya esta suscrito al bus."""
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_auth_failed_attempt
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        return bus.handler_count(domain_events.AUTH_FAILED_ATTEMPT) > 0 and (
+            on_auth_failed_attempt in bus._handlers.get(domain_events.AUTH_FAILED_ATTEMPT, [])
+        )
+    except AttributeError:
+        return False
+
+
+def run_outbox_once(
+    *,
+    session_factory: Any | None = None,
+    bus: Any | None = None,
+    limit: int = 100,
+    max_attempts: int | None = None,
+    backoff_base_seconds: int | None = None,
+) -> dict[str, int]:
+    """Una pasada del worker del outbox con sesion/`commit` propios (E2-T23).
+
+    Abre su propia sesion (`session_factory` o `SessionLocal`), publica
+    pendientes via `publish_pending` y hace `commit` (o `rollback` ante
+    fallo y re-lanza). Sin bloquear el hilo del llamante mas que la pasada.
+    `max_attempts`/`backoff_base_seconds` son configurables (regla de oro 6:
+    el arranque los lee de entorno); `None` usa los defaults de `shared`.
+    """
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    from app.modules.shared import repository as shared_repo
+    from app.modules.shared.jobs.publisher import publish_pending
+
+    if max_attempts is None:
+        max_attempts = shared_repo.DEFAULT_MAX_ATTEMPTS
+    if backoff_base_seconds is None:
+        backoff_base_seconds = shared_repo.DEFAULT_BACKOFF_BASE_SECONDS
+    session = session_factory()
+    try:
+        result = publish_pending(
+            session,
+            bus=bus,
+            limit=limit,
+            max_attempts=max_attempts,
+            backoff_base_seconds=backoff_base_seconds,
+        )
+        session.commit()
+        return result
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def start_outbox_worker(
+    *,
+    session_factory: Any | None = None,
+    bus: Any | None = None,
+    interval_seconds: float = 2.0,
+    stop_event: Any | None = None,
+    **run_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Arranca el worker periodico del outbox en un hilo daemon (E2-T23).
+
+    Cada ciclo es `run_outbox_once` (sesion/`commit` propios); los errores
+    del ciclo se tragan (best-effort) para no matar el hilo. Retorna
+    `(thread, stop_event)`; fijar `stop_event` detiene el ciclo. No bloquea
+    al llamante. `interval_seconds` lo fija el arranque desde entorno.
+    """
+    import threading as _threading
+
+    if stop_event is None:
+        stop_event = _threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            try:
+                run_outbox_once(
+                    session_factory=session_factory,
+                    bus=bus,
+                    **run_kwargs,
+                )
+            except Exception:  # noqa: BLE001, S112 - el worker nunca muere
+                continue
+
+    thread = _threading.Thread(
+        name="outbox-publisher",
+        target=_loop,
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event
+
+
 __all__ = [
     "get_account_projection_port",
     "get_balance_port",
     "get_default_ports",
+    "is_movements_wired",
+    "is_risk_security_wired",
     "is_wired",
     "resolve_account_projection",
     "resolve_balance_port",
+    "run_outbox_once",
+    "start_outbox_worker",
+    "subscribe_accounts_movements",
+    "subscribe_risk_security",
     "wire_ports",
 ]

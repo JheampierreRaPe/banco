@@ -1,7 +1,6 @@
 ---
 description: Planificador de tareas de Banca Online Integral. Crea briefs en docs/tasks/<ID>.md (NUNCA escribe codigo de implementacion).
 mode: subagent
-model: opencode-go/deepseek-v4.1-flash
 permission:
   edit: allow
   bash: allow

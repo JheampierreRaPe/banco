@@ -9,6 +9,7 @@ import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../data/accounts_service.dart';
 import '../models/account.dart';
+import '../models/movement_concept.dart';
 import '../utils/format.dart';
 
 /// Detalle de cuenta + movimientos (HU05 CA-02/CA-03/CA-04).
@@ -120,14 +121,24 @@ class _AccountDetailPageState extends State<AccountDetailPage> {
         filters: _filters,
       );
       if (!mounted) return;
+      // Patas internas (`TRANSFER_HOLD`/`INTERBANK_HOLD`) fuera: son
+      // retenciones, no dinero del usuario (E2-T35, presentacion).
+      final visible = result.items
+          .where(
+            (m) => !isInternalMovement(
+              entryType: m.entryType,
+              description: m.description,
+            ),
+          )
+          .toList();
       setState(() {
         if (reset) {
           _movements
             ..clear()
-            ..addAll(result.items);
+            ..addAll(visible);
           _page = result.page;
         } else {
-          _movements.addAll(result.items);
+          _movements.addAll(visible);
           _page = result.page;
         }
         _total = result.total;
@@ -623,16 +634,27 @@ class _MovementTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // DECISION m3 (auditoria): las filas NO navegan a `/movements/:id`.
+    // El `Movement` de cuentas solo expone `journalEntryId` (id del asiento
+    // contable, `GET /accounts/{id}/movements`) mientras que la ruta de
+    // detalle exige `transaction_id` (`GET /transactions/{id}`). Son
+    // espacios de ids distintos sin mapeo en el cliente: navegar con el
+    // `journalEntryId` caeria en `NOT_FOUND` ("No encontramos ese
+    // movimiento"). No se inventa un id; la fila queda informativa.
     final scheme = Theme.of(context).colorScheme;
     final credit = movement.isCredit;
     final color = credit ? AppColors.success : scheme.error;
     final signed = '${credit ? '+' : '-'}'
         '${formatMinor(movement.amountMinor, movement.currency)}';
+    // Etiqueta de negocio por `entry_type` (E2-T35): `settle <uuid>` y
+    // cualquier texto tecnico se sustituyen; nunca se muestra un UUID.
+    final title = conceptForMovement(
+      entryType: movement.entryType,
+      description: movement.description,
+    ).label;
     return AppListItem(
       leadingIcon: credit ? Icons.arrow_downward : Icons.arrow_upward,
-      title: movement.description.isEmpty
-          ? '(Sin descripcion)'
-          : movement.description,
+      title: title,
       subtitle: '${formatValueDate(movement.valueDate)} - '
           '${credit ? 'Abono' : 'Cargo'}',
       trailing: Text(signed, style: TextStyle(color: color)),

@@ -129,7 +129,19 @@
 `transfer.daily_limit_minor`, `qr.express_limit_minor`, `otp.ttl_seconds`,
 `otp.max_resends`, `auth.max_failed_attempts`, `session.inactivity_seconds`,
 `kyc.match_threshold`, `kyc.max_attempts`, `loan.max_dti_ratio`,
+`loan.max_amount_minor`, `loan.min_score`, `loan.review_margin`,
+`loan.max_debt_minor`,
 `fx.quote_ttl_seconds`, `fx.spread_base`, `fx.spread_volume_step`, `pocket.yield_rate`.
+
+> Motor de credito (E3-T07, HU10): `loan.max_dti_ratio` (`0.4`, semilla
+> `0001` como texto `"0.4"`, normalizado a numero por `0030`),
+> `loan.max_amount_minor` (`5000000`, tope generico en centimos),
+> `loan.min_score` (`650`), `loan.review_margin` (`50`, puntos de score;
+> banda de revision `[min, min + margin)`), `loan.max_debt_minor`
+> (`10000000`, deuda total maxima en centimos). Semillas `0030`
+> (idempotentes). Opcional por perfil: `loan.max_amount_{PERFIL}_minor`
+> (override del tope generico, mismo patron que
+> `transfer.daily_limit_{PERFIL}_minor`).
 
 ## 4. Schema `identity`
 
@@ -266,7 +278,7 @@
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | user_id | UUID | No | - | REF identity.users, IDX | - |
-| account_number | VARCHAR(20) | No | - | UQ | Numero interno. |
+| account_number | VARCHAR(20) | No | - | UQ | Numero interno de 14 digitos con DV (prefijo `001`). |
 | type | VARCHAR(20) | No | - | CK | `account_type`. |
 | currency | CHAR(3) | No | 'PEN' | | ISO-4217. |
 | status | VARCHAR(20) | No | 'ACTIVE' | IDX, CK | `account_status`. |
@@ -275,6 +287,16 @@
 | opened_at | TIMESTAMPTZ | No | now() | | - |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
+
+> Formato de `account_number` (decision del dueno 2026-10-03, `E2-T28`): **14 digitos con digito
+> verificador** — `001` (prefijo de entidad, 3) + `CCCCCCCCCC` (cuerpo, 10) + `D` (DV, 1). El DV es
+> **modulo 11 con pesos ciclicos 2..7 de derecha a izquierda** sobre los 13 primeros digitos:
+> `dv = 11 - (suma mod 11)`, mapeando `10`/`11` -> `0`; `verify_account_number` exige
+> `^001[0-9]{11}$` + DV valido. La columna sigue `VARCHAR(20)` UQ (14 digitos caben). El numero en
+> claro es interno (jamas en logs ni respuestas; la API solo expone UUIDs y `account_number_masked`
+> `****` + ultimos 4). La migracion `0024_accounts_numeric_backfill` reasigna numeros de 14 digitos
+> a las cuentas existentes no conformes (incluidas las de formato hex `001-<12 hex>`), de forma
+> determinista y unica.
 
 ### 5.2 `account_balances`
 
@@ -299,7 +321,6 @@
 | account_or_cci | VARCHAR(30) | No | - | | Cuenta o CCI. |
 | holder_name | VARCHAR(150) | Si | - | | - |
 | holder_doc_hash | VARCHAR(128) | Si | - | | - |
-| preapproved_limit_minor | BIGINT | Si | - | CK >=0 | Tope sin factor extra. |
 | currency | CHAR(3) | Si | - | | - |
 | status | VARCHAR(20) | No | 'ACTIVE' | | `ACTIVE`/`DELETED`. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
@@ -316,6 +337,7 @@
 | amount_minor | BIGINT | Monto. |
 | currency | CHAR(3) | Moneda. |
 | description | TEXT | Concepto. |
+| entry_type | VARCHAR(30) | Concepto contable del asiento (E2-T35; backfill `0028` E2-T37: `NULL` solo en filas huerfanas/no resolubles, con fallback en cliente). |
 | value_date | DATE | Fecha valor. |
 | created_at | TIMESTAMPTZ | - |
 
@@ -405,6 +427,11 @@ Indices: `(account_id, created_at DESC)`.
 | is_system | BOOLEAN | No | false | | Cuenta del catalogo. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 
+> Nota de alineacion (E2-T07, cierra G05): la cuenta canonica de comisiones es
+> **`4100-Ingresos por comisiones`** (catalogo semilla: `4000` = "Ingresos por
+> intereses"). La comision de transferencias (`transactions.fee_minor`) se acredita
+> a `4100`, nunca a `4000` (`docs/04#72/#73`).
+
 ### 7.2 `journal_entries`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
@@ -493,7 +520,7 @@ Indices: `(account_id, created_at DESC)`.
 | bureau_authorized | BOOLEAN | No | false | | Consentimiento. |
 | bureau_authorized_at | TIMESTAMPTZ | Si | - | | - |
 | score | INTEGER | Si | - | | Score interno/bureau. |
-| dti_ratio | NUMERIC(6,4) | Si | - | | Deuda/ingreso. |
+| dti_ratio | NUMERIC(12,4) | Si | - | | Deuda/ingreso (informativo; se acota a ±99999999.9999 al persistir, el dictamen usa el DTI exacto). |
 | total_income_minor | BIGINT | Si | - | | - |
 | total_debt_minor | BIGINT | Si | - | | - |
 | decision_reason | TEXT | Si | - | | Justificacion. |

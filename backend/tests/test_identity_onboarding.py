@@ -533,39 +533,22 @@ def test_integration_postgres_onboarding(db_session: Session):
 
 def test_migration_up_down_on_test_database(db_session: Session):
     """`up/down` de la revision propia en base de prueba (restaura `head` al final)."""
-    import subprocess
-    import sys
-
     from sqlalchemy import inspect
 
-    from tests.db_utils import BACKEND_DIR, resolve_test_database_url
+    from tests.db_utils import (
+        downgrade_in_process,
+        resolve_test_database_url,
+        run_migrations_in_process,
+    )
 
     url = resolve_test_database_url()
 
-    def _alembic(*args: str) -> None:
-        import os
-
-        env = os.environ.copy()
-        env["DATABASE_URL"] = url
-        proc = subprocess.run(
-            [sys.executable, "-m", "alembic", *args],
-            cwd=str(BACKEND_DIR),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-        assert (
-            proc.returncode == 0
-        ), f"alembic {' '.join(args)} fallo:\n{proc.stdout}\n{proc.stderr}"
-
     try:
         assert inspect(db_session.get_bind()).has_table("users", schema="identity")
-        _alembic("downgrade", "0011_notifications")
+        downgrade_in_process(url, "0011_notifications")
         assert not inspect(db_session.get_bind()).has_table("users", schema="identity")
         assert not inspect(db_session.get_bind()).has_table("credentials", schema="identity")
     finally:
-        _alembic("upgrade", "head")
+        run_migrations_in_process(url, "head")
     assert inspect(db_session.get_bind()).has_table("users", schema="identity")
     assert inspect(db_session.get_bind()).has_table("credentials", schema="identity")

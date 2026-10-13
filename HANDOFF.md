@@ -1,112 +1,244 @@
-# HANDOFF — Orquestador (2026-09-26) → Sprint 2
+# HANDOFF — Orquestador → continuación (cierre final del Sprint 2) · actualizado 2026-10-12
 
-Lee esto antes de continuar. Estado real del proyecto al cerrar la sesión. Reemplaza al handoff anterior (2026-09-18).
+Lee esto antes de continuar. Estado real del proyecto. Reemplaza al handoff del 2026-10-10
+(cierre previo de créditos + panel web). El **Sprint 2 quedó CERRADO** (papeleo incluido) y la
+rama **`sprint-2` está pusheada con CI verde**; el índice y el cierre oficial están en
+`docs/tasks/SPRINT-2.md#cierre-del-sprint-2-2026-10-11`.
 
 ## 1. Dónde estamos
 
-- Rama de trabajo: **`kyc-ux-24-08-2026`** (creada desde `refactorizacion-ui`), HEAD **`13e2847`**.
-- Commits de esta sesión (de más viejo a más nuevo):
-  - `08f6f12` docs(tasks): briefs E1-T35/F-T44/F-T45
-  - `9d11847` feat(kyc,identity): lookup de titular por documento vía apiinti + estados/bloqueo KYC
-  - `e72f057` fix(kyc,identity): camelCase de apiinti + estilo deshabilitado de botones
-  - `053cbb8` feat: RUC real + precheck duplicado + consentimiento biométrico + UX KYC (E1-T36..T38, F-T46..T48)
-  - `737802a` feat: consentimiento biométrico + precheck email + RUC en pin-reset + retiro de recovery (E1-T39..T41, F-T49..F-T55)
-  - `ea1cda5` chore(release): cierre Sprint 1 — QA, coherencia docs, seguridad y features KYC/login/dashboard
-  - `13e2847` docs: cierre formal del Sprint 1 (estados y drift documental)
-- Ramas locales previas: `refactorizacion-ui` (padre, 25 commits sobre `master`, **NO está en origin**), `pruebas-flutter-nuevoagente`, `master`, varias `feature/*`.
-- `origin` = https://github.com/JheampierreRaPe/banco . `gh` **no está instalado** en esta máquina (PR por API/URL manual).
-- Backend: **727 passed + 1 skipped**, `ruff`/`black` limpios, `alembic check` limpio, head **`0020_identity_ruc_business_name`**.
-- Frontend: **576/576** tests, `flutter analyze` limpio.
-- Stack Docker: `healthy` (postgres/redis ahora solo en `127.0.0.1`; backend `:8000`, admin-web `:8080`).
-- Dispositivo: adb TLS `192.168.1.43` (pair), app `com.bancaonline.banca_online.refactorui` v0.1.0 instalada; APK apunta a `http://192.168.1.20:8000` (IP LAN estática del PC). App vieja `com.bancaonline.banca_online` intacta.
+- Rama de trabajo: **`sprint-2`**, HEAD actual **`835078c`**, **YA PUSHEADA**
+  (`sprint-2` con upstream `origin/sprint-2`). `origin` =
+  https://github.com/JheampierreRaPe/banco . **CI verde**: run #14, **8/8 jobs `success`**
+  (`lint`, `test`, `migrations`, `build`, `scan`, `frontend`, `panel`, `ci-success`) →
+  https://github.com/JheampierreRaPe/banco/actions/runs/38255962404 . (`gh` no está instalado →
+  PR vía push + URL web.)
+- **Stack Docker:** **5/5 `healthy`** (`postgres`, `redis`, `backend`, `worker`, `admin-web`).
+  El microservicio KYC vive aparte del compose (contenedor `kyc-facial-service-8001`, `:8001`,
+  `healthy`).
+- **Commits recientes relevantes** (rama pusheada):
+  - **Créditos HU09/HU10 (E3-T01..T11):** `64383ad` (motor financiero + catálogo),
+    `b961c72` (API simulador + UI + QA), `fa3b1df` (adaptador de buró + reglas + solicitud),
+    `2532480` (UI solicitud + panel analista + QA).
+  - **HU11 firma de contrato (E3-T12..T16):** `48667cd` (3 documentos + migración `0033`),
+    `1e0eae3` (firma biometría/PIN + copia por correo), `20fca8c` (UI contrato/firma + QA).
+  - **Calidad:** `7918266` (Q-T03 seguridad), `6ab357b` (Q-T07 observabilidad),
+    `fbd38ce` (Q-T08 escaneo + Q-T12 cobertura/CI).
+  - **E3-T23 "Mis créditos":** `dd3d6fe` (listado + pestañas), `b64e763` (contrato get-or-create
+    al abrir la firma), `13cdeca` (Firmado no re-firmable + volver al inicio).
+  - **Papeleo/cierre:** `dfdbaf7` (sesión 2026-10-11), `276ad5d` (guion demo Q-T09),
+    `28640d3` (cierre del Sprint 2), `7bb160d` (estado tras cierre).
+  - **Cierre de deuda técnica:** `9076546` (`G58` HMAC del PIN en `transactions` + `OBS-3` CAS
+    del contador de fallos + `OBS-4` nonce de un solo uso), `c809518` (`G26` decimales en
+    `PUT /admin/parameters` + `H5` env vars del buró en `docs/02#9`).
+  - **CI endurecido:** `835078c` (el test de carga mide el camino de **escritura** en
+    `backend/tests/load/harness.py`; `.gitleaks.toml` con allowlist a falsos positivos de
+    fixtures de test).
+- **Dispositivo adb:** `adb devices -l` puede mostrar duplicados con sufijo ` (2)` (p.ej.
+  `adb-KJSGAUYHSCB6HUSS-yIJZve (2)._adb-tls-connect._tcp`, modelo `2311DRK48G`) →
+  `adb disconnect "<serial (2)>"` para dejar uno.
 
-## 2. Qué se hizo en esta sesión (resumen)
+## 2. Estado de suites / migraciones (verificado 2026-10-12)
 
-- **RUC real (E1-T36):** `identity.users.business_name`, CHECK `ck_users_doc_type` con `RUC`, migración `0020`, propagación en alta/submit, UI de razón social.
-- **Lookup por documento (E1-T35):** `POST /auth/kyc/document/lookup` vía apiinti real (Bearer + key en `.env`, `DOC_LOOKUP_PROVIDER=apiinti`); mapeo camelCase.
-- **Precheck de duplicado (E1-T37):** 409 `DUPLICATE_DOCUMENT` (DNI+RUC) antes del proveedor.
-- **Consentimiento biométrico (E1-T38/T39, F-T46/T49/T52):** `POST /auth/biometric/consent`, flag en login PIN, biometría real con `local_auth` (fallback PIN), pantalla "Mi perfil" (`/profile`) con switch y "Cerrar sesión".
-- **Fix login biométrico (E1-T42, F-T53):** rebind de `public_key` en login PIN + no rotar `device.secret` ante refresh benigno. (Requiere un login con PIN tras desplegar para refrescar la clave.)
-- **Dashboard (E1-T43/T44, F-T54/T55):** rediseño según `dash`, `GET /accounts/totals` (total real del servidor) y `GET /me` (nombre real); bottom-nav (`Perfil`→`/profile`).
-- **Login en dispositivo nuevo (E1-T45/T46, F-T56/T57):** email+DNI → OTP → PIN → asocia dispositivo y abre sesión; separado de "Olvidé mi PIN" (`/pin-reset`).
-- **QA del Sprint 1 (10 briefs):** concurrencia/idempotencia/saldo/latencia, KYC, cadena de hashes de `journal_entries`, OTP, auth/lockout/refresh, carga <200 ms, enmascaramiento/consistencia saldos-ledger, contrato OpenAPI + integración KYC, verificación infra demo.
-- **Docs:** coherencia con el código (canon `docs/14`, enums, catálogo de errores, `/auth/recover` retirado, READMEs de módulo, dueño único de `config.parameters`) y **archivado de los briefs `Hecho`** en `docs/tasks/archive/` (Sprint 1 cerrado formal y funcionalmente).
-- **Seguridad (quick wins):** `JWT_SECRET` fuerte + validación de arranque, Postgres/Redis solo loopback, `.gitignore` (notas/temporales/`key.properties`), 401 sin detalle interno, scaffold de firma release Android.
+- **Backend (`pytest`, desde `backend/` con `.venv`):** **1553 passed + 1 skipped**,
+  cobertura **86%** (≥ 80, comando del CI con `--cov-fail-under=80`;
+  `.github/workflows/ci.yml:82`). `ruff check .` limpio; `black --check .` (391 archivos sin
+  cambios); `alembic check` → "No new upgrade operations detected". **Head de migración:
+  `0033_credits_contracts`** (`backend/migrations/versions/0033_credits_contracts.py`).
+  - Nota: `tests/load/test_engine_load.py::test_e5_t08_pico_fin_de_mes_sin_degradacion` es un
+    test de **carga** con SLA p95 < 200 ms y es **sensible a la contención de la máquina**:
+    falló una vez corriendo las tres suites en paralelo y pasó solo en 0.54 s. No es un defecto
+    del producto; no ejecutar las suites pesadas en paralelo.
+- **Frontend (`flutter`, desde `frontend/`):** `flutter analyze` → "No issues found!";
+  `flutter test` → **829/829**.
+- **Panel `admin-web` (desde `admin-web/`):** `npm test` → **18/18** (vitest, 3 archivos);
+  `npm run lint` (`tsc --noEmit`) y `npm run build` limpios.
+- **CI (GitHub Actions, `.github/workflows/ci.yml`):** **8 jobs** (`lint`, `test`,
+  `migrations`, `build`, `scan`, `frontend`, `panel`) + agregador `ci-success`; **run #14 →
+  8/8 `success`** (`835078c`). Dispara en `push` a `main`, `feature/**` y **`sprint-*`**
+  (`.github/workflows/ci.yml:9`) y en PR a `main`. **El CI NO corre en local**: solo se ejecuta
+  en GitHub al pushear.
 
-## 3. Qué funciona de verdad (verificado)
+## 3. Qué se hizo (por bloques)
 
-- Alta KYC end-to-end, PIN, login PIN, login biométrico (tras un PIN-login), login por PIN en dispositivo nuevo, consentimiento biométrico, dashboard con datos reales, "Mi perfil", "Olvidó mi PIN".
-- apiinti real para DNI/RUC (key en `.env`, backend-side; el cliente nunca la ve).
-- Motor/ledger con los 12 casos del QA en verde; proyección de movimientos probada (ver pendiente en §4).
+- **HU06/HU07/HU08 (Sprint 2, base):** transferencias propias/tercero/interbancarias
+  (hold+settle, saga con compensación, comprobante PDF), beneficiarios (AES-256-GCM + índice
+  ciego), reto biométrico del dispositivo con fallback PIN, umbral + límite diario, cuenta de
+  14 dígitos con DV + lookup DNI/celular, `/movements` con reverso, `/admin/parameters`.
+  Detalle en `docs/tasks/archive/` y `docs/tasks/SPRINT-2.md`.
+- **Correcciones `E2-T33..T37`:** retiro real del tope pre-aprobado (`0026`), umbral biométrico
+  **por operación** (`E2-T34`), `entry_type` en movimientos (`0027`) + backfill (`0028`),
+  cierre del bypass del límite diario (`E2-T36`). Gaps `G46..G49` en `docs/18`.
+- **Créditos HU09/HU10 (`E3-T01..T11`):** motor financiero francés (TEA/TCEA), catálogo
+  `loan_products` (`0029`), `POST /credits/simulate` + PDF, adaptador `CreditBureau`
+  (mock+HTTP), motor de reglas DTI/score (`0030`), expediente `loan_applications` (`0031`) +
+  outbox, panel de analista (bandeja `IN_REVIEW` → dictamen con motivo obligatorio).
+- **HU11 firma de contrato (`E3-T12..T16`, adelanto de Sprint 3):** **3 documentos separados**
+  (contrato + pagaré + resumen) con `doc_ref`/`doc_hash` (`0033`); servicio de firma con sello
+  determinista + hash del token; endpoints `POST .../sign/challenge` y
+  `POST .../sign` (biometría del dispositivo **o** PIN, mutuamente excluyentes,
+  `Idempotency-Key`); copia certificada por correo **best-effort** (sender Gmail/mock);
+  UI Flutter `/credits/contract` + `/credits/sign`; QA de integridad/no reutilización.
+- **`E3-T23` "Mis créditos":** `GET /credits/applications` (sin `status`) devuelve **solo las
+  solicitudes del titular** (vista mínima, sin ingresos/deuda/score); pantalla `/credits` con
+  pestañas `Simulador | Mis créditos`; **contrato get-or-create al abrir la firma**; estado
+  **Firmado no re-firmable** (`409`) y "volver al inicio". Gap `G59` en `docs/18`.
+- **Calidad:** `Q-T03` (QA de seguridad RBAC/idempotencia/rate-limit/inyección), `Q-T07`
+  (logs estructurados + `request_id` correlacionado), `Q-T08` (escaneo de deps/secretos:
+  `bandit` + `pip-audit` + `npm audit` + gitleaks/secrets-check), `Q-T12` (cobertura con umbral
+  `--cov-fail-under=80` + jobs frontend/panel + `ci-success`), `Q-T09` (guion y datos de demo).
+  Todos archivados en `docs/tasks/archive/`.
+- **Cierre de deuda técnica (post-cierre):** `9076546` (`G58` HMAC del PIN en `transactions`,
+  `OBS-3` CAS en el contador de fallos, `OBS-4` nonce de un solo uso), `c809518` (`G26`
+  decimales en `PUT /admin/parameters`, `H5` env vars del buró en `docs/02#9`), `835078c` (CI:
+  el test de carga mide el camino de escritura + allowlist gitleaks de fixtures). Con esto el
+  Sprint 2 queda **cerrado y con CI verde**.
 
-## 4. Pendientes / Sprint 2
+## 4. Qué funciona de verdad (verificado)
 
-- **Sprint 2 (transferencias HU06/HU07/HU08):** crear los briefs `E2-T07..E2-T22` desde `docs/07` y `docs/04`; el motor base ya está Hecho; falta el router `/transfers/*` y los endpoints `/transactions/*/authorize`, `/payments/qr`.
-- **`E2-T04` / `movements_view`:** el consumidor de `ledger.entry.posted` NO está cableado en producción (diferido a Sprint 2; ver `docs/17:113` y nota en `docs/tasks/SPRINT-1.md`).
-- **QA de fases posteriores:** `Q-T03` (seguridad), `Q-T07` (observabilidad), `Q-T08` (escaneo de deps/secretos, parcial en CI), `Q-T09` (guion demo) — sin brief aún.
-- **Frontend no implementado:** `F-T06..F-T18` (transferencias/créditos/wallet-QR/divisas/panel admin).
-- **HU04 (`E1-T19..E1-T23`):** superado por el flujo vigente; no crear salvo rediseño explícito.
-- **Mejoras UI:** "opciones-usuario" ya existe; quedan filas visuales sin función y quick-actions/bottom-nav "Próximamente".
+- **Transferencias:** propia (ruta atómica), a tercero (hold+settle, comisión, comprobante) e
+  interbancaria (saga, timeout, reverso). Destino por cuenta de 14 dígitos con DV o por
+  DNI/celular con lookup previo neutro. Idempotencia por titular (replay con
+  `meta.replayed=true`).
+- **Créditos (ciclo completo hasta firma):** simular → solicitar → dictamen → panel del analista
+  (`admin-web`) → **firmar con biometría o PIN** → **copia por correo**. El buró mock es
+  determinista por hash del `sub` (`prime` aprueba, `standard` → `IN_REVIEW`).
+- **"Mis créditos" (`E3-T23`):** listado del titular con pestañas, contrato al abrir la firma,
+  estado Firmado sin re-firma.
+- **Panel web (`:8080`):** bandeja `IN_REVIEW` + detalle enmascarado + dictamen; conectado al
+  backend por **same-origin** (nginx `/api` → `backend:8000`). Token de analista con
+  `backend/scripts/mint_demo_token.py` (firma local, sin backdoor). Runbook:
+  `docs/guia-acceso-panel-web.md`.
+- **Guion de demo:** `docs/demo/guion-demo-sprint-2.md` (requisitos previos, datos demo, paso a
+  paso por HU, checklist y plan B).
 
-## 5. Riesgos / decisiones abiertas (`docs/17`)
+## 5. Pendientes (para el que continúe)
 
-- R26: `device_public_key` = secreto HMAC (migrar a asimétrica Ed25519/EC; `cryptography` no declarado).
-- OTP hasheado con SHA-256 simple (usar PBKDF2/HMAC-pepper).
-- Rate-limit en memoria por réplica (migrar a Redis/middleware) — R28.
-- Dependencias/imágenes sin pinear (usar `==`/lockfile; ojo: un `uv sync` accidental subió `sqlalchemy` a 2.1.1, aún dentro de `>=2.0`).
-- R29: RUC solo probado contra el mock de `kyc-service/verify-full` (no verificado contra el microservicio real).
-- D05/R02: rol DevOps sin titular → **riesgo aceptado para MVP/demo** (2026-09-26).
-- `kyc-service/` es repo anidado ignorado con secretos propios (no versionado a propósito).
+> **Estado:** el Sprint 2 está **cerrado**, la rama `sprint-2` está **pusheada** (`origin/sprint-2`,
+> HEAD `835078c`) y el **CI está verde** (run #14, 8/8 `success`). No queda deuda técnica abierta.
 
-## 6. Notas de trabajo
+- **Vídeo de respaldo del demo (`docs/15`):** **único pendiente real** de papeleo. Lo graba el
+  dueño; el guion está en `docs/demo/guion-demo-sprint-2.md` (`Q-T09` lo pide explícitamente en
+  `docs/15-calidad-seguridad-devops.md:106`).
+- **HU12 (Sprint 3) — desembolso + cuotas** (`E3-T17..E3-T22`): **sin briefs ni código**. Es el
+  **siguiente bloque natural**. Referencias conceptuales:
+  `docs/08-epica-3-creditos.md:78` (HU12) y los asientos `docs/04-motor-transaccional-y-ledger.md:163`
+  (§7.5 desembolso) y `:170` (§7.6 pago de cuota). Requiere crear los briefs antes de implementar.
+- **Sprint 3+:** HU13–HU16 (billetera/QR/servicios), panel general `F-T12`, frontend
+  `F-T06..F-T18`.
+- **Deuda técnica — CERRADA (no figura como abierta):**
+  - ~~**`G58`** — HMAC del PIN en `transactions`~~ **CERRADO** (`9076546`): el motor de dinero ya
+    persiste HMAC del PIN (no `sha256` sin sal) en el `request_hash`; regresión en
+    `backend/tests/test_e2_t31_authorize_pin.py`.
+  - ~~**`OBS-3`** — CAS en `save_block` del contador de fallos~~ **CERRADO** (`9076546`).
+  - ~~**`OBS-4`** — `nonce` de un solo uso~~ **CERRADO** (`9076546`): ya no es reintentable tras
+    fallo.
+  - ~~**`G26`** — `PUT /admin/parameters` no acepta decimales~~ **CERRADO** (`c809518`): acepta
+    decimales (`loan.max_dti_ratio`, `loan.review_margin`) vía `set_parameter`; regresión en
+    `backend/tests/test_g26_admin_parameters_decimal.py`.
+  - ~~**`H5` (de E3-T06)** — registrar las env vars del buró~~ **CERRADO** (`c809518`):
+    documentadas en `docs/02-arquitectura.md#9`.
+- **Papeleo:** ~~pushear `sprint-2`~~ **HECHO** (`origin/sprint-2` = `835078c`); solo resta el
+  **vídeo de respaldo** del demo.
 
-- Notas del dueño (`.txt`) ya están en `.gitignore`; **no commitearlas**.
-- `.opencode/agent/diseno-frontend.md` queda untracked a propósito (excluido de commits).
-- Subagentes del proyecto: `planificador` (briefs), `worker` (una tarea), `fixer` (solo defectos indicados), `validador` (solo lectura, dictamen con severidad), `diseno-frontend` (figma `pantallas.fig` + Flutter), `explore`/`general` (investigación).
-- Archivo de tareas resueltas: `docs/tasks/archive/` (113 briefs `Hecho`). `docs/tasks/` solo tiene `README.md`, `SPRINT-1.md`, `_PLANTILLA.md`.
+## 6. Riesgos abiertos (`docs/17-riesgos-y-decisiones-abiertas.md`)
 
-## 7. Comandos de verificación rápida
+- `device_public_key` = secreto **HMAC**, no clave pública asimétrica (R26) → si se filtra
+  `device_bindings.public_key` se compromete el secreto de firma.
+- OTP hasheado SHA-256 simple (R22); rate-limit **en memoria por réplica**, no compartido (R28).
+- Dependencias/imágenes **sin pinear** (riesgo transversal de `docs/17` §3/§4).
+- RUC validado **solo contra el mock** (R29); D05/R02 (DevOps sin titular formal, aceptado para
+  el MVP/demo).
+- **Nuevo:** los `nonce` de firma viven **en memoria del proceso** (no persistidos entre réplicas).
+- **El CI no se ejecuta en local** (solo en GitHub al pushear): verificar localmente con los
+  comandos de §8.
+
+## 7. Cómo arrancar / cerrar sesión (`hola` / `adios`)
+
+Protocolo vigente (lo ejecuta un `worker` delegado):
+
+- **`hola` (arranque):**
+  1. **Levantar contenedores:** `docker compose ps -a` → si existen detenidos, `docker compose
+     start`; si no, `docker compose up -d`. Esperar `healthy`.
+     - **VERSION SKEW (importante):** `start` **no recompila**. Si cambió el **código o las
+       migraciones del backend** desde la última build, la imagen queda vieja → el backend
+       crashea (`Can't locate revision …`) o sirve un contrato desactualizado. En ese caso:
+       `docker compose build backend worker` + `docker compose up -d --force-recreate backend
+       worker`. **Nota:** la sesión anterior cambió el middleware `request_id` (Q-T07) y el
+       backend actual de Docker ya está recreado (`Up ... healthy`), pero **ante cualquier duda
+       reconstruir**.
+     - Si cambió el **frontend**, reconstruir e instalar el APK (§8). APK y backend del **mismo
+       HEAD**.
+  2. **Warmup KYC:** `docker start kyc-facial-service-8001` si hace falta; conectar a la red
+     `banca-demo_default`; golpear `http://localhost:8001/health`.
+  3. **Device adb:** `adb devices -l` (reconciliar duplicados con sufijo ` (2)`); reconectar si no
+     aparece.
+- **`adios` (cierre):**
+  1. **Detener** con `docker compose stop` (**NO** `down`; "baja" = detener, no eliminar).
+  2. **Preguntar** si se desea commitear (y hacerlo solo si autoriza).
+  3. **Generar** `docs/sesiones/<fecha>.md` con lo avanzado (tareas, commits, suites, pendientes,
+     riesgos).
+  - Cerrar con el mensaje exacto: **"Descansa bello"**.
+
+## 8. Comandos rápidos
 
 ```powershell
 # Backend (desde backend/)
-.venv\Scripts\python.exe -m pytest tests/ -q        # 727 passed + 1 skipped
+.venv\Scripts\python.exe -m pytest --cov=app --cov-fail-under=80 -q   # 1553 passed + 1 skipped, cov 86%
 .venv\Scripts\python.exe -m ruff check .
 .venv\Scripts\python.exe -m black --check .
-.venv\Scripts\alembic.exe check ; .venv\Scripts\alembic.exe current   # head 0020
+.venv\Scripts\alembic.exe check ; .venv\Scripts\alembic.exe heads      # head 0033_credits_contracts
 
 # Frontend (desde frontend/)
-flutter analyze ; flutter test                       # 576/576
+flutter analyze ; flutter test                                         # analyze limpio; 829/829
+
+# Panel admin-web (desde admin-web/)
+npm test ; npm run lint ; npm run build                                # 18/18; tsc; build limpio
 
 # Stack
-docker compose ps                                    # postgres/redis/backend/worker/admin-web healthy
-curl http://localhost:8000/health                    # {"status":"ok"}
+docker compose ps                                                      # 5 servicios healthy
+Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/health/ready' -TimeoutSec 10 |
+  Select-Object -ExpandProperty Content                               # {"status":"ok","database":true}
+
+# APK (reconstruir con la IP LAN vigente del PC)
+flutter build apk --debug --dart-define=API_BASE_URL=http://192.168.1.20:8000 --dart-define=APP_VERSION=0.1.0
+
+# Token de analista (desde backend/; escribe a %TEMP%, nunca al repo)
+.venv\Scripts\python.exe scripts\mint_demo_token.py > $env:TEMP\analyst.jwt
+# Variantes: --role credit_analyst | --subject <uuid> | --minutes 60
+
+# Guion de demo (referencia completa en docs/demo/guion-demo-sprint-2.md)
+.venv\Scripts\python.exe scripts\seed_demo.py check                   # dataset sintetico reproducible
 ```
 
-- APK: `frontend/build/app/outputs/flutter-apk/app-debug.apk` — reconstruir con
-  `flutter build apk --debug --dart-define=API_BASE_URL=http://192.168.1.20:8000 --dart-define=APP_VERSION=0.1.0`.
-  Si cambia la IP LAN del PC, reconstruir con la nueva.
-- Device: `adb devices -l` (serial TLS `adb-...._adb-tls-connect._tcp`); instalar con `adb -s <serial> install -r <apk>`.
-- Tras desplegar el fix biométrico: hacer **un login con PIN** para refrescar la clave antes de probar la biometría.
+- Config clave sembrada: `transfer.biometric_threshold_minor` = **100000** (S/ 1,000);
+  `transfer.daily_limit_*_minor` = **500000** (S/ 5,000).
+- **Tras cualquier cambio de backend:** reconstruir la imagen (§7) antes de probar; APK y
+  backend del mismo HEAD.
 
-## 8. Reglas de trabajo (vigentes)
+## 9. Reglas de trabajo (vigentes)
 
-- El orquestador **delega** (no implementa ni verifica directamente): briefs al `planificador`, implementación al `worker`, defectos al `fixer`, verificación al `validador`/`explore`.
-- **No commitear ni pushear sin autorización explícita** del dueño. Commits por bloque temático; excluir `.opencode/` y `.txt`.
-- No tocar `kyc-service/`. Sin PII/secretos en logs. Cliente delgado. No borrar pruebas para pasar.
-- Antes de avanzar un campo: revisar si lo construido estaba especificado (o es alternativa de reemplazo) y resolver.
+- El **orquestador delega** (no implementa ni verifica ni ejecuta pruebas directamente): briefs al
+  `planificador`/`general`; implementación, builds e instalaciones al `worker`; defectos al
+  `fixer`; verificación al `explore`/`validador`; pantallas al `diseno-frontend`.
+- **No commitear/pushear sin autorización** del dueño. Commits por bloque temático; excluir
+  `.opencode/`, `eliminar-movements.jpeg` y `node_modules/`.
+- **No tocar `kyc-service/`.** Sin PII/secretos en logs ni respuestas. Cliente delgado (el
+  frontend no calcula saldos/comisiones/DTI/score). No borrar pruebas para pasar.
+- Fronteras por módulo: ningún módulo accede a tablas de otro (fachadas/eventos); cambios de ORM
+  con migración Alembic y `alembic check` limpio.
+- Antes de avanzar: contrastar con `docs/01` (decisiones, fuente de verdad) y la doc canónica; si
+  algo contradice, manda `docs/01` y se corrige.
 
-## 9. Protocolo de sesión del orquestador (hola / adiós)
+## 10. Doc clave a leer
 
-El dueño usa dos palabras clave. **Todo lo de esta sección lo ejecuta un subagente delegado (`worker`); el orquestador no lo hace directamente.**
-
-- **Cuando el dueño escriba `hola`:** significa que cerró la sesión anterior y hay que arrancar. **Lo primero** (delegado a un `worker`):
-  1. **Levantar los contenedores** (`docker compose up -d`) y esperar a `healthy` (`docker compose ps`; backend `:8000`, admin-web `:8080`, postgres/redis, worker).
-  2. **Warmup del microservicio de KYC** (contenedor `kyc-facial-service-8001` en `:8001`): conectarlo a la red si hace falta (`docker network connect banca-demo_default kyc-facial-service-8001`) y golpear su health/endpoint de listo hasta que responda.
-  3. **Verificar que el device esté conectado por adb** (`adb devices -l`; serial TLS tipo `adb-...._adb-tls-connect._tcp`). Si no aparece, reconectar (`adb connect <ip:puerto>` o parear) y reportar.
-  - Antes de continuar con cualquier tarea, reportar al dueño el estado de (1) contenedores, (2) warmup KYC y (3) device.
-
-- **Cuando el dueño escriba `adios`:** cerrar la sesión. Delegado a un `worker`, en este orden:
-  1. **Dar de baja los contenedores** (`docker compose down`; conservar volúmenes salvo indicación del dueño).
-  2. **Preguntar si se desea commitear** antes de irse y, solo si autoriza, hacerlo (por bloque temático; excluir `.opencode/` y los `.txt`).
-  3. **Generar un documento con todo lo avanzado en la sesión actual** (tareas, commits, suites, pendientes y riesgos) — p. ej. `docs/sesiones/<fecha>.md` o el destino que indique el dueño.
-  - Cerrar con el mensaje exacto: **"Descansa bello"**.
+- `docs/01-hallazgos-y-decisiones.md` (fuente de verdad), `docs/04-motor-transaccional-y-ledger.md`
+  (§7 asientos; :163 desembolso, :170 cuota), `docs/05-contratos-api.md` (§6.3/§6.4/§6.8; §64
+  créditos), `docs/08-epica-3-creditos.md` (HU09–HU12).
+- `docs/14-plan-sprints-y-ejecucion.md` (cronograma; Sprint 3 = firma/desembolso/wallet/QR),
+  `docs/15-calidad-seguridad-devops.md` (§8 tareas Q-T*, §9 criterios de salida),
+  `docs/16-guia-para-agentes.md` (DoD y reglas de oro), `docs/18-gestion-de-cambios.md`
+  (gaps `G*`/`OBS-*`).
+- `docs/demo/guion-demo-sprint-2.md`, `docs/guia-acceso-panel-web.md`,
+  `docs/design/creditos-pantallas.md` (spec de contenido de las pantallas de créditos), y este
+  `HANDOFF.md` §7 (§9 previo → protocolo `hola`/`adios`).

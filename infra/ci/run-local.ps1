@@ -42,7 +42,18 @@ else {
   docker build -f "$ROOT/infra/ci/Dockerfile.worker" -t banca-worker:ci "$ROOT"; if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
-Write-Output "==> [5/5] escaneo de dependencias"
+Write-Output "==> [5/5] escaneo (pip-audit + npm audit admin-web + bandit + secretos)"
 & $BackendVenv -m pip_audit; if ($LASTEXITCODE -ne 0) { exit 1 }
+# Paridad con el job `scan` de CI: audita solo las dependencias de produccion
+# del panel (las que se despliegan); falla ante high/critical.
+Push-Location "$ROOT\admin-web"
+try { npm audit --omit=dev --audit-level=high; if ($LASTEXITCODE -ne 0) { exit 1 } }
+finally { Pop-Location }
+# Q-T08: SAST con el mismo umbral que CI (HIGH severidad + HIGH confianza).
+& $BackendVenv -m bandit --severity-level high --confidence-level high -r "$ROOT\backend\app"; if ($LASTEXITCODE -ne 0) { exit 1 }
+if ($bash) { & bash "$ROOT/infra/ci/secrets-check.sh"; if ($LASTEXITCODE -ne 0) { exit 1 } }
+else { Write-Output "bash no disponible: chequeo de patrones de secretos solo en CI." }
+if (Get-Command gitleaks -ErrorAction SilentlyContinue) { & gitleaks detect --source "$ROOT" --no-banner; if ($LASTEXITCODE -ne 0) { exit 1 } }
+else { Write-Output "gitleaks no instalado localmente; se valida en CI (job scan)." }
 
 Write-Output "CI local OK: todo verde."

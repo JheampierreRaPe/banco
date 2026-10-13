@@ -33,7 +33,7 @@ lib/
     widgets/loading_view.dart, empty_view.dart, error_view.dart
   features/
     README.md                  # convencion: cada feature expone List<GoRoute>
-    auth/auth_routes.dart      # authRoutes -> /login (placeholder)
+    login/login_routes.dart    # loginRoutes -> /login (login real E1-T16)
     home/home_routes.dart      # homeRoutes -> /home (placeholder)
 ```
 

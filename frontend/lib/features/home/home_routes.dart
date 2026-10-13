@@ -4,7 +4,7 @@ import '../accounts/data/accounts_service.dart';
 import 'data/profile_service.dart';
 import 'presentation/home_page.dart';
 
-/// Rutas del feature `home` (ver convencion en `auth_routes.dart`).
+/// Rutas del feature `home` (ver convencion en `features/README.md`).
 ///
 /// `/home` monta el inicio redisenado (F-T54, diseno `dash`). Los servicios
 /// se resuelven desde `accountsServiceFactory`/`homeProfileServiceFactory`

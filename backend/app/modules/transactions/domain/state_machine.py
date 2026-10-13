@@ -52,6 +52,11 @@ class ConcurrencyError(ValueError):
 # - FAILED (tecnico, libera holds): solo tras retener (FUNDS_HELD, POSTED).
 # - REVERSED (compensacion con asiento inverso): POSTED, SETTLED, CONCILIATED.
 # - CONCILIATED -> REVERSED: la conciliacion detecto descuadre.
+# - AUTHORIZED -> POSTED (E2-T07): ruta atomica SIN hold de `OWN_TRANSFER`
+#   (un solo asiento `2000-S -> 2000-D`; nunca pasa por `FUNDS_HELD`).
+_AUTHORIZED_NEXT = frozenset(
+    {TransactionStatus.FUNDS_HELD, TransactionStatus.POSTED, TransactionStatus.REJECTED}
+)
 _TRANSITIONS: dict[TransactionStatus, frozenset[TransactionStatus]] = {
     TransactionStatus.INITIATED: frozenset(
         {TransactionStatus.VALIDATED, TransactionStatus.REJECTED}
@@ -66,9 +71,7 @@ _TRANSITIONS: dict[TransactionStatus, frozenset[TransactionStatus]] = {
     TransactionStatus.PENDING_AUTHORIZATION: frozenset(
         {TransactionStatus.AUTHORIZED, TransactionStatus.REJECTED}
     ),
-    TransactionStatus.AUTHORIZED: frozenset(
-        {TransactionStatus.FUNDS_HELD, TransactionStatus.REJECTED}
-    ),
+    TransactionStatus.AUTHORIZED: _AUTHORIZED_NEXT,
     TransactionStatus.FUNDS_HELD: frozenset({TransactionStatus.POSTED, TransactionStatus.FAILED}),
     TransactionStatus.POSTED: frozenset(
         {
@@ -103,6 +106,7 @@ _ACTORS: dict[tuple[TransactionStatus, TransactionStatus], frozenset[ActorType]]
         {ActorType.SYSTEM, ActorType.USER}
     ),
     (TransactionStatus.AUTHORIZED, TransactionStatus.FUNDS_HELD): frozenset({ActorType.SYSTEM}),
+    (TransactionStatus.AUTHORIZED, TransactionStatus.POSTED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.AUTHORIZED, TransactionStatus.REJECTED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.FUNDS_HELD, TransactionStatus.POSTED): frozenset({ActorType.SYSTEM}),
     (TransactionStatus.FUNDS_HELD, TransactionStatus.FAILED): frozenset({ActorType.SYSTEM}),

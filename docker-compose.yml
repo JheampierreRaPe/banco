@@ -74,6 +74,10 @@ services:
       GMAIL_USER: ${GMAIL_USER:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
       DOC_HASH_PEPPER: ${DOC_HASH_PEPPER:-change-me}
+      # Beneficiarios (E2-T13): clave AES-256-GCM y pepper del indice ciego.
+      # Obligatorias fuera de 'local' (fail-fast); viven en el `.env` de la raiz.
+      BENEFICIARY_CRYPTO_KEY: ${BENEFICIARY_CRYPTO_KEY:-}
+      BENEFICIARY_INDEX_PEPPER: ${BENEFICIARY_INDEX_PEPPER:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -99,6 +103,8 @@ services:
       DATABASE_URL: *database-url
       REDIS_URL: redis://redis:6379/0
       WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-8100}
+      BENEFICIARY_CRYPTO_KEY: ${BENEFICIARY_CRYPTO_KEY:-}
+      BENEFICIARY_INDEX_PEPPER: ${BENEFICIARY_INDEX_PEPPER:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,7 +120,7 @@ services:
   admin-web:
     build:
       context: .
-      dockerfile: infra/docker/Dockerfile.panel
+      dockerfile: admin-web/Dockerfile
     restart: unless-stopped
     ports:
       - "${ADMIN_WEB_PORT:-8080}:80"

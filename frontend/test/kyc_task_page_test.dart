@@ -114,13 +114,13 @@ void main() {
     await tester.pumpAndSettle();
 
     // Step 1: preview disponible -> Capturar habilitado.
-    expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(_captureButton(tester).onPressed, isNotNull);
 
     await _tapCapture(tester, 'Capturar');
 
     // Step 2: el preview nuevo debe volver a habilitar Capturar.
-    expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+    expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     expect(_captureButton(tester).onPressed, isNotNull);
   });
 
@@ -209,7 +209,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(KycCaptureOverlay), findsNothing);
-      expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     });
 
     testWidgets(
@@ -246,13 +246,13 @@ void main() {
       await tester.pumpAndSettle();
 
       // Sigue en la MISMA tarea, con error visible y sin overlay.
-      expect(find.textContaining('Paso 1 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
       expect(find.byType(KycCaptureOverlay), findsNothing);
       expect(find.textContaining('Reintentar captura'), findsOneWidget);
       expect(_captureButton(tester).onPressed, isNotNull);
 
       await _tapCapture(tester, 'Reintentar captura');
-      expect(find.textContaining('Paso 2 de 2'), findsOneWidget);
+      expect(find.text('Paso 3 de 4 · Rostro'), findsOneWidget);
     });
   });
 

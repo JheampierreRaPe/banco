@@ -250,8 +250,12 @@ class _KycTaskPageState extends State<KycTaskPage> {
           // F-T25: `busy` NO reemplaza la pantalla; el viewfinder sigue vivo y
           // el estado se muestra como overlay (mas abajo) para que el usuario
           // siga moviendose durante la rafaga y la evaluacion.
-          final index = c.currentStepIndex;
-          final total = c.steps.length;
+          //
+          // Auditoria m1: el stepper es el del FLUJO de alta (no el de las
+          // sub-tareas de liveness del servidor): fijo `3 de 4 · Rostro`,
+          // consistente con `1 de 4 · Datos` (`kyc_start_page.dart`) y
+          // `2 de 4 · Documento` (`kyc_document_page.dart`). El progreso
+          // dentro de las tareas de rostro lo indica el contador de intentos.
           final attempts = c.attemptsOf(step);
           final frames = c.framesCountOf(step);
           final source = c.frameSource;
@@ -270,9 +274,9 @@ class _KycTaskPageState extends State<KycTaskPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                KycProgressStepper(
-                  step: index + 1,
-                  total: total,
+                const KycProgressStepper(
+                  step: 3,
+                  total: 4,
                   stageLabel: 'Rostro',
                 ),
                 const SizedBox(height: AppSpacing.stackLg),

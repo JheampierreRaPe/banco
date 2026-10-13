@@ -57,7 +57,8 @@ class AccountDetailResponse(BaseModel):
 class Movement(BaseModel):
     """Movimiento de `movements_view` (E2-T03, HU05 CA-03/CA-04).
 
-    Columnas exactas de `03b#5.4`. Dinero entero en centimos
+    Columnas exactas de `03b#5.4` (+ `entry_type`, E2-T35: concepto contable
+    del asiento, `None` en filas legacy). Dinero entero en centimos
     (`amount_minor > 0`); nunca `float`. Sin numeros de cuenta en claro
     (solo `account_id` UUID; el enmascaramiento de E2-T02 no aplica aqui
     porque no viaja ningun numero).
@@ -70,6 +71,9 @@ class Movement(BaseModel):
     amount_minor: int = Field(..., ge=1)
     currency: str
     description: str | None = None
+    entry_type: str | None = Field(
+        default=None, description="Concepto contable del asiento (E2-T35)"
+    )
     value_date: date | None = None
     created_at: datetime | None = None
 
@@ -126,4 +130,21 @@ __all__ = [
     "CurrencyTotal",
     "Movement",
     "MovementsListResponse",
+]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.schemas.beneficiaries import (
+    BeneficiariesListResponse,
+    BeneficiaryCreate,
+    BeneficiaryOut,
+    BeneficiaryResponse,
+    BeneficiaryUpdate,
+)
+
+__all__ += [
+    "BeneficiariesListResponse",
+    "BeneficiaryCreate",
+    "BeneficiaryOut",
+    "BeneficiaryResponse",
+    "BeneficiaryUpdate",
 ]

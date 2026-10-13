@@ -177,6 +177,22 @@ dominio.
 | `SanctionsLists` | OFAC / World-Check / PEP | Cotejo difuso por nombre/documento. |
 | `Notifications` | Push / correo / SMS | `send(canal, destinatario, plantilla, datos)`. |
 
+`CreditBureau` (E3-T06, HU10) se configura por entorno (solo nombres y defaults
+seguros; la key nunca va en el repo ni en logs, solo en la cabecera
+`Authorization`):
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `CREDIT_BUREAU_PROVIDER` | `mock` | `mock` (determinista por perfil, sin red) \| `http` (real, `POST {base_url}/score`). Valor no reconocido -> `mock`. |
+| `CREDIT_BUREAU_BASE_URL` | `http://localhost:8000` | Base del proveedor real (ruta `POST /score`). |
+| `CREDIT_BUREAU_API_KEY` | (vacio) | Key server-side del proveedor real (solo cabecera; jamas en la URL ni en logs). |
+| `CREDIT_BUREAU_TIMEOUT_SECONDS` | `5.0` | Timeout corto por intento (s); nunca bloquea el hilo. |
+| `CREDIT_BUREAU_MAX_RETRIES` | `2` | Reintentos con backoff exponencial tras fallo/timeout. |
+
+Errores tipados del adaptador (el caso de uso los traduce a `EN_REVISION`, E3-T08):
+`BUREAU_UNAVAILABLE` (`503`, proveedor caido tras agotar reintentos) y
+`BUREAU_TIMEOUT` (`502`, timeout tras agotar reintentos).
+
 ## 10. Seguridad arquitectonica
 
 - **Autenticacion**: JWT de acceso corto (minutos) + refresh; el access token lleva `sub`,

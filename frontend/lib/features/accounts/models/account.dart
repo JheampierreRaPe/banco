@@ -60,11 +60,15 @@ class Account {
   }
 }
 
-/// Movimiento de la cuenta (HU05 CA-03).
+/// Movimiento de la cuenta (HU05 CA-03; `entry_type` E2-T35).
 ///
 /// El campo de monto se lee de forma defensiva: los tests de export prueban
 /// `amount_minor`; la lista expone `journal_entry_id/direction/description/
 /// value_date`. Si el backend no trae monto, se usa 0 (no se inventa dinero).
+///
+/// `entryType` es el concepto contable del asiento (`TRANSFER_SETTLE`,
+/// `OWN_TRANSFER`, ...; `null` en filas legacy). La etiqueta en español y la
+/// visibilidad salen de `movement_concept.dart`; aqui solo se transporta.
 class Movement {
   const Movement({
     required this.journalEntryId,
@@ -73,6 +77,7 @@ class Movement {
     required this.valueDate,
     required this.amountMinor,
     this.currency = 'PEN',
+    this.entryType,
   });
 
   final String journalEntryId;
@@ -85,6 +90,9 @@ class Movement {
   final String valueDate;
   final int amountMinor;
   final String currency;
+
+  /// Concepto contable del asiento (`null` = fila legacy).
+  final String? entryType;
 
   /// `true` para abonos (`CREDIT`).
   bool get isCredit => direction.toUpperCase() == 'CREDIT';
@@ -115,6 +123,7 @@ class Movement {
       valueDate: json['value_date']?.toString() ?? '',
       amountMinor: minor,
       currency: currency,
+      entryType: json['entry_type']?.toString(),
     );
   }
 }

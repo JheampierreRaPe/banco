@@ -11,8 +11,10 @@ import '../theme/app_typography.dart';
 /// [activeIndex] y notifica la seleccion por [onSelect].
 ///
 /// No navega por si misma (no usa `go_router`): quien la integra
-/// (`F-T54`) mapea `Perfil (3) -> /profile` y deja el resto sin accion
-/// ("Proximamente"). Sin logica de negocio, sin red, sin logs.
+/// (`home`, `profile`) mapea `Operar (1) -> /transfers` y `Perfil (3) ->
+/// `/profile`, e `Inicio (0)` es no-op cuando ya se esta en home;
+/// `Tarjetas` (2) queda visual sin prometer accion (auditoria M5).
+/// Sin logica de negocio, sin red, sin logs.
 class AppBottomNav extends StatelessWidget {
   const AppBottomNav({
     super.key,

@@ -627,12 +627,18 @@ def test_q_t02_10_hold_vencido_liberado_por_job(session: Session, monkeypatch: p
     assert tx.status == "FAILED"
     released = [c for c in outbox_calls if c["event_type"] == domain_events.FUNDS_RELEASED]
     assert len(released) == 1 and released[0]["aggregate_id"] == tx.id
+    # E2-T23: el asiento de liberacion tambien emite `ledger.entry.posted`.
+    entry_calls = [c for c in outbox_calls if c["event_type"] == domain_events.LEDGER_ENTRY_POSTED]
+    assert len(entry_calls) == 1 and entry_calls[0]["aggregate_type"] == "journal_entry"
 
     # Reproceso idempotente: nada cambia ni se duplica.
     hist_len = len(repo.list_history(session, tx.id))
     assert release_expired_holds(session, now=datetime.now(UTC)) == []
     assert len(repo.list_history(session, tx.id)) == hist_len
-    assert len(outbox_calls) == 1
+    assert len([c for c in outbox_calls if c["event_type"] == domain_events.FUNDS_RELEASED]) == 1
+    assert (
+        len([c for c in outbox_calls if c["event_type"] == domain_events.LEDGER_ENTRY_POSTED]) == 1
+    )
 
 
 # ---------------------------------------------------------------- Caso 11: UUID unico

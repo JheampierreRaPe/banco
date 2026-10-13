@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
+    "cryptography>=41",
     "psycopg[binary]>=3.1",
     "pydantic-settings>=2.2",
     "pyjwt>=2.8",
@@ -18,8 +19,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5",
     "ruff>=0.4",
     "black==26.5.1",
+    "bandit>=1.7",
 ]
 
 [build-system]
@@ -32,6 +35,17 @@ include = ["app*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# Q-T12: cobertura solo del paquete de producto (`app`). `tests/` y
+# `migrations/` quedan fuera del alcance del umbral. El umbral numerico
+# (`--cov-fail-under`) vive en el CI y se corre en local con el mismo flag;
+# aqui solo se fija el alcance y el reporte con lineas faltantes.
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.ruff]
 line-length = 100

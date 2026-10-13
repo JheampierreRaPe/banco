@@ -279,11 +279,16 @@ def test_repository_has_no_posting_mutation_nor_event_publish():
 # ---------------------------------------------------------------- Parte B: SQLite
 @pytest.fixture()
 def sqlite_session():
-    """Sesion SQLite aislada con schema `ledger` (ATTACH)."""
+    """Sesion SQLite aislada con schemas `ledger`+`shared` (ATTACH).
+
+    `shared.outbox` incluido: la fachada `ledger.service` emite
+    `ledger.entry.posted` al outbox en la misma transaccion (E2-T23).
+    """
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
 
     import app.modules.ledger.models as m  # noqa: F401
+    import app.modules.shared.models as _s  # noqa: F401 (registro outbox)
 
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -292,6 +297,7 @@ def sqlite_session():
     def _attach(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
         cur.execute("ATTACH DATABASE ':memory:' AS ledger")
+        cur.execute("ATTACH DATABASE ':memory:' AS shared")
         cur.close()
 
     event.listen(engine, "connect", _attach)
@@ -301,6 +307,7 @@ def sqlite_session():
             Base.metadata.tables["ledger.ledger_accounts"],
             Base.metadata.tables["ledger.journal_entries"],
             Base.metadata.tables["ledger.postings"],
+            Base.metadata.tables["shared.outbox"],
         ],
     )
     session = Session(bind=engine, autoflush=False, expire_on_commit=False)

@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="390" height="1360" viewBox="0 0 390 1360">
+  <g>
+    <rect width="390" height="1360" fill="#FBF9F4"/>
+    <g>
+      <rect width="390" height="64" fill="#152A1F"/>
+      <g transform="translate(16, 20)">
+        <text x="0" y="20" font-family="Inter" font-size="20" fill="#FFFFFF">‹</text>
+      </g>
+      <g transform="translate(159, 22)">
+        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Créditos</text>
+      </g>
+      <g transform="translate(360, 22)">
+        <text x="0" y="16" font-family="Inter" font-size="16" fill="#FFFFFF">···</text>
+      </g>
+    </g>
+    <g transform="translate(0, 64)">
+      <g transform="translate(16, 16)">
+        <g>
+          <text x="0" y="24" font-family="Inter" font-size="24" font-weight="600" fill="#152A1F">Mis créditos</text>
+        </g>
+        <g transform="translate(0, 33)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#6B7268">Tus expedientes. El estado lo decide el servidor.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 82)">
+        <rect width="358" height="48" rx="9999" ry="9999" fill="#EAE8E3"/>
+        <g transform="translate(4, 4)">
+          <g transform="translate(52, 10)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Simulador</text>
+          </g>
+        </g>
+        <g transform="translate(177, 4)">
+          <rect width="173" height="40" rx="9999" ry="9999" fill="#152A1F"/>
+          <g transform="translate(45, 10)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#FFFFFF">Mis créditos</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 146)">
+        <rect width="358" height="165" rx="16" ry="16" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+        <g transform="translate(16, 16)">
+          <g transform="translate(0, 3.5)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Personal • S/ 10,000 • 12 m</text>
+          </g>
+          <g transform="translate(244, 0)">
+            <rect width="82" height="27" rx="9999" ry="9999" fill="#D0E8D7"/>
+            <g transform="translate(12, 6)">
+              <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#0B1F15">Aprobado</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(16, 51)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">CR-2026-0841 • hace 2 h • 12 cuotas de S/ 927.50</text>
+        </g>
+        <g transform="translate(16, 74)">
+          <rect width="326" height="52" rx="12" ry="12" fill="#152A1F"/>
+          <g transform="translate(87, 16)">
+            <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Continuar a la firma</text>
+          </g>
+        </g>
+        <g transform="translate(16, 134)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#9B5F12">Ver estado ›</text>
+        </g>
+      </g>
+      <g transform="translate(16, 327)">
+        <rect width="358" height="105" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(16, 16)">
+          <g transform="translate(0, 3.5)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Vehicular • S/ 25,000 • 24 m</text>
+          </g>
+          <g transform="translate(238, 0)">
+            <rect width="88" height="27" rx="9999" ry="9999" fill="#FFDCBC"/>
+            <g transform="translate(12, 6)">
+              <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#683D00">En revisión</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(16, 51)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">CR-2026-0837 • hace 1 d • Un analista la verifica</text>
+        </g>
+        <g transform="translate(16, 74)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#9B5F12">Ver estado ›</text>
+        </g>
+      </g>
+      <g transform="translate(16, 448)">
+        <rect width="358" height="105" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(16, 16)">
+          <g transform="translate(0, 3.5)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Pyme • S/ 8,000 • 12 m</text>
+          </g>
+          <g transform="translate(241, 0)">
+            <rect width="85" height="27" rx="9999" ry="9999" fill="#E4E2DD"/>
+            <g transform="translate(12, 6)">
+              <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">Evaluando</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(16, 51)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">CR-2026-0845 • hace 10 min • Pre-calificación en curso</text>
+        </g>
+        <g transform="translate(16, 74)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#9B5F12">Ver estado ›</text>
+        </g>
+      </g>
+      <g transform="translate(16, 569)">
+        <rect width="358" height="105" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(16, 16)">
+          <g transform="translate(0, 3.5)">
+            <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Personal • S/ 15,000 • 36 m</text>
+          </g>
+          <g transform="translate(237, 0)">
+            <rect width="89" height="27" rx="9999" ry="9999" fill="#FFDAD6"/>
+            <g transform="translate(12, 6)">
+              <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#93000A">Rechazado</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(16, 51)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">CR-2026-0819 • hace 5 d • Motivo solo en el estado</text>
+        </g>
+        <g transform="translate(16, 74)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#9B5F12">Ver estado ›</text>
+        </g>
+      </g>
+      <g transform="translate(16, 690)">
+        <rect width="358" height="120" rx="12" ry="12" fill="#F5F3EE"/>
+        <g transform="translate(16, 16)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">El 5.º estado se ve así: Vencido (gris, como Evaluando)</text>
+        </g>
+        <g transform="translate(16, 39)">
+          <rect width="90" height="27" rx="9999" ry="9999" fill="#E4E2DD"/>
+          <g transform="translate(12, 6)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">Vencido</text>
+          </g>
+        </g>
+        <g transform="translate(16, 74)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Solo Aprobado muestra “Continuar a la firma”. Las demás filas solo “Ver estado”.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 826)">
+        <rect width="358" height="143" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Aún no tienes solicitudes</text>
+        </g>
+        <g transform="translate(20, 48)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Simula un crédito y envía tu primera solicitud.</text>
+        </g>
+        <g transform="translate(20, 71)">
+          <rect width="318" height="52" rx="12" ry="12" fill="#FBF9F4" stroke="#152A1F" stroke-width="1"/>
+          <g transform="translate(104.5, 16)">
+            <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#152A1F">Ir al simulador</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 985)">
+        <rect width="358" height="149" rx="12" ry="12" fill="#F5F3EE"/>
+        <g transform="translate(16, 16)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">Cargando: skeleton de filas. Error: mensaje + Reintentar.</text>
+        </g>
+        <g transform="translate(16, 54)">
+          <rect width="326" height="12" rx="9999" ry="9999" fill="#E4E2DD"/>
+        </g>
+        <g transform="translate(16, 74)">
+          <rect width="200" height="12" rx="9999" ry="9999" fill="#E4E2DD"/>
+        </g>
+        <g transform="translate(16, 94)">
+          <rect width="326" height="39" rx="12" ry="12" fill="#FFDAD6"/>
+          <g transform="translate(12, 12)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#93000A">Sin conexión. Revisa tu red y toca Reintentar.</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 1150)">
+        <rect width="358" height="58" rx="12" ry="12" fill="#F5F3EE"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Orden: más reciente primero. Pull para actualizar. Sin PII en la lista.</text>
+        </g>
+      </g>
+    </g>
+    <g transform="translate(0, 1288)">
+      <rect width="390" height="72" fill="#FFFFFF" stroke="#E4E2DD" stroke-width="1"/>
+      <g transform="translate(32, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Inicio</text>
+      </g>
+      <g transform="translate(122.67, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#152A1F">Créditos</text>
+      </g>
+      <g transform="translate(232.33, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Pagos</text>
+      </g>
+      <g transform="translate(328, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Perfil</text>
+      </g>
+    </g>
+  </g>
+</svg>

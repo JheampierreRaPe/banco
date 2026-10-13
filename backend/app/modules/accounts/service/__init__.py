@@ -72,6 +72,64 @@ class AccountForbiddenError(PermissionError):
     """La cuenta no pertenece al usuario (el router lo traduce a 403 NOT_AUTHORIZED)."""
 
 
+def get_account(session: Session, account_id: uuid.UUID | str) -> dict | None:
+    """Lectura por fachada para el motor de transferencias (E2-T07, HU06).
+
+    Retorna `{account_id, user_id, status, currency, account_number}` de la
+    cuenta, o `None` si no existe. Solo lectura (sin `flush`/`commit`).
+
+    Frontera (D-01 del brief E2-T07): `transactions` valida propiedad,
+    estado (`ACTIVE`), moneda y titular por esta fachada, sin importar
+    modelos ni repositorios de `accounts`. El `account_number` en claro es
+    de uso interno del motor (el llamante jamas lo registra en logs ni lo
+    expone en respuestas: regla de oro 7/9; la API solo devuelve UUIDs).
+    Lanza `ValueError` si `account_id` no es UUID; retorna `None` si la
+    cuenta no existe.
+    """
+    account = accounts_repo.get_account(session, account_id)
+    if account is None:
+        return None
+    balance = accounts_repo.get_balance(session, account.id)
+    currency = balance.currency if balance is not None else account.currency
+    return {
+        "account_id": account.id,
+        "user_id": account.user_id,
+        "status": account.status,
+        "currency": currency,
+        "account_number": account.account_number,
+    }
+
+
+def get_account_by_number(session: Session, account_number: str) -> dict | None:
+    """Lectura por fachada para resolver el destino de un beneficiario (E2-T30).
+
+    Retorna `{account_id, user_id, status, currency, account_number}` de la
+    cuenta con ese `account_number`, o `None` si no existe. Solo lectura
+    (sin `flush`/`commit`).
+
+    Frontera (D-01): la consume `transactions` para resolver el
+    `account_or_cci` de un beneficiario a su cuenta real, sin importar
+    modelos ni repositorios de `accounts`. El `account_number` en claro es
+    de uso interno del motor (el llamante jamas lo registra en logs ni lo
+    expone en respuestas: regla de oro 7/9; la API solo devuelve UUIDs).
+    Entrada no textual o vacia -> `None` (sin oraculo).
+    """
+    if not isinstance(account_number, str) or not account_number.strip():
+        return None
+    account = accounts_repo.get_by_number(session, account_number.strip())
+    if account is None:
+        return None
+    balance = accounts_repo.get_balance(session, account.id)
+    currency = balance.currency if balance is not None else account.currency
+    return {
+        "account_id": account.id,
+        "user_id": account.user_id,
+        "status": account.status,
+        "currency": currency,
+        "account_number": account.account_number,
+    }
+
+
 def mask_account_number(account_number: str) -> str:
     """Enmascara: solo ultimos 4 visibles, resto `*` (formato `****1234`).
 
@@ -267,6 +325,7 @@ def to_movement(row: object) -> Movement:
         amount_minor=int(get(row, "amount_minor")),  # type: ignore[arg-type]
         currency=get(row, "currency"),
         description=get(row, "description"),
+        entry_type=get(row, "entry_type"),
         value_date=get(row, "value_date"),
         created_at=get(row, "created_at"),
     )
@@ -581,6 +640,8 @@ __all__ = [
     "AccountNotFoundError",
     "CurrencyTotal",
     "ExportFormatUnavailableError",
+    "get_account",
+    "get_account_by_number",
     "get_account_detail",
     "get_accounts_totals",
     "get_export_movements",
@@ -596,3 +657,41 @@ __all__ = [
     "to_movement",
     "to_summary",
 ]
+
+# ------------------------------------------------- Beneficiarios (E2-T13)
+from app.modules.accounts.service import beneficiaries as beneficiaries_service
+from app.modules.accounts.service import beneficiaries_crypto as beneficiaries_crypto
+
+__all__ += ["beneficiaries_crypto", "beneficiaries_service"]
+
+
+# ------------------------------------------------- Lookup previo (E2-T27)
+def list_active_by_user(session: Session, user_id: uuid.UUID | str) -> list[dict]:
+    """Cuentas `ACTIVE` de un usuario para el lookup previo (E2-T27, HU06).
+
+    Fachada de lectura que consume `transactions` (`resolve_transfer_target`)
+    sin importar modelos ni repositorios de `accounts` (regla de oro 4,
+    D-01). Retorna una vista por cuenta (`account_id`, `user_id`, `status`,
+    `currency`, `account_number`) en orden de creacion; el `account_number`
+    en claro es de uso interno del llamante (jamas en logs ni respuestas:
+    reglas de oro 7/9; la API solo expone UUIDs y mascaras). Solo lectura
+    (sin `flush`/`commit`). Lanza `ValueError` si `user_id` no es UUID.
+    """
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    return [
+        {
+            "account_id": account.id,
+            "user_id": account.user_id,
+            "status": account.status,
+            "currency": account.currency,
+            "account_number": account.account_number,
+        }
+        for account in accounts_repo.list_by_user(session, uid)
+        if account.status == "ACTIVE"
+    ]
+
+
+__all__ += ["list_active_by_user"]

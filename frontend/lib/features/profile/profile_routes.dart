@@ -6,7 +6,9 @@ import '../../core/session/session_identity_store.dart';
 import '../../core/session/session_repository.dart';
 import '../../core/session/session_service.dart';
 import '../../core/widgets/error_view.dart';
+import '../accounts/data/accounts_service.dart';
 import '../biometrics/biometric_reader.dart';
+import '../home/data/profile_service.dart';
 import 'data/biometric_consent_service.dart';
 import 'presentation/profile_page.dart';
 
@@ -69,6 +71,12 @@ final List<GoRoute> profileRoutes = [
         onLogout: deps.onLogout ??
             () => SessionService(dio: deps.api.dio, session: deps.session)
                 .logout(),
+        // D2 8-10-2026-2.txt: numero enmascarado + copiar (GET /accounts).
+        accountsService: AccountsService(api: deps.api),
+        // Auditoria M3: identidad real del hero (GET /me, mismo contrato
+        // que el home: `HttpProfileService`). Servicio propio del feature
+        // para no acoplar `profile` a la fabrica de `home`.
+        profileService: HttpProfileService(api: deps.api),
       );
     },
   ),

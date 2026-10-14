@@ -82,30 +82,9 @@ class _MovementDetailPageState extends State<MovementDetailPage> {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.canPop() ? context.pop() : null,
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: SizedBox(
-              width: 48,
-              height: 48,
-              child: IconButton(
-                key: const Key('movement-detail-avatar'),
-                onPressed: () => context.push('/profile'),
-                padding: EdgeInsets.zero,
-                tooltip: 'Mi perfil',
-                icon: const CircleAvatar(
-                  radius: 16,
-                  backgroundColor: AppColors.primary,
-                  child: Icon(
-                    Icons.person_outline,
-                    size: 18,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+        // H6: sin atajo a `/profile` desde el detalle (destino incoherente
+        // en contexto de movimientos): la ayuda es el reintento del
+        // `ErrorView` y el reverso de la pantalla.
       ),
       body: FutureBuilder<MovementDetail>(
         future: _future,

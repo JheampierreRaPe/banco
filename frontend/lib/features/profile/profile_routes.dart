@@ -58,8 +58,8 @@ final List<GoRoute> profileRoutes = [
         return Scaffold(
           appBar: AppBar(title: const Text('Mi perfil')),
           body: const ErrorView(
-            message: 'Tu perfil no esta disponible en este momento. '
-                'Intentalo mas tarde.',
+            message: 'Tu perfil no está disponible en este momento. '
+                'Inténtalo más tarde.',
           ),
         );
       }

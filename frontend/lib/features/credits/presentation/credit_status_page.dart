@@ -488,15 +488,9 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
     // Contrato ya firmado (el servidor lo deriva de `credits.contracts`):
     // un `APPROVED` firmado deja de ser re-firmable (mismo criterio que
     // "Mis créditos": sin CTA de firma, solo lectura).
+
     final signed =
         status == LoanApplicationStatus.approved && result.contractSigned;
-    // El cronograma definitivo es HU12 (E3-T21, fuera de este brief): sigue
-    // como aviso hasta que exista la pantalla.
-    void comingSoon(String feature) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$feature estará disponible próximamente.')),
-      );
-    }
 
     switch (status) {
       case LoanApplicationStatus.approved:
@@ -557,7 +551,10 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
             width: double.infinity,
             child: OutlinedButton(
               key: const Key('credit-status-schedule-cta'),
-              onPressed: () => comingSoon('El cronograma definitivo'),
+              // C3: el cronograma definitivo vive en "Mis préstamos"
+              // (`GET /credits/loans`, E3-T21): el expediente no trae
+              // `loanId`, asi que se navega a la lista (sin `comingSoon`).
+              onPressed: () => context.push('/credits/loans'),
               style: OutlinedButton.styleFrom(
                 minimumSize: const Size(88, 52),
               ),

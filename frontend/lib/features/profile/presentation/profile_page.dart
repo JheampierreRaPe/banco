@@ -26,8 +26,11 @@ import '../data/biometric_consent_service.dart';
 ///   `biometric_enabled` devuelto (autoridad del servidor). Un fallo revierte
 ///   el switch y muestra un mensaje neutro con reintento.
 /// - "Cerrar sesion" (`0:3032`, `Key('profile-logout')`): ejecuta [onLogout]
-///   (en produccion `SessionService.logout()`, F-T02) y la guarda del router
-///   redirige a `/login` o `/welcome`.
+///   (en produccion `SessionService.logout()`, F-T02) y tras el exito navega
+///   explicitamente a `/login` con limpieza de pila (`go`, H5); en error
+///   muestra mensaje con tilde + accion de reintentar.
+/// - "Mi billetera" (`Key('profile-wallet')`): navega a `/wallet` (C1).
+/// - Bottom-nav: `Tarjetas` (2) -> `/wallet` (C1).
 /// - "Créditos preaprobados" (`Key('profile-credits')`): navega a `/credits`
 ///   (punto de entrada a Créditos; la ruta exige sesión por la guarda F-T37).
 /// - "Cambiar PIN y contraseñas" (`Key('profile-pin-reset')`, auditoria M2):
@@ -121,7 +124,7 @@ class _ProfilePageState extends State<ProfilePage> {
       if (mounted) {
         setState(() {
           _error =
-              'Biometria no disponible en este momento. Intentalo mas tarde.';
+              'Biometría no disponible en este momento. Inténtalo más tarde.';
         });
       }
       return;
@@ -140,9 +143,9 @@ class _ProfilePageState extends State<ProfilePage> {
       // Revierte: el switch conserva el ultimo valor confirmado por el
       // servidor y se muestra un mensaje neutro con reintento.
       if (mounted) {
-        setState(() {
-          _error = 'No se pudo actualizar la biometria. Intentalo de nuevo.';
-        });
+          setState(() {
+            _error = 'No se pudo actualizar la biometría. Inténtalo de nuevo.';
+          });
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -154,19 +157,28 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _loggingOut = true);
     try {
       await widget.onLogout?.call();
+      // H5: navegacion explicita a `/login` tras el cierre exitoso (sin
+      // depender solo de la guarda) con limpieza de pila: `go` reemplaza
+      // la pila y "atras" no reexpone `/home`. Sin router (tests con
+      // `MaterialApp` plano) no se navega.
+      if (!mounted) return;
+      if (GoRouter.maybeOf(context) != null) context.go('/login');
     } catch (_) {
-      // `onLogout` es best-effort (F-T02): un fallo no debe propagar ni
-      // romper la pantalla; se avisa con un mensaje neutro (sin tecnicismos).
+      // H5: mensaje con tilde + accion de reintentar (sin tecnicismos).
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No se pudo cerrar la sesion. Intentalo de nuevo.'),
+          SnackBar(
+            content: const Text(
+              'No se pudo cerrar la sesión. Inténtalo de nuevo.',
+            ),
+            action: SnackBarAction(
+              label: 'Reintentar',
+              onPressed: _logout,
+            ),
           ),
         );
       }
     } finally {
-      // La guarda del router reacciona al cambio de sesion y redirige a
-      // `/login` o `/welcome`; aqui no se navega manualmente.
       if (mounted) setState(() => _loggingOut = false);
     }
   }
@@ -199,8 +211,21 @@ class _ProfilePageState extends State<ProfilePage> {
                   const SizedBox(height: AppSpacing.stackMd),
                   _Section(
                     label: 'AGENDA',
-                    child: _AgendaRow(
-                      onTap: () => context.push('/beneficiaries'),
+                    child: Column(
+                      children: [
+                        _AgendaRow(
+                          onTap: () => context.push('/beneficiaries'),
+                        ),
+                        const Divider(height: 1),
+                        _StaticRow(
+                          icon: Icons.account_balance_wallet_outlined,
+                          iconBackground: AppColors.secondaryFixed,
+                          title: 'Mi billetera',
+                          subtitle: 'Cobros QR, recargas y servicios',
+                          tapKey: const Key('profile-wallet'),
+                          onTap: () => context.push('/wallet'),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: AppSpacing.stackMd),
@@ -338,10 +363,10 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 }
 
-/// Bottom-nav del perfil (auditoria M4): reutiliza el [AppBottomNav]
+/// Bottom-nav del perfil (auditoria M4 + C1): reutiliza el [AppBottomNav]
 /// compartido con el home (mismo patron de `home_page.dart`): Perfil activo
-/// (3); Inicio -> `/home`, Operar -> `/transfers`; la pestana activa es
-/// no-op. Sin SnackBar ni destinos muertos.
+/// (3); Inicio -> `/home`, Operar -> `/transfers`, Tarjetas (2) ->
+/// `/wallet`; la pestana activa es no-op. Sin SnackBar ni destinos muertos.
 class _ProfileBottomNav extends StatelessWidget {
   const _ProfileBottomNav();
 
@@ -357,8 +382,11 @@ class _ProfileBottomNav extends StatelessWidget {
         }
         if (index == 1) {
           context.push('/transfers');
+          return;
         }
-        // Tarjetas (2): visual sin accion prometida (igual que el home).
+        if (index == 2) {
+          context.push('/wallet');
+        }
       },
     );
   }

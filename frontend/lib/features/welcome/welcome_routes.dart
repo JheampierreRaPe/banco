@@ -16,12 +16,17 @@ library;
 
 import 'package:go_router/go_router.dart';
 
+import '../../core/session/session_identity_store.dart';
 import 'onboarding_page.dart';
 
 /// Rutas del feature `welcome` (ver convencion en `features/README.md`).
 final List<GoRoute> welcomeRoutes = [
   GoRoute(
     path: '/welcome',
-    builder: (context, state) => const OnboardingPage(),
+    // C2: el onboarding resuelve el `userRef` conocido para el secundario
+    // (retornante -> `/login`, nuevo -> `/login/device`).
+    builder: (context, state) => OnboardingPage(
+      identity: sessionIdentityStoreFactory?.call(),
+    ),
   ),
 ];

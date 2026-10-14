@@ -483,34 +483,32 @@ void main() {
       expect(find.textContaining('constancia-tx-settled-1.pdf'), findsOneWidget);
     });
 
-    testWidgets('m5: avatar del historial navega a /profile', (tester) async {
+    testWidgets('h6: historial sin atajo a /profile (destino coherente)',
+        (tester) async {
       final fake = FakeMovementsService();
       await tester.pumpWidget(_listHarness(fake));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('movements-avatar')), findsOneWidget);
-      await tester.tap(find.byKey(const Key('movements-avatar')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Perfil (fake)'), findsOneWidget);
+      // H6: el avatar incoherente se retiro del historial: no hay enlace a
+      // perfil; la ayuda es el reintento/limpiar filtros de la pantalla.
+      expect(find.byKey(const Key('movements-avatar')), findsNothing);
+      expect(find.text('Historial de movimientos'), findsOneWidget);
     });
 
-    testWidgets('m5: avatar del detalle navega a /profile', (tester) async {
+    testWidgets('h6: detalle sin atajo a /profile (destino coherente)',
+        (tester) async {
       final fake = FakeMovementsService();
       await tester.pumpWidget(_listHarness(fake));
       await tester.pumpAndSettle();
 
-      // Entrar al detalle tocando la primera tarjeta y luego al avatar.
+      // Entrar al detalle tocando la primera tarjeta: tampoco hay avatar.
       await tester.tap(find.byKey(const Key('movement-card-tx-settled-1')));
       await tester.pumpAndSettle();
       expect(
         find.byKey(const Key('movement-detail-avatar')),
-        findsOneWidget,
+        findsNothing,
       );
-      await tester.tap(find.byKey(const Key('movement-detail-avatar')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Perfil (fake)'), findsOneWidget);
+      expect(find.text('Detalle de movimiento'), findsOneWidget);
     });
   });
 

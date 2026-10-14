@@ -217,7 +217,7 @@ void main() {
       );
       expect(identity.biometricEnabled, isNull);
       expect(
-        find.text('No se pudo actualizar la biometria. Intentalo de nuevo.'),
+        find.text('No se pudo actualizar la biometría. Inténtalo de nuevo.'),
         findsOneWidget,
       );
       expect(
@@ -283,7 +283,7 @@ void main() {
 
       expect(calls, 1);
       expect(
-        find.text('No se pudo cerrar la sesion. Intentalo de nuevo.'),
+        find.text('No se pudo cerrar la sesión. Inténtalo de nuevo.'),
         findsOneWidget,
       );
       expect(find.text('boom-tecnico'), findsNothing);

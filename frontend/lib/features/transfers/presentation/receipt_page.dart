@@ -74,11 +74,11 @@ class _ReceiptPageState extends State<ReceiptPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Estado terminal (exito o rechazo): sin back fisico ni flecha.
-    // La unica salida es "Volver al inicio" (-> /home con `go`).
-    return PopScope(
-      canPop: false,
-      child: Scaffold(
+    // M1: el bloqueo de retroceso (`PopScope`) aplica SOLO al exito (estado
+    // terminal con "Volver al inicio"). En carga/error/fallo el retroceso
+    // queda libre y el error ofrece "Volver" (canPop ? pop : go('/home')):
+    // nadie queda atrapado aunque falle el fetch.
+    return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(
         title: const Text('Comprobante'),
@@ -97,12 +97,31 @@ class _ReceiptPageState extends State<ReceiptPage> {
             final error = snapshot.error;
             return Padding(
               padding: const EdgeInsets.all(16),
-              child: ErrorView(
-                message:
-                    error is ApiException
-                        ? transferUserMessage(error)
-                        : 'Ocurrió un error al consultar el servidor.',
-                onRetry: _retry,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ErrorView(
+                    message:
+                        error is ApiException
+                            ? transferUserMessage(error)
+                            : 'Ocurrió un error al consultar el servidor.',
+                    onRetry: _retry,
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      key: const Key('receipt-back-cta'),
+                      onPressed: () => context.canPop()
+                          ? context.pop()
+                          : context.go('/home'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(88, 52),
+                      ),
+                      child: const Text('Volver'),
+                    ),
+                  ),
+                ],
               ),
             );
           }
@@ -110,195 +129,203 @@ class _ReceiptPageState extends State<ReceiptPage> {
           final detail = data.detail;
           if (!detail.isSuccess) return _failureView(detail);
           final receipt = data.receipt;
-          return ListView(
-            key: const Key('receipt-success'),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            children: [
-              AppCard(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 64,
-                      height: 64,
-                      alignment: Alignment.center,
-                      decoration: const BoxDecoration(
-                        color: AppColors.successContainer,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.check,
-                        size: 32,
-                        color: AppColors.success,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Transferencia exitosa',
-                      style: AppTypography.titleMd.copyWith(
-                        color: AppColors.primary,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      formatMoneyMinor(
-                        detail.amountMinor,
-                        detail.currency,
-                      ),
-                      style: AppTypography.displayLg.copyWith(
-                        fontSize: 32,
-                        color: AppColors.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    AppStatusChip.info(
-                      label: _statusLabel(detail.status),
-                    ),
-                    if (receipt != null &&
-                        receipt.operationNumber.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        key: const Key('receipt-op-number'),
-                        'Nº ${receipt.operationNumber}',
-                        style: AppTypography.labelMd.copyWith(
-                          color: AppColors.onSurfaceVariant,
+          return PopScope(
+            canPop: false,
+            child: ListView(
+              key: const Key('receipt-success'),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              children: [
+                AppCard(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 64,
+                        height: 64,
+                        alignment: Alignment.center,
+                        decoration: const BoxDecoration(
+                          color: AppColors.successContainer,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.check,
+                          size: 32,
+                          color: AppColors.success,
                         ),
                       ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Transferencia exitosa',
+                        style: AppTypography.titleMd.copyWith(
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        formatMoneyMinor(
+                          detail.amountMinor,
+                          detail.currency,
+                        ),
+                        style: AppTypography.displayLg.copyWith(
+                          fontSize: 32,
+                          color: AppColors.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      AppStatusChip.info(
+                        label: _statusLabel(detail.status),
+                      ),
+                      if (receipt != null &&
+                          receipt.operationNumber.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          key: const Key('receipt-op-number'),
+                          'Nº ${receipt.operationNumber}',
+                          style: AppTypography.labelMd.copyWith(
+                            color: AppColors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              AppCard(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 8,
+                const SizedBox(height: 12),
+                AppCard(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 8,
+                  ),
+                  child: Column(
+                    children: [
+                      _row('Tipo', _typeLabel(detail.type)),
+                      _row('Estado', _statusLabel(detail.status)),
+                      _row(
+                        'Monto',
+                        formatMoneyMinor(detail.amountMinor, detail.currency),
+                      ),
+                      _row(
+                        'Comisión',
+                        formatMoneyMinor(detail.feeMinor, detail.currency),
+                      ),
+                      _row(
+                        'Total debitado',
+                        formatMoneyMinor(detail.totalMinor, detail.currency),
+                        bold: true,
+                      ),
+                      if ((detail.externalRef ?? '').isNotEmpty)
+                        _row('Referencia', detail.externalRef!),
+                      if (detail.holderMasked.isNotEmpty)
+                        _row('Titular destino', detail.holderMasked),
+                    ],
+                  ),
                 ),
-                child: Column(
-                  children: [
-                    _row('Tipo', _typeLabel(detail.type)),
-                    _row('Estado', _statusLabel(detail.status)),
-                    _row(
-                      'Monto',
-                      formatMoneyMinor(detail.amountMinor, detail.currency),
+                const SizedBox(height: 16),
+                if (receipt != null)
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      key: const Key('receipt-download'),
+                      onPressed: () => _download(receipt),
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: const Text('Descargar comprobante (PDF)'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(88, 52),
+                      ),
                     ),
-                    _row(
-                      'Comisión',
-                      formatMoneyMinor(detail.feeMinor, detail.currency),
-                    ),
-                    _row(
-                      'Total debitado',
-                      formatMoneyMinor(detail.totalMinor, detail.currency),
-                      bold: true,
-                    ),
-                    if ((detail.externalRef ?? '').isNotEmpty)
-                      _row('Referencia', detail.externalRef!),
-                    if (detail.holderMasked.isNotEmpty)
-                      _row('Titular destino', detail.holderMasked),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              if (receipt != null)
+                  ),
+                const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton.icon(
-                    key: const Key('receipt-download'),
-                    onPressed: () => _download(receipt),
-                    icon: const Icon(Icons.download_outlined, size: 18),
-                    label: const Text('Descargar comprobante (PDF)'),
-                    style: OutlinedButton.styleFrom(
+                  child: FilledButton(
+                    key: const Key('receipt-home-cta'),
+                    onPressed: () => context.go('/home'),
+                    style: FilledButton.styleFrom(
                       minimumSize: const Size(88, 52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadii.md),
+                      ),
                     ),
+                    child: const Text('Volver al inicio'),
                   ),
                 ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  key: const Key('receipt-home-cta'),
-                  onPressed: () => context.go('/home'),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(88, 52),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(AppRadii.md),
-                    ),
-                  ),
-                  child: const Text('Volver al inicio'),
-                ),
-              ),
-            ],
+              ],
+            ),
           );
         },
-      ),
       ),
     );
   }
 
   Widget _failureView(TransactionDetail detail) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      children: [
-        AppCard(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                alignment: Alignment.center,
-                decoration: const BoxDecoration(
-                  color: AppColors.errorContainer,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.close,
-                  size: 32,
-                  color: AppColors.error,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'La transferencia no prosperó',
-                textAlign: TextAlign.center,
-                style: AppTypography.titleMd.copyWith(
-                  color: AppColors.primary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                transferUserMessage(
-                  ApiException(
-                    code: detail.failureCode ?? 'UNKNOWN',
-                    message: '',
+    // Rechazo terminal (no es error de fetch): mantiene el bloqueo de
+    // retroceso como estado terminal deliberado; la salida es
+    // "Volver al inicio" (M1 conforme: tiene Volver, nadie queda atrapado).
+    return PopScope(
+      canPop: false,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          AppCard(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: AppColors.errorContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close,
+                    size: 32,
+                    color: AppColors.error,
                   ),
                 ),
-                textAlign: TextAlign.center,
-                style: AppTypography.bodyMd.copyWith(
-                  color: AppColors.onSurfaceVariant,
+                const SizedBox(height: 12),
+                Text(
+                  'La transferencia no prosperó',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.titleMd.copyWith(
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  transferUserMessage(
+                    ApiException(
+                      code: detail.failureCode ?? 'UNKNOWN',
+                      message: '',
+                    ),
+                  ),
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                AppStatusChip.error(label: _statusLabel(detail.status)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              key: const Key('receipt-home-cta'),
+              onPressed: () => context.go('/home'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(88, 52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadii.md),
                 ),
               ),
-              const SizedBox(height: 8),
-              AppStatusChip.error(label: _statusLabel(detail.status)),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton(
-            key: const Key('receipt-home-cta'),
-            onPressed: () => context.go('/home'),
-            style: FilledButton.styleFrom(
-              minimumSize: const Size(88, 52),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppRadii.md),
-              ),
+              child: const Text('Volver al inicio'),
             ),
-            child: const Text('Volver al inicio'),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 

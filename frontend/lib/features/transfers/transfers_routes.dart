@@ -42,10 +42,18 @@ final List<GoRoute> transfersRoutes = [
   ),
   GoRoute(
     path: '/transfers/destination',
+    // H1: `?kind=interbank` NO degrada a propia: redirige al formulario
+    // interbancario (`/transfers/interbank`); propia/tercero van al destino.
+    redirect: (context, state) {
+      if (state.uri.queryParameters['kind'] == 'interbank') {
+        return '/transfers/interbank';
+      }
+      return null;
+    },
     builder: (context, state) {
       final kind = TransferKind.fromQuery(state.uri.queryParameters['kind']);
       return DestinationPage(
-        kind: kind == TransferKind.interbank ? TransferKind.own : kind,
+        kind: kind,
         service: transfersServiceFactory?.call(),
       );
     },

@@ -308,8 +308,17 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
       if (!mounted) return;
       setState(() => _resolvingExisting = false);
       if (candidates.length == 1) {
+        // M2: reemplaza en vez de apilar (`/beneficiaries/new → /:id`):
+        // sin pila (deep-link) `pushReplacement` cae a la agenda.
         final existing = candidates.single;
-        context.push('/beneficiaries/${existing.id}', extra: existing);
+        if (context.canPop()) {
+          context.pushReplacement(
+            '/beneficiaries/${existing.id}',
+            extra: existing,
+          );
+        } else {
+          context.go('/beneficiaries/${existing.id}', extra: existing);
+        }
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
@@ -323,7 +332,13 @@ class _BeneficiaryFormPageState extends State<BeneficiaryFormPage> {
           ),
         ),
       );
-      context.push('/beneficiaries');
+      // M2: vuelve a la agenda sin apilar (`/new → /:id → /list`): si hay
+      // pila se desapila al origen; si no (deep-link), `go` a la agenda.
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/beneficiaries');
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() => _resolvingExisting = false);
@@ -931,14 +946,14 @@ class _DuplicateBanner extends StatelessWidget {
 String _friendlyFormError(String code) {
   switch (code) {
     case 'VALIDATION_ERROR':
-      return 'Revisa los datos ingresados e intentalo de nuevo.';
+      return 'Revisa los datos ingresados e inténtalo de nuevo.';
     case 'NOT_AUTHORIZED':
-      return 'No tienes permiso para esta operacion.';
+      return 'No tienes permiso para esta operación.';
     case 'NOT_FOUND':
       return 'No encontramos ese beneficiario.';
     case 'IDEMPOTENCY_CONFLICT':
-      return 'Esta operacion ya fue registrada. Revisa tu agenda.';
+      return 'Esta operación ya fue registrada. Revisa tu agenda.';
     default:
-      return 'Ocurrio un error inesperado. Intentalo mas tarde.';
+      return 'Ocurrió un error inesperado. Inténtalo más tarde.';
   }
 }

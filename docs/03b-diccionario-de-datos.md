@@ -640,7 +640,7 @@ Indices: `(account_id, created_at DESC)`.
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | transaction_id | UUID | No | - | REF transactions, UQ | - |
-| charge_id | UUID | No | - | FK qr_charges, IDX | - |
+| charge_id | UUID | No | - | FK qr_charges, UQ parcial (`uq_qr_payments_charge_active`: unico donde `status <> 'REJECTED'`; fix ALTO-2/MEDIO-2, migracion `0041`) | Un cargo admite un solo cobro real/pendiente; los `REJECTED` admiten reintento. |
 | payer_user_id | UUID | No | - | REF users, IDX | - |
 | merchant_id | UUID | No | - | FK merchant_accounts | - |
 | amount_minor | BIGINT | No | - | | - |
@@ -900,6 +900,12 @@ Indices: `(account_id, created_at DESC)`.
 
 > Nota de alineacion (2026-09-25): `user_channel_preferences` DIFERIDA (fuera de alcance, sin
 > implementar en el MVP).
+>
+> Nota de implementacion (2026-10-13, E6-T12, HU22): la tabla queda IMPLEMENTADA con la
+> migracion `0044_notifications_preferences` (`down_revision="0043_wallet_service_reminder"`;
+> `user_id` PK logica a `users` sin FK fisica; `push`/`email` default `true`, `sms` default
+> `false`). La misma migracion siembra las claves `notifications.security_delivery_window_seconds`
+> (`5`) y `notifications.security_alerts_email_backup` (`true`) en `config.parameters`.
 
 ## 14. Schema `audit`
 

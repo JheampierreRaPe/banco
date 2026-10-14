@@ -133,9 +133,17 @@ def sec_session():
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     # Todos los schemas registrados (inmune al orden de ejecucion: si otra
-    # suite importo mas modelos, sus schemas tambien se adjuntan).
+    # suite importo mas modelos, sus schemas tambien se adjuntan), salvo
+    # `wallet` (E4-T01, 2026-10-13): SQLite admite maximo 10 BD adjuntas
+    # (`SQLITE_MAX_ATTACHED`, techo de compilacion sin PRAGMA que lo eleve)
+    # y con 10 schemas con tablas + `config` se llegaria a 11. Esta suite
+    # no ejercita endpoints de `wallet` (sus tablas las cubre la fixture
+    # propia de `tests/test_e4_t01_wallet_links.py`); si un test futuro la
+    # necesitara, el fallo seria un `OperationalError` ruidoso (jamas
+    # silencioso) y habria que re-partir la fixture.
     schemas = {name.split(".")[0] for name in Base.metadata.tables if "." in name}
     schemas.add("config")
+    schemas.discard("wallet")
 
     def _attach(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
@@ -144,7 +152,10 @@ def sec_session():
         cur.close()
 
     event.listen(engine, "connect", _attach)
-    Base.metadata.create_all(engine)
+    Base.metadata.create_all(
+        engine,
+        tables=[table for table in Base.metadata.tables.values() if table.schema != "wallet"],
+    )
     with engine.begin() as conn:
         conn.execute(
             sa.text(

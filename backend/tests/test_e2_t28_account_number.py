@@ -375,12 +375,18 @@ def test_migration_file_chain():
 
 
 def test_single_head_is_0030():
-    # E3-T12 (2026-10-11): la cabeza avanza con la migracion
-    # 0033_credits_contracts (juego contractual; un solo head
-    # encadenado tras 0032).
+    # E4-T11 (2026-10-13): la cabeza avanza con la migracion
+    # 0040_wallet_qr_payments (cobro QR + qr_payments; un solo head
+    # encadenado tras 0039). Fix guarda (2026-10-13): la cabeza avanza
+    # a 0041_wallet_qr_payment_guard (indice unico parcial anti doble
+    # cobro, encadenado tras 0040). E4-T16 (2026-10-13): la cabeza avanza
+    # a 0042_wallet_services (catalogo `billers` + servicios, tras 0041).
+    # E6-T12 (2026-10-13): la cabeza avanza a
+    # 0044_notifications_preferences (preferencias por canal + claves de
+    # seguridad, tras 0043).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0033_credits_contracts",)
+    assert get_head_revisions() == ("0044_notifications_preferences",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

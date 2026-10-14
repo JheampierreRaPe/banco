@@ -1,7 +1,6 @@
 # Q-T06: imagen demo del worker (colas/tareas).
-# Esqueleto: valida conectividad con Postgres/Redis y expone /health.
-# El consumidor real de colas llega con la tarea del modulo correspondiente;
-# esta imagen solo mantiene el entorno demo arriba sin logica de negocio.
+# Valida conectividad con Postgres/Redis, expone /health y corre los jobs
+# periodicos registrados en `worker_entrypoint.py` (cuotas E3-T19).
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

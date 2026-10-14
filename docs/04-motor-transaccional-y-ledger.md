@@ -200,6 +200,31 @@ referencia `reverses_journal_entry_id`. **Nunca** se marca el original como borr
 Debe  <lo que estaba al haber>   /   Haber <lo que estaba al debe>
 ```
 
+### 7.10 Pago de servicio y recarga (HU16, `E4-T17`, cierra `docs/18` G73)
+
+El proveedor/biller es **externo** (sin usuario ni cuenta en el core): el dinero se mueve
+por el servicio interno `wallet.service.express.pay_express` (`E4-T02`, `tx_type=
+THIRD_PARTY_TRANSFER`, **sin comision** en el MVP —`fee_minor=0` explicito—) con el mismo
+camino hold + liquidacion de `#7.2`/`#7.4` y el mismo gate (sobre el limite base ->
+`PENDING_AUTHORIZATION`; sobre el diario -> `REJECTED` sin tocar saldos). El abono no va
+a una cuenta del proveedor (no existe) sino a la **cuenta interna de liquidacion del
+proveedor** (`2000-Liquidacion`), resuelta por la fachada `accounts` desde el parametro
+`WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID` (una por moneda; debe estar `ACTIVE` y coincidir
+en moneda; sin columna nueva en `billers`; conciliacion posterior contra el extracto del
+proveedor por `#8`). Sin esa cuenta el pago se rechaza fail-closed **antes de operar**.
+
+```
+1) Retencion del pagador:  Debe 2000-Pagador        X / Haber 2100-Pagador        X
+2) Liquidacion:            Debe 2100-Pagador        X / Haber 2000-Liquidacion    X
+```
+
+Justificacion (G73): crear cuentas contables nuevas en `ledger` o columnas en `billers`
+invadiria otros modulos (regla de oro 4); el parametro deja la regla configurable fuera
+del codigo (regla de oro 6). La partida doble se mantiene (`sum(debitos) = sum(creditos)`);
+`wallet` no escribe `transactions`/`ledger` (solo persiste `service_payments`/`topups` con
+su `transaction_id` + comprobante). El comprobante usa el numero oficial `OP-…`
+(convencion `E2-T10`, `docs/05#6.3`: `OP-` + 12 hex de `sha256(transaction_id)`).
+
 ## 8. Liquidacion y conciliacion
 
 1. Toda operacion con terceros pasa por `2200-Transito` hasta confirmarse.

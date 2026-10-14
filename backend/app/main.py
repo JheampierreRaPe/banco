@@ -7,6 +7,29 @@ consumidor `ledger.entry.posted` -> `movements_view` al bus y arranca el
 worker periodico del outbox en un hilo daemon (no bloquea). El worker se
 desactiva con `OUTBOX_WORKER_ENABLED=0` y su intervalo se configura con
 `OUTBOX_POLL_INTERVAL_SECONDS` (regla de oro 6: fuera del codigo).
+
+Jobs de cuotas (E3-T19, HU12 CA-03/CA-04): el `lifespan` tambien arranca el
+worker periodico de debito automatico + recordatorios con el mismo mecanismo
+(hilo daemon, parada por evento). Se desactiva con `CREDIT_LOAN_JOBS_ENABLED=0`
+(los flags por job `CREDIT_LOANS_AUTO_DEBIT_ENABLED` /
+`CREDIT_LOANS_REMINDERS_ENABLED` rigen cada pasada) y su intervalo se configura
+con `CREDIT_LOANS_JOBS_INTERVAL_SECONDS` (defecto 3600 s).
+
+Caducidad del QR (E4-T07, HU14 CA-02) + reconciliacion del cobro
+(R-1, HU15): el `lifespan` arranca ademas el worker periodico de QR
+(`wallet/jobs/qr_expiry.py` + `wallet/jobs/qr_reconcile.py`) con el
+mismo mecanismo. Se desactiva con `WALLET_QR_JOBS_ENABLED=0` (los flags
+por job `WALLET_QR_EXPIRY_ENABLED` / `WALLET_QR_RECONCILE_ENABLED`
+rigen cada pasada) y su intervalo se configura con
+`WALLET_QR_JOBS_INTERVAL_SECONDS` (defecto 60 s).
+
+Recordatorios de servicios (E4-T18, HU16 CA-03): el `lifespan`
+arranca ademas el worker periodico de servicios
+(`wallet/jobs/service_reminders.py`) con el mismo mecanismo. Se
+desactiva con `WALLET_SERVICE_JOBS_ENABLED=0` (el flag por job
+`WALLET_SERVICE_REMINDERS_ENABLED` rige cada pasada) y su intervalo
+se configura con `WALLET_SERVICE_JOBS_INTERVAL_SECONDS` (defecto
+3600 s).
 """
 
 from __future__ import annotations
@@ -110,28 +133,82 @@ def _outbox_poll_interval_seconds() -> float:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Cableado productivo E2-T23: suscripcion + worker del outbox.
+    """Cableado productivo E2-T23 + jobs de cuotas E3-T19 + jobs QR E4-T07/R-1.
 
     No llama a `wire_ports()`: la ruta productiva de saldos/proyeccion
     resuelve los adaptadores reales via `resolve_*` sin mutar globales
     (diseno E2-T01 opcion b); mutarlos aqui romperia el aislamiento.
     """
     from app.composition import (
+        credit_loan_jobs_enabled,
+        credit_loan_jobs_interval_seconds,
+        start_credit_loan_jobs_worker,
         start_outbox_worker,
+        start_wallet_qr_jobs_worker,
+        start_wallet_service_jobs_worker,
         subscribe_accounts_movements,
+        subscribe_channel_lock,
         subscribe_risk_security,
+        subscribe_security_alerts,
+        subscribe_unrecognized_reports,
+        wallet_qr_jobs_enabled,
+        wallet_qr_jobs_interval_seconds,
+        wallet_service_jobs_enabled,
+        wallet_service_jobs_interval_seconds,
     )
 
     subscribe_accounts_movements()
     subscribe_risk_security()
+    subscribe_security_alerts()
+    subscribe_unrecognized_reports()
+    subscribe_channel_lock()
     stop_event = None
     if _outbox_worker_enabled():
         _thread, stop_event = start_outbox_worker(interval_seconds=_outbox_poll_interval_seconds())
+    jobs_stop_event = None
+    if credit_loan_jobs_enabled():
+        _jobs_thread, jobs_stop_event = start_credit_loan_jobs_worker(
+            interval_seconds=credit_loan_jobs_interval_seconds()
+        )
+        logger.info(
+            "credit_loan_jobs_worker started interval_seconds=%s",
+            credit_loan_jobs_interval_seconds(),
+        )
+    else:
+        logger.info("credit_loan_jobs_worker disabled")
+    qr_jobs_stop_event = None
+    if wallet_qr_jobs_enabled():
+        _qr_thread, qr_jobs_stop_event = start_wallet_qr_jobs_worker(
+            interval_seconds=wallet_qr_jobs_interval_seconds()
+        )
+        logger.info(
+            "wallet_qr_jobs_worker started interval_seconds=%s",
+            wallet_qr_jobs_interval_seconds(),
+        )
+    else:
+        logger.info("wallet_qr_jobs_worker disabled")
+    service_jobs_stop_event = None
+    if wallet_service_jobs_enabled():
+        _service_thread, service_jobs_stop_event = start_wallet_service_jobs_worker(
+            interval_seconds=wallet_service_jobs_interval_seconds()
+        )
+        logger.info(
+            "wallet_service_jobs_worker started interval_seconds=%s",
+            wallet_service_jobs_interval_seconds(),
+        )
+    else:
+        logger.info("wallet_service_jobs_worker disabled")
     try:
         yield
     finally:
         if stop_event is not None:
             stop_event.set()
+        if jobs_stop_event is not None:
+            jobs_stop_event.set()
+        if qr_jobs_stop_event is not None:
+            qr_jobs_stop_event.set()
+        if service_jobs_stop_event is not None:
+            service_jobs_stop_event.set()
 
 
 def create_app() -> FastAPI:

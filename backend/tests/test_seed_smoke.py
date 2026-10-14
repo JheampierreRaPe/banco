@@ -40,8 +40,17 @@ def test_baseline_esquemas_y_parametros(test_engine) -> None:
     # (E1-T34; `auth.max_failed_attempts` ya estaba en las 13) + 1 de
     # `0023_risk_profiles_params` (E2-T18; `transfer.daily_limit_STANDARD_minor`)
     # + 4 de `0030_credits_loan_rule_params` (E3-T07; `loan.max_amount_minor`,
-    # `loan.min_score`, `loan.review_margin`, `loan.max_debt_minor`).
-    assert report["parameter_count"] == 25
+    # `loan.min_score`, `loan.review_margin`, `loan.max_debt_minor`)
+    # + 1 de `0036_loan_reminder_param` (E3-T19; `loan.reminder_days_before`)
+    # + 2 de `0038_wallet_express_params` (E4-T02; `wallet.express_limit_minor`,
+    # `wallet.daily_limit_minor`)
+    # + 1 de `0039_wallet_qr` (E4-T06; `wallet.qr_ttl_seconds`)
+    # + 1 de `0043_wallet_service_reminder_param` (E4-T18;
+    # `wallet.service_reminder_days_before`)
+    # + 2 de `0044_notifications_preferences` (E6-T12;
+    # `notifications.security_delivery_window_seconds`,
+    # `notifications.security_alerts_email_backup`).
+    assert report["parameter_count"] == 32
 
 
 def test_carga_semilla_idempotente_y_roundtrip(test_engine, seed_dataset: dict) -> None:

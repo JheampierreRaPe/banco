@@ -11,8 +11,10 @@ import '../../features/biometrics/biometric_reader.dart';
 import '../../features/credits/credits_routes.dart';
 import '../../features/credits/data/credit_applications_service.dart';
 import '../../features/credits/data/credit_contract_service.dart';
+import '../../features/credits/data/credit_disbursement_service.dart';
 import '../../features/credits/data/credit_sign_controller.dart';
 import '../../features/credits/data/credits_service.dart';
+import '../../features/credits/data/loan_schedule_service.dart';
 import '../../features/home/data/profile_service.dart';
 import '../../features/home/home_routes.dart';
 import '../../features/kyc/camera_frame_source.dart';
@@ -22,6 +24,8 @@ import '../../features/kyc/kyc_service.dart';
 import '../../features/login/login_routes.dart';
 import '../../features/movements/data/movements_service.dart';
 import '../../features/movements/movements_routes.dart';
+import '../../features/notifications/data/notifications_service.dart';
+import '../../features/notifications/notifications_routes.dart';
 import '../../features/payment_authorization/data/payment_authorization_service.dart';
 import '../../features/payment_authorization/payment_authorization_routes.dart';
 import '../../features/pin_reset/pin_reset_routes.dart';
@@ -31,6 +35,11 @@ import '../../features/profile/profile_routes.dart';
 import '../../features/splash/splash_routes.dart';
 import '../../features/transfers/data/transfers_service.dart';
 import '../../features/transfers/transfers_routes.dart';
+import '../../features/wallet/data/merchant_qr_service.dart';
+import '../../features/wallet/data/qr_payment_service.dart';
+import '../../features/wallet/data/services_service.dart';
+import '../../features/wallet/data/wallet_service.dart';
+import '../../features/wallet/wallet_routes.dart';
 import '../../features/welcome/welcome_routes.dart';
 import '../http/api_client.dart';
 import '../session/secure_key_value_storage.dart';
@@ -125,6 +134,22 @@ GoRouter buildRouter(
   // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
   // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
   transfersServiceFactory = () => TransfersService(api: client);
+  // Billetera y vinculacion (E4-T04, HU13): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca (`/wallet*`
+  // exige sesion).
+  walletServiceFactory = () => WalletService(api: client);
+  // Cobros QR del comercio (E4-T09, HU14): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/merchant-*` exige sesion).
+  merchantQrServiceFactory = () => MerchantQrService(api: client);
+  // Pago QR del pagador (E4-T13, HU15): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/pay-qr*` exige sesion).
+  qrPaymentServiceFactory = () => QrPaymentService(api: client);
+  // Servicios y recargas (E4-T19, HU16): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/services*` y `/wallet/topups` exigen sesion).
+  servicesServiceFactory = () => ServicesService(api: client);
   // Simulador de creditos (E3-T04): mismo patron, solo cableado con el
   // `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*` exige
   // sesion).
@@ -151,6 +176,14 @@ GoRouter buildRouter(
         session: session,
         deviceId: identityStore.deviceId ?? '',
       );
+  // Desembolso + cronograma de créditos (M-1 HU12 + E3-T21): mismo patrón,
+  // solo cableado con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/credits*` exige sesión). Sin este cableado `loanScheduleServiceFactory`
+  // quedaba en `null` (las pantallas de préstamos degradaban a error) y el
+  // ciclo "firmar → desembolsar → pagar" no era alcanzable en la app.
+  loanScheduleServiceFactory = () => LoanScheduleService(api: client);
+  creditDisbursementServiceFactory =
+      () => CreditDisbursementService(api: client);
   paymentAuthorizationDepsFactory = () => PaymentAuthorizationDeps(
     service: PaymentAuthorizationService(api: client),
     reader: systemReader,
@@ -161,6 +194,10 @@ GoRouter buildRouter(
   // el `ApiClient` compartido; la guarda F-T37 no se toca (`/movements*`
   // exige sesion).
   movementsServiceFactory = () => MovementsService(api: client);
+  // Centro de notificaciones (E6-T15, HU22): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/notifications*` exige sesion).
+  notificationsServiceFactory = () => NotificationsService(api: client);
   // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
   // cableado; la guarda F-T37 no se toca.
   homeProfileServiceFactory = () => HttpProfileService(api: client);
@@ -231,9 +268,11 @@ GoRouter buildRouter(
       ...accountsRoutes,
       ...beneficiariesRoutes,
       ...transfersRoutes,
+      ...walletRoutes,
       ...creditsRoutes,
       ...paymentAuthorizationRoutes,
       ...movementsRoutes,
+      ...notificationsRoutes,
       ...homeRoutes,
       ...profileRoutes,
     ],

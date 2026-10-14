@@ -173,9 +173,10 @@ dominio.
 | `CreditBureau` | Central de riesgo | `POST /score` -> {score, deudas, morosidad}. |
 | `FxRateProvider` | API de tipo de cambio | `GET /rates?base=PEN` -> {quote, ttl}. |
 | `InterbankGateway` | Red interbancaria / equipo par | `POST /transfers`, `GET /transfers/{id}`, estado final. |
+| `WalletInterop` | Billetera interoperable / equipo par (HU13 CA-03) | Sobre `BO-QR1` (formato propio firmado, D06): `encode/decode` local + `POST {base_url}/interop/counterparts/validate` -> `{valid, peer_ref?, bank_code?}`. |
 | `ClearingSource` | Archivos de compensacion | Lote con operaciones; puede ser CSV/JSON simulado. |
 | `SanctionsLists` | OFAC / World-Check / PEP | Cotejo difuso por nombre/documento. |
-| `Notifications` | Push / correo / SMS | `send(canal, destinatario, plantilla, datos)`. |
+| `Notifications` | Push / correo / SMS | `send(canal, destinatario, plantilla, datos)`; resolucion desacoplada por canal (`sender_for_channel`, E6-T13): `PUSH_PROVIDER`/`EMAIL_PROVIDER`/`SMS_PROVIDER` (`mock` por defecto, sin red; valor desconocido -> `ValueError`; fallo aislado por canal). |
 
 `CreditBureau` (E3-T06, HU10) se configura por entorno (solo nombres y defaults
 seguros; la key nunca va en el repo ni en logs, solo en la cabecera
@@ -192,6 +193,26 @@ seguros; la key nunca va en el repo ni en logs, solo en la cabecera
 Errores tipados del adaptador (el caso de uso los traduce a `EN_REVISION`, E3-T08):
 `BUREAU_UNAVAILABLE` (`503`, proveedor caido tras agotar reintentos) y
 `BUREAU_TIMEOUT` (`502`, timeout tras agotar reintentos).
+
+`WalletInterop` (E4-T03, HU13 CA-03) se configura por entorno (solo nombres y defaults
+seguros; la key nunca va en el repo ni en logs, solo en la cabecera
+`Authorization`):
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `WALLET_INTEROP_PROVIDER` | `mock` | `mock` (determinista, sin red) \| `http` (real, `POST {base_url}/interop/counterparts/validate`). Valor no reconocido -> `mock`. |
+| `WALLET_INTEROP_BASE_URL` | `http://localhost:8000` | Base del par (ruta `POST /interop/counterparts/validate`). |
+| `WALLET_INTEROP_API_KEY` | (vacio) | Key server-side del par (solo cabecera; jamas en la URL ni en logs). |
+| `WALLET_INTEROP_TIMEOUT_SECONDS` | `5.0` | Timeout corto por intento (s); nunca bloquea el hilo. |
+| `WALLET_INTEROP_MAX_RETRIES` | `2` | Reintentos con backoff exponencial tras fallo/timeout. |
+
+Contrato del sobre `BO-QR1` (D06, formato propio firmado; `E4-T06` fija la firma
+local en `wallet.qr_charges`, aqui `sig` es opaco de passthrough): JSON canonico
+(claves ordenadas `{v, issuer, peer, ref, amount_minor, currency, exp, sig}`) ->
+base64url sin padding; `decode` rechaza version distinta o campos invalidos con
+`VALIDATION_ERROR` (sin red). Errores tipados: `INTEROP_UNAVAILABLE` (`503`, par
+caido tras reintentos) e `INTEROP_TIMEOUT` (`502`, timeout tras reintentos). El
+adaptador no mueve dinero ni persiste nada.
 
 ## 10. Seguridad arquitectonica
 

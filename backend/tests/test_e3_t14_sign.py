@@ -369,8 +369,9 @@ def test_sign_pin_happy_path(app_client):
     assert len(sender.calls) == 1
     rows = contracts_repo.list_by_application(session, app_id)
     assert all(row.status == "SIGNED" for row in rows)
-    # El PIN en claro jamas queda en la BD.
-    assert all(PIN not in (row.signature_token_hash or "") for row in rows)
+    # El PIN en claro jamas queda en la BD (igualdad exacta: el hash del
+    # token es hex aleatorio y puede contener esos 4 digitos por azar).
+    assert all((row.signature_token_hash or "") != PIN for row in rows)
 
 
 # ------------------------------------------------ errores
@@ -594,6 +595,17 @@ def test_no_secrets_or_pii_in_logs(app_client, caplog):
 
 
 def test_pin_never_persisted_in_idempotency_snapshot(app_client):
+    """El PIN en claro jamas queda en `shared.idempotency_keys`.
+
+    Estabilizado (fix flaky M-2/BAJO): la version anterior buscaba el
+    PIN como subcadena (`PIN in snap`) sobre el JSON serializado, cuyos
+    valores hex aleatorios (UUIDs, `doc_hash`/sellos SHA-256) contienen
+    los 4 digitos hex del PIN (`7319`) por azar (~1/2 corridas de
+    suite). La garantia se conserva sin falsos positivos: el PIN no
+    aparece como **valor completo** de ningun campo del snapshot ni
+    como **campo `pin`** serializado (un hash que contenga esos 4
+    caracteres como subcadena no es persistir el secreto).
+    """
     import json
 
     client, session = app_client["client"], app_client["session"]
@@ -602,12 +614,29 @@ def test_pin_never_persisted_in_idempotency_snapshot(app_client):
     table = Base.metadata.tables["shared.idempotency_keys"]
     session.expire_all()
     snapshots = [
-        json.dumps(row[0], ensure_ascii=False)
+        row[0]
         for row in session.execute(sa.select(table.c.response_snapshot)).all()
         if row[0] is not None
     ]
     assert snapshots
-    assert all(PIN not in snap for snap in snapshots)
+
+    def _string_values(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                assert str(key).lower() != "pin", f"campo pin persistido: {key!r}"
+                yield from _string_values(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                yield from _string_values(item)
+        elif isinstance(node, str):
+            yield node
+
+    for snap in snapshots:
+        assert all(value != PIN for value in _string_values(snap))
+        # Sin campo `pin` serializado (`"via": "pin"` es la via usada,
+        # no el secreto: se busca la clave con `:`, no el valor).
+        blob = json.dumps(snap, ensure_ascii=False)
+        assert not re.search(r'"pin"\s*:', blob, flags=re.IGNORECASE)
 
 
 def test_credits_sign_imports_no_foreign_models():

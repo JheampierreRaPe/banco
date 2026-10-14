@@ -61,8 +61,7 @@ Codigos de error reales (verificados en codigo, 2026-09-25; `DUPLICATE_BENEFICIA
 `DAILY_LIMIT_EXCEEDED`/`BIOMETRIC_PREVENTIVE_BLOCK` y `CONFLICT` de reverso consolidados
 2026-09-27, E2-T17/E2-T19/E2-T25):
 `ACCOUNT_LOCKED`, `BIOMETRIC_PREVENTIVE_BLOCK`, `CONFLICT` (409), `DAILY_LIMIT_EXCEEDED`,
-`DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_BENEFICIARY` (409),
-`DUPLICATE_DOCUMENT`, `DUPLICATE_EMAIL`, `EXPIRED_NONCE`, `EXPIRED_OTP`,
+`DOC_LOOKUP_UNAVAILABLE`, `DOCUMENT_NOT_FOUND`, `DUPLICATE_BENEFICIARY` (409), `DUPLICATE_DOCUMENT`, `DUPLICATE_EMAIL`, `DUPLICATE_LINK` (409, E4-T01), `EXPIRED_NONCE`, `EXPIRED_OTP`,
 `EXPORT_FORMAT_NOT_SUPPORTED` (501), `IDEMPOTENCY_CONFLICT` (409),
 `INSUFFICIENT_FUNDS` (solo como `data.failure_code` con `data.status=REJECTED` en
 `POST /transfers/*`, E2-T07; el HTTP sigue `201` para no romper la idempotencia),
@@ -77,9 +76,11 @@ Fuentes: `backend/app/modules/identity/api/*` (+ `service/`), `backend/app/modul
 (`EXPORT_FORMAT_NOT_SUPPORTED`, `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`,
 `VALIDATION_ERROR`), `backend/app/modules/accounts/api/beneficiaries.py`
 (`DUPLICATE_BENEFICIARY`, `IDEMPOTENCY_CONFLICT`), `backend/app/modules/transactions/api/__init__.py`
-(`RECEIPT_FORMAT_NOT_SUPPORTED`). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
+(`RECEIPT_FORMAT_NOT_SUPPORTED`). `backend/app/modules/wallet/api/__init__.py` (`DUPLICATE_LINK`,
+`IDEMPOTENCY_CONFLICT` de vinculos, E4-T01). Sin `INVALID_RECOVERY_CODE` (solo lo emitia el retirado `verify`, E1-T41).
 `TARGET_NOT_FOUND`/`TARGET_AMBIGUOUS` (decisiones de destino 2026-10-03, E2-T27) se fijan en el
-endpoint de lookup previo descrito en `#6.3`.
+endpoint de lookup previo descrito en `#6.3`. `DUPLICATE_LINK` (`409`, E4-T01: la fuente ya esta
+vinculada y `ACTIVE`; ver `docs/05#6.5`).
 
 ## 5. Codigos HTTP
 
@@ -399,6 +400,11 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | GET | `/transactions/{id}/receipt` | Comprobante. |
 | POST | `/transactions/{id}/reverse` | Reverso autorizado (operaciones). |
 
+> Nota de ownership (`docs/18` G74, `E4-T12`): `POST /payments/qr`
+> figura en esta tabla por descubrimiento, pero la implementa
+> `wallet` (`api/payments.py`, detalle en `docs/05#6.5`); el caso de
+> uso es de billetera (HU15), no de transferencias.
+
 > Contrato E2-T07 `POST /transfers/own` y `POST /transfers/third-party` (Bearer, HU06):
 > request `{source_account_id, target_account_id, amount_minor (> 0), currency (ISO-4217),
 > [fee_minor (>= 0, solo tercero; `None` = `transfer.third_party_fee_minor` de
@@ -622,9 +628,11 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | POST | `/credits/applications/{id}/review` | Dictamen manual del analista. |
 | POST | `/credits/applications/{id}/contract` | Genera contrato. |
 | POST | `/credits/applications/{id}/sign` | Firma con biometria. |
+| POST | `/credits/applications/{id}/disburse` | Desembolsa el prestamo (E3-T17; gap G62 cerrado). |
 | GET | `/credits/loans` | Prestamos del cliente. |
 | GET | `/credits/loans/{id}/schedule` | Cronograma definitivo. |
 | POST | `/credits/loans/{id}/pay` | Pago de cuota. |
+| PUT | `/credits/loans/{id}/auto-debit` | Debito automatico on/off (E3-T19). |
 | POST | `/credits/simulate/export` | PDF del cronograma simulado (E3-T03; gap G21 cerrado). |
 
 > Detalle del simulador (E3-T03 `Hecho`, 2026-10-09; HU09 CA-01..CA-04).
@@ -791,6 +799,100 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > >   `Idempotency-Key`, esquema o ambos/ningun factor; el `422` sanitario
 > >   no refleja el cuerpo, el PIN nunca fuga). **No mueve dinero** (sin
 > >   `loans`, sin asientos; el desembolso es HU12).
+> >
+> > Detalle del desembolso + lectura de prestamos (E3-T17 `Hecho`,
+> > 2026-10-13; HU12 CA-01/CA-02/CA-03-tiempo; gap G62 cerrado para estas
+> > rutas; `PUT .../auto-debit` y `POST .../pay` son de E3-T19/E3-T20).
+> > Auth: `Authorization: Bearer <jwt>` en las tres rutas (401 `NOT_AUTHENTICATED`
+> > sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON.
+> > - `POST /credits/applications/{id}/disburse` (cuerpo `{account_id?}`
+> >   (UUID; omitido = cuenta principal del titular, la `ACTIVE` mas
+> >   antigua); cabecera `Idempotency-Key` obligatoria: **mueve dinero**) ->
+> >   `201 {"data": {loan_id, application_id, transaction_id, status
+> >   ("SETTLED"), disbursed_at, account_masked ("****dddd"), amount_minor,
+> >   currency}, "meta": {"request_id", "replayed"}}` con el prestamo creado
+> >   y acreditado, o `200` con la misma forma si es replay (misma clave +
+> >   mismo cuerpo, o reintento con otra clave sobre un expediente ya
+> >   desembolsado: un prestamo, un asiento, un evento). El dinero viaja
+> >   por el motor (`Transaction LOAN_DISBURSEMENT`, un asiento
+> >   `Debe 5000-Cartera / Haber 2000-Cuenta`, `docs/04#7.5`); monto =
+> >   `requested_amount_minor` del expediente; sin holds ni comision.
+> > - `GET /credits/loans` (solo lectura, sin `Idempotency-Key`) ->
+> >   `200 {"data": [{id, application_id, account_id, principal_minor,
+> >   outstanding_principal_minor, tcea (string), term_months, status,
+> >   disbursed_at, auto_debit_enabled, created_at}], "meta": {total,
+> >   request_id}}` con los prestamos del titular (`data: []` si no tiene).
+> > - `GET /credits/loans/{id}/schedule` (solo lectura, sin
+> >   `Idempotency-Key`) -> `200 {"data": {loan, schedule:
+> >   [{installment_no, due_date, principal_minor, interest_minor,
+> >   insurance_minor, total_minor, status, paid_at}]}, "meta":
+> >   {"request_id"}}` con el cronograma definitivo.
+> > - Codigos: `404 NOT_FOUND` (expediente/prestamo/cuenta ajeno o
+> >   inexistente, neutro; tambien sin cuenta `ACTIVE` cuando se omite
+> >   `account_id`), `409 CONFLICT` (expediente no `APPROVED`, juego no
+> >   `SIGNED`) / `409 IDEMPOTENCY_CONFLICT` (misma clave con cuerpo
+> >   distinto), `422 VALIDATION_ERROR` (sin `Idempotency-Key`, cuenta no
+> >   `ACTIVE`, moneda incoherente o cuerpo invalido). Evento por `outbox`:
+> >   `credit.disbursed` (`loan_id`, `application_id`, `user_id`,
+> >   `transaction_id`, `amount_minor`, `currency`, sin PII).
+> >
+> > > Detalle del pago de cuota (E3-T20 `Hecho`, 2026-10-13; HU12 CA-02
+> > > parte de cuotas; gap G62 cerrado para esta ruta; MVP: pago por
+> > > cuota **total**, sin abonos parciales ni prepago libre).
+> > > Auth: `Authorization: Bearer <jwt>` (401 `NOT_AUTHENTICATED`
+> > > sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON.
+> > > - `POST /credits/loans/{id}/pay` (cuerpo `{schedule_id?}` (UUID;
+> > >   omitido = proxima cuota exigible `PENDING`/`PARTIAL`/`OVERDUE` por
+> > >   `installment_no`); cabecera `Idempotency-Key` obligatoria: **mueve
+> > >   dinero**) -> `200 {"data": {loan_id, schedule_id, transaction_id,
+> > >   status ("SETTLED"), amount_minor, outstanding_principal_minor,
+> > >   paid_at}, "meta": {"request_id", "replayed"}}` con la cuota cobrada
+> > >   por el motor (`Transaction LOAN_INSTALLMENT`, un asiento
+> > >   `Debe 2000-Cuenta / Haber 5000-Cartera + Haber 4000-Intereses +
+> > >   Haber 4200-Seguro`, `docs/04#7.6`; las patas con monto 0 se
+> > >   omiten), `loan_payments` con el desglose, cuota `PAID` y saldo de
+> > >   capital reducido (ultima cuota -> `loans.status=PAID`). Sin fondos
+> > >   -> `200` con `status=REJECTED` + `failure_code=INSUFFICIENT_FUNDS`
+> > >   (sin tocar saldos ni la cuota; reintentable con la misma clave,
+> > >   patron `E2-T07`). Replay (misma clave + mismo cuerpo) -> `200`
+> > >   con `meta.replayed=true` sin segundo debito.
+> > > - Codigos: `404 NOT_FOUND` (prestamo/cuenta ajeno o inexistente,
+> > >   neutro), `409 CONFLICT` (cuota ya `PAID`, prestamo no `ACTIVE`,
+> > >   sin cuotas pendientes) / `409 IDEMPOTENCY_CONFLICT` (misma clave
+> > >   con cuerpo distinto), `422 VALIDATION_ERROR` (sin
+> > >   `Idempotency-Key`, `schedule_id` malformado o de otro prestamo).
+> > >   Evento por `outbox`: `loan.installment.paid` (`loan_id`,
+> > >   `schedule_id`, `user_id`, `transaction_id`, `amount_minor`,
+> > >   `currency`, sin PII).
+> > >
+> > > Detalle del debito automatico + recordatorios (E3-T19 `Hecho`,
+> > > 2026-10-13; HU12 CA-03/CA-04; gaps G61/G64 aplicados).
+> > > Auth: `Authorization: Bearer <jwt>` (401 `NOT_AUTHENTICATED`
+> > > sin token valido). Envoltorio `05#4` (`{"data", "meta"}`) en JSON.
+> > > - `PUT /credits/loans/{id}/auto-debit` (cuerpo `{enabled: bool}`
+> > >   estricto —ni `1`/`0` ni texto—; **sin** `Idempotency-Key`: no
+> > >   mueve dinero, solo fija el flag) -> `200 {"data": {loan_id,
+> > >   auto_debit_enabled}, "meta": {"request_id"}}`.
+> > > - Codigos: `404 NOT_FOUND` (prestamo ajeno o inexistente, neutro),
+> > >   `422 VALIDATION_ERROR` (`enabled` ausente o no booleano, Pydantic
+> > >   `StrictBool`).
+> > > - Jobs (sin endpoints; registrables via
+> > >   `app.composition.run_credit_loan_jobs_once`, env
+> > >   `CREDIT_LOAN_JOBS_ENABLED` / `CREDIT_LOANS_AUTO_DEBIT_ENABLED` /
+> > >   `CREDIT_LOANS_REMINDERS_ENABLED`, periodicidad
+> > >   `CREDIT_LOANS_JOBS_INTERVAL_SECONDS` defecto 3600 s):
+> > >   `run_auto_debit_once` cobra las cuotas `PENDING`/`PARTIAL`/
+> > >   `OVERDUE` con `due_date <= hoy` de prestamos `ACTIVE` con
+> > >   `auto_debit_enabled` reutilizando el caso de uso de `E3-T20`
+> > >   (clave HTTP `auto-debit:<schedule>` + motor anclado a la cuota;
+> > >   `commit` por item); sin fondos -> cuota y saldos intactos +
+> > >   push `loan_auto_debit_failed` (una vez por cuota y dia).
+> > >   `run_installment_reminders_once` avisa por push
+> > >   (`loan_installment_reminder`) las cuotas `PENDING`/`PARTIAL`
+> > >   con `due_date == hoy + loan.reminder_days_before` (parametro
+> > >   `config.parameters`, default `3`, semilla `0036`; una vez por
+> > >   cuota y dia via `processed_events`). Sin evento nuevo
+> > >   (basta el push best-effort; decision 3 del brief).
 
 ### 6.5 Billetera, QR y servicios (`wallet`) - HU13-HU16
 
@@ -798,11 +900,333 @@ Detalle del flujo KYC (`identity`, E1-T29):
 |---|---|---|
 | GET | `/wallet` | Billetera y vinculos. |
 | POST | `/wallet/links` | Vincular cuenta/tarjeta. |
+| DELETE | `/wallet/links/{id}` | Desvincular fuente (baja logica a `INACTIVE`, solo titular). |
 | POST | `/merchants/qr` | Generar QR de cobro (HU14). |
 | GET | `/merchants/qr/{id}` | Consultar estado del QR. |
 | GET | `/services/catalog` | Catalogo de servicios y operadores. |
+| POST | `/services/subscriptions` | Registrar un servicio a recordar. |
 | POST | `/services/payments` | Pago de servicio. |
 | POST | `/topups` | Recarga de celular. |
+
+> Detalle de billetera y vinculos (E4-T01 `Hecho`, 2026-10-13; HU13 CA-01;
+> cierra `docs/18` G66 en lo que toca a `/wallet*`, y G67 con el proveedor
+> `mock` + interfaz desacoplada).
+> Auth: `Authorization: Bearer <jwt>` en ambas rutas (401 `NOT_AUTHENTICATED`
+> sin token valido). Envoltorio `05#4` (`{"data", "meta": {"request_id"}}`).
+> El PAN, el numero completo y el `token_ref` jamas viajan en respuestas
+> (solo `account_masked`/`last4`/`brand`).
+> - `GET /wallet` (solo lectura, aislada por `sub` del JWT) ->
+>   `200 {"data": {wallet_id, status, links[]}, "meta": {"request_id"}}`.
+>   Sin billetera aun -> `200` con `wallet_id: null`, `status: "NONE"` y
+>   `links: []` (la fila se crea on-demand en la primera vinculacion).
+>   Vinculo = `{id, type (ACCOUNT|CARD), account_masked? (****1234, solo
+>   cuentas), last4?/brand? (solo tarjetas), status, linked_at}`.
+> - `POST /wallet/links` (cuerpo `{type: ACCOUNT|CARD, account_id?,
+>   card?}`; exactamente uno de `account_id`/`card`; `type=ACCOUNT` exige
+>   `account_id` UUID y prohibe `card`; `type=CARD` exige `card` y prohibe
+>   `account_id`; `card` acepta el PAN crudo (`pan`, tokenizado server-side
+>   con el proveedor vigente y descartado) o un `token_ref` pre-tokenizado
+>   con `last4?`/`brand?` opcionales; cabecera `Idempotency-Key` opcional)
+>   -> `201 {"data": {vinculo}, "meta": {"request_id", "replayed"}}`.
+>   La cuenta se valida por la fachada de `accounts` (titular + `ACTIVE`).
+>   Re-vincular una fuente `INACTIVE` la reactiva (sin borrar filas);
+>   un `token_ref` de otro titular nunca se reactiva (se responde
+>   `409 DUPLICATE_LINK` generico sin tocar la fila ajena).
+>   Emite `wallet.link.created` por `outbox` (payload sin PII:
+>   `wallet_id`, `link_id`, `type`).
+> - `DELETE /wallet/links/{id}` (solo titular, sin `Idempotency-Key`:
+>   no mueve dinero, solo cambia estado) ->
+>   `200 {"data": {vinculo con `status: "INACTIVE"`}, "meta":
+>   {"request_id"}}` (baja logica; sin borrar filas). Vinculo
+>   ajeno/inexistente/id malformado o ya `INACTIVE` ->
+>   `404 NOT_FOUND` neutro (mismo cuerpo, sin oraculo).
+> - Codigos: `404 NOT_FOUND` neutro (cuenta ajena/inexistente/inactiva, sin
+>   oraculo), `409 DUPLICATE_LINK` (fuente ya vinculada `ACTIVE`),
+>   `409 IDEMPOTENCY_CONFLICT` (misma clave + cuerpo distinto),
+>   `422 VALIDATION_ERROR` (`type` invalido, falta dato, `card` con
+>   ambas/ninguna fuente, PAN malformado) + `422` de esquema Pydantic.
+>
+> Detalle del QR de comercio (E4-T08 `Hecho`, 2026-10-13; HU14
+> CA-01/CA-02 parcial/CA-04 parcial; cierra `docs/18` G66 en lo que
+> toca a `/merchants/qr*`).
+> Auth: `Authorization: Bearer <jwt>` en ambas rutas (401
+> `NOT_AUTHENTICATED` sin token valido). El rol de comercio es la
+> fila propia `ACTIVE` en `wallet.merchant_accounts` (sin ella ->
+> `403 NOT_AUTHORIZED`; decision 3 del brief). Envoltorio `05#4`
+> (`{"data", "meta": {"request_id"}}`). El secreto HMAC y el RUC
+> jamas viajan en respuestas (solo la firma verificable, el
+> `payload` canonico y el sobre `BO-QR1`).
+> - `POST /merchants/qr` (cuerpo `{amount_minor (entero > 0, sin
+>   `float`), currency (ISO-4217, default `PEN`), concept? (<= 120),
+>   mode? (`DYNAMIC` default | `STATIC`)}`; cabecera `Idempotency-Key`
+>   opcional —decision 1 del brief, patron `E2-T13`: no mueve dinero—)
+>   -> `201 {"data": {charge_id, qr_content, payload, payload_hash,
+>   signature, amount_minor, currency, concept, mode, status
+>   ("ACTIVE"), expires_at, created_at}, "meta": {"request_id",
+>   "replayed"}}`.
+>   `qr_content` (`String`, decision del dueno sprint-3) es el
+>   contenido escaneable e interoperable: el token/sobre canonico
+>   `BO-QR1` que produce el propio backend
+>   (`wallet.domain.qr.to_interop_token`, adaptador `E4-T03`:
+>   `issuer`/`peer` = `CUYCASH`, `ref` = `charge_id`,
+>   `amount_minor`/`currency`/`exp` del cargo, `sig` = `signature`);
+>   es lo que se renderiza como QR y lo que un lector conforme
+>   (HU15) decodifica (`decode_payload`) y verifica contra
+>   `payload`/`signature`. `payload` sigue siendo objeto (dict) y no
+>   sustituye al string.
+>   Misma clave + mismo cuerpo = replay (un solo cargo,
+>   `replayed: true`, `payload` y `qr_content` reconstruidos
+>   deterministicamente); cuerpo distinto = `409
+>   IDEMPOTENCY_CONFLICT`. Emite `qr.charge.created` por `outbox`
+>   (payload sin PII).
+> - `GET /merchants/qr/{id}` (solo el comercio dueno; id malformado,
+>   ajeno o inexistente -> `404 NOT_FOUND` neutro, sin montos,
+>   anti-enumeracion) -> `200 {"data": {charge_id, qr_content,
+>   status, amount_minor, currency, expires_at, paid_at?}, "meta":
+>   {"request_id"}}` (`qr_content`: mismo sobre `BO-QR1` del `POST`,
+>   reconstruido deterministicamente; sin `payload`/`signature` en
+>   esta ruta). El `status` es efectivo on-read (`E4-T07`): un
+>   `ACTIVE` con `expires_at <= now` se reporta `EXPIRED` aunque el
+>   job aun no lo haya marcado (solo lectura, sin mutar la fila).
+> - Aviso de abono (HU14 CA-04 parcial, `docs/18` G72): plantilla
+>   `qr_charge_paid` (push, sin PII ni cifras: solo referencia del
+>   cargo e instante) invocada por la fachada
+>   `notifications.send(...)` via el helper
+>   `wallet.service.qr.notify_merchant_charge_paid` cuando el pago de
+>   `HU15` (`qr.payment.confirmed`) se confirma (< 5 s); `E4-T10` la
+>   valida con pago simulado y el E2E queda para HU15.
+> - Codigos: `403 NOT_AUTHORIZED` (sin cuenta de comercio `ACTIVE`),
+>   `404 NOT_FOUND` neutro (cargo ajeno/inexistente),
+>   `409 IDEMPOTENCY_CONFLICT`, `422 VALIDATION_ERROR`
+>   (`amount_minor <= 0`, moneda invalida, `mode` fuera de
+>   `DYNAMIC`/`STATIC`, `concept` > 120) + `422` de esquema Pydantic.
+>
+> Detalle del catalogo de servicios (E4-T16 `Hecho`, 2026-10-13; HU16
+> CA-01/CA-03 base; cierra `docs/18` G77 en lo que toca a
+> `/services/catalog` y `/services/subscriptions`).
+> Auth: `Authorization: Bearer <jwt>` en ambas rutas (401
+> `NOT_AUTHENTICATED` sin token valido). Envoltorio `05#4`
+> (`{"data", "meta": {"request_id"}}`). **No mueve dinero** (el pago
+> y la recarga son `E4-T17`).
+> - `GET /services/catalog` (filtros opcionales `category?`/`q?`,
+>   solo lectura, < 2 s) -> `200 {"data": [{biller_id, category,
+>   name, required_fields}], "meta": {"request_id"}}` con los
+>   `billers` habilitados (`docs/03b#95`, migracion
+>   `0042_wallet_services` con 6 demos: `ELECTRICIDAD`/`AGUA`/`GAS`/
+>   `INTERNET` con `required_fields: ["supply_ref"]` y `TELEFONIA`
+>   con `["phone"]`, decision 3 del brief). El catalogo es
+>   **extensible sin cambios estructurales** (columnas fijas +
+>   `required_fields` JSONB; agregar empresas es insertar filas).
+>   `category` malformada o `q` > 80 -> `422 VALIDATION_ERROR`;
+>   categoria bien formada pero desconocida -> `200` vacio.
+> - `POST /services/subscriptions` (cuerpo `{biller_id (UUID),
+>   supply_ref (1..80), notify_days_before? (1..30, default `3`,
+>   coherente con HU16)}`, sin `Idempotency-Key`: no mueve dinero)
+>   -> `201 {"data": {subscription_id, biller_id, supply_ref,
+>   notify_days_before, status}, "meta": {"request_id", "replayed"}}`
+>   (registro para los recordatorios que consume el job de `E4-T18`;
+>   decision 1 del brief, `docs/18` G77). Valida el suministro contra
+>   el proveedor vigente (`mock` determinista por defecto) antes de
+>   persistir. Idempotente por naturaleza: re-registrar el mismo
+>   `biller`+suministro devuelve la fila `ACTIVE` existente
+>   (`replayed: true`, sin duplicar).
+> - Adaptador `ServiceProviderGateway`
+>   (`backend/app/adapters/service_provider.py`, decision 2 del
+>   brief, `docs/18` G77): interfaz (`lookup_biller` por
+>   nombre/suministro + `validate_supply`) + `mock` determinista sin
+>   red (modos `success`/`down`/`timeout`; deuda simulada derivada
+>   del hash) + `http` (`POST
+>   {base_url}/services/supply/validate`, timeout/reintentos con
+>   backoff/circuit breaker) + fabrica `create_service_provider`
+>   (`SERVICE_PROVIDER=mock|http`, default `mock`, valor no
+>   reconocido -> `mock`). Sin PII/secretos en logs (solo hash del
+>   suministro).
+> - Codigos: `404 NOT_FOUND` neutro (`biller`
+>   inexistente/deshabilitado), `422 VALIDATION_ERROR`
+>   (filtro/`supply_ref`/`notify_days_before`/suministro invalido) +
+>   `422` de esquema Pydantic, `503
+>   SERVICE_PROVIDER_UNAVAILABLE` (proveedor caido), `502
+>   SERVICE_PROVIDER_TIMEOUT` (timeout del proveedor).
+> - Pruebas: `backend/tests/test_e4_t16_services_catalog.py`
+>   (catalogo/busqueda, suscripcion + replay, adaptador
+>   determinista/seleccion/`http` simulado, errores, sin PII,
+>   cadena `0042`).
+> - Job de recordatorios de servicios (`E4-T18` `Hecho`, 2026-10-13;
+>   HU16 CA-03; cierra `docs/18` G77 en lo que toca al aviso): sin
+>   endpoint (job best-effort, **no mueve dinero**). Cada pasada
+>   (`wallet/jobs/service_reminders.py::run_service_reminders_once`,
+>   `commit` por item, patron `E3-T19`) recorre las
+>   `service_subscriptions` `ACTIVE` y avisa por push (plantilla
+>   `service_reminder`: solo referencia del servicio y fecha, sin PII
+>   ni cifras) las que vencen en la ventana exacta. Vencimiento
+>   derivado determinista (decision 1 del brief: `service_subscriptions`
+>   no tiene columna de fecha y el proveedor no expone vencimiento;
+>   dia del mes `1..28` del `subscription_id` + proxima ocurrencia;
+>   el proveedor real lo reemplazara sin tocar el job). Ventana
+>   efectiva = minimo entre el parametro global
+>   `wallet.service_reminder_days_before` (default `3`,
+>   `shared/config`, semilla `0043`, `PUT /admin/parameters` sin
+>   redespliegue) y el `notify_days_before` de la fila (1..30,
+>   default `3`). Idempotencia por `(subscription_id, dia)` en
+>   `processed_events` (consumidor `wallet-service-reminders`; la marca
+>   se confirma al reclamarla, como en `E3-T19`: el fallo posterior
+>   queda `failed` sin duplicar). Wiring en ambos runtimes (patron
+>   M-2): runner `app.composition.run_wallet_service_jobs_once` /
+>   `start_wallet_service_jobs_worker` (flags
+>   `WALLET_SERVICE_JOBS_ENABLED` /
+>   `WALLET_SERVICE_REMINDERS_ENABLED`, intervalo
+>   `WALLET_SERVICE_JOBS_INTERVAL_SECONDS` defecto 3600 s), en el
+>   `lifespan` y en `worker_entrypoint.py`; `/health` intacto.
+> - Pruebas: `backend/tests/test_e4_t18_service_reminders.py`
+>   (ventana exacta, idempotencia, parametro, `notify` por fila, sin
+>   PII, wiring, cadena `0043`).
+>
+> - Pago de servicio y recarga (`E4-T17` `Hecho`, 2026-10-13; HU16
+>   CA-02/CA-04, cierra `docs/18` G73): el dinero se mueve **solo** por
+>   el motor (`pay_express`, asiento `docs/04#7.10` sin comision).
+>   Auth: `Authorization: Bearer <jwt>` en ambas rutas (401
+>   `NOT_AUTHENTICATED` sin token valido); **solo el titular** (el
+>   vinculo debe ser suyo: ajeno/inexistente/inactivo -> `404
+>   NOT_FOUND` neutro; `CARD` -> `422`, no debitable).
+>   - `POST /services/payments` (cuerpo `{biller_id (UUID),
+>     supply_ref (1..80), amount_minor (entero > 0, sin `float`),
+>     currency? (ISO-4217, default `PEN`), link_id (UUID del vinculo
+>     `ACCOUNT` a debitar)}` con cabecera `Idempotency-Key`
+>     **obligatoria** (mueve dinero; sin ella -> `422
+>     VALIDATION_ERROR`)) -> `201 {"data": {payment_id,
+>     transaction_id, status
+>     (SETTLED/PENDING_AUTHORIZATION/REJECTED), amount_minor,
+>     currency, receipt?, failure_code?, authorization?}, "meta":
+>     {"request_id", "replayed"}}`. Valida el suministro contra el
+>     proveedor vigente **antes de cobrar** (invalido -> `422`;
+>     caido -> `503 SERVICE_PROVIDER_UNAVAILABLE`; timeout -> `502
+>     SERVICE_PROVIDER_TIMEOUT`). `<=` base -> `SETTLED` con
+>     comprobante `receipt {receipt_no (`OP-` + 12 hex, convencion
+>     `E2-T10`), transaction_id, concept (nombre del `biller`),
+>     supply_masked, amount_minor, currency, paid_at, status}`;
+>     `>` base -> `PENDING_AUTHORIZATION` + `authorization {method:
+>     "BIOMETRIC", nonce, expires_at}` (se confirma con
+>     `POST /transactions/{id}/authorize`, firma o PIN; el reintento
+>     con la misma clave finaliza el pago a `PAID`); `REJECTED`
+>     (diario/fondos) con `failure_code`
+>     (`DAILY_LIMIT_EXCEEDED`/`INSUFFICIENT_FUNDS`, patron `E2-T07`)
+>     sin tocar saldos. Emite `service.paid` por `outbox` (payload
+>     sin PII). Misma clave + mismo cuerpo = replay (un solo pago);
+>     cuerpo distinto = `409 CONFLICT`.
+>   - `POST /topups` (cuerpo `{operator (nombre del operador
+>     `TELEFONIA` o su UUID), phone (digitos 6..15), amount_minor,
+>     currency? (default `PEN`), link_id}`, `Idempotency-Key`
+>     obligatoria) -> `201 {"data": {topup_id, transaction_id,
+>     status, amount_minor, currency, receipt?, failure_code?,
+>     authorization?}, "meta": {"request_id", "replayed"}}` (misma
+>     semantica: valida el telefono con el adaptador `E4-T16` antes
+>     de cobrar; operador inexistente/no-`TELEFONIA` -> `404`
+>     neutro; emite `topup.completed` por `outbox`, sin telefono en
+>     el payload; el comprobante lleva `phone_masked`).
+>   - Codigos: `404 NOT_FOUND` neutro (`biller`/operador/vinculo
+>     ajeno o inexistente), `409 CONFLICT` (clave con cuerpo
+>     distinto), `422 VALIDATION_ERROR` (sin clave, suministro/
+>     telefono/monto/moneda invalidos, liquidacion sin configurar)
+>     + `422` de esquema Pydantic, `502`/`503` del proveedor.
+>   - Pruebas: `backend/tests/test_e4_t17_service_payments.py`
+>   (feliz con asiento cuadrado + evento + aviso de saldos,
+>   pendiente + autorizacion/finalizacion, diario/fondos sin tocar
+>   saldos, idempotencia/`CONFLICT`, comprobante `OP-…`, errores,
+>   sin PII, frontera, OpenAPI, cadena `0042`).
+>
+> Otros servicios internos (sin endpoint publico): el **servicio de generacion** del QR (`E4-T06`
+> `Hecho`, 2026-10-13) ya existe como servicio interno sin endpoint
+> publico: `wallet.service.qr.create_qr_charge(session, *,
+> merchant_id, amount_minor, currency, concept?, mode?,
+> ...)` (firma HMAC-SHA256 + `expires_at = now +
+> wallet.qr_ttl_seconds` en `DYNAMIC`, `NULL` en `STATIC`; persiste
+> `ACTIVE` y emite `qr.charge.created` por `outbox`; **no mueve
+> dinero**). El pago express de billetera (`E4-T02` `Hecho`,
+> 2026-10-13) quedo como **servicio interno sin endpoint publico**
+> (decision G66, opcion recomendada del brief): `wallet.service.express.
+> pay_express(session, *, initiator_user_id, link_id, target_account_id,
+> amount_minor, currency, idempotency_key, ...)` (reutilizable por HU15
+> `POST /payments/qr` y HU16; `Idempotency-Key` obligatoria; limites
+> `wallet.express_limit_minor`/`wallet.daily_limit_minor` via
+> `shared/config`, semillas `0038`; `CARD` no debitable; errores
+> `NOT_FOUND` neutro/`VALIDATION_ERROR`/`CONFLICT`; `REJECTED` con
+> `DAILY_LIMIT_EXCEEDED` o fondos insuficientes sin tocar saldos).
+> - Servicio interno de cobro QR (`E4-T11` `Hecho`, 2026-10-13; HU15
+>   CA-01/CA-04, cierra `docs/18` G72 lado backend): `wallet.service.
+>   qr_payment.pay_qr_charge(session, *, payer_user_id, qr_content,
+>   link_id, idempotency_key, ...)` (sin endpoint publico: la ruta
+>   `POST /payments/qr` la fija `E4-T12`, `docs/18` G74). Decodifica el
+>   `qr_content` (`BO-QR1`, adaptador `E4-T03`), verifica firma/hash
+>   + estado `ACTIVE`/no vencido **antes de operar** (vencido/
+>   corrupto/manipulado -> `VALIDATION_ERROR` sin retencion ni asiento;
+>   ya cobrado -> `CONFLICT`) y mueve el dinero **solo** por
+>   `pay_express` (`docs/04#7.4` sin comision; `Idempotency-Key`
+>   obligatoria). La cuenta de abono es la primera cuenta `ACTIVE`
+>   del titular comercio con la moneda del cargo (fachada `accounts`,
+>   sin columna nueva). `SETTLED` -> `qr_payments PAID` + cargo `PAID`/
+>   `paid_at` + `qr.payment.confirmed` por `outbox` (payload sin PII:
+>   `qr_payment_id`, `charge_id`, `merchant_id`, `amount_minor`,
+>   `currency`, `status`) + aviso `qr_charge_paid` (< 5 s);
+>   `PENDING_AUTHORIZATION` (sobre el limite base) -> pago pendiente
+>   (sin marcar `PAID`; `E4-T12` autoriza con
+>   `daily_limit_reader=wallet_daily_limit_reader`, G75, y finaliza
+>   con `finalize_qr_payment`); `REJECTED` (diario/fondos) sin tocar
+>   el cargo ni notificar.
+> - `POST /payments/qr` (`E4-T12` `Hecho`, 2026-10-13; HU15 CA-01..CA-04,
+>   cierra `docs/18` G74): el endpoint del pagador sobre el servicio
+>   de `E4-T11` (sin duplicar logica). Auth: `Authorization: Bearer
+>   <jwt>` (401 `NOT_AUTHENTICATED` sin token valido); **solo el
+>   titular pagador** (el vinculo debe ser suyo: ajeno/inexistente/
+>   inactivo -> `404 NOT_FOUND` neutro). Request `{qr_content
+>   (`String` `BO-QR1` escaneado), link_id (UUID del vinculo `ACCOUNT`
+>   a debitar)}` con cabecera `Idempotency-Key` **obligatoria** (mueve
+>   dinero; sin ella -> `422 VALIDATION_ERROR`) -> `201 {"data":
+>   {transaction_id, qr_payment_id, charge_id, merchant {merchant_id,
+>   business_name}, amount_minor (entero), currency, status
+>   (SETTLED/PENDING_AUTHORIZATION/REJECTED), failure_code?,
+>   authorization?}, "meta": {"request_id", "replayed"}}`.
+>   `<=` limite base -> `SETTLED` en un toque (comercio y monto en la
+>   respuesta, < 2 s; cargo `PAID` + `qr.payment.confirmed` + aviso
+>   `qr_charge_paid` unico, < 5 s); `>` base ->
+>   `PENDING_AUTHORIZATION` + `authorization {method: "BIOMETRIC",
+>   nonce, expires_at}` (patron `_challenge_fields`, `E2-T19`; el
+>   cliente confirma con `POST /transactions/{id}/authorize`, firma o
+>   PIN, `E2-T31`) sin marcar `PAID` aun; `REJECTED` (diario/fondos)
+>   con `failure_code` (`DAILY_LIMIT_EXCEEDED`/`INSUFFICIENT_FUNDS`,
+>   patron `E2-T07`) sin tocar saldos ni el cargo. Tras autorizar, el
+>   reintento con la misma clave finaliza el diferido
+>   (`finalize_qr_payment`: cargo `PAID` + aviso unico; si la
+>   operacion quedo `REJECTED`, el pago se espeja a `REJECTED`;
+>   cierra `docs/18` G72 lado endpoint). Misma clave + mismo cuerpo =
+>   replay (un solo pago, `replayed: true`); cuerpo distinto = `409
+>   CONFLICT`. Codigos: `422 VALIDATION_ERROR` (QR corrupto/
+>   manipulado/vencido/ajeno, monto/moneda, esquema), `404 NOT_FOUND`
+>   neutro (vinculo ajeno/inexistente), `409 CONFLICT` (QR ya pagado /
+>   `IDEMPOTENCY_CONFLICT`), `403 NOT_AUTHORIZED` ajeno en el
+>   `authorize`. Sin PII/RUC/secretos en respuestas ni logs; montos
+>   enteros. **Ownership** (`docs/18` G74, decision 1 del brief
+>   `E4-T12`): la ruta vive en `wallet` (`api/payments.py`,
+>   `schemas/payment.py`) aunque `docs/05#6.3` la liste junto a
+>   `transactions` por descubrimiento; el detalle vive aqui (`#6.5`).
+> - `POST /payments/qr/preview` (fix MEDIO-3, 2026-10-13; HU15 CA-01,
+>   consentimiento informado): previsualiza **comercio y monto antes de
+>   confirmar**. Auth: `Authorization: Bearer <jwt>` (401
+>   `NOT_AUTHENTICATED` sin token valido). Request `{qr_content
+>   (`String` `BO-QR1` escaneado)}`, **sin** cabecera `Idempotency-Key`
+>   (no mueve dinero) -> `200 {"data": {charge_id, merchant
+>   {merchant_id, business_name}, amount_minor (entero), currency,
+>   expires_at (`None` en `STATIC`), status (`ACTIVE`)}, "meta":
+>   {"request_id"}}`. Decodifica y verifica el `qr_content` (adaptador
+>   `E4-T03` + `verify_charge_signature` + caducidad/estado) en **solo
+>   lectura**: sin retencion, sin asiento, sin pagos ni eventos.
+>   Vencido/corrupto/manipulado/ajeno o comercio sin cuenta de abono ->
+>   `422 VALIDATION_ERROR` sin efectos; ya cobrado -> `409 CONFLICT`.
+>   La respuesta nunca incluye el `qr_content` crudo, la firma, el
+>   secreto ni el RUC (solo el nombre publico del comercio, como `POST
+>   /payments/qr`). Se elige `POST` sobre `GET`: el `qr_content` (hasta
+>   8192 caracteres) no cabe bien en una URL y no debe quedar en access
+>   logs. Servicio `wallet.service.qr_payment.preview_qr_charge`;
+>   regresion en `backend/tests/test_e4_t11b_qr_payment_guard.py`.
 
 ### 6.6 Divisas y ahorro (`fx`) - HU24, HU25
 
@@ -854,6 +1278,59 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   (valor de tipo/formato invalido). Cambiar el umbral/topes/limites se
 >   refleja en el motor sin despliegue (fachada `shared/config`, regla de oro
 >   6).
+
+### 6.9 Centro de notificaciones (`notifications`) - HU22
+
+| Metodo | Ruta | Proposito |
+|---|---|---|
+| GET | `/notifications` | Centro del titular: lista paginada de SUS notificaciones (metadatos). |
+| GET | `/notifications/{id}` | Detalle read-only de UNA notificacion propia (metadatos acotados). |
+| POST | `/notifications/{id}/read` | Marca una notificacion propia como leida (idempotente). |
+| POST | `/notifications/{id}/report` | Reporta "no reconozco esta operacion" (idempotente; bloquea + escala). |
+| GET | `/notifications/preferences` | Preferencias de canal del titular. |
+| PUT | `/notifications/preferences` | Actualiza las preferencias de canal (idempotente). |
+
+> Contrato E6-T12 `GET /api/v1/notifications` (Bearer, solo el titular) ->
+> `200 {"data": [ {"id", "channel", "template_code", "status", "created_at",
+> "read_at", "device", "location", "reference"} ], "meta": {"page",
+> "page_size", "total", "request_id"}}`
+> (sin `payload_json` crudo ni PII; mas recientes primero; `device`/
+> `location`/`reference` son los campos de render acotados de la alerta —
+> etiquetas saneadas sin PII, `null` en filas que no los traen, fix A2).
+> Filtros opcionales `channel` (`push`/`email`/`sms`) y `unread=true`
+> (solo no leidas); `page >= 1`, `1 <= page_size <= 100`.
+> - `GET /api/v1/notifications/{id}` (Bearer, solo el titular; fix A2) ->
+>   `200 {"data": {...misma vista acotada...}, "meta": {"request_id"}}`
+>   (detalle read-only de UNA notificacion propia; ajena/inexistente ->
+>   `404 NOT_FOUND` neutro; id malformado -> `422 VALIDATION_ERROR`).
+> - `POST /api/v1/notifications/{id}/read` (Bearer, solo el titular) ->
+>   `200 {"data": {...}, "meta": {"request_id"}}` (fija `read_at`;
+>   idempotente: repetir devuelve el mismo `read_at`).
+> - `POST /api/v1/notifications/{id}/report` (E6-T14, HU22; Bearer, solo el
+>   titular; body opcional `{reason?}`, max 280) -> `200 {"data":
+>   {"reported": true, "replayed": bool, "notification_id",
+>   "confirmation_id", "reference"}, "meta": {"request_id"}}` (registra el
+>   reporte "no reconozco": fija `read_at` de la alerta, crea el acuse push
+>   `security_report_received` y emite `security.operation_reported` por
+>   `outbox` para que `risk` escale y `identity` bloquee; idempotente por
+>   estado: repetir devuelve `replayed: true` sin nuevos efectos).
+> - `GET /api/v1/notifications/preferences` (Bearer) -> `200 {"data":
+>   {"push", "email", "sms"}, "meta": {"request_id"}}` (defaults
+>   `true`/`true`/`false` si el titular aun no tiene fila).
+> - `PUT /api/v1/notifications/preferences` (Bearer) body `{push, email,
+>   sms}` (los tres booleanos obligatorios) -> `200` con las preferencias
+>   guardadas (idempotente por `user_id` PK: repetir no duplica).
+> - Nota de seguridad (decision del dueno, E6-T12): desactivar `email` NO
+>   desactiva el respaldo de alertas de seguridad (el correo de respaldo se
+>   garantiza; las preferencias rigen el resto de notificaciones).
+> - Fachada interna (sin ruta publica): `notify_security_event(...)` que los
+>   emisores llaman en el momento sensible (push inmediato + correo de
+>   respaldo en paralelo, ventana `< 5 s`; plantillas
+>   `security_operation_alert`/`security_operation_email` con dispositivo,
+>   hora y ubicacion aproximada, sin PII).
+> - Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `404 NOT_FOUND`
+>   neutro (ajeno/inexistente); `422 VALIDATION_ERROR` (filtros/paginado/
+>   cuerpo invalidos).
 
 ## 7. API de integracion interbancaria (a definir con el equipo par)
 

@@ -55,6 +55,7 @@ EXPECTED_PARAMETER_KEYS = (
     "loan.min_score",
     "loan.review_margin",
     "loan.max_debt_minor",
+    "loan.reminder_days_before",
     "fx.quote_ttl_seconds",
     "fx.spread_base",
     "pocket.yield_rate",

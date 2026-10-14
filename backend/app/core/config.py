@@ -66,6 +66,33 @@ class Settings(BaseSettings):
     holder_lookup_breaker_cooldown_seconds: float = 30.0
     holder_lookup_cache_ttl_seconds: float = 300.0
 
+    # Interoperabilidad de billetera con el sistema par (E4-T03, HU13 CA-03):
+    # adaptador `WalletInteropGateway` con mock determinista por defecto; el
+    # contrato definitivo del par llega despues (D01). La API key es
+    # server-side (solo cabecera `Authorization`); nunca en logs ni en el repo.
+    wallet_interop_provider: str = "mock"
+    wallet_interop_mock_mode: str = "success"
+    wallet_interop_base_url: str = "http://localhost:8000"
+    wallet_interop_api_key: str = ""
+    wallet_interop_timeout_seconds: float = 5.0
+    wallet_interop_max_retries: int = 2
+
+    # Proveedor de servicios para HU16 (E4-T16, catalogo `billers`):
+    # adaptador `ServiceProviderGateway` con mock determinista por
+    # defecto (busqueda por nombre/suministro + validacion sin red); el
+    # proveedor real se cablea despues sin tocar el dominio. La API key
+    # es server-side (solo cabecera `Authorization`); nunca en logs ni
+    # en el repo. Sin PII en logs (solo hash del suministro).
+    service_provider: str = "mock"
+    service_provider_mock_mode: str = "success"
+    service_provider_base_url: str = "http://localhost:8000"
+    service_provider_api_key: str = ""
+    service_provider_timeout_seconds: float = 5.0
+    service_provider_max_retries: int = 2
+    service_provider_backoff_base_seconds: float = 0.1
+    service_provider_breaker_failures: int = 3
+    service_provider_breaker_cooldown_seconds: float = 30.0
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

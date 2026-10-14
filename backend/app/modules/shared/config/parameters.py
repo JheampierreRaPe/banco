@@ -53,6 +53,29 @@ LOAN_MIN_SCORE_KEY = "loan.min_score"
 LOAN_REVIEW_MARGIN_KEY = "loan.review_margin"
 LOAN_MAX_DEBT_MINOR_KEY = "loan.max_debt_minor"
 
+#: Ventana del recordatorio de cuota en dias (E3-T19, HU12 CA-04,
+#: modulo `credits`): el job avisa las cuotas con
+#: `due_date == hoy + loan.reminder_days_before`.
+LOAN_REMINDER_DAYS_BEFORE_KEY = "loan.reminder_days_before"
+
+#: Limite base del pago express en centimos (E4-T02, HU13, modulo
+#: `wallet`): bajo este total no se exige reto del servidor.
+WALLET_EXPRESS_LIMIT_MINOR_KEY = "wallet.express_limit_minor"
+
+#: Limite diario de billetera en centimos (E4-T02, HU13, modulo
+#: `wallet`): `acumulado + total > limite` -> `REJECTED`.
+WALLET_DAILY_LIMIT_MINOR_KEY = "wallet.daily_limit_minor"
+
+#: Vigencia del QR de cobro en segundos (E4-T06, HU14, modulo
+#: `wallet`): `expires_at = now + ttl` en modo `DYNAMIC` (el modo
+#: `STATIC` no tiene caducidad estricta en el MVP).
+WALLET_QR_TTL_SECONDS_KEY = "wallet.qr_ttl_seconds"
+
+#: Ventana del recordatorio de servicios en dias (E4-T18, HU16 CA-03,
+#: modulo `wallet`): el job avisa las suscripciones cuyo vencimiento
+#: derivado cae en `hoy + wallet.service_reminder_days_before`.
+WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY = "wallet.service_reminder_days_before"
+
 #: Patron de tope de monto por perfil (`{profile}` en MAYUSCULAS; espejo
 #: del patron de limite diario `transfer.daily_limit_{profile}_minor`).
 LOAN_MAX_AMOUNT_PROFILE_TEMPLATE = "loan.max_amount_{profile}_minor"
@@ -66,6 +89,34 @@ DEFAULT_LOAN_MAX_AMOUNT_MINOR = 5_000_000
 DEFAULT_LOAN_MIN_SCORE = 650
 DEFAULT_LOAN_REVIEW_MARGIN = Decimal(50)
 DEFAULT_LOAN_MAX_DEBT_MINOR = 10_000_000
+
+#: Ventana del recordatorio de cuota en dias (E3-T19, HU12 CA-04):
+#: mismo valor que la semilla `0036` (el job lo usa como fallback
+#: cuando la clave falta o el valor almacenado es invalido).
+DEFAULT_LOAN_REMINDER_DAYS_BEFORE = 3
+
+#: Limites de billetera (E4-T02, HU13, modulo `wallet`; semillas
+#: `0038`): mismos valores que las migraciones siembran, asi migrar no
+#: cambia la conducta del pago express (el caso de uso los usa como
+#: fallback cuando la clave falta o el valor almacenado es invalido).
+#: El base (S/ 200) replica la magnitud del `qr.express_limit_minor`
+#: sembrado en `0001`; el diario (S/ 5,000) replica el diario generico
+#: de transferencias. Invariante: base < diario (como OBS-2 `0025`).
+DEFAULT_WALLET_EXPRESS_LIMIT_MINOR = 20_000
+DEFAULT_WALLET_DAILY_LIMIT_MINOR = 500_000
+
+#: Vigencia del QR de cobro en segundos (E4-T06, HU14, modulo
+#: `wallet`; semilla `0039`): mismo valor que la migracion siembra,
+#: asi migrar no cambia la conducta de la generacion (el caso de uso
+#: lo usa como fallback cuando la clave falta o el valor almacenado
+#: es invalido).
+DEFAULT_WALLET_QR_TTL_SECONDS = 300
+
+#: Ventana del recordatorio de servicios en dias (E4-T18, HU16 CA-03,
+#: modulo `wallet`; semilla `0043`): mismo valor que la migracion
+#: siembra, asi migrar no cambia la conducta del job (el job lo usa
+#: como fallback cuando la clave falta o el valor es invalido).
+DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE = 3
 
 #: Perfiles con clave propia sembrada por migracion (`0023`).
 SEEDED_PROFILES: tuple[str, ...] = ("STANDARD",)
@@ -82,6 +133,21 @@ _SPECS: dict[str, tuple[int, int]] = {
     LOAN_MAX_AMOUNT_MINOR_KEY: (DEFAULT_LOAN_MAX_AMOUNT_MINOR, 0),
     LOAN_MIN_SCORE_KEY: (DEFAULT_LOAN_MIN_SCORE, 0),
     LOAN_MAX_DEBT_MINOR_KEY: (DEFAULT_LOAN_MAX_DEBT_MINOR, 0),
+    # Ventana del recordatorio (E3-T19): minimo 1 dia (el `0` seria
+    # "avisar el mismo dia del vencimiento", fuera de HU12 2-3 dias).
+    LOAN_REMINDER_DAYS_BEFORE_KEY: (DEFAULT_LOAN_REMINDER_DAYS_BEFORE, 1),
+    # Pago express (E4-T02, HU13): base y diario de billetera.
+    WALLET_EXPRESS_LIMIT_MINOR_KEY: (DEFAULT_WALLET_EXPRESS_LIMIT_MINOR, 0),
+    WALLET_DAILY_LIMIT_MINOR_KEY: (DEFAULT_WALLET_DAILY_LIMIT_MINOR, 0),
+    # QR firmado (E4-T06, HU14): vigencia en segundos (minimo 1 s: un
+    # TTL `0` naceria expirado y no aporta al MVP).
+    WALLET_QR_TTL_SECONDS_KEY: (DEFAULT_WALLET_QR_TTL_SECONDS, 1),
+    # Recordatorio de servicios (E4-T18, HU16 CA-03): minimo 1 dia (el
+    # `0` seria "avisar el mismo dia del vencimiento", fuera de HU16).
+    WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY: (
+        DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE,
+        1,
+    ),
 }
 
 #: (default, minimo, maximo) por clave decimal conocida (`None` = sin
@@ -379,6 +445,67 @@ def get_loan_max_debt_minor(session: Session) -> int:
     """Deuda total maxima del solicitante en centimos (E3-T07)."""
     default, minimum = _SPECS[LOAN_MAX_DEBT_MINOR_KEY]
     return get_int_parameter(session, LOAN_MAX_DEBT_MINOR_KEY, default, minimum)
+
+
+def get_loan_reminder_days_before(session: Session) -> int:
+    """Dias antes del vencimiento para el recordatorio de cuota (E3-T19).
+
+    Ventana del job de recordatorios (HU12 CA-04): avisa las cuotas
+    con `due_date == hoy + N`. Lectura best-effort con fallback
+    (`DEFAULT_LOAN_REMINDER_DAYS_BEFORE` si la clave falta o el valor
+    es invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[LOAN_REMINDER_DAYS_BEFORE_KEY]
+    return get_int_parameter(session, LOAN_REMINDER_DAYS_BEFORE_KEY, default, minimum)
+
+
+def get_wallet_express_limit_minor(session: Session) -> int:
+    """Limite base del pago express en centimos (E4-T02, HU13).
+
+    Bajo este total el pago liquida sin reto del servidor; sobre el
+    total exige biometria/PIN (gate del motor). Lectura best-effort
+    con fallback (`DEFAULT_WALLET_EXPRESS_LIMIT_MINOR` si la clave
+    falta o el valor es invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[WALLET_EXPRESS_LIMIT_MINOR_KEY]
+    return get_int_parameter(session, WALLET_EXPRESS_LIMIT_MINOR_KEY, default, minimum)
+
+
+def get_wallet_daily_limit_minor(session: Session) -> int:
+    """Limite diario de billetera en centimos (E4-T02, HU13).
+
+    `acumulado + total > limite` -> `REJECTED` (`DAILY_LIMIT_EXCEEDED`)
+    sin tocar saldos. MVP generico (sin variantes por perfil).
+    Lectura best-effort con fallback
+    (`DEFAULT_WALLET_DAILY_LIMIT_MINOR` si la clave falta o el valor
+    es invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[WALLET_DAILY_LIMIT_MINOR_KEY]
+    return get_int_parameter(session, WALLET_DAILY_LIMIT_MINOR_KEY, default, minimum)
+
+
+def get_wallet_qr_ttl_seconds(session: Session) -> int:
+    """Vigencia del QR de cobro en segundos (E4-T06, HU14).
+
+    `expires_at = now + ttl` en modo `DYNAMIC`. Lectura best-effort
+    con fallback (`DEFAULT_WALLET_QR_TTL_SECONDS` si la clave falta o
+    el valor es invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[WALLET_QR_TTL_SECONDS_KEY]
+    return get_int_parameter(session, WALLET_QR_TTL_SECONDS_KEY, default, minimum)
+
+
+def get_wallet_service_reminder_days_before(session: Session) -> int:
+    """Dias antes del vencimiento para el recordatorio de servicios (E4-T18).
+
+    Ventana del job de recordatorios (HU16 CA-03): avisa las
+    suscripciones cuyo vencimiento derivado cae en `hoy + N`.
+    Lectura best-effort con fallback
+    (`DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE` si la clave falta
+    o el valor es invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY]
+    return get_int_parameter(session, WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY, default, minimum)
 
 
 def get_loan_params(session: Session) -> dict[str, object]:

@@ -76,6 +76,14 @@ eventos (`outbox`/`inbox`).
   (`failed_attempts`/`locked_until`) ni emite eventos. La consume `transactions`
   para la variante PIN de `authorize`, **sin importar modelos de `identity`**.
 - **Consume:** `risk.alert.raised` (bloqueo), `notifications` (OTP).
+- **Bloqueo de canales por alerta de fraude (E6-T14, HU22 CA-03):** el
+  consumidor D-04 `identity.events.on_fraud_alert_raised` (consumidor
+  `identity-channel-lock`, idempotente por `processed_events`) delega en la
+  fachada `identity.service.sessions.lock_user_channels`, que revoca TODAS
+  las sesiones activas del titular (`sessions.revoked_at` via
+  `revoke_user_sessions`; un `REVOKED` no se reactiva; nada se borra) y
+  audita best-effort (`identity.sessions_revoked`, sin PII). Suscrito en el
+  arranque (`composition.subscribe_channel_lock`); no mueve dinero.
 - **OTP de activacion (E1-T32/SCR-005):** solo por `email` (`users.email`,
   plantilla `otp_code_email`); sin email no hay entrega y nunca SMS (entrega
   best-effort). `POST /auth/activate` deprecado pero vivo (`Deprecation: true` +
@@ -466,12 +474,81 @@ eventos (`outbox`/`inbox`).
   la misma transaccion). Misma clave + mismo cuerpo = replay (una firma
   y un correo); fallo del factor snapshotteado (reintento real con clave
   nueva tras rotar el reto); snapshot sin PII (solo digests).
-  Destinatario por la fachada nueva de solo lectura
-  `identity.service.holder_contact.get_holder_email` (D-03, `docs/18`
-  G57). **No mueve dinero**.
+   Destinatario por la fachada nueva de solo lectura
+   `identity.service.holder_contact.get_holder_email` (D-03, `docs/18`
+   G57). **No mueve dinero**.
+- **Prestamo y cronograma definitivo (E3-T18, HU12 CA-02):** `loans` +
+  `loan_schedules` + `loan_payments` (`docs/03b#83`/`#84`/`#85`,
+  migracion `0034`) con `Loan`/`LoanSchedule`/`LoanPayment`,
+  `repository/loans.py` (`create_loan` con UQ por `application_id`,
+  `link_contracts_to_loan` que rellena `contracts.loan_id`, G54;
+  `create_schedules` completo y cuadrado; `mark_installment_paid`/
+  `partial`, `flag_overdue_installments`, `set_auto_debit`,
+  `update_outstanding_principal`), `domain/schedule.py`
+  (`build_definitive_schedule` determinista con `due_date`, reutiliza
+  el motor E3-T01, sin `float`) y fachada interna `service/loans.py`
+  (`create_loan_with_schedule` congela la TCEA del flujo definitivo;
+  la usan `E3-T17`/`E3-T20`/`E3-T19`). Columna aditiva
+   `loans.auto_debit_enabled` (`docs/18` G61). Sin endpoints ni eventos.
+   **No mueve dinero** (sin `transactions`/`ledger`, sin asientos).
+- **Desembolso transaccional (E3-T17, HU12 CA-01/CA-02):**
+  `transactions/service/disbursement.py` (fachada aditiva del motor:
+  `disburse_loan` crea la `Transaction LOAN_DISBURSEMENT`, asegura la
+  subcuenta `2000` destino y registra **un** asiento `Debe 5000-Cartera
+  / Haber 2000-Cuenta` por `ledger.service.post_entry`, aplica el delta
+  por el `BalancePort` y transiciona `AUTHORIZED -> POSTED -> SETTLED`;
+  sin holds) y `credits/service/disbursement.py`
+  (`disburse_application_idempotent`: valida `APPROVED` + juego
+  `SIGNED`, crea `loans`+cronograma via `E3-T18`, puebla
+  `contracts.loan_id` (G54, cierra el gap), mueve el dinero en la misma
+  transaccion y emite `credit.disbursed` por `outbox` + auditoria
+  best-effort). Endpoints `POST /credits/applications/{id}/disburse`
+  (`Idempotency-Key` obligatoria, `{account_id?}` con default a la
+  principal; `201`/`200` replay) + `GET /credits/loans` y
+  `GET /credits/loans/{id}/schedule` (solo titular, `404` neutro).
+  Idempotencia doble (negocio + motor con clave anclada al `loan_id`);
+  cuenta solo enmascarada (`****dddd`).
 - **Puede llamar a:** `transactions` (desembolso/cuota), `identity` (firma), `risk`, `notifications`,
   `audit`.
 - **Prohibido:** acreditar dinero sin pasar por el motor.
+- **Pago de cuota (E3-T20, HU12 CA-02 parte de cuotas):**
+  `transactions/service/loan_payment.py` (fachada aditiva del motor:
+  `pay_loan_installment` crea la `Transaction LOAN_INSTALLMENT`,
+  comprueba fondos por el `BalancePort` (`REJECTED` +
+  `INSUFFICIENT_FUNDS` sin tocar saldos) y registra **un** asiento
+  `Debe 2000-Cuenta / Haber 5000-Cartera + Haber 4000-Intereses +
+  Haber 4200-Seguro` (patas > 0) por `ledger.service.post_entry`,
+  debita por el `BalancePort` y transiciona
+  `AUTHORIZED -> POSTED -> SETTLED`; sin holds) y
+  `credits/service/loan_payments.py` (`pay_installment_idempotent`:
+  cuota indicada o proxima exigible, `loan_payments` con desglose,
+  cuota `PAID` + `paid_at`, `outstanding` reducido y `loans.status =
+  PAID` si no quedan cuotas, en la misma transaccion; emite
+  `loan.installment.paid` por `outbox` + auditoria best-effort).
+   Endpoint `POST /credits/loans/{id}/pay` (`Idempotency-Key`
+   obligatoria, `{schedule_id?}`; `200`/`200` replay; MVP: pago por
+   cuota total, sin parciales/prepago). Idempotencia doble (HTTP +
+   motor con clave anclada a la cuota); cuenta solo enmascarada
+   (`****dddd`).
+- **Debito automatico + recordatorios (E3-T19, HU12 CA-03/CA-04):**
+  `PUT /credits/loans/{id}/auto-debit` (`{enabled: bool}` estricto,
+  solo titular, `404` neutro; no mueve dinero, sin `Idempotency-Key`)
+  fija `loans.auto_debit_enabled` (G61). `jobs/auto_debit.py`
+  (`run_auto_debit_once`) cobra las cuotas vencidas/hoy de prestamos
+  `ACTIVE` con debito habilitado reutilizando el caso de uso de
+  `E3-T20` (`commit` por item; sin fondos -> cuota y saldos intactos
+  + push `loan_auto_debit_failed`, una vez por cuota y dia).
+  `jobs/installment_reminders.py` (`run_installment_reminders_once`)
+  avisa por push (`loan_installment_reminder`) las cuotas que vencen
+   en `loan.reminder_days_before` dias (default `3`, semilla `0036`;
+   una vez por cuota y dia via `processed_events`). Arranque en ambos
+   runtimes (fix M-2): `lifespan` del backend (`backend/app/main.py`) y
+   contenedor `worker` (`infra/docker/worker_entrypoint.py`) via
+   `app.composition.run_credit_loan_jobs_once` /
+   `start_credit_loan_jobs_worker` (hilo daemon + parada por evento,
+   mismo mecanismo que el outbox; env `CREDIT_LOAN_JOBS_ENABLED` +
+   flags por job + periodicidad `CREDIT_LOANS_JOBS_INTERVAL_SECONDS`).
+   Sin evento nuevo (basta el push best-effort).
 
 ## `wallet`
 
@@ -479,8 +556,206 @@ eventos (`outbox`/`inbox`).
 - **Dueno de:** `wallets`, `wallet_links`, `merchant_accounts`, `qr_charges`, `qr_payments`,
   `billers`, `service_payments`, `topups`, `service_subscriptions`.
 - **Expone:** `/wallet*`, `/merchants/qr*`, `/services/*`, `/topups`; eventos
-  `qr.charge.created`, `qr.payment.confirmed`, `service.paid`.
+  `wallet.link.created`, `qr.charge.created`, `qr.payment.confirmed`, `service.paid`,
+  `topup.completed`.
+- **Billetera y vinculos (E4-T01, HU13 CA-01):** `wallet.wallets` (una fila
+  por titular, `UQ user_id`) + `wallet.wallet_links` (`docs/03b#91`,
+  migracion `0037_wallet`; `CHECK` sobre `VARCHAR`, REF logicas sin FK
+  entre schemas salvo `wallet_id`). `GET /api/v1/wallet` (billetera +
+  vinculos enmascarados del titular; sin billetera -> `200` vacio) y
+  `POST /api/v1/wallet/links` (`{type: ACCOUNT|CARD, account_id?|card?}`,
+  `Idempotency-Key` opcional, `201`; contrato en `docs/05#6.5`) y
+  `DELETE /api/v1/wallet/links/{id}` (baja logica a `INACTIVE`, solo
+  titular; ajeno/inexistente/ya dado de baja -> `404` neutro; sin borrar
+  filas; contrato en `docs/05#6.5`).
+  Tokenizacion obligatoria (`docs/18` G67): el PAN se tokeniza
+  server-side con el proveedor vigente (`mock` determinista local en el
+  MVP, `WALLET_TOKENIZATION_PROVIDER`, interfaz `WalletTokenizationProvider`
+  desacoplada) y se descarta; en BD/respuestas/logs solo `token_ref`/
+  `last4`/`brand` y `account_masked` (`****1234`). La cuenta se valida por
+  la fachada `accounts.service.get_account` (titular + `ACTIVE`, error
+  neutro). Duplicado `ACTIVE` -> `DUPLICATE_LINK` (`409`); un `token_ref`
+  de otro titular nunca se reactiva (`409` generico sin tocar la fila
+  ajena); evento `wallet.link.created` por `outbox` (payload sin PII).
+- **Pago express interno (E4-T02, HU13 CA-02/CA-04):** `wallet.service.express.pay_express`
+  (servicio interno, **sin endpoint publico**: lo consumen HU15/HU16) resuelve el
+  `wallet_link ACTIVE` de tipo `ACCOUNT` del titular y mueve el dinero **solo** via
+  `transactions.service.transfer_third_party` (`docs/04#7.2`, `tx_type=THIRD_PARTY_TRANSFER`
+  con `metadata.wallet_link_id`; el asiento y el gate son los del motor, sin asiento
+  nuevo en `wallet`). Limites por `shared/config` (`wallet.express_limit_minor` base
+  S/ 200, `wallet.daily_limit_minor` diario S/ 5,000; semillas `0038`): bajo el base
+  liquida sin reto (`SETTLED`); sobre el base queda en `PENDING_AUTHORIZATION`
+  (nonce/PIN, `E2-T19`/`E2-T31`, hold reutilizado); sobre el diario queda `REJECTED`
+  (`DAILY_LIMIT_EXCEEDED`) sin tocar saldos. Regla pura en `wallet/domain/limits.py`
+  (`decide_express`, sin `float`).   `Idempotency-Key` obligatoria (replay = misma
+  operacion; cuerpo distinto = `CONFLICT`, resuelto por la fachada
+  `transactions.service.find_by_idempotency_key`, sin importar el
+  repositorio ajeno). Vinculos `CARD` no son debitables
+  (`VALIDATION_ERROR`); vinculo ajeno/inexistente/inactivo -> `NOT_FOUND` neutro.
+  Reutiliza los eventos del motor (sin evento propio) + auditoria best-effort
+  `wallet.express.executed` (sin PII ni cifras). Al autorizar una pendiente express,
+  pasar `daily_limit_reader=wallet_daily_limit_reader` para el re-chequeo `E2-T36`.
+- **QR firmado + `qr_charges` (E4-T06, HU14 CA-01/CA-03 + caducidad):**
+  `wallet.merchant_accounts` (`user_id` UQ + REF logica, `tax_id_hash`
+  hasheado, 2 comercios demo sembrados por la migracion `0039`, G69) y
+  `wallet.qr_charges` (`merchant_id` FK mismo schema, `amount_minor
+  CK>0`, `mode DYNAMIC|STATIC`, `payload_hash`/`signature`,
+  `status qr_charge_status`, `expires_at`; indices `(merchant_id,
+  status)`, `(expires_at)`). `domain/qr.py` (payload canonico `BO-QR1`
+  + SHA-256 + firma **HMAC-SHA256** con secreto de servidor,
+  encapsulada en `QrSigner` para migrar a `Ed25519`, G68; sobre
+  interoperable via el adaptador `E4-T03`) + `repository/qr.py` +
+  `service/qr.py::create_qr_charge` (firma, `expires_at = now +
+  wallet.qr_ttl_seconds` en `DYNAMIC` —default `300` s, semilla `0039`,
+  G70— y `NULL` en `STATIC` sin caducidad estricta, persiste `ACTIVE`,
+  emite `qr.charge.created` por `outbox` sin PII). **No mueve dinero**
+  (el pago es HU15); sin endpoint publico (el router es `E4-T08`).
+- **Caducidad automatica del QR (E4-T07, HU14 CA-02):** job
+  `wallet/jobs/qr_expiry.py::run_qr_expiry_once(session, *, now=None)`
+  (una pasada con `commit` por item, patron `E3-T19`) que marca
+  `ACTIVE` -> `EXPIRED` los `qr_charges` con `expires_at <= now`
+  (borde exacto; `STATIC` con `NULL` nunca vence; `PAID`/`EXPIRED`/
+  `CANCELLED` intactos; idempotente) + validacion on-read reutilizable
+  `wallet/service/qr.py::is_charge_valid` (`ACTIVE` y no expirado; la
+  usan `E4-T08`/`HU15` antes de operar). Cableado en ambos runtimes
+  (patron M-2): `app.composition.run_wallet_qr_jobs_once` /
+   `start_wallet_qr_jobs_worker` (flags `WALLET_QR_JOBS_ENABLED` /
+   `WALLET_QR_EXPIRY_ENABLED` / `WALLET_QR_RECONCILE_ENABLED`, intervalo
+   `WALLET_QR_JOBS_INTERVAL_SECONDS` defecto 60 s), arrancados en el
+   `lifespan` y en `worker_entrypoint.py`. **No mueve dinero**, sin
+   evento nuevo, sin migracion (reuso de `0039`).
+- **Reconciliacion del cobro QR (R-1, HU15):** job
+  `wallet/jobs/qr_reconcile.py::run_qr_reconcile_once(session, *,
+  limit=100)` (una pasada con `commit` por item, patron `E3-T19`) que
+  finaliza los `qr_payments` en `PENDING_AUTHORIZATION` cuya operacion
+  del motor ya esta `SETTLED` (autorizado sin replay del cliente),
+  via el helper existente `finalize_qr_payment` (cargo `PAID` + un solo
+  `qr_charge_paid`; sin mover dinero). La operacion se lee por la
+  fachada `transactions.service.find_transaction_by_id` (patron M-1;
+  sin importar tablas ajenas); otro estado -> `skipped` sin tocar
+  nada. El runner lo ejecuta **antes** que la caducidad (un autorizado
+  se cierra a `PAID` antes de poder expirar). Pruebas:
+  `backend/tests/test_r1_qr_reconcile.py` (6 pruebas).
+- **Endpoints del comercio (E4-T08, HU14 CA-01/CA-02 parcial/CA-04
+  parcial):** `POST /api/v1/merchants/qr` (`{amount_minor, currency,
+  concept?, mode?}`, `Idempotency-Key` opcional patron `E2-T13`,
+  solo comercio `ACTIVE` -> `201` con `{charge_id, payload,
+  payload_hash, signature, amount_minor, currency, concept, mode,
+  status, expires_at, created_at}` + `meta.replayed`; emite
+  `qr.charge.created` por `outbox`) y `GET
+  /api/v1/merchants/qr/{id}` (solo el dueno -> `200` con
+  `{charge_id, status, amount_minor, currency, expires_at, paid_at?}`;
+  `status` efectivo on-read: `ACTIVE` vencido se reporta `EXPIRED`;
+  ajeno/inexistente -> `404` neutro; sin rol -> `403`). Capas:
+  `api/qr.py` + `schemas/qr.py` (contrato en `docs/05#6.5`),
+  `service/qr.py::create_qr_charge_idempotent` /
+  `get_charge_status` / `require_merchant_for_user` /
+  `notify_merchant_charge_paid` (ruta del aviso via
+  `notifications.send`, plantilla `qr_charge_paid`; el disparador es
+  el pago de `HU15`, `docs/18` G72). **No mueve dinero**, sin
+  migracion (reuso de `0039`). Pruebas:
+  `backend/tests/test_e4_t08_merchant_qr.py` (12 pruebas).
+- **Cobro QR por el motor (E4-T11, HU15 CA-01/CA-04):** `wallet.qr_payments`
+  (`docs/03b#94`, migracion `0040_wallet_qr_payments`,
+  `down_revision="0039_wallet_qr"`: `transaction_id` REF UQ, `charge_id`
+  FK, `payer_user_id` REF, `merchant_id` FK, `amount_minor`/`currency`,
+  `status` `PENDING`/`PENDING_AUTHORIZATION`/`PAID`/`REJECTED`; fix
+   guarda: migracion `0041_wallet_qr_payment_guard`, unico parcial
+   `uq_qr_payments_charge_active` anti doble cobro + reintento tras
+   `REJECTED`; head vigente tras `E4-T16`: `0042_wallet_services`). Capas:
+  `domain/qr_payment.py` (decodifica `BO-QR1` + verifica firma/hash/
+  envelope + caducidad/estado, puro; errores `InvalidQrError`/
+  `QrExpiredError`/`QrAlreadyPaidError`/`QrMerchantUnknownError`/
+  `QrPaymentConflictError`), `repository/qr_payment.py`
+  (`get_active_by_charge`/`lock_charge`),
+  `service/qr_payment.py::pay_qr_charge` (valida antes de operar, abono
+  por fachada `accounts`, dinero solo por `pay_express` con la misma
+  `Idempotency-Key`, `PAID` + `qr.payment.confirmed` por `outbox` +
+  aviso `qr_charge_paid`; `PENDING_AUTHORIZATION` sin marcar `PAID`;
+  `REJECTED` sin tocar el cargo) + `finalize_qr_payment` (tras autorizar
+  con `daily_limit_reader=wallet_daily_limit_reader`, G75; lo invoca
+   `E4-T12`) + `preview_qr_charge` (solo lectura para CA-01, fix
+  MEDIO-3). Evento `qr.payment.confirmed` (constante ya existente en
+  `app/core/events.py`). Sin endpoint publico de cobro (el router es
+  `E4-T12`).
+   Pruebas: `backend/tests/test_e4_t11_qr_payment.py` (22 pruebas) +
+  `backend/tests/test_e4_t11b_qr_payment_guard.py` (11 pruebas del fix).
+- **Endpoint de pago QR (E4-T12, HU15 CA-01..CA-04):** `POST
+  /api/v1/payments/qr` (`{qr_content, link_id}`, `Idempotency-Key`
+  obligatoria, solo el titular pagador -> `201` con `SETTLED` en un
+  toque, `PENDING_AUTHORIZATION` + reto sobre el limite base o
+  `REJECTED` + `failure_code`; contrato en `docs/05#6.5`) + `POST
+  /api/v1/payments/qr/preview` (`{qr_content}`, sin clave, `200` con
+  comercio/monto sin mover dinero; fix MEDIO-3). Capas:
+  `api/payments.py` (delega en `pay_qr_charge` sin duplicar logica;
+  finaliza el diferido con `finalize_qr_payment` cuando la operacion
+  ya liquido —cargo `PAID` + aviso `qr_charge_paid` unico, `docs/18`
+  G72 lado endpoint— y espeja a `REJECTED` si el motor rechazo;
+  `422` QR corrupto/manipulado/vencido sin descontar, `409` ya
+  pagado, `404` neutro vinculo ajeno) + `schemas/payment.py`.
+  Ownership `wallet` (`docs/18` G74). El re-chequeo diario al
+   autorizar usa `wallet_daily_limit_reader` en el flujo de billetera
+   (`docs/18` G75). Pruebas:
+   `backend/tests/test_e4_t12_qr_payment_api.py` (21 pruebas).
+- **Catalogo de servicios (E4-T16, HU16 CA-01/CA-03 base):**
+  `wallet.billers` (catalogo extensible: `category` IDX, `name`,
+  `required_fields` JSONB, `enabled`; `docs/03b#95`, migracion
+  `0042_wallet_services`, head vigente, con 6 demos por categoria +
+  operadores de recarga) + `wallet.service_payments`/`wallet.topups`
+  (vacias; las escribe el pago de `E4-T17`) +
+  `wallet.service_subscriptions` (`notify_days_before` default `3`;
+  las consume el job de `E4-T18`). `GET /api/v1/services/catalog`
+  (`category?`/`q?`, solo lectura -> `200` con `billers` habilitados;
+  contrato en `docs/05#6.5`) y `POST /api/v1/services/subscriptions`
+  (`{biller_id, supply_ref, notify_days_before?}` -> `201`,
+  idempotente por naturaleza con `replayed`; valida el suministro
+  contra el proveedor vigente, `503`/`502` si cae). Capas:
+  `api/services.py` + `schemas/services.py` + `service/services.py`
+  + `repository/services.py` (`list_billers`/`get_biller`/
+  `create_subscription`/`list_subscriptions`, `ensure_demo_billers`).
+  Adaptador `ServiceProviderGateway`
+  (`backend/app/adapters/service_provider.py`, `docs/18` G77):
+  interfaz (`lookup_biller` por nombre/suministro +
+  `validate_supply`) + `mock` determinista sin red (`success`/
+  `down`/`timeout`) + `http` (timeout/reintentos/circuito) +
+  fabrica `create_service_provider` (`SERVICE_PROVIDER`, default
+  `mock`). Errores tipados `SERVICE_PROVIDER_UNAVAILABLE` (`503`) /
+  `SERVICE_PROVIDER_TIMEOUT` (`502`); sin PII/secretos en logs.
+  **No mueve dinero**. Pruebas:
+  `backend/tests/test_e4_t16_services_catalog.py` (35 pruebas).
+- **Pago de servicio y recarga (E4-T17, HU16 CA-02/CA-04):**
+  `service/services.py::pay_service`/`pay_topup` (validan el
+  suministro/telefono contra el proveedor vigente **antes de cobrar**;
+  dinero **solo** por `pay_express`, asiento `docs/04#7.10` sin
+  comision: `Debe 2000-Pagador / Haber 2100-Pagador` +
+  `Debe 2100-Pagador / Haber 2000-Liquidacion`, `docs/18` G73) +
+  `POST /api/v1/services/payments` (`{biller_id, supply_ref,
+  amount_minor, currency?, link_id}`) y `POST /api/v1/topups`
+  (`{operator, phone, amount_minor, currency?, link_id}`)
+  (`Idempotency-Key` obligatoria, solo el titular -> `201` con
+  `SETTLED` + comprobante, `PENDING_AUTHORIZATION` + reto o
+  `REJECTED` + `failure_code`; contrato en `docs/05#6.5`) +
+  `schemas/services.py`. `SETTLED` -> `service_payments PAID` (+
+  `receipt_data`) / `topups PAID` + eventos `service.paid`/
+  `topup.completed` por `outbox` (sin PII); `PENDING` se finaliza al
+  reintentar tras autorizar (con
+  `daily_limit_reader=wallet_daily_limit_reader`, G75). La cuenta de
+  liquidacion es la cuenta `accounts` interna del proveedor
+  (`WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID`, fachada `accounts`, sin
+  columna nueva). Comprobante con `receipt_no` oficial `OP-…`
+  (convencion `E2-T10`). `wallet` no escribe
+  `transactions`/`ledger`. Pruebas:
+  `backend/tests/test_e4_t17_service_payments.py` (42 pruebas).
+- **Recordatorios de vencimiento de servicios (E4-T18, HU16 CA-03):** job `wallet/jobs/service_reminders.py::run_service_reminders_once(session, *, now=None)` (una pasada con `commit` por item, patron `E3-T19`) que recorre las `service_subscriptions` `ACTIVE` y avisa por push (plantilla `service_reminder`) las que vencen en la ventana exacta. Vencimiento derivado determinista (decision 1 del brief: `service_subscriptions` no tiene columna de fecha y el adaptador `ServiceProviderGateway` no expone vencimiento; dia del mes `1..28` del `subscription_id` + proxima ocurrencia `>= hoy`; el proveedor real lo reemplazara sin tocar el job). Ventana efectiva = minimo entre el parametro global `wallet.service_reminder_days_before` (default `3`, `shared/config`, semilla `0043`) y el `notify_days_before` de la fila. Idempotencia por `(subscription_id, dia)` en `processed_events` (consumidor `wallet-service-reminders`; la marca se confirma al reclamarla, como en `E3-T19`). Cableado en ambos runtimes (patron M-2): `app.composition.run_wallet_service_jobs_once` / `start_wallet_service_jobs_worker` (flags `WALLET_SERVICE_JOBS_ENABLED` / `WALLET_SERVICE_REMINDERS_ENABLED`, intervalo `WALLET_SERVICE_JOBS_INTERVAL_SECONDS` defecto 3600 s), arrancados en el `lifespan` y en `worker_entrypoint.py`. **No mueve dinero**, sin evento nuevo, sin PII ni cifras (plantilla aditiva `service_reminder`). Pruebas: `backend/tests/test_e4_t18_service_reminders.py` (20 pruebas).
 - **Consume:** `transfer.settled`.
+- **Interoperabilidad con el par (E4-T03, HU13 CA-03):** adaptador
+  `WalletInteropGateway` (`backend/app/adapters/wallet_interop.py`, contrato en
+  `docs/02#9`): `(de)codificacion` local determinista del sobre `BO-QR1` (D06;
+  `sig` opaco, la firma local la fija `E4-T06`) + `validate_counterpart`
+  (`mock` determinista sin red por defecto, `http` con timeout/reintentos/
+  circuito; `WALLET_INTEROP_PROVIDER`, valor no reconocido -> `mock`).
+  Errores tipados `INTEROP_UNAVAILABLE` (`503`) / `INTEROP_TIMEOUT` (`502`);
+  sin PII/secretos en logs; no mueve dinero ni persiste.
 - **Puede llamar a:** `transactions`, `accounts`, `notifications`, `audit`.
 - **Prohibido:** debitar directamente sin el motor.
 
@@ -514,6 +789,16 @@ eventos (`outbox`/`inbox`).
   `risk.alerts` (tablas de HU20, D-16).
 - **Expone:** `/risk/*`, `/compliance/*`; eventos `fraud.alert.raised`, `screening.hit`,
   `ros.filed`.
+- **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
+  D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
+  `risk-unrecognized-reports`, idempotente por `processed_events`) consume
+  `security.operation_reported` de `notifications`: sube la severidad del
+  titular en `risk_profiles` (`+10`, tope `100`; HU20 sintoniza), audita
+  (`risk.unrecognized_operation`, sin PII) y emite `fraud.alert.raised` por
+  `outbox` (lo consume `identity`, que bloquea). **No** crea `risk.alerts`
+  (tabla reservada a HU20, D-16): la alerta queda como evento + auditoria +
+  severidad. Suscrito en el arranque (`composition.subscribe_unrecognized_reports`);
+  no mueve dinero.
 - **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
 - **Puede llamar a:** adaptador `SanctionsLists`, `transactions` (bloqueo), `notifications`, `audit`.
 - **Prohibido:** mover dinero.
@@ -540,8 +825,34 @@ eventos (`outbox`/`inbox`).
   canal `email` (asunto + aviso con referencia del expediente e instante de
   firma, sin PII ni cifras; el PDF se descarga en `GET .../contract`), invocada
   por la fachada `send(...)` desde `credits` (best-effort). Envio real por
-  `GmailNotificationSender` con `EMAIL_PROVIDER=gmail` + `GMAIL_USER`/
-  `GMAIL_APP_PASSWORD` (solo `.env`); `mock` por defecto.
+   `GmailNotificationSender` con `EMAIL_PROVIDER=gmail` + `GMAIL_USER`/
+   `GMAIL_APP_PASSWORD` (solo `.env`); `mock` por defecto.
+- **Cuotas del prestamo (E3-T19, HU12 CA-03/CA-04):**
+  `loan_installment_reminder` (recordatorio de cuota proxima, push) y
+  `loan_auto_debit_failed` (fallo del debito automatico, push), canal
+  push, invocadas por la fachada `send(...)` desde los jobs de
+  `credits` (best-effort, sin PII ni cifras: solo referencia del
+  prestamo e instante).
+- **Abono QR al comercio (E4-T08, HU14 CA-04 parcial, `docs/18`
+  G72):** `qr_charge_paid`, canal push, invocada por la fachada
+  `send(...)` via el helper
+  `wallet.service.qr.notify_merchant_charge_paid` cuando el pago de
+  `HU15` (`qr.payment.confirmed`) se confirma (best-effort, sin PII
+  ni cifras del pagador: solo referencia del cargo e instante; el
+  detalle vive en el panel del comercio).
+- **Recordatorio de servicios (E4-T18, HU16 CA-03):** `service_reminder`, canal push, invocada por la fachada `send(...)` desde el job `wallet/jobs/service_reminders.py` (best-effort, sin PII ni cifras: solo referencia del servicio e instante; el detalle vive en los servicios registrados).
+- **Adaptadores desacoplados por canal (E6-T13, HU22):** `sender_for_channel` resuelve `push` por `PUSH_PROVIDER` (`PushNotificationSender` mock determinista con guiones `ok`/`down`/`timeout`, sin red), `email` por `EMAIL_PROVIDER` (`mock`|`gmail`) y `sms` por `SMS_PROVIDER` (`mock`|`twilio`); `mock` por defecto y valor desconocido -> `ValueError` fail-fast; el fallo de un proveedor queda aislado por canal (`NotificationProviderError`, sin cruzar al otro; lo consume la fachada `send` de `E6-T12`).
+- **Alertas de seguridad multicanal (E6-T12 + fix A1/A2/A3/B2, HU22):** fachada `notify_security_event(...)` (push inmediato + correo de respaldo en paralelo, ventana `< 5 s` en el camino feliz; una fila `notifications` por canal, `FAILED`/reimpulsable ante caida sin afectar al otro; cada canal se marca `SENT`/`FAILED` al completarse SU futuro, sin acoplar latencias, fix B2); plantillas `security_operation_alert` (push) + `security_operation_email` (email, con `reference` no PII para `E6-T14`) + `security_report_received` (acuse "no reconozco" para `E6-T14`); contenido con dispositivo/hora/ubicacion aproximada, sin PII; preferencias `user_channel_preferences` (migracion `0044`, `push`/`email` default `true`, `sms` default `false`) con **email garantizado como respaldo de seguridad** (decision del dueno); centro del titular `GET /notifications`, `GET /notifications/{id}` (detalle read-only, fix A2), `POST /notifications/{id}/read`, `GET/PUT /notifications/preferences` (`docs/05#6.9`; el centro expone `device`/`location`/`reference` acotados, sin PII); claves `notifications.security_delivery_window_seconds` (`5`) y `notifications.security_alerts_email_backup` (`true`) en `config.parameters` (lectura best-effort con fallback); cableado E2E en el arranque (`composition.subscribe_security_alerts`, fix A1, cierra `docs/18` G80): `on_sensitive_business_event` (push + correo) suscrito a `transfer.settled`/`credit.disbursed`/`loan.installment.paid`/`qr.payment.confirmed`/`service.paid`/`topup.completed` (los emisores aportan `user_id` —y `device_id` cuando lo conocen— en el payload, sin que `notifications` importe sus modelos) y `on_auth_failed_attempt` con `include_push=False` (solo el correo de respaldo: el push de login lo emite `risk`/E2-T20, exactamente UN push por evento). Destinatario del respaldo (fix A3): `recipient_email` explicito del emisor > resolutor cableado en el arranque (`composition.wire_security_email_resolver` -> fachada de solo lectura `identity.service.holder_contact.get_holder_email`, D-03, mismo patron que la copia certificada de HU11) > fallback `str(user_id)` (los senders mock resuelven; el sender Gmail valida formato email y deja la fila `FAILED`/reimpulsable ante un no-email —el proveedor NO resuelve, corrige lo que decia esta seccion—); asi `service/` nunca importa otro modulo (guardian `test_e6_t14...frontera`).
+- **Reporte "no reconozco" + bloqueo (E6-T14 + fix B3/B4, HU22 CA-01/CA-03):** endpoint
+  `POST /notifications/{id}/report` (Bearer, solo el titular; body opcional
+  `{reason?}`; `200 {reported, replayed, ...}` idempotente, `404` neutro,
+  `422` si la notificacion no es de seguridad, `docs/05#6.9`) + `service.report_unrecognized_operation` (fija `read_at`,
+  crea el acuse push `security_report_received`, emite
+  `security.operation_reported` por `outbox` y audita
+  `notifications.unrecognized_report`; el motivo libre nunca se persiste en
+  claro; B3: idempotencia robusta por marca transaccional en `shared.processed_events` (consumidor `notifications-report`, PK con el id de la alerta, misma transaccion) + escaneo de confirmaciones sin limite arbitrario; B4: solo plantillas `security_*` del titular son reportables). La cadena sigue por eventos (D-04, suscritos en el arranque):
+  `risk` escala a `fraud.alert.raised` e `identity` revoca las sesiones
+  (`docs/18` G81/G82/G83; sin escribir `risk.alerts`, D-16).
 - **Consume:** practicamente todos los eventos de negocio.
 - **Puede llamar a:** adaptador de notificaciones; `audit`.
 - **Prohibido:** depender de modulos de negocio.
@@ -593,7 +904,21 @@ eventos (`outbox`/`inbox`).
   (`Decimal("0.4")`; semilla `0001` como texto `"0.4"`, normalizada a
   numero por `0030`), `loan.max_amount_minor` (`5000000`),
   `loan.min_score` (`650`), `loan.review_margin` (`Decimal("50")`) y
-  `loan.max_debt_minor` (`10000000`) —semillas `0030`, idempotentes—.
+   `loan.max_debt_minor` (`10000000`) —semillas `0030`, idempotentes—.
+    **Ventana del recordatorio de cuota (E3-T19, HU12 CA-04):**
+    `loan.reminder_days_before` (`3` dias; semilla `0036`,
+    idempotente) —lectura con `get_loan_reminder_days_before`
+    (best-effort con fallback, nunca lanza)—.
+   **Limites de billetera (E4-T02, HU13):** `wallet.express_limit_minor`
+   (`20000`, S/ 200) y `wallet.daily_limit_minor` (`500000`, S/ 5,000)
+   —semillas `0038`, idempotentes; lectura con
+   `get_wallet_express_limit_minor` / `get_wallet_daily_limit_minor`
+   (best-effort con fallback, nunca lanzan)—.
+   **Vigencia del QR (E4-T06, HU14):** `wallet.qr_ttl_seconds`
+   (`300` s, 5 min) —semilla `0039`, idempotente; lectura con
+   `get_wallet_qr_ttl_seconds` (best-effort con fallback, nunca
+   lanza)—.
+- **Recordatorio de servicios (E4-T18, HU16 CA-03):** `wallet.service_reminder_days_before` (`3` dias; semilla `0043`, idempotente) —lectura con `get_wallet_service_reminder_days_before` (best-effort con fallback, nunca lanza)—.
   Lectura con `get_loan_*` / `get_loan_params` (ratios `Decimal`, nunca
   `float`) y escritura con `set_parameter` (acepta `Decimal`/`int`/`str`
   numerico en claves decimales; `float` se rechaza); opcional

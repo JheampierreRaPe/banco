@@ -1017,6 +1017,7 @@ def _continue_after_authorized(
     resume = (get_block(authorized) or {}).get("resume") or {}
     total_minor = int(authorized.amount_minor) + int(authorized.fee_minor or 0)
     resume_settle = resume.get("settle", True)
+    device_hint = (get_block(authorized) or {}).get("device_id")
     return _continue(
         session,
         authorized,
@@ -1031,6 +1032,7 @@ def _continue_after_authorized(
         atomic=bool(resume.get("atomic", authorized.type == "OWN_TRANSFER")),
         balance_port=balance_port,
         reuse_hold=authorized.type == "THIRD_PARTY_TRANSFER",
+        device_id=device_hint if isinstance(device_hint, str) and device_hint.strip() else None,
     )
 
 

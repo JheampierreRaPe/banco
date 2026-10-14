@@ -1,4 +1,4 @@
-# Especificación de contenido — Pantallas de Créditos (HU09 / HU10 / HU11)
+# Especificación de contenido — Pantallas de Créditos (HU09 / HU10 / HU11 / HU12)
 
 > Mockups en `pantallas.fig` (páginas `Créditos/Simulador`, `Créditos/Solicitud`,
 > `Créditos/Estado`, `Créditos/Analista`, `Créditos/Contrato`, `Créditos/Firma`,
@@ -6,6 +6,11 @@
 > (más `.svg` vectoriales homónimos). Sistema de diseño: `docs/20-diseno-ui.md`
 > (tokens "Eucalipto y Ocre", solo modo claro). Sin PII real en los mockups
 > (datos de ejemplo enmascarados).
+>
+> Nota E3-T21: HU12 (cronograma + débito automático, §8) no tiene mockup del
+> dueño (`docs/design/creditos-cronograma.png` pendiente, fila en
+> `docs/design/mockups.md`); la UI se diseñó desde los tokens de `docs/20` y
+> las convenciones comunes de abajo.
 >
 > Nota de layout: en el mockup del simulador la tarjeta de cronograma quedó al
 > final por una limitación del reemplazo de nodo; al implementar, el orden
@@ -417,6 +422,134 @@ score ni documento (regla de oro 7).
 
 ---
 
+## 8. E3-T21 — Cronograma del préstamo y débito automático (HU12)
+
+Mockup: `(pendiente)` `docs/design/creditos-cronograma.png` (fila en
+`docs/design/mockups.md`). Rutas: `/credits/loans` (Mis préstamos) y
+`/credits/loans/{id}` (cronograma). Entrada: CTA `Ver mis préstamos` en el
+éxito de la firma (`/credits/sign`) + navegación directa a las rutas.
+
+### 8a. Mis préstamos (`/credits/loans`, `GET /credits/loans`)
+
+1. **Header**: TopBar `Mis préstamos`.
+2. **Fila por préstamo** (card blanca, radio 16, borde `outline-variant`;
+   la fila `Activo` lleva borde `primary`):
+   - Línea 1: `Préstamo • {monto} • {plazo} m` (14/600 `primary`,
+     ej. `Préstamo • S/ 10,000.00 • 12 m`) + badge de estado (pill,
+     `Activo` en `success-container` / `#0B1F15`; otros estados del
+     servidor se muestran tal cual).
+   - Línea 2: `PRÉSTAMO {8 primeros del id}` (12, `secondary-text`).
+     Sin número de cuenta en claro (el `account_id` es UUID lógico).
+   - Línea 3: `Saldo de capital: {monto del servidor}` (ej.
+     `Saldo de capital: S/ 9,237.90`).
+   - Línea 4: `Débito automático activado|desactivado` (icono +
+     `secondary-text`, valor de `auto_debit_enabled` del servidor).
+   - Acción: `Ver cronograma ›` (`OutlinedButton`, → `/credits/loans/{id}`).
+3. **Estados**: vacío (`Aún no tienes préstamos desembolsados…` + `Ir al
+   simulador` → `/credits`); carga (skeleton); error accionable con
+   `Reintentar`; pull-to-refresh.
+
+### 8b. Cronograma (`/credits/loans/{id}`, `GET .../schedule`)
+
+1. **Header**: TopBar `Cronograma del préstamo`.
+2. **Hero condiciones** (fondo `surface-container-low`): label
+   `CRONOGRAMA DEFINITIVO (servidor)`; valor
+   `Saldo de capital: S/ 9,237.90` (del servidor); línea
+   `S/ 10,000.00 • 12 cuotas • Activo`.
+3. **Card Débito automático** (blanca, borde `outline-variant`): título
+   `Débito automático` + subtítulo (`Tus cuotas se cobran solas en su
+   vencimiento.` / `Actívalo para no olvidar tus vencimientos.`) + `Switch`.
+   Al cambiar → `PUT .../auto-debit` (`{enabled: bool}`, sin
+   `Idempotency-Key`); el switch refleja el `auto_debit_enabled` confirmado
+   por el servidor + `SnackBar` (`Débito automático activado|desactivado.`);
+   error → `SnackBar` accionable sin mover el switch.
+4. **CTA Pagar próxima cuota** (primario, 52px; solo si hay alguna cuota
+   `Pendiente`/`Parcial`/`Vencida`): `POST .../pay` (cuerpo `{}`, el
+   servidor cobra la próxima exigible; con `Idempotency-Key` del intento).
+   Éxito (`SETTLED`) → aviso `Cuota pagada. Actualizando el cronograma…` +
+   recarga (nuevo saldo del servidor). `REJECTED` + `INSUFFICIENT_FUNDS` →
+   aviso `Saldo insuficiente para pagar la cuota. Recarga tu cuenta e
+   inténtalo de nuevo.` (la cuota queda intacta, sin recarga).
+5. **Card Cuotas (N)** (blanca): una fila por cuota con divisores `divider`:
+   `Cuota {N} • Vence {due_date}` + badge de estado (pill, mismo set que
+   §3/§7: `Pendiente` gris `surface-container-highest`, `Parcial` ocre
+   `warning-container`, `Pagada` verde `success-container`, `Vencida` rojo
+   `error-container`); `Total: {total_minor del servidor}`;
+   `Capital {…} • Interés {…} • Seguro {…}`; si `Pagada` y trae `paid_at`,
+   `Pagada el {paid_at}`. Sin CTA por fila: las filas del servidor no
+   exponen `schedule_id` (el pago es por cuota total exigible).
+6. **Nota**: `Montos y fechas del servidor. El cliente no calcula.`
+7. **Estados**: carga (skeleton), vacío (sin cuotas → `EmptyView` +
+   `Reintentar`), error de red/negocio con `Reintentar`
+   (`404` neutro, `409` cuota ya pagada, `422`, red).
+
+### 8c. M-1 — Disparador de desembolso (HU12, CTA en el éxito de la firma)
+
+Mockup: `(pendiente)` `docs/design/creditos-desembolso.png` (fila en
+`docs/design/mockups.md`). Punto de entrada ÚNICO: bloque de éxito de
+`/credits/sign` (`credit_sign_page.dart` + `CreditDisburseSection`), junto a
+los CTA `Volver al inicio` / `Ver mis préstamos`. No se duplica en el
+listado: el listado (§8a) solo muestra préstamos ya desembolsados.
+
+1. **Visibilidad**: la sección aparece cuando el expediente está `APPROVED`
+   y el contrato `SIGNED` (el bloque de éxito de la firma lo garantiza) y
+   **aún no tiene préstamo desembolsado** (se verifica con
+   `GET /credits/loans` buscando el `application_id`; si ya hay préstamo,
+   sin CTA de desembolso: card `Desembolso completado` + `Ver cronograma`).
+2. **Card Desembolso a tu cuenta** (borde `primary`): título
+   `Desembolso a tu cuenta` + subtítulo
+   `El dinero se acredita en la cuenta que elijas.`
+3. **Selector de cuentas** (cuentas propias enmascaradas del servidor,
+   ej. `Ahorros •••• 4521`): si el usuario no elige, se omite `account_id`
+   y el backend usa la cuenta principal. Nota:
+   `Si no eliges, usamos tu cuenta principal.` Sin cuentas (o sin servicio):
+   aviso `Se desembolsará a tu cuenta principal.` sin bloquear la CTA.
+4. **CTA primario**: `Desembolsar a mi cuenta` (52px; `Desembolsando…` en
+   curso) → `POST /credits/applications/{id}/disburse` (cuerpo
+   `{account_id?}` + `Idempotency-Key` del intento, clave nueva por intento).
+5. **Éxito** (card `success-container`): `¡Desembolso acreditado!` +
+   `Se acreditó {monto del servidor} en tu cuenta {account_masked}.` +
+   CTA `Ver cronograma` (→ `/credits/loans/{loan_id}` del préstamo recién
+   creado). Sin CTA de re-desembolso tras el éxito.
+6. **Error** (card `error-container`, español accionable + la CTA sigue para
+   reintentar): `409` → `Aún no puedes desembolsar: el crédito debe estar
+   aprobado y firmado…` + link `Ver mis préstamos`; `404` neutro
+   (`No encontramos el expediente o la cuenta…`); `422`
+   (`No pudimos procesar el desembolso. Verifica la cuenta…`); red con
+   `Reintentar`.
+7. **Estados**: verificación inicial (`Verificando el estado del
+   desembolso…`); sin servicio → aviso honesto
+   `El desembolso no está disponible por ahora.` (sin CTA).
+
+### Datos del backend (desembolso, `docs/05` §6.4, detalle E3-T17)
+
+`POST /credits/applications/{id}/disburse` (cuerpo `{account_id?}` UUID;
+omitido = cuenta principal `ACTIVE` más antigua; `Idempotency-Key`
+obligatoria) → `201 {"data": {loan_id, application_id, transaction_id,
+status ("SETTLED"), disbursed_at, account_masked ("****dddd"),
+amount_minor, currency}, "meta": {"request_id", "replayed"}}` o `200` replay.
+Códigos: `404 NOT_FOUND` (neutro), `409 CONFLICT` (no `APPROVED`/no
+`SIGNED`) / `409 IDEMPOTENCY_CONFLICT`, `422 VALIDATION_ERROR`.
+La UI muestra monto y cuenta tal cual; no calcula ni reinterpreta.
+
+### Datos del backend (HU12, `docs/05` §6.4)
+
+`GET /credits/loans` → `[{id, application_id, account_id, principal_minor,
+outstanding_principal_minor, tcea, term_months, status, disbursed_at,
+auto_debit_enabled, created_at}]` (`data: []` sin préstamos).
+`GET /credits/loans/{id}/schedule` → `{loan, schedule: [{installment_no,
+due_date, principal_minor, interest_minor, insurance_minor, total_minor,
+status, paid_at}]}`.
+`PUT .../auto-debit` (`{enabled: bool}` estricto) → `{loan_id,
+auto_debit_enabled}` (sin `Idempotency-Key`).
+`POST .../pay` (`{schedule_id?}` omitido = próxima exigible, MVP por cuota
+total; `Idempotency-Key` obligatoria) → `{loan_id, schedule_id,
+transaction_id, status (SETTLED|REJECTED), amount_minor,
+outstanding_principal_minor, paid_at, failure_code?}`.
+La UI muestra fechas/montos/estados tal cual; no recalcula ni reinterpreta.
+
+---
+
 ## Chequeo contra `docs/01` (contradicciones)
 
 Ninguna:
@@ -442,4 +575,6 @@ Ninguna:
 | `docs/design/creditos-firma.png` (+ `.svg`) | Mockup HU11 firma |
 | `docs/design/creditos-mis-creditos.png` (+ `.svg`) | Mockup E3-T23 "Mis créditos" (HU10/HU11) |
 | `docs/design/creditos-simulador.png` (+ `.svg`) | Mockup HU09 (actualizado E3-T23: TopBar `Créditos` + segmentos) |
+| `(pendiente) `docs/design/creditos-cronograma.png` | Mockup HU12 (E3-T21: §8a/§8b diseñadas desde tokens `docs/20`) |
+| `(pendiente) `docs/design/creditos-desembolso.png` | Mockup HU12 (M-1: §8c disparador de desembolso en el éxito de la firma, diseñado desde tokens `docs/20`; el `.fig` abierto no trae la página de firma para extender) |
 | `docs/design/creditos-pantallas.md` (este archivo) | Spec de contenido |

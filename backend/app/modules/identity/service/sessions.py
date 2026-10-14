@@ -307,9 +307,57 @@ def logout_session(
     return {"revoked": True, "session_id": str(row.id)}
 
 
+#: Consumidor idempotente en `shared.processed_events` (<= 60 caracteres).
+CONSUMER_CHANNEL_LOCK = "identity-channel-lock"
+#: Accion de auditoria del bloqueo de canales (best-effort, sin PII).
+AUDIT_SESSIONS_REVOKED = "identity.sessions_revoked"
+
+
+def lock_user_channels(
+    session: Session,
+    user_id,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """Bloquea los canales digitales del titular (E6-T14, HU22 CA-03).
+
+    Revoca TODAS las sesiones activas (`sessions.revoked_at`, reuso de
+    `identity.repository.revoke_user_sessions`); un `REVOKED` no se
+    reactiva y nada se borra (regla de oro 2). Idempotente por estado:
+    sin sesiones activas retorna `revoked=0`. Audita best-effort
+    (`identity.sessions_revoked`, sin PII). `flush` sin `commit`.
+    """
+    import uuid as _uuid
+
+    moment = _as_aware(now) if isinstance(now, datetime) else _utcnow()
+    try:
+        uid = user_id if isinstance(user_id, _uuid.UUID) else _uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    revoked = identity_repo.revoke_user_sessions(session, uid, moment)
+    try:
+        from app.modules.audit.service import record as audit_record
+
+        audit_record(
+            session,
+            actor=uid,
+            action=AUDIT_SESSIONS_REVOKED,
+            entity="user",
+            entity_id=uid,
+            metadata={"revoked": int(revoked)},
+        )
+        session.flush()
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado
+        logger.warning("channel lock auditoria no registrada error=%s", type(exc).__name__)
+    logger.info("channel lock user revoked=%d", int(revoked))
+    return {"revoked": int(revoked), "user_id": str(uid)}
+
+
 __all__ = [
     "AUDIT_FAILED_ATTEMPT",
     "AUDIT_LOGIN_SUCCEEDED",
+    "AUDIT_SESSIONS_REVOKED",
+    "CONSUMER_CHANNEL_LOCK",
     "EXPIRED_MESSAGE",
     "INACTIVE_MESSAGE",
     "INACTIVITY_SECONDS",
@@ -319,6 +367,7 @@ __all__ = [
     "RefreshInvalidError",
     "RefreshReuseError",
     "SessionInactiveError",
+    "lock_user_channels",
     "logout_session",
     "refresh_session",
 ]

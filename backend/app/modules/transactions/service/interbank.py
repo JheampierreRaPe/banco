@@ -980,6 +980,11 @@ def _settle_confirmed(session: Session, tx: Transaction) -> Transaction:
                             "currency": currency,
                             "external_ref": fresh.external_ref,
                             "status": "SETTLED",
+                            "user_id": (
+                                str(fresh.initiator_user_id)
+                                if fresh.initiator_user_id is not None
+                                else None
+                            ),
                         },
                     )
                     logger.info(

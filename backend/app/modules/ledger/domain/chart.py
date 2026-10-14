@@ -51,8 +51,10 @@ class CatalogEntry:
 
 
 # Semilla del catalogo. Supuesto documentado: tipos asignados por naturaleza
-# contable (pasivo para 2000/2100/2200, patrimonio 3000, ingresos 4xxx,
-# gastos 5xxx/6xxx; 9100 orden como asset para cumplir el CK de 5 tipos).
+# contable (pasivo para 2000/2100/2200, patrimonio 3000, ingresos 4xxx;
+# 5000 es activo "Cartera de prestamos" (capital colocado, `docs/04#7.5`);
+# 4200 es ingreso "Ingresos por seguro" (`docs/04#7.6`); gastos 6xxx;
+# 9100 orden como asset para cumplir el CK de 5 tipos).
 SYSTEM_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("1000", "Caja y bancos", "asset"),
     CatalogEntry("2000", "Depositos de clientes - disponible", "liability"),
@@ -61,8 +63,8 @@ SYSTEM_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("3000", "Capital", "equity"),
     CatalogEntry("4000", "Ingresos por intereses", "income"),
     CatalogEntry("4100", "Ingresos por comisiones", "income"),
-    CatalogEntry("4200", "Otros ingresos", "income"),
-    CatalogEntry("5000", "Costos financieros", "expense"),
+    CatalogEntry("4200", "Ingresos por seguro", "income"),
+    CatalogEntry("5000", "Cartera de prestamos", "asset"),
     CatalogEntry("6000", "Gastos operativos", "expense"),
     CatalogEntry("9100", "Cuentas de orden", "asset"),
 )

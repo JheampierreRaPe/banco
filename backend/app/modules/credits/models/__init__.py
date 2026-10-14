@@ -18,12 +18,16 @@ Expediente `credits.loan_applications` (E3-T08, HU10): `LoanApplication`
 (`docs/03b#82`). El enum `loan_application_status` (`docs/03b#1`) se
 aplica como `CHECK` sobre `VARCHAR(20)` (no como enum Postgres: evita
 drift y es portable a SQLite en pruebas).
+
+Prestamo y cronograma definitivo (E3-T18, HU12): `Loan`
+(`docs/03b#83`), `LoanSchedule` (`docs/03b#84`) y `LoanPayment`
+(`docs/03b#85`); estados por `CHECK` sobre `VARCHAR` (mismo criterio).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -253,6 +257,190 @@ class Contract(Base):
     )
     signed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+
+
+#: Estados del prestamo (`docs/03b#1`, enum `loan_status`).
+LOAN_STATUSES: tuple[str, ...] = ("ACTIVE", "PAID", "DEFAULTED", "WRITTEN_OFF")
+
+#: Estados de cada cuota (`docs/03b#1`, enum `installment_status`).
+INSTALLMENT_STATUSES: tuple[str, ...] = ("PENDING", "PARTIAL", "PAID", "OVERDUE")
+
+
+class Loan(Base):
+    """Prestamo desembolsado (`docs/03b#83`, E3-T18 HU12).
+
+    Una sola fila por `application_id` (UQ: idempotencia de negocio).
+    `account_id` es UUID **logico sin FK fisica** (REF `accounts`,
+    cuenta de desembolso, regla de oro 4); `application_id` es FK
+    fisica al expediente del mismo schema (`credits`).
+
+    Dinero entero en centimos (`principal_minor` /
+    `outstanding_principal_minor`, `BIGINT`); `tcea` e
+    `insurance_rate` son `NUMERIC(18,8)` (`Decimal`, nunca `float`).
+    `outstanding_principal_minor` arranca en `principal_minor` y
+    nunca es negativo. `status` inicial `ACTIVE`.
+
+    Columna aditiva fuera de `docs/03b#83` (gap E3-T18, G61):
+    `auto_debit_enabled` (debito automatico de cuotas, CA-03 de HU12;
+    la expone `E3-T19`).
+    """
+
+    __tablename__ = "loans"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["application_id"],
+            ["credits.loan_applications.id"],
+            name="fk_loans_application",
+        ),
+        sa.UniqueConstraint(
+            "application_id",
+            name="uq_loans_application_id",
+        ),
+        sa.CheckConstraint(
+            "principal_minor > 0",
+            name="ck_loans_principal_pos",
+        ),
+        sa.CheckConstraint(
+            "outstanding_principal_minor >= 0",
+            name="ck_loans_outstanding_nonneg",
+        ),
+        sa.CheckConstraint(
+            "status IN ('ACTIVE','PAID','DEFAULTED','WRITTEN_OFF')",
+            name="ck_loans_status",
+        ),
+        sa.Index("ix_loans_status", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    application_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    account_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    principal_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    tcea: Mapped[Decimal] = mapped_column(sa.Numeric(18, 8), nullable=False)
+    term_months: Mapped[int] = mapped_column(sa.SmallInteger(), nullable=False)
+    insurance_rate: Mapped[Decimal] = mapped_column(
+        sa.Numeric(18, 8), nullable=False, default=Decimal(0), server_default="0"
+    )
+    outstanding_principal_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    status: Mapped[str] = mapped_column(
+        sa.String(20), nullable=False, default="ACTIVE", server_default="ACTIVE"
+    )
+    disbursed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    auto_debit_enabled: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=False, server_default=sa.false()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+
+
+class LoanSchedule(Base):
+    """Cuota del cronograma definitivo (`docs/03b#84`, E3-T18 HU12).
+
+    `loan_id` es FK fisica al prestamo del mismo schema (`credits`),
+    con UQ por `(loan_id, installment_no)`: el cronograma se genera
+    completo (`installment_no` 1..N). Por cuota
+    `principal + interest + insurance == total` y
+    `sum(principal) == loans.principal_minor` (cuadre del dominio
+    puro `credits.domain.schedule`). Estado inicial `PENDING`.
+    """
+
+    __tablename__ = "loan_schedules"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["loan_id"],
+            ["credits.loans.id"],
+            name="fk_loan_schedules_loan",
+        ),
+        sa.UniqueConstraint(
+            "loan_id",
+            "installment_no",
+            name="uq_loan_schedules_loan_installment",
+        ),
+        sa.CheckConstraint(
+            "status IN ('PENDING','PARTIAL','PAID','OVERDUE')",
+            name="ck_loan_schedules_status",
+        ),
+        sa.Index("ix_loan_schedules_loan_due_status", "loan_id", "due_date", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    loan_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    installment_no: Mapped[int] = mapped_column(sa.SmallInteger(), nullable=False)
+    due_date: Mapped[date] = mapped_column(sa.Date(), nullable=False)
+    principal_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    interest_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    insurance_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    total_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    status: Mapped[str] = mapped_column(
+        sa.String(15), nullable=False, default="PENDING", server_default="PENDING"
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
+class LoanPayment(Base):
+    """Aplicacion de un pago a la cuota (`docs/03b#85`, E3-T18 HU12).
+
+    `loan_id` / `schedule_id` son FK fisicas dentro de `credits`;
+    `transaction_id` es UUID **logico sin FK fisica** (REF
+    `transactions`, operacion en el motor, regla de oro 4; la puebla
+    `E3-T20` al pagar por el motor). El desglose aplicado
+    (`principal/interest/insurance_applied_minor`) documenta a que
+    componente fue cada centimo.
+    """
+
+    __tablename__ = "loan_payments"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["loan_id"],
+            ["credits.loans.id"],
+            name="fk_loan_payments_loan",
+        ),
+        sa.ForeignKeyConstraint(
+            ["schedule_id"],
+            ["credits.loan_schedules.id"],
+            name="fk_loan_payments_schedule",
+        ),
+        sa.CheckConstraint(
+            "amount_minor > 0",
+            name="ck_loan_payments_amount_pos",
+        ),
+        sa.Index("ix_loan_payments_loan_id", "loan_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    loan_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    schedule_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    principal_applied_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    interest_applied_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    insurance_applied_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    paid_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
         default=_utcnow,
         server_default=sa.func.now(),

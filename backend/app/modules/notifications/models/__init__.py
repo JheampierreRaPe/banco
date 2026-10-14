@@ -2,8 +2,10 @@
 
 Fuente: `docs/03b-diccionario-de-datos.md#13-schema-notifications` (columnas
 exactas) e indices `docs/03b#15` (`(user_id, created_at DESC)`, `(status)`).
-Frontera: solo `notifications` + `notification_templates` (la tabla
-`user_channel_preferences` se difiere: la fachada `send` no la necesita).
+Frontera: solo `notifications` + `notification_templates` +
+`user_channel_preferences` (E6-T12, HU22: la fachada de seguridad lee las
+preferencias por canal; el respaldo `email` de seguridad se garantiza aunque
+el usuario lo desactive, decision del dueno documentada en el servicio).
 
 - `payload_json` usa `sa.JSON()` (generico) para que los tests corran en
   SQLite; la migracion Postgres usa `JSONB` segun `03b`.
@@ -107,3 +109,33 @@ sa.Index(
     Notification.user_id,
     Notification.created_at.desc(),
 )
+
+
+class UserChannelPreference(Base):
+    """Preferencias de canal por titular (`03b#13`, E6-T12, HU22).
+
+    `user_id` es PK logica (REF `identity.users` solo a nivel aplicacion,
+    regla de oro 4: sin FK fisica entre schemas). Las alertas de seguridad
+    respetan `push`, garantizan `email` como respaldo (decision del dueno)
+    y nunca usan `sms` en la ruta de seguridad.
+    """
+
+    __tablename__ = "user_channel_preferences"
+    __table_args__ = ({"schema": SCHEMA},)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True)
+    push: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=True, server_default="true"
+    )
+    email: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=True, server_default="true"
+    )
+    sms: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=False, server_default="false"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )

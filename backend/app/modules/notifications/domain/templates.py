@@ -104,6 +104,101 @@ BASE_TEMPLATES: dict[str, dict] = {
             "La copia certificada queda disponible en tu expediente."
         ),
     },
+    # Cuotas del prestamo (E3-T19, HU12 CA-03/CA-04): un canal natural
+    # por codigo (push). Cuerpo generico sin PII ni cifras (solo la
+    # referencia del prestamo —prefijo del `loan_id`— y la fecha; el
+    # detalle vive en el cronograma, que solo consulta el titular).
+    "loan_installment_reminder": {
+        "code": "loan_installment_reminder",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu prestamo {loan_ref} tiene una cuota que vence el {due_on}. " "Revisa tu cronograma."
+        ),
+    },
+    "loan_auto_debit_failed": {
+        "code": "loan_auto_debit_failed",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "No pudimos debitar automaticamente la cuota de tu prestamo "
+            "{loan_ref} el {at}. Revisa tu cronograma."
+        ),
+    },
+    # Aviso de abono QR al comercio (E4-T08, HU14 CA-04; `docs/18` G72):
+    # canal push, invocado por la fachada `send(...)` desde el pago de
+    # `HU15` (evento `qr.payment.confirmed`) via el helper
+    # `wallet.service.qr.notify_merchant_charge_paid`. Cuerpo generico
+    # sin PII ni cifras del pagador (solo la referencia del cargo y el
+    # instante; el detalle vive en el panel del comercio, que solo
+    # consulta el dueno). El aviso se emite dentro de la ventana < 5 s
+    # (CA-04); `E4-T10` lo valida con un pago simulado y el E2E con el
+    # pago real queda para la QA de HU15.
+    "qr_charge_paid": {
+        "code": "qr_charge_paid",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Recibiste un pago con QR {charge_ref} el {at}. "
+            "Revisa el detalle en tu panel de comercio."
+        ),
+    },
+    # Recordatorio de vencimiento de servicios (E4-T18, HU16 CA-03):
+    # canal push, invocado por la fachada `send(...)` desde el job
+    # `wallet/jobs/service_reminders.py` (best-effort). Cuerpo
+    # generico sin PII ni cifras (solo la referencia del servicio
+    # —prefijo del `subscription_id`— y la fecha de vencimiento; el
+    # detalle vive en los servicios registrados, que solo consulta
+    # el titular).
+    "service_reminder": {
+        "code": "service_reminder",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu servicio {service_ref} vence el {due_on}. " "Revisa tus servicios registrados."
+        ),
+    },
+    # Alertas de seguridad multicanal (E6-T12, HU22 CA-01/CA-02):
+    # las invoca la fachada `notify_security_event` (push inmediato +
+    # correo de respaldo en paralelo, ventana < 5 s). Cuerpo generico
+    # sin PII ni cifras: solo la operacion (codigo de evento, no
+    # narrativa libre), el instante `{at}` (ISO), la etiqueta de
+    # dispositivo `{device}` (acotada) y la ubicacion aproximada
+    # `{location}` (ciudad/region o "no disponible"; jamas
+    # coordenadas, PAN, montos, firmas, `nonce` ni biometria). El
+    # detalle completo vive en la app/centro, no en el push ni en el
+    # correo. El `{reference}` (no PII) solo viaja en el correo para
+    # que `E6-T14` correlacione el reporte "no reconozco".
+    "security_operation_alert": {
+        "code": "security_operation_alert",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Alerta de seguridad: {operation} el {at} desde {device} "
+            "({location}). Si no fuiste tu, revisa tu actividad."
+        ),
+    },
+    "security_operation_email": {
+        "code": "security_operation_email",
+        "channel": "email",
+        "subject": "Alerta de seguridad en tu cuenta",
+        "body_template": (
+            "Detectamos {operation} el {at} desde {device} ({location}). "
+            "Referencia {reference}. Si no reconoces esta operacion, "
+            "revisa tu actividad en la app."
+        ),
+    },
+    # Acuse del reporte "no reconozco" (E6-T12 lo registra, E6-T14 lo
+    # invoca): canal push, sin PII ni cifras (solo la referencia del
+    # reporte y el instante).
+    "security_report_received": {
+        "code": "security_report_received",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Recibimos tu reporte {reference} el {at}. Lo estamos " "revisando y te avisaremos."
+        ),
+    },
 }
 
 _SCALAR_TYPES = (str, int, bool, type(None))

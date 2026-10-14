@@ -73,11 +73,29 @@ services:
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-mock}
       GMAIL_USER: ${GMAIL_USER:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      # Push desacoplado por canal (E6-T13): mock determinista sin red.
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-mock}
       DOC_HASH_PEPPER: ${DOC_HASH_PEPPER:-change-me}
       # Beneficiarios (E2-T13): clave AES-256-GCM y pepper del indice ciego.
       # Obligatorias fuera de 'local' (fail-fast); viven en el `.env` de la raiz.
       BENEFICIARY_CRYPTO_KEY: ${BENEFICIARY_CRYPTO_KEY:-}
       BENEFICIARY_INDEX_PEPPER: ${BENEFICIARY_INDEX_PEPPER:-}
+      # Jobs de cuotas HU12 (E3-T19): debito automatico + recordatorios en el
+      # lifespan del backend (mismo mecanismo que el worker del outbox).
+      CREDIT_LOAN_JOBS_ENABLED: ${CREDIT_LOAN_JOBS_ENABLED:-1}
+      CREDIT_LOANS_AUTO_DEBIT_ENABLED: ${CREDIT_LOANS_AUTO_DEBIT_ENABLED:-1}
+      CREDIT_LOANS_REMINDERS_ENABLED: ${CREDIT_LOANS_REMINDERS_ENABLED:-1}
+      CREDIT_LOANS_JOBS_INTERVAL_SECONDS: ${CREDIT_LOANS_JOBS_INTERVAL_SECONDS:-3600}
+      # Jobs de QR HU14 (E4-T07): caducidad de `qr_charges` en el
+      # lifespan del backend (mismo mecanismo que el worker del outbox).
+      WALLET_QR_JOBS_ENABLED: ${WALLET_QR_JOBS_ENABLED:-1}
+      WALLET_QR_EXPIRY_ENABLED: ${WALLET_QR_EXPIRY_ENABLED:-1}
+      WALLET_QR_JOBS_INTERVAL_SECONDS: ${WALLET_QR_JOBS_INTERVAL_SECONDS:-60}
+      # Jobs de servicios HU16 (E4-T18): recordatorios en el
+      # lifespan del backend (mismo mecanismo que el worker del outbox).
+      WALLET_SERVICE_JOBS_ENABLED: ${WALLET_SERVICE_JOBS_ENABLED:-1}
+      WALLET_SERVICE_REMINDERS_ENABLED: ${WALLET_SERVICE_REMINDERS_ENABLED:-1}
+      WALLET_SERVICE_JOBS_INTERVAL_SECONDS: ${WALLET_SERVICE_JOBS_INTERVAL_SECONDS:-3600}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -105,6 +123,22 @@ services:
       WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-8100}
       BENEFICIARY_CRYPTO_KEY: ${BENEFICIARY_CRYPTO_KEY:-}
       BENEFICIARY_INDEX_PEPPER: ${BENEFICIARY_INDEX_PEPPER:-}
+      # Jobs de cuotas HU12 (E3-T19): debito automatico + recordatorios en el
+      # worker (mismo mecanismo que el worker del outbox; inertes con `0`).
+      CREDIT_LOAN_JOBS_ENABLED: ${CREDIT_LOAN_JOBS_ENABLED:-1}
+      CREDIT_LOANS_AUTO_DEBIT_ENABLED: ${CREDIT_LOANS_AUTO_DEBIT_ENABLED:-1}
+      CREDIT_LOANS_REMINDERS_ENABLED: ${CREDIT_LOANS_REMINDERS_ENABLED:-1}
+      CREDIT_LOANS_JOBS_INTERVAL_SECONDS: ${CREDIT_LOANS_JOBS_INTERVAL_SECONDS:-3600}
+      # Jobs de QR HU14 (E4-T07): caducidad de `qr_charges` en el
+      # worker (mismo mecanismo que el worker del outbox; inertes con `0`).
+      WALLET_QR_JOBS_ENABLED: ${WALLET_QR_JOBS_ENABLED:-1}
+      WALLET_QR_EXPIRY_ENABLED: ${WALLET_QR_EXPIRY_ENABLED:-1}
+      WALLET_QR_JOBS_INTERVAL_SECONDS: ${WALLET_QR_JOBS_INTERVAL_SECONDS:-60}
+      # Jobs de servicios HU16 (E4-T18): recordatorios en el
+      # worker (mismo mecanismo que el worker del outbox; inertes con `0`).
+      WALLET_SERVICE_JOBS_ENABLED: ${WALLET_SERVICE_JOBS_ENABLED:-1}
+      WALLET_SERVICE_REMINDERS_ENABLED: ${WALLET_SERVICE_REMINDERS_ENABLED:-1}
+      WALLET_SERVICE_JOBS_INTERVAL_SECONDS: ${WALLET_SERVICE_JOBS_INTERVAL_SECONDS:-3600}
     depends_on:
       postgres:
         condition: service_healthy

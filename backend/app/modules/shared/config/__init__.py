@@ -27,6 +27,29 @@ Claves de esta tarea (regla de oro 6: regla variable = parametro):
   decimales y los guarda como numero JSON). Semillas: `0001`
   (`loan.max_dti_ratio`, como texto `"0.4"`, normalizado a numero por
   `0030`) y `0030` (el resto, idempotente).
+- Recordatorio de cuota (E3-T19, HU12 CA-04, modulo `credits`):
+  `loan.reminder_days_before` (`3` dias; semilla `0036`,
+  idempotente). Lectura con `get_loan_reminder_days_before`
+  (best-effort con fallback, nunca lanza); escritura con
+  `set_parameter` (entero `>= 1`, exige fila sembrada).
+- Pago express (E4-T02, HU13, modulo `wallet`):
+  `wallet.express_limit_minor` (`20000`, S/ 200; semilla `0038`,
+  idempotente) y `wallet.daily_limit_minor` (`500000`, S/ 5,000;
+  semilla `0038`, idempotente). Lectura con
+  `get_wallet_express_limit_minor` / `get_wallet_daily_limit_minor`
+  (best-effort con fallback, nunca lanzan); escritura con
+  `set_parameter` (entero `>= 0`, exige fila sembrada). Sin
+  variantes por perfil en el MVP (el diario es generico).
+- QR firmado (E4-T06, HU14, modulo `wallet`):
+  `wallet.qr_ttl_seconds` (`300` s, 5 min; semilla `0039`,
+  idempotente). Lectura con `get_wallet_qr_ttl_seconds`
+  (best-effort con fallback, nunca lanza); escritura con
+  `set_parameter` (entero `>= 1`, exige fila sembrada).
+- Recordatorio de servicios (E4-T18, HU16 CA-03, modulo `wallet`):
+  `wallet.service_reminder_days_before` (`3` dias; semilla `0043`,
+  idempotente). Lectura con `get_wallet_service_reminder_days_before`
+  (best-effort con fallback, nunca lanza); escritura con
+  `set_parameter` (entero `>= 1`, exige fila sembrada).
 
 Semantica:
 
@@ -64,15 +87,25 @@ from app.modules.shared.config.parameters import (
     DEFAULT_LOAN_MAX_DEBT_MINOR,
     DEFAULT_LOAN_MAX_DTI_RATIO,
     DEFAULT_LOAN_MIN_SCORE,
+    DEFAULT_LOAN_REMINDER_DAYS_BEFORE,
     DEFAULT_LOAN_REVIEW_MARGIN,
     DEFAULT_MAX_FAILED_ATTEMPTS,
+    DEFAULT_WALLET_DAILY_LIMIT_MINOR,
+    DEFAULT_WALLET_EXPRESS_LIMIT_MINOR,
+    DEFAULT_WALLET_QR_TTL_SECONDS,
+    DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE,
     LOAN_MAX_AMOUNT_MINOR_KEY,
     LOAN_MAX_AMOUNT_PROFILE_TEMPLATE,
     LOAN_MAX_DEBT_MINOR_KEY,
     LOAN_MAX_DTI_RATIO_KEY,
     LOAN_MIN_SCORE_KEY,
+    LOAN_REMINDER_DAYS_BEFORE_KEY,
     LOAN_REVIEW_MARGIN_KEY,
     SEEDED_PROFILES,
+    WALLET_DAILY_LIMIT_MINOR_KEY,
+    WALLET_EXPRESS_LIMIT_MINOR_KEY,
+    WALLET_QR_TTL_SECONDS_KEY,
+    WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY,
     ParameterError,
     ParameterNotFoundError,
     ParameterValidationError,
@@ -86,9 +119,14 @@ from app.modules.shared.config.parameters import (
     get_loan_max_dti_ratio,
     get_loan_min_score,
     get_loan_params,
+    get_loan_reminder_days_before,
     get_loan_review_margin,
     get_max_failed_attempts,
     get_parameter,
+    get_wallet_daily_limit_minor,
+    get_wallet_express_limit_minor,
+    get_wallet_qr_ttl_seconds,
+    get_wallet_service_reminder_days_before,
     loan_amount_key_for_profile,
     set_parameter,
 )
@@ -104,15 +142,25 @@ __all__ = [
     "DEFAULT_LOAN_MAX_DEBT_MINOR",
     "DEFAULT_LOAN_MAX_DTI_RATIO",
     "DEFAULT_LOAN_MIN_SCORE",
+    "DEFAULT_LOAN_REMINDER_DAYS_BEFORE",
     "DEFAULT_LOAN_REVIEW_MARGIN",
     "DEFAULT_MAX_FAILED_ATTEMPTS",
+    "DEFAULT_WALLET_DAILY_LIMIT_MINOR",
+    "DEFAULT_WALLET_EXPRESS_LIMIT_MINOR",
+    "DEFAULT_WALLET_QR_TTL_SECONDS",
+    "DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE",
     "LOAN_MAX_AMOUNT_MINOR_KEY",
     "LOAN_MAX_AMOUNT_PROFILE_TEMPLATE",
     "LOAN_MAX_DEBT_MINOR_KEY",
     "LOAN_MAX_DTI_RATIO_KEY",
     "LOAN_MIN_SCORE_KEY",
+    "LOAN_REMINDER_DAYS_BEFORE_KEY",
     "LOAN_REVIEW_MARGIN_KEY",
     "SEEDED_PROFILES",
+    "WALLET_DAILY_LIMIT_MINOR_KEY",
+    "WALLET_EXPRESS_LIMIT_MINOR_KEY",
+    "WALLET_QR_TTL_SECONDS_KEY",
+    "WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY",
     "ParameterError",
     "ParameterNotFoundError",
     "ParameterValidationError",
@@ -126,9 +174,14 @@ __all__ = [
     "get_loan_max_dti_ratio",
     "get_loan_min_score",
     "get_loan_params",
+    "get_loan_reminder_days_before",
     "get_loan_review_margin",
     "get_max_failed_attempts",
     "get_parameter",
+    "get_wallet_daily_limit_minor",
+    "get_wallet_express_limit_minor",
+    "get_wallet_qr_ttl_seconds",
+    "get_wallet_service_reminder_days_before",
     "loan_amount_key_for_profile",
     "set_parameter",
 ]

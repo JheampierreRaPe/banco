@@ -208,6 +208,175 @@ def is_risk_security_wired(bus: Any | None = None) -> bool:
         return False
 
 
+# ------------------------------------------------- Cableado E6-T14
+# Cadena "no reconozco" (HU22): `notifications` emite
+# `security.operation_reported` -> `risk` escala (severidad + auditoria
+# + `fraud.alert.raised`) -> `identity` bloquea (revoca sesiones).
+# Cada consumidor es D-04 (sesion/`commit` propios, idempotente por
+# `processed_events`); aqui solo se suscriben al bus, sin logica.
+
+
+def subscribe_unrecognized_reports(bus: Any | None = None) -> Any:
+    """Suscribe `on_unrecognized_operation_reported` al bus (E6-T14).
+
+    Idempotente: si el handler ya esta registrado no lo duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna el
+    handler registrado.
+    """
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_unrecognized_operation_reported
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers = list(
+        getattr(bus, "_handlers", {}).get(domain_events.SECURITY_OPERATION_REPORTED, [])
+    )
+    if on_unrecognized_operation_reported not in handlers:
+        bus.subscribe(domain_events.SECURITY_OPERATION_REPORTED, on_unrecognized_operation_reported)
+    return on_unrecognized_operation_reported
+
+
+def is_unrecognized_reports_wired(bus: Any | None = None) -> bool:
+    """`True` si el consumidor del reporte ya esta suscrito al bus."""
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_unrecognized_operation_reported
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        return bus.handler_count(domain_events.SECURITY_OPERATION_REPORTED) > 0 and (
+            on_unrecognized_operation_reported
+            in bus._handlers.get(domain_events.SECURITY_OPERATION_REPORTED, [])
+        )
+    except AttributeError:
+        return False
+
+
+def subscribe_channel_lock(bus: Any | None = None) -> Any:
+    """Suscribe `on_fraud_alert_raised` al bus (E6-T14, bloqueo).
+
+    Idempotente: si el handler ya esta registrado no lo duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna el
+    handler registrado.
+    """
+    from app.core import events as domain_events
+    from app.modules.identity.events import on_fraud_alert_raised
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers = list(getattr(bus, "_handlers", {}).get(domain_events.FRAUD_ALERT_RAISED, []))
+    if on_fraud_alert_raised not in handlers:
+        bus.subscribe(domain_events.FRAUD_ALERT_RAISED, on_fraud_alert_raised)
+    return on_fraud_alert_raised
+
+
+def is_channel_lock_wired(bus: Any | None = None) -> bool:
+    """`True` si el consumidor de bloqueo ya esta suscrito al bus."""
+    from app.core import events as domain_events
+    from app.modules.identity.events import on_fraud_alert_raised
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        return bus.handler_count(domain_events.FRAUD_ALERT_RAISED) > 0 and (
+            on_fraud_alert_raised in bus._handlers.get(domain_events.FRAUD_ALERT_RAISED, [])
+        )
+    except AttributeError:
+        return False
+
+
+# ------------------------------------------------- Cableado A1 (HU22 CA-01)
+# Alertas de seguridad multicanal E2E: `notifications` consume los eventos
+# de negocio sensibles ya emitidos por `outbox` y el login (solo correo
+# de respaldo: el push lo emite `risk`/E2-T20, sin duplicar). Cada
+# consumidor es D-04 (sesion/`commit` propios, idempotente por
+# `processed_events`); aqui solo se suscriben al bus, sin logica, mas el
+# registro del resolutor del correo del titular (A3, fachada
+# `holder_contact`, D-03: `composition` SI puede importar `identity`;
+# `notifications/service` no, por frontera).
+
+
+def wire_security_email_resolver() -> Any:
+    """Registra el resolutor del correo de respaldo (A3, HU22).
+
+    Idempotente. Import perezoso a `identity.service.holder_contact`
+    (D-03, mismo patron que la copia certificada de HU11 en `credits`).
+    Retorna el resolutor registrado (o `None` si `identity` no esta
+    disponible: rige el fallback `str(user_id)` del servicio).
+    """
+    try:
+        from app.modules.identity.service import holder_contact as _holder_contact
+    except ImportError:
+        return None
+    try:
+        from app.modules.notifications import service as _notifications_service
+    except ImportError:  # pragma: no cover - el modulo existe en el repo
+        return None
+    _notifications_service.set_security_email_resolver(_holder_contact.get_holder_email)
+    return _holder_contact.get_holder_email
+
+
+def subscribe_security_alerts(bus: Any | None = None) -> Any:
+    """Suscribe las alertas de seguridad multicanal al bus (A1, HU22).
+
+    Idempotente: no duplica handlers ya registrados. Suscribe
+    `notifications.events.on_auth_failed_attempt` (solo correo) a
+    `auth.failed_attempt` y `on_sensitive_business_event` (push +
+    correo) a cada evento de `SENSITIVE_BUSINESS_EVENTS`, y registra el
+    resolutor del correo (A3). `bus` por defecto es el bus global.
+    Retorna el handler de negocio registrado.
+    """
+    from app.core import events as domain_events
+    from app.modules.notifications import events as notifications_events
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    wire_security_email_resolver()
+    login_handlers = list(getattr(bus, "_handlers", {}).get(domain_events.AUTH_FAILED_ATTEMPT, []))
+    if notifications_events.on_auth_failed_attempt not in login_handlers:
+        bus.subscribe(
+            domain_events.AUTH_FAILED_ATTEMPT, notifications_events.on_auth_failed_attempt
+        )
+    for event_type in notifications_events.SENSITIVE_BUSINESS_EVENTS:
+        handlers = list(getattr(bus, "_handlers", {}).get(event_type, []))
+        if notifications_events.on_sensitive_business_event not in handlers:
+            bus.subscribe(event_type, notifications_events.on_sensitive_business_event)
+    return notifications_events.on_sensitive_business_event
+
+
+def is_security_alerts_wired(bus: Any | None = None) -> bool:
+    """`True` si las alertas de seguridad estan suscritas (A1)."""
+    from app.core import events as domain_events
+    from app.modules.notifications import events as notifications_events
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        handlers = getattr(bus, "_handlers", {})
+        if notifications_events.on_auth_failed_attempt not in handlers.get(
+            domain_events.AUTH_FAILED_ATTEMPT, []
+        ):
+            return False
+        return all(
+            notifications_events.on_sensitive_business_event in handlers.get(event_type, [])
+            for event_type in notifications_events.SENSITIVE_BUSINESS_EVENTS
+        )
+    except AttributeError:
+        return False
+
+
 def run_outbox_once(
     *,
     session_factory: Any | None = None,
@@ -299,18 +468,492 @@ def start_outbox_worker(
     return thread, stop_event
 
 
+# ------------------------------------------------- Jobs E3-T19 (HU12 CA-03/CA-04)
+# Debito automatico + recordatorios de cuota (`credits/jobs`). Cada job
+# gestiona su propio `commit` por item (idempotentes y re-ejecutables);
+# aqui solo se abre/cierra la sesion y se leen los flags de entorno
+# (regla de oro 6: encendido y periodicidad fuera del codigo). No se
+# toca `liveness`/`lifespan`: el despliegue registra
+# `start_credit_loan_jobs_worker` o invoca `run_credit_loan_jobs_once`
+# desde su programador (cron); los tests llaman a los `run_*_once`
+# directamente con su sesion.
+
+
+def credit_loan_jobs_enabled() -> bool:
+    """Interruptor general de los jobs de cuotas (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("CREDIT_LOAN_JOBS_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def credit_loan_auto_debit_enabled() -> bool:
+    """Interruptor del debito automatico (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("CREDIT_LOANS_AUTO_DEBIT_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def credit_loan_reminders_enabled() -> bool:
+    """Interruptor de los recordatorios (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("CREDIT_LOANS_REMINDERS_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def credit_loan_jobs_interval_seconds() -> float:
+    """Periodicidad del worker en segundos (env, defecto 3600 s)."""
+    import os as _os
+
+    try:
+        return max(1.0, float(_os.getenv("CREDIT_LOANS_JOBS_INTERVAL_SECONDS", "3600")))
+    except ValueError:
+        return 3600.0
+
+
+def run_credit_loan_jobs_once(
+    *,
+    session_factory: Any | None = None,
+    today: Any | None = None,
+    auto_debit: bool | None = None,
+    reminders: bool | None = None,
+    limit: int = 100,
+    sender: Any | None = None,
+) -> dict[str, Any]:
+    """Una pasada de los jobs de cuotas con sesion propia (E3-T19).
+
+    Ejecuta el debito automatico y/o los recordatorios segun los
+    flags (parametro explicito o env `CREDIT_LOANS_*_ENABLED`); cada
+    job confirma por item con su propio `commit`. Retorna
+    `{"auto_debit": {...} | {"skipped": ...}, "reminders": {...} |
+    {"skipped": ...}}`. Ante un fallo fuera de los items se revierte
+    y re-lanza (los items ya confirmados quedan; el reintento los
+    omite por idempotencia).
+    """
+    from app.modules.credits.jobs.auto_debit import run_auto_debit_once
+    from app.modules.credits.jobs.installment_reminders import run_installment_reminders_once
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    run_debit = credit_loan_auto_debit_enabled() if auto_debit is None else bool(auto_debit)
+    run_remind = credit_loan_reminders_enabled() if reminders is None else bool(reminders)
+    if not credit_loan_jobs_enabled():
+        run_debit = False
+        run_remind = False
+    session = session_factory()
+    try:
+        result: dict[str, Any] = {}
+        result["auto_debit"] = (
+            run_auto_debit_once(session, today=today, limit=limit, sender=sender)
+            if run_debit
+            else {"skipped": "disabled"}
+        )
+        result["reminders"] = (
+            run_installment_reminders_once(session, today=today, limit=limit, sender=sender)
+            if run_remind
+            else {"skipped": "disabled"}
+        )
+        return result
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def start_credit_loan_jobs_worker(
+    *,
+    session_factory: Any | None = None,
+    interval_seconds: float | None = None,
+    stop_event: Any | None = None,
+    **run_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Arranca el worker periodico de los jobs de cuotas en hilo daemon (E3-T19).
+
+    Cada ciclo es `run_credit_loan_jobs_once` (sesion/`commit`
+    propios); los errores del ciclo se tragan (best-effort) para no
+    matar el hilo. Retorna `(thread, stop_event)`; fijar `stop_event`
+    detiene el ciclo. No bloquea al llamante. `interval_seconds` lo
+    fija el arranque desde entorno (`credit_loan_jobs_interval_seconds`).
+    """
+    import threading as _threading
+
+    if interval_seconds is None:
+        interval_seconds = credit_loan_jobs_interval_seconds()
+    if stop_event is None:
+        stop_event = _threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            try:
+                run_credit_loan_jobs_once(
+                    session_factory=session_factory,
+                    **run_kwargs,
+                )
+            except Exception:  # noqa: BLE001, S112 - el worker nunca muere
+                continue
+
+    thread = _threading.Thread(
+        name="credit-loan-jobs",
+        target=_loop,
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event
+
+
+# ------------------------------------------------- Jobs E4-T07 (HU14 CA-02) + R-1 (HU15)
+# Caducidad del QR (`wallet/jobs/qr_expiry.py`) + reconciliacion del
+# cobro (`wallet/jobs/qr_reconcile.py`). Cada job gestiona su propio
+# `commit` por item (idempotentes y re-ejecutables); aqui solo se
+# abre/cierra la sesion y se leen los flags de entorno (regla de oro 6:
+# encendido y periodicidad fuera del codigo). Ninguno mueve dinero (la
+# caducidad solo toca `status` de `qr_charges`; la reconciliacion solo
+# cierra cobros cuya operacion del motor ya liquido). El despliegue
+# registra `start_wallet_qr_jobs_worker` o invoca
+# `run_wallet_qr_jobs_once` desde su programador (cron); los tests
+# llaman a los `run_*_once` directamente con su sesion.
+
+
+def wallet_qr_jobs_enabled() -> bool:
+    """Interruptor general de los jobs de QR (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("WALLET_QR_JOBS_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def wallet_qr_expiry_enabled() -> bool:
+    """Interruptor de la caducidad (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("WALLET_QR_EXPIRY_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def wallet_qr_reconcile_enabled() -> bool:
+    """Interruptor de la reconciliacion del cobro (R-1, `1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("WALLET_QR_RECONCILE_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def wallet_qr_jobs_interval_seconds() -> float:
+    """Periodicidad del worker en segundos (env, defecto 60 s).
+
+    Barrido corto frente al TTL (`wallet.qr_ttl_seconds`, 300 s) para
+    que un vencido quede `EXPIRED` sin esperar al siguiente ciclo
+    (la defensa on-read `is_charge_valid` cubre el intermedio).
+    """
+    import os as _os
+
+    try:
+        return max(1.0, float(_os.getenv("WALLET_QR_JOBS_INTERVAL_SECONDS", "60")))
+    except ValueError:
+        return 60.0
+
+
+def run_wallet_qr_jobs_once(
+    *,
+    session_factory: Any | None = None,
+    now: Any | None = None,
+    limit: int = 100,
+    expiry: bool | None = None,
+    reconcile: bool | None = None,
+) -> dict[str, Any]:
+    """Una pasada de los jobs de QR con sesion propia (E4-T07 + R-1).
+
+    Ejecuta la caducidad y/o la reconciliacion segun los flags
+    (parametro explicito o env `WALLET_QR_EXPIRY_ENABLED` /
+    `WALLET_QR_RECONCILE_ENABLED`); cada job confirma por item con su
+    propio `commit`. La reconciliacion corre **antes** que la caducidad:
+    un cobro autorizado (`Transaction` `SETTLED`) se cierra a `PAID`
+    antes de que el vencimiento pueda pasarlo a `EXPIRED` sin aviso
+    (R-1). Retorna `{"qr_reconcile": {...} | {"skipped": "disabled"},
+    "qr_expiry": {...} | {"skipped": "disabled"}}`. Ante un fallo fuera
+    de los items se revierte y re-lanza (los items ya confirmados
+    quedan; el reintento los omite por idempotencia).
+    """
+    from app.modules.wallet.jobs.qr_expiry import run_qr_expiry_once
+    from app.modules.wallet.jobs.qr_reconcile import run_qr_reconcile_once
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    run_expiry = wallet_qr_expiry_enabled() if expiry is None else bool(expiry)
+    run_reconcile = wallet_qr_reconcile_enabled() if reconcile is None else bool(reconcile)
+    if not wallet_qr_jobs_enabled():
+        run_expiry = False
+        run_reconcile = False
+    session = session_factory()
+    try:
+        result: dict[str, Any] = {}
+        result["qr_reconcile"] = (
+            run_qr_reconcile_once(session, limit=limit)
+            if run_reconcile
+            else {"skipped": "disabled"}
+        )
+        result["qr_expiry"] = (
+            run_qr_expiry_once(session, now=now, limit=limit)
+            if run_expiry
+            else {"skipped": "disabled"}
+        )
+        return result
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def start_wallet_qr_jobs_worker(
+    *,
+    session_factory: Any | None = None,
+    interval_seconds: float | None = None,
+    stop_event: Any | None = None,
+    **run_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Arranca el worker periodico de los jobs de QR en hilo daemon (E4-T07 + R-1).
+
+    Cada ciclo es `run_wallet_qr_jobs_once` (sesion/`commit`
+    propios: reconciliacion del cobro y luego caducidad); los errores
+    del ciclo se tragan (best-effort) para no matar el hilo. Retorna
+    `(thread, stop_event)`; fijar `stop_event` detiene el ciclo. No
+    bloquea al llamante. `interval_seconds` lo fija el arranque desde
+    entorno (`wallet_qr_jobs_interval_seconds`).
+    """
+    import threading as _threading
+
+    if interval_seconds is None:
+        interval_seconds = wallet_qr_jobs_interval_seconds()
+    if stop_event is None:
+        stop_event = _threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            try:
+                run_wallet_qr_jobs_once(
+                    session_factory=session_factory,
+                    **run_kwargs,
+                )
+            except Exception:  # noqa: BLE001, S112 - el worker nunca muere
+                continue
+
+    thread = _threading.Thread(
+        name="wallet-qr-jobs",
+        target=_loop,
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event
+
+
+# ------------------------------------------------- Jobs E4-T18 (HU16 CA-03)
+# Recordatorio de vencimiento de servicios (`wallet/jobs/
+# service_reminders.py`). El job gestiona su propio `commit` por item
+# (idempotente y re-ejecutable); aqui solo se abre/cierra la sesion y
+# se leen los flags de entorno (regla de oro 6: encendido y
+# periodicidad fuera del codigo). No mueve dinero (solo un push
+# best-effort por la fachada `notifications.send`, sin PII). El
+# despliegue registra `start_wallet_service_jobs_worker` o invoca
+# `run_wallet_service_jobs_once` desde su programador (cron); los
+# tests llaman a `run_service_reminders_once` directamente con su
+# sesion.
+
+
+def wallet_service_jobs_enabled() -> bool:
+    """Interruptor general de los jobs de servicios (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("WALLET_SERVICE_JOBS_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def wallet_service_reminders_enabled() -> bool:
+    """Interruptor de los recordatorios (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("WALLET_SERVICE_REMINDERS_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def wallet_service_jobs_interval_seconds() -> float:
+    """Periodicidad del worker en segundos (env, defecto 3600 s)."""
+    import os as _os
+
+    try:
+        return max(1.0, float(_os.getenv("WALLET_SERVICE_JOBS_INTERVAL_SECONDS", "3600")))
+    except ValueError:
+        return 3600.0
+
+
+def run_wallet_service_jobs_once(
+    *,
+    session_factory: Any | None = None,
+    now: Any | None = None,
+    limit: int = 100,
+    reminders: bool | None = None,
+    sender: Any | None = None,
+) -> dict[str, Any]:
+    """Una pasada de los jobs de servicios con sesion propia (E4-T18).
+
+    Ejecuta los recordatorios segun el flag (parametro explicito o
+    env `WALLET_SERVICE_REMINDERS_ENABLED`); el job confirma por item
+    con su propio `commit`. Retorna `{"reminders": {...} |
+    {"skipped": "disabled"}}`. Ante un fallo fuera de los items se
+    revierte y re-lanza (los items ya confirmados quedan; el reintento
+    los omite por idempotencia).
+    """
+    from app.modules.wallet.jobs.service_reminders import run_service_reminders_once
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    run_remind = wallet_service_reminders_enabled() if reminders is None else bool(reminders)
+    if not wallet_service_jobs_enabled():
+        run_remind = False
+    session = session_factory()
+    try:
+        result: dict[str, Any] = {}
+        result["reminders"] = (
+            run_service_reminders_once(session, now=now, limit=limit, sender=sender)
+            if run_remind
+            else {"skipped": "disabled"}
+        )
+        return result
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def start_wallet_service_jobs_worker(
+    *,
+    session_factory: Any | None = None,
+    interval_seconds: float | None = None,
+    stop_event: Any | None = None,
+    **run_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Arranca el worker periodico de los jobs de servicios en hilo daemon (E4-T18).
+
+    Cada ciclo es `run_wallet_service_jobs_once` (sesion/`commit`
+    propios); los errores del ciclo se tragan (best-effort) para no
+    matar el hilo. Retorna `(thread, stop_event)`; fijar `stop_event`
+    detiene el ciclo. No bloquea al llamante. `interval_seconds` lo
+    fija el arranque desde entorno (`wallet_service_jobs_interval_seconds`).
+    """
+    import threading as _threading
+
+    if interval_seconds is None:
+        interval_seconds = wallet_service_jobs_interval_seconds()
+    if stop_event is None:
+        stop_event = _threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            try:
+                run_wallet_service_jobs_once(
+                    session_factory=session_factory,
+                    **run_kwargs,
+                )
+            except Exception:  # noqa: BLE001, S112 - el worker nunca muere
+                continue
+
+    thread = _threading.Thread(
+        name="wallet-service-jobs",
+        target=_loop,
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event
+
+
 __all__ = [
+    "credit_loan_auto_debit_enabled",
+    "credit_loan_jobs_enabled",
+    "credit_loan_jobs_interval_seconds",
+    "credit_loan_reminders_enabled",
     "get_account_projection_port",
     "get_balance_port",
     "get_default_ports",
+    "is_channel_lock_wired",
     "is_movements_wired",
     "is_risk_security_wired",
+    "is_security_alerts_wired",
+    "is_unrecognized_reports_wired",
     "is_wired",
     "resolve_account_projection",
     "resolve_balance_port",
+    "run_credit_loan_jobs_once",
     "run_outbox_once",
+    "run_wallet_qr_jobs_once",
+    "run_wallet_service_jobs_once",
+    "start_credit_loan_jobs_worker",
     "start_outbox_worker",
+    "start_wallet_qr_jobs_worker",
+    "start_wallet_service_jobs_worker",
     "subscribe_accounts_movements",
+    "subscribe_channel_lock",
     "subscribe_risk_security",
+    "subscribe_security_alerts",
+    "subscribe_unrecognized_reports",
+    "wallet_qr_expiry_enabled",
+    "wallet_qr_jobs_enabled",
+    "wallet_qr_jobs_interval_seconds",
+    "wallet_qr_reconcile_enabled",
+    "wallet_service_jobs_enabled",
+    "wallet_service_jobs_interval_seconds",
+    "wallet_service_reminders_enabled",
     "wire_ports",
+    "wire_security_email_resolver",
 ]

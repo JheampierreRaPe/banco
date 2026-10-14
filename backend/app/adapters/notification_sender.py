@@ -412,3 +412,62 @@ class GmailNotificationSender:
                 "recipient debe ser un email valido (ej. 'usuario@dominio.com')"
             )
         return to
+
+
+class PushNotificationSender(MockNotificationSender):
+    """Proveedor push mock desacoplado por canal (E6-T13, HU22).
+
+    Extiende `MockNotificationSender` (sin duplicar el registro en memoria ni
+    el formato de `provider_ref` `mock-push-...`): solo atiende el canal
+    `push` y anade guiones deterministas de caida (`mode`), siempre sin red:
+
+    - `ok` (default): `SendResult(ok=True, provider_ref="mock-push-...")`.
+    - `down`: caida blanda -> `SendResult(ok=False, error=...)` (la fachada
+      deja la fila `FAILED`/reimpulsable sin excepcion).
+    - `timeout`: caida dura -> lanza `NotificationProviderError`
+      (reintentable por la fachada).
+
+    Otro canal -> `NotificationValidationError` (no reintentable), igual que
+    `GmailNotificationSender`/`TwilioNotificationSender` con el suyo. Los
+    logs solo incluyen canal y `provider_ref`/error (sin PII). El proveedor
+    push real futuro implementa el mismo Protocol `NotificationSender` sin
+    tocar el modulo; el seam HTTP sigue el patron de `docs/02#9` (timeout,
+    reintentos, circuit breaker en la fachada/HTTP, nunca aqui).
+    """
+
+    PUSH_MODES = ("ok", "down", "timeout")
+
+    def __init__(self, *, mode: str = "ok") -> None:
+        super().__init__()
+        self.set_mode(mode)
+
+    # -- configuracion del simulacro -------------------------------------
+    def set_mode(self, mode: str) -> None:
+        """Fija el guion determinista (`ok`/`down`/`timeout`)."""
+        normalized = str(mode or "ok").strip().lower() or "ok"
+        if normalized not in self.PUSH_MODES:
+            raise ValueError(f"mode debe ser uno de {self.PUSH_MODES}, recibido: {mode!r}")
+        self._mode = normalized
+
+    @property
+    def mode(self) -> str:
+        """Guion vigente (`ok`/`down`/`timeout`)."""
+        return self._mode
+
+    # -- contrato ---------------------------------------------------------
+    def send(self, *, channel: str, recipient: str, subject: str | None, body: str) -> SendResult:
+        if channel != "push":
+            raise NotificationValidationError(
+                f"PushNotificationSender solo atiende canal 'push', recibido: {channel!r}"
+            )
+        if self._mode == "timeout":
+            logger.warning("notifications.push.timeout channel=%s", channel)
+            raise NotificationProviderError("push no disponible (timeout simulado)")
+        if self._mode == "down":
+            error = "push no disponible (caida simulada)"
+            self.calls.append(
+                {"channel": channel, "ok": False, "provider_ref": None, "error": error}
+            )
+            logger.warning("notifications.push.failed channel=%s error=%s", channel, error)
+            return SendResult(ok=False, error=error)
+        return super().send(channel=channel, recipient=recipient, subject=subject, body=body)

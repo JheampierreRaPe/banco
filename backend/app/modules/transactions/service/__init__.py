@@ -315,6 +315,49 @@ def _coerce_optional_user(value: uuid.UUID | str | None) -> uuid.UUID | None:
         raise ValueError(f"initiator_user_id debe ser UUID, recibido: {value!r}") from exc
 
 
+def find_by_idempotency_key(
+    session: Session,
+    key: str,
+    *,
+    initiator_user_id: uuid.UUID | str | None = None,
+) -> Transaction | None:
+    """Fachada de lectura por `Idempotency-Key` acotada al titular (frontera).
+
+    Envuelve `transactions.repository.get_by_idempotency_key` para que
+    otros modulos (p. ej. `wallet.service.express`) resuelvan el replay
+    sin importar el repositorio ajeno (regla de oro 4). Solo lectura
+    (sin `flush`/`commit`); `None` si no existe.
+    """
+    return tx_repository.get_by_idempotency_key(
+        session,
+        key,
+        initiator_user_id=_coerce_optional_user(initiator_user_id),
+    )
+
+
+def find_transaction_by_id(
+    session: Session,
+    transaction_id: uuid.UUID | str,
+) -> Transaction | None:
+    """Fachada de lectura por id de `Transaction` (frontera, R-1).
+
+    Envuelve `transactions.repository.get_transaction` para que otros
+    modulos (p. ej. el job `wallet/jobs/qr_reconcile.py`) lean el estado
+    de la operacion del motor sin importar el repositorio ajeno (regla
+    de oro 4, patron M-1). Solo lectura (sin `flush`/`commit`); `None`
+    si no existe o el id es malformado.
+    """
+    try:
+        wanted = (
+            transaction_id
+            if isinstance(transaction_id, uuid.UUID)
+            else uuid.UUID(str(transaction_id))
+        )
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return tx_repository.get_transaction(session, wanted)
+
+
 def _resolve_beneficiary_id(
     explicit: uuid.UUID | str | None, metadata: dict[str, Any] | None
 ) -> uuid.UUID | str | None:
@@ -611,11 +654,16 @@ def _settle_held_phase(
     currency: str,
     port: BalancePort,
     settle: bool,
+    device_id: str | None = None,
 ) -> Transaction:
     """Liquidacion de un hold ya en `POSTED` (`2100-S -> 2000-D` + fee a `4100`).
 
     Con `settle=False` (diferida, `04#7.3`) se detiene en `POSTED` con el
     hold `ACTIVE`. Solo `flush`.
+
+    A1/HU22: el `transfer.settled` lleva `user_id` (titular) y
+    `device_id` (si el llamante lo conoce) para que el consumidor de
+    alertas dispare push + correo sin importar otros modulos.
     """
     if not settle:
         return tx
@@ -665,6 +713,8 @@ def _settle_held_phase(
             "fee_minor": fee_minor,
             "currency": currency,
             "status": "SETTLED",
+            "user_id": str(tx.initiator_user_id) if tx.initiator_user_id is not None else None,
+            "device_id": device_id,
         },
     )
     return tx
@@ -736,6 +786,7 @@ def continue_from_authorized(
     port: BalancePort | None = None,
     balance_port: BalancePort | None = None,
     reuse_hold: bool = False,
+    device_id: str | None = None,
 ) -> Transaction:
     """Continua una operacion `AUTHORIZED` (motor o `authorize` biometrico).
 
@@ -795,6 +846,7 @@ def continue_from_authorized(
                 currency=currency,
                 port=active_port,
                 settle=settle if resume_settle is None else bool(resume_settle),
+                device_id=device_id,
             )
             return tx
 
@@ -847,6 +899,10 @@ def continue_from_authorized(
                     "fee_minor": 0,
                     "currency": currency,
                     "status": "SETTLED",
+                    "user_id": (
+                        str(tx.initiator_user_id) if tx.initiator_user_id is not None else None
+                    ),
+                    "device_id": device_id,
                 },
             )
             return tx
@@ -878,6 +934,7 @@ def continue_from_authorized(
             currency=currency,
             port=active_port,
             settle=settle,
+            device_id=device_id,
         )
         return tx
     except Exception:  # noqa: BLE001 - cleanup best-effort y re-lanza (finally: raise)
@@ -1041,6 +1098,7 @@ def execute_transfer(
             settle=settle,
             atomic=atomic,
             port=port,
+            device_id=device_id,
         )
     except Exception:  # noqa: BLE001 - cleanup best-effort y re-lanza (finally: raise)
         # Fallo tecnico en el prefijo (creacion, gate o retencion en
@@ -1321,7 +1379,15 @@ __all__ = [
     "DEFAULT_BALANCE_PORT",
     "FEE_ACCOUNT_CODE",
     "HOLD_ENTRY_TYPE",
+    "INSUFFICIENT_FUNDS",
+    "INSURANCE_ACCOUNT_CODE",
+    "INTEREST_ACCOUNT_CODE",
+    "LOAN_DISBURSEMENT_ENTRY_TYPE",
+    "LOAN_DISBURSEMENT_TX_TYPE",
+    "LOAN_INSTALLMENT_ENTRY_TYPE",
+    "LOAN_INSTALLMENT_TX_TYPE",
     "OWN_SETTLE_ENTRY_TYPE",
+    "PORTFOLIO_ACCOUNT_CODE",
     "SETTLE_ENTRY_TYPE",
     "THIRD_PARTY_FEE_DEFAULT_MINOR",
     "THIRD_PARTY_FEE_PARAM_KEY",
@@ -1331,17 +1397,31 @@ __all__ = [
     "BalancePort",
     "BalanceView",
     "CurrencyMismatchError",
+    "DisbursementConflictError",
+    "DisbursementError",
+    "DisbursementNotFoundError",
+    "DisbursementValidationError",
     "HolderLookupProvider",
     "HolderLookupTimeoutError",
     "HolderLookupUnavailableError",
     "HolderNotFoundError",
+    "LoanPaymentConflictError",
+    "LoanPaymentError",
+    "LoanPaymentNotFoundError",
+    "LoanPaymentValidationError",
     "TransferError",
     "biometric",
     "clear_holder_cache",
     "continue_from_authorized",
     "create_holder_lookup_provider",
+    "disburse_loan",
     "execute_transfer",
+    "find_by_idempotency_key",
+    "find_disbursement_tx",
+    "find_transaction_by_id",
     "hold_src_hold_id",
+    "mask_account_number",
+    "pay_loan_installment",
     "resolve_third_party_fee",
     "resolve_third_party_target_id",
     "transfer_interbank",
@@ -1354,16 +1434,52 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Re-export perezoso de la saga interbancaria (E2-T09).
+    """Re-export perezoso de la saga interbancaria (E2-T09), del desembolso (E3-T17)
+    y del pago de cuota (E3-T20).
 
-    `service/interbank.py` no se importa a nivel top para evitar el ciclo
-    (`interbank` referencia este paquete de forma perezosa dentro de sus
-    funciones); se resuelve bajo demanda y se cachea en el modulo.
+    `service/interbank.py`, `service/disbursement.py` y
+    `service/loan_payment.py` no se importan a nivel top para evitar el
+    ciclo (referencian este paquete de forma perezosa dentro de sus
+    funciones); se resuelven bajo demanda y se cachean en el modulo.
     """
     if name in ("transfer_interbank", "validate_interbank_parties"):
         from app.modules.transactions.service import interbank as _interbank
 
         value = getattr(_interbank, name)
+        globals()[name] = value
+        return value
+    if name in (
+        "LOAN_DISBURSEMENT_ENTRY_TYPE",
+        "LOAN_DISBURSEMENT_TX_TYPE",
+        "PORTFOLIO_ACCOUNT_CODE",
+        "DisbursementConflictError",
+        "DisbursementError",
+        "DisbursementNotFoundError",
+        "DisbursementValidationError",
+        "disburse_loan",
+        "find_disbursement_tx",
+        "mask_account_number",
+    ):
+        from app.modules.transactions.service import disbursement as _disbursement
+
+        value = getattr(_disbursement, name)
+        globals()[name] = value
+        return value
+    if name in (
+        "LOAN_INSTALLMENT_ENTRY_TYPE",
+        "LOAN_INSTALLMENT_TX_TYPE",
+        "INSUFFICIENT_FUNDS",
+        "INTEREST_ACCOUNT_CODE",
+        "INSURANCE_ACCOUNT_CODE",
+        "LoanPaymentConflictError",
+        "LoanPaymentError",
+        "LoanPaymentNotFoundError",
+        "LoanPaymentValidationError",
+        "pay_loan_installment",
+    ):
+        from app.modules.transactions.service import loan_payment as _loan_payment
+
+        value = getattr(_loan_payment, name)
         globals()[name] = value
         return value
     raise AttributeError(f"modulo {__name__!r} sin atributo {name!r}")

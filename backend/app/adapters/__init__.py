@@ -10,9 +10,16 @@ from __future__ import annotations
 _LAZY = {
     "holder_lookup": "app.adapters.holder_lookup",
     "credit_bureau": "app.adapters.credit_bureau",
+    "wallet_interop": "app.adapters.wallet_interop",
+    "service_provider": "app.adapters.service_provider",
 }
 
-__all__ = ["create_credit_bureau_provider", "create_holder_lookup_provider"]
+__all__ = [
+    "create_credit_bureau_provider",
+    "create_holder_lookup_provider",
+    "create_service_provider",
+    "create_wallet_interop_provider",
+]
 
 
 def __getattr__(name: str):
@@ -22,6 +29,14 @@ def __getattr__(name: str):
         return factory
     if name == "create_credit_bureau_provider":
         from app.adapters.credit_bureau import create_credit_bureau_provider as factory
+
+        return factory
+    if name == "create_wallet_interop_provider":
+        from app.adapters.wallet_interop import create_wallet_interop_provider as factory
+
+        return factory
+    if name == "create_service_provider":
+        from app.adapters.service_provider import create_service_provider as factory
 
         return factory
     raise AttributeError(f"modulo {__name__!r} sin atributo {name!r}")

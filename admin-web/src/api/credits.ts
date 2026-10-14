@@ -17,20 +17,40 @@ import type {
   ReviewDecision,
 } from "../domain/types";
 
+// La bandeja (`status=IN_REVIEW`) NO expone un total real: el backend
+// devuelve `meta.total = len(items)` (tamaño de página) y topa `limit` a
+// 1..100 (`backend/.../credits/api/applications.py`). Por eso, para "cargar
+// más" se pagina por `offset` en bloques y `hasMore` indica si puede haber
+// filas siguientes (última página llena -> contador "50+").
+const REVIEW_PAGE_MAX = 100;
+
 export async function listReviewQueue(
   token: string,
-): Promise<{ items: LoanApplication[]; meta: PageMeta }> {
-  const { data, meta } = await apiFetch<LoanApplication[]>(
-    "/credits/applications?status=IN_REVIEW&limit=50&offset=0",
-    token,
-  );
+  limit = 50,
+): Promise<{ items: LoanApplication[]; meta: PageMeta; hasMore: boolean }> {
+  const items: LoanApplication[] = [];
+  let offset = 0;
+  let hasMore = false;
+  while (items.length < limit) {
+    const chunk = Math.min(REVIEW_PAGE_MAX, limit - items.length);
+    const { data } = await apiFetch<LoanApplication[]>(
+      `/credits/applications?status=IN_REVIEW&limit=${chunk}&offset=${offset}`,
+      token,
+    );
+    const page = Array.isArray(data) ? data : [];
+    items.push(...page);
+    offset += page.length;
+    if (page.length < chunk) {
+      hasMore = false;
+      break;
+    }
+    hasMore = true;
+    if (page.length === 0) break;
+  }
   return {
-    items: Array.isArray(data) ? data : [],
-    meta: {
-      total: Number(meta.total ?? (Array.isArray(data) ? data.length : 0)),
-      limit: Number(meta.limit ?? 50),
-      offset: Number(meta.offset ?? 0),
-    },
+    items,
+    meta: { total: items.length, limit, offset: 0 },
+    hasMore,
   };
 }
 

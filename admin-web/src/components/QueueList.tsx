@@ -27,7 +27,7 @@ export function QueueList({ items, total, selectedId, onSelect, productName }: P
                 {ref} - {product} {formatPEN(app.requested_amount_minor)}
               </p>
               <p className="row-sub">
-                Solicitante {maskRef(app.user_id)} - Doc. {maskRef(app.user_id)} -{" "}
+                Solicitante {maskRef(app.user_id)} -{" "}
                 {timeAgo(app.created_at)}
               </p>
               <span className="pill">

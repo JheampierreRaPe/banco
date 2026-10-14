@@ -34,6 +34,17 @@ Bandeja `EN_REVISION` + detalle enmascarado + dictamen manual, según
   `403` (sin rol) → pantalla denegada.
 - 4 estados de UI por pantalla (`docs/20#7`): contenido, carga (skeleton), vacío
   ("Sin expedientes por revisar"), error accionable + Reintentar.
+- Bandeja con **Refrescar** manual y refresco automático (30 s) cuando la última
+  carga fue buena; **sesión vencida** (`401 NOT_AUTHENTICATED`) ofrece
+  **"Volver a ingresar"** (hace `signOut`, limpia `sessionStorage` y vuelve a la
+  pantalla de sesión — sin bucle de reintentos con el token vencido).
+- **Cerrar sesión** disponible en la barra lateral (flujo normal).
+- Navegación no implementada ("Aprobados hoy", "Rechazados", "Auditoría") se
+  muestra **deshabilitada** con etiqueta "próximamente" (no parece activa).
+- Bandeja acotada a 50 por defecto con **"Cargar más"**: el backend no expone un
+  total real para la bandeja (`meta.total = tamaño de página`, `limit` topado a
+  100), así que el panel pagina por `offset` y muestra el contador como **"50+"**
+  cuando la última página vino llena (puede haber más).
 
 ## Levantar y probar
 
@@ -48,7 +59,7 @@ docker compose up --build -d   # desde la raíz; servicio `admin-web`
 
 # Calidad del panel
 cd admin-web
-npm test         # vitest: 14 pruebas (feliz, errores, enmascaramiento, 4 estados)
+npm test         # vitest: 23 pruebas (feliz, errores, 401→login, logout, refrescar, enmascaramiento, 4 estados, paginación 50+)
 npm run build    # tsc + build limpio (tsc es el lint del panel)
 ```
 

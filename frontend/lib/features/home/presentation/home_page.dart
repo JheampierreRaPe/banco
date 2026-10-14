@@ -27,12 +27,16 @@ import '../data/profile_service.dart';
 ///   **El cliente NUNCA suma saldos** (cliente delgado, `docs/19` §4/§8): el
 ///   monto se muestra tal cual responde el servidor; el ojo solo oculta el
 ///   texto en pantalla (estado local, sin recalcular ni llamar al servidor).
-/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers` y
-///   `Credito` a `/credits` (Sprint 2); `Cobrar QR`/`Recargar` y
-///   `Analizar`/campana siguen visuales -> "Proximamente". Bottom-nav:
-///   `Operar` (1) -> `/transfers`, `Perfil` (3) -> `/profile`; `Inicio` (0)
-///   es no-op (ya estamos en home) y `Tarjetas` (2) queda visual sin
-///   prometer accion (auditoria M5: sin SnackBar enganoso).
+/// - Quick-actions (`0:3082`): `Transferir` navega a `/transfers`,
+///   `Credito` a `/credits`, `Cobrar QR` a `/wallet/merchant-qr` y
+///   `Recargar` a `/wallet/topups` (C1, Sprint 3); `Analizar` es un
+///   marcador deshabilitado (no tappable, atenuado + badge/tooltip
+///   "Próximamente", sin SnackBar ni navegación) hasta que exista un
+///   destino real de análisis; no se apunta a `/movements` para no
+///   duplicar "Ver todos los movimientos". Bottom-nav:
+///   `Operar` (1) -> `/transfers`, `Tarjetas` (2) -> `/wallet` (C1),
+///   `Perfil` (3) -> `/profile`; `Inicio` (0)
+///   es no-op (ya estamos en home).
 /// - `MIS CUENTAS` (`0:3108`, de `GET /accounts`, pull-to-refresh) +
 ///   `ULTIMOS MOVIMIENTOS` (`0:3130`, preview de la primera cuenta,
 ///   `GET /accounts/{id}/movements`, pagina 1, 3 items) + banner
@@ -184,22 +188,17 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _soon(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Próximamente'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-
   void _onNavSelect(BuildContext context, int index) {
-    // Auditoria M5: Inicio (0) es no-op (ya estamos en `/home`); Operar
-    // (1) -> `/transfers`; Perfil (3) -> `/profile`. Tarjetas (2) queda
-    // visual sin prometer accion: sin SnackBar enganoso.
-    if (index == 0 || index == 2) return;
+    // `Inicio` (0) es no-op (ya estamos en `/home`); `Operar` (1) ->
+    // `/transfers`; `Tarjetas` (2) -> `/wallet` (C1: entrada real a la
+    // billetera); `Perfil` (3) -> `/profile`.
+    if (index == 0) return;
     if (index == 1) {
       context.push('/transfers');
+      return;
+    }
+    if (index == 2) {
+      context.push('/wallet');
       return;
     }
     if (index == 3) {
@@ -216,7 +215,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             _HomeHeader(
               profileService: widget.profileService,
-              onSoon: () => _soon(context),
+              onBell: () => context.push('/notifications'),
             ),
             Expanded(
               child: FutureBuilder<List<Account>>(
@@ -231,7 +230,7 @@ class _HomePageState extends State<HomePage> {
                     final error = snapshot.error;
                     final message = error is ApiException
                         ? error.message
-                        : 'Ocurrio un error inesperado. Intentalo mas tarde.';
+                        : 'Ocurrió un error inesperado. Inténtalo más tarde.';
                     return ErrorView(message: message, onRetry: _retry);
                   }
                   final accounts = snapshot.data ?? const <Account>[];
@@ -243,7 +242,7 @@ class _HomePageState extends State<HomePage> {
                         children: const [
                           SizedBox(height: 120),
                           EmptyView(
-                            message: 'Aun no tienes cuentas.',
+                            message: 'Aún no tienes cuentas.',
                           ),
                         ],
                       ),
@@ -257,7 +256,6 @@ class _HomePageState extends State<HomePage> {
                       children: [
                         _TotalsHero(
                           totalsFuture: _totalsFuture,
-                          onSoon: () => _soon(context),
                         ),
                         const SizedBox(height: AppSpacing.stackMd),
                         const _QuickActions(),
@@ -271,6 +269,13 @@ class _HomePageState extends State<HomePage> {
                           service: widget.service!,
                           account: accounts.first,
                         ),
+                        const SizedBox(height: AppSpacing.stackMd),
+                        // C1: entrada real a `/wallet` (card compacta). Va
+                        // DEBAJO del preview de movimientos a proposito: el
+                        // preview debe seguir construyendose en el primer
+                        // layout (cacheExtent del `ListView`) para que el
+                        // re-entrar a `/home` lo recargue (E2-T35).
+                        const _WalletCard(),
                         const SizedBox(height: AppSpacing.stackMd),
                         const _SecurityBanner(),
                       ],
@@ -295,13 +300,13 @@ class _HomePageState extends State<HomePage> {
 /// Avatar ocre con las iniciales del titular de `GET /me`; el avatar es el
 /// acceso a `/profile` (key `homeProfile`, area tactil 48px, F-T52).
 /// Sin perfil (servicio `null` o error): fallback generico `Hola` sin PII
-/// (mantiene `router_test.dart` en verde). La campana es visual
-/// ("Proximamente").
+/// (mantiene `router_test.dart` en verde). La campana (key `homeBell`)
+/// navega a `/notifications` (C1: centro del titular, ruta real).
 class _HomeHeader extends StatefulWidget {
-  const _HomeHeader({required this.profileService, required this.onSoon});
+  const _HomeHeader({required this.profileService, required this.onBell});
 
   final ProfileServiceBase? profileService;
-  final VoidCallback onSoon;
+  final VoidCallback onBell;
 
   @override
   State<_HomeHeader> createState() => _HomeHeaderState();
@@ -413,7 +418,7 @@ class _HomeHeaderState extends State<_HomeHeader> {
                 height: 48,
                 child: IconButton(
                   key: const Key('homeBell'),
-                  onPressed: widget.onSoon,
+                  onPressed: widget.onBell,
                   padding: EdgeInsets.zero,
                   style: IconButton.styleFrom(
                     minimumSize: const Size(48, 48),
@@ -451,12 +456,14 @@ class _HomeHeaderState extends State<_HomeHeader> {
 /// `formatMinor` y el `as_of` del servidor (`Actualizado hoy • HH:MM`).
 /// **Jamas suma saldos en el cliente** (docs/19 §4/§8). Sin total disponible:
 /// estado neutro sin inventar montos. El ojo (`heroEye`) solo oculta/muestra
-/// el texto (estado local de UI).
+/// el texto (estado local de UI). `Analizar` (`heroAnalyze`) es un marcador
+/// deshabilitado: no es tappable, se muestra atenuado con badge/tooltip
+/// "Próximamente" (consistente con los ítems deshabilitados del panel
+/// `admin-web`) y no dispara SnackBar ni navegación.
 class _TotalsHero extends StatefulWidget {
-  const _TotalsHero({required this.totalsFuture, required this.onSoon});
+  const _TotalsHero({required this.totalsFuture});
 
   final Future<AccountsTotals> totalsFuture;
-  final VoidCallback onSoon;
 
   @override
   State<_TotalsHero> createState() => _TotalsHeroState();
@@ -573,13 +580,43 @@ class _TotalsHeroState extends State<_TotalsHero> {
                       ),
                     ),
                   ),
-                  GestureDetector(
-                    key: const Key('heroAnalyze'),
-                    onTap: widget.onSoon,
-                    child: Text(
-                      'Analizar ›',
-                      style: AppTypography.labelMd.copyWith(
-                        color: scheme.secondaryContainer,
+                  // Marcador deshabilitado (sin destino real de análisis):
+                  // no tappable, atenuado + badge/tooltip "Próximamente",
+                  // sin SnackBar ni navegación (no duplica `/movements`).
+                  Tooltip(
+                    message: 'Próximamente',
+                    child: Opacity(
+                      key: const Key('heroAnalyze'),
+                      opacity: 0.6,
+                      child: ExcludeSemantics(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Analizar',
+                              style: AppTypography.labelMd.copyWith(
+                                color: scheme.secondaryContainer,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: scheme.onPrimary.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                'Próximamente',
+                                style: AppTypography.labelSm.copyWith(
+                                  color: scheme.onPrimary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -595,8 +632,9 @@ class _TotalsHeroState extends State<_TotalsHero> {
 
 /// Fila de accesos rapidos del `dash` (`0:3082`).
 ///
-/// `Transferir` navega a `/transfers` y `Credito` a `/credits` (Sprint 2);
-/// el resto sigue siendo visual ("Proximamente"). `Cobrar QR` va destacado
+/// `Transferir` navega a `/transfers`, `Credito` a `/credits`,
+/// `Cobrar QR` a `/wallet/merchant-qr` y `Recargar` a `/wallet/topups`
+/// (C1: entradas reales, sin "Proximamente"). `Cobrar QR` va destacado
 /// en ocre.
 class _QuickActions extends StatelessWidget {
   const _QuickActions();
@@ -616,8 +654,20 @@ class _QuickActions extends StatelessWidget {
       'qa-creditos',
       '/credits',
     ),
-    (Icons.qr_code_2_outlined, 'Cobrar QR', true, 'qa-qr', null),
-    (Icons.smartphone_outlined, 'Recargar', false, 'qa-recargar', null),
+    (
+      Icons.qr_code_2_outlined,
+      'Cobrar QR',
+      true,
+      'qa-qr',
+      '/wallet/merchant-qr',
+    ),
+    (
+      Icons.smartphone_outlined,
+      'Recargar',
+      false,
+      'qa-recargar',
+      '/wallet/topups',
+    ),
   ];
 
   @override
@@ -637,7 +687,7 @@ class _QuickActions extends StatelessWidget {
               tileColor: item.$3
                   ? scheme.secondaryContainer
                   : AppColors.surfaceContainerLowest,
-              onTap: item.$5 == null ? null : () => context.push(item.$5!),
+              onTap: () => context.push(item.$5),
             ),
           ),
       ],
@@ -663,8 +713,9 @@ class _QuickAction extends StatelessWidget {
   final Color iconColor;
   final Color tileColor;
 
-  /// Accion real de navegacion (`Transferir`/`Credito` la definen; `null` =
-  /// visual con "Proximamente").
+  /// Accion real de navegacion (las 4 quick-actions la definen; `null` =
+  /// reserva defensiva con "Proximamente", sin ruta muerta de
+  /// wallet/notificaciones).
   final VoidCallback? onTap;
 
   @override
@@ -757,6 +808,68 @@ class _AgendaCard extends StatelessWidget {
                 const SizedBox(height: AppSpacing.unit),
                 Text(
                   'Agenda y contactos frecuentes',
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right,
+            color: AppColors.secondaryText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Acceso a la billetera (C1).
+///
+/// Punto de entrada a `/wallet` (la billetera ya tiene sus flujos QR,
+/// servicios y recargas): card compacta con `Key('home-wallet')` que no
+/// altera el `dash` (`0:3057`) ni las quick-actions existentes.
+class _WalletCard extends StatelessWidget {
+  const _WalletCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppCard(
+      onTap: () => context.push('/wallet'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.secondaryContainer,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            child: Icon(
+              Icons.account_balance_wallet_outlined,
+              size: 24,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Mi billetera',
+                  key: const Key('home-wallet'),
+                  style: AppTypography.bodyLg.copyWith(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.unit),
+                Text(
+                  'Cobros QR, recargas y servicios',
                   style: AppTypography.bodyMd.copyWith(
                     color: AppColors.secondaryText,
                   ),
@@ -1059,7 +1172,7 @@ class _LatestMovementsState extends State<_LatestMovements> {
         final visible = snapshot.data ?? const <Movement>[];
         if (visible.isEmpty) {
           return Text(
-            'Aun no tienes movimientos.',
+            'Aún no tienes movimientos.',
             style: AppTypography.bodyMd.copyWith(
               color: AppColors.secondaryText,
             ),

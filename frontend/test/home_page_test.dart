@@ -314,28 +314,112 @@ void main() {
     expect(find.text('S/ 999.99'), findsOneWidget);
   });
 
-  testWidgets('Analizar muestra Proximamente sin navegar', (tester) async {
-    await tester.pumpWidget(_okHarness());
+  testWidgets('Analizar es marcador deshabilitado sin SnackBar ni navegación',
+      (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/movements',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Historial (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('heroAnalyze')));
-    await tester.pump();
-
+    // Affordance clara de no disponible (badge + tooltip, atenuado).
+    expect(find.byKey(const Key('heroAnalyze')), findsOneWidget);
+    expect(find.text('Analizar'), findsOneWidget);
     expect(find.text('Próximamente'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is Tooltip && w.message == 'Próximamente',
+      ),
+      findsOneWidget,
+    );
+    // No es tappable: tocarlo no dispara SnackBar ni navega.
+    await tester.tap(
+      find.byKey(const Key('heroAnalyze')),
+      warnIfMissed: false,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.text('Historial (fake)'), findsNothing);
+    expect(find.byKey(const Key('homeHero')), findsOneWidget);
   });
 
-  testWidgets('quick-actions restantes siguen visuales (Proximamente)',
+  testWidgets('quick-actions QR navegan a wallet (C1, sin Proximamente)',
       (tester) async {
-    await tester.pumpWidget(_okHarness());
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/wallet/merchant-qr',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Cobro QR (fake)')),
+        ),
+        GoRoute(
+          path: '/wallet/topups',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Recargas (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
     await tester.pumpAndSettle();
 
-    // `qa-pagar` se retiró al reemplazar `Pagar` por `Crédito` (`qa-creditos`
-    // navega a `/credits`): solo `qa-qr`/`qa-recargar` siguen visuales.
-    for (final key in ['qa-qr', 'qa-recargar']) {
-      await tester.tap(find.byKey(Key(key)));
-      await tester.pump();
-      expect(find.text('Próximamente'), findsOneWidget);
-    }
+    // `Cobrar QR` -> `/wallet/merchant-qr` (C1).
+    await tester.tap(find.byKey(const Key('qa-qr')));
+    await tester.pumpAndSettle();
+    expect(find.text('Cobro QR (fake)'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('quick-action Recargar navega a /wallet/topups (C1)',
+      (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/wallet/topups',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Recargas (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('qa-recargar')));
+    await tester.pumpAndSettle();
+    expect(find.text('Recargas (fake)'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
   testWidgets('quick-action Transferir navega a /transfers', (tester) async {
@@ -364,7 +448,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Transferencias (fake)'), findsOneWidget);
-    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
   testWidgets('quick-action Crédito navega a /credits', (tester) async {
@@ -393,20 +477,36 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Créditos (fake)'), findsOneWidget);
-    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
-  testWidgets('bottom-nav: Tarjetas es visual sin SnackBar enganoso',
-      (tester) async {
-    await tester.pumpWidget(_okHarness());
+  testWidgets('bottom-nav: Tarjetas navega a /wallet (C1)', (tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+          ),
+        ),
+        GoRoute(
+          path: '/wallet',
+          builder: (context, state) =>
+              const Scaffold(body: Text('Billetera (fake)')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
     await tester.pumpAndSettle();
 
-    // Auditoria M5: Tarjetas (2) queda visual sin prometer accion: no hay
-    // SnackBar y se sigue en el home.
+    // C1: Tarjetas (2) es entrada real a `/wallet` (sin SnackBar).
     await tester.tap(find.byKey(const Key('bottomNav-tarjetas')));
     await tester.pumpAndSettle();
-    expect(find.text('Próximamente'), findsNothing);
-    expect(find.byKey(const Key('homeHero')), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+    expect(find.text('Billetera (fake)'), findsOneWidget);
   });
 
   testWidgets('bottom-nav: Inicio es no-op sin SnackBar', (tester) async {
@@ -416,7 +516,7 @@ void main() {
     // Auditoria M5: Inicio (0) no dispara "Próximamente": se sigue en home.
     await tester.tap(find.byKey(const Key('bottomNav-inicio')));
     await tester.pumpAndSettle();
-    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
     expect(find.byKey(const Key('homeHero')), findsOneWidget);
   });
 
@@ -446,7 +546,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Transferencias (fake)'), findsOneWidget);
-    expect(find.text('Próximamente'), findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
   testWidgets('Ver todos los movimientos abre /movements', (tester) async {
@@ -585,7 +685,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Aun no tienes cuentas.'), findsOneWidget);
+    expect(find.text('Aún no tienes cuentas.'), findsOneWidget);
     expect(find.text('MIS CUENTAS'), findsNothing);
   });
 

@@ -536,6 +536,9 @@ class _TrackingPageState extends State<TrackingPage> {
   }
 
   Widget _pollErrorView() {
+    // M1: estado de error con reintento (solo GET) + salida "Volver"
+    // (canPop ? pop : go('/transfers')): nadie queda atrapado si falla el
+    // fetch de seguimiento.
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(title: const Text('Seguimiento')),
@@ -560,6 +563,20 @@ class _TrackingPageState extends State<TrackingPage> {
               style: AppTypography.bodyMd.copyWith(
                 fontSize: 12,
                 color: AppColors.outline,
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: const Key('tracking-back-cta'),
+                onPressed: () => context.canPop()
+                    ? context.pop()
+                    : context.go('/transfers'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                ),
+                child: const Text('Volver'),
               ),
             ),
           ],

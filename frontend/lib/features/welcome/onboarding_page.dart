@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/session/session_identity_store.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/widgets/app_button.dart';
@@ -13,17 +14,23 @@ import '../../core/widgets/app_version_label.dart';
 /// indicador de pagina y dos acciones:
 ///
 /// - Primaria "Crear mi cuenta" -> `/kyc`.
-/// - Secundaria "Ya tengo cuenta · Iniciar sesión" -> `/login/device`
-///   (entrada al flujo "iniciar sesión en este dispositivo", F-T57/F-T56;
-///   el restablecimiento de PIN sigue como opción secundaria "Olvidé mi
-///   PIN" -> `/pin-reset` desde el login).
+/// - Secundaria "Ya tengo cuenta · Iniciar sesión" (C2): si hay usuario
+///   conocido (`identityStore.userRef != null`, retornante) va a `/login`;
+///   si no, a `/login/device` (entrada al flujo "iniciar sesión en este
+///   dispositivo", F-T57/F-T56; el restablecimiento de PIN sigue como opción
+///   secundaria "Olvidé mi PIN" -> `/pin-reset` desde el login).
 ///
 /// Cliente delgado: solo presenta y navega; sin logica de negocio, red,
 /// estado ni persistencia. Estilos solo con tokens/componentes de F-T34
 /// ([AppColors], [AppSpacing], [AppRadii], tema `Inter`, [AppPrimaryButton],
 /// [AppSecondaryButton], [AppVersionLabel]).
 class OnboardingPage extends StatefulWidget {
-  const OnboardingPage({super.key});
+  const OnboardingPage({super.key, this.identity});
+
+  /// Store F-T20 (fuente del `userRef` conocido). `null` = lo resuelve desde
+  /// [sessionIdentityStoreFactory] (orquestador); sin store se asume usuario
+  /// nuevo (-> `/login/device`). Inyectable para tests.
+  final SessionIdentityStore? identity;
 
   /// Tamano del medallon ilustrativo (derivado del ritmo de 4px de F-T34:
   /// `stackXl * 4` = 192). Constante nombrada de la frontera (patron del fix
@@ -82,6 +89,15 @@ const List<_OnboardingSlide> _slides = [
 class _OnboardingPageState extends State<OnboardingPage> {
   late final PageController _controller;
   int _index = 0;
+
+  /// C2: el secundario distingue retornante (usuario conocido con `userRef`)
+  /// de usuario nuevo. Sin store/DI se asume nuevo (-> `/login/device`).
+  String get _loginRoute {
+    final known = (widget.identity ?? sessionIdentityStoreFactory?.call())
+        ?.userRef;
+    if (known != null && known.isNotEmpty) return '/login';
+    return '/login/device';
+  }
 
   @override
   void initState() {
@@ -193,7 +209,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               AppSecondaryButton(
                 key: const Key('onboarding-cta-secondary'),
                 label: 'Ya tengo cuenta · Iniciar sesión',
-                onPressed: () => context.go('/login/device'),
+                onPressed: () => context.go(_loginRoute),
               ),
               const SizedBox(height: AppSpacing.stackMd),
               // Version visible del build (F-T30): discreta, al pie.

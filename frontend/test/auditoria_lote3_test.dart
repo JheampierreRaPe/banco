@@ -25,7 +25,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 // Pruebas de la auditoría Lote 3 (diseñador frontend): M12, m6, m7, M10,
-// M11, m9, m10. i3-cronograma no cambia (decisión del dueño: "Próximamente").
+// M11, m9, m10. i3-cronograma cambia en sprint-3 (C3): "Ver cronograma"
+// navega a `/credits/loans` (E3-T21) en vez del aviso "Próximamente".
 
 const _a1 = Account(
   id: 'a1',
@@ -528,35 +529,45 @@ void main() {
 
   // --i3_cronograma-----------------------------------------------------------------------
 
-  group('i3-cronograma: Ver cronograma sigue en Próximamente', () {
-    testWidgets('el aviso es claro y no navega', (tester) async {
+  group('i3-cronograma (C3 sprint-3): Ver cronograma va a /credits/loans', () {
+    testWidgets('navega a Mis prestamos sin aviso', (tester) async {
       tester.view.physicalSize = const Size(800, 2200);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(() {
         tester.view.resetPhysicalSize();
         tester.view.resetDevicePixelRatio();
       });
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: CreditStatusPage(
-            initialResult: LoanApplicationResult(
-              id: 'app-1',
-              status: LoanApplicationStatus.approved,
+      final router = GoRouter(
+        initialLocation: '/status',
+        routes: [
+          GoRoute(
+            path: '/status',
+            builder: (context, state) => const CreditStatusPage(
+              initialResult: LoanApplicationResult(
+                id: 'app-1',
+                status: LoanApplicationStatus.approved,
+              ),
             ),
           ),
-        ),
+          GoRoute(
+            path: '/credits/loans',
+            builder: (context, state) =>
+                const Scaffold(body: Text('Prestamos (fake)')),
+          ),
+        ],
       );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(MaterialApp.router(routerConfig: router));
       await tester.pumpAndSettle();
 
       expect(find.text('Ver cronograma'), findsOneWidget);
       await tester.tap(find.text('Ver cronograma'));
       await tester.pumpAndSettle();
 
-      // Decisión del dueño: HU12 no existe; el copy lo dice sin ambigüedad.
-      expect(
-        find.text('El cronograma definitivo estará disponible próximamente.'),
-        findsOneWidget,
-      );
+      // C3: el cronograma definitivo vive en "Mis préstamos" (E3-T21):
+      // navega a la lista, sin `comingSoon`.
+      expect(find.text('Prestamos (fake)'), findsOneWidget);
+      expect(find.textContaining('próximamente'), findsNothing);
     });
   });
 }

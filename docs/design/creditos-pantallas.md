@@ -168,7 +168,9 @@ Mockup: `docs/design/creditos-estado.png` · Fig página `Créditos/Estado`
 4. **Card Progreso** (pasos): `Solicitud enviada → Evaluación automática →
    Decisión lista → Firma y desembolso (siguiente)`.
 5. **CTA por estado**:
-   - Aprobado: primario `Continuar a la firma` + secundario `Ver cronograma`.
+   - Aprobado: primario `Continuar a la firma` + secundario `Ver cronograma`
+     (→ `/credits/loans`, lista de préstamos E3-T21; el expediente no trae
+     `loanId`, sprint-3 C3).
    - En revisión / Evaluando: solo `Volver al simulador` + pull-to-refresh.
    - Rechazado: primario `Simular otro monto` + secundario `Volver al inicio`.
 6. **Nota**: `Cargando (skeleton), vacío (sin expediente) y error con Reintentar.

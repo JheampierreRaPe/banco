@@ -205,7 +205,10 @@ class _InterbankFormPageState extends State<InterbankFormPage> {
               child: EmptyView(
                 message: 'Aún no tienes cuentas para transferir.',
                 actionLabel: 'Volver',
-                onAction: () => context.pop(),
+                // M4: fallback como el resto (sin pila -> `/transfers`).
+                onAction: () => context.canPop()
+                    ? context.pop()
+                    : context.go('/transfers'),
               ),
             );
           }

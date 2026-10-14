@@ -105,6 +105,14 @@ el servidor**. Sin rol `analyst`/`credit_analyst` verás la pantalla **denegada*
 Estados de UI por pantalla: contenido, carga (skeleton), vacío ("Sin expedientes
 por revisar") y error accionable con **Reintentar**.
 
+La bandeja trae un botón **Refrescar** y se actualiza sola cada 30 s (mientras la
+última carga haya sido buena), para ver solicitudes nuevas sin recargar la página.
+El backend no expone un total real para la bandeja, así que el contador sale como
+**"50+"** cuando la última página vino llena y **"Cargar más"** pagina por `offset`.
+Puedes **Cerrar sesión** desde la barra lateral. Las secciones aún no
+implementadas ("Aprobados hoy", "Rechazados", "Auditoría") salen
+**deshabilitadas** con la etiqueta "próximamente".
+
 ## 7. Cómo generar un expediente en revisión
 
 Si la bandeja está vacía, crea uno con datos sintéticos (sin PII). Los pasos
@@ -151,8 +159,11 @@ Recarga el panel: el expediente aparece en la bandeja y ya puedes dictaminar.
   (`:8080`) y el API va por el **mismo origen**; si abres el panel por IP-LAN,
   funciona igual tras el fix. Si personalizas `VITE_API_BASE_URL`, recuerda que
   debe ser **relativo** (`/api/v1`), no una URL absoluta.
-- **Token expirado** (dura 15 min): reemítelo con el script del paso 3 (o usa
-  `--minutes <n>` para más tiempo).
+- **Token expirado** (dura 15 min): si el panel ya cargó y el token vence, la
+  bandeja muestra **"Tu sesión expiró. Vuelve a ingresar."** con el botón
+  **"Volver a ingresar"** (cierra la sesión y regresa a la pantalla de login).
+  Reemite el token con el script del paso 3 (o usa `--minutes <n>` para más
+  tiempo) y vuelve a pegarlo.
 - **Acceso denegado**: el token no tiene rol de analista; emítelo con
   `--role analyst` o `--role credit_analyst`.
 - **El panel en `:8080` no responde**: reconstruye y recrea solo ese servicio.

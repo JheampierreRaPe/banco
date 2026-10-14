@@ -78,7 +78,6 @@ export function ApplicationDetail({ app, productLabel, onReviewed, onConflict, r
           {productLabel ?? `Producto ${maskRef(app.product_id)}`} - {formatPEN(app.requested_amount_minor)} -{" "}
           {app.term_months} m
         </h3>
-        <p className="card-value">Cuenta {maskRef(app.user_id)}</p>
         <p className="card-value">Solicitante {maskRef(app.user_id)}</p>
       </div>
 

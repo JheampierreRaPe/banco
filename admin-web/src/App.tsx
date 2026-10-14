@@ -5,6 +5,7 @@ import { useSession } from "./auth/session";
 import { SessionGate } from "./components/SessionGate";
 import { QueueList, productNameResolver } from "./components/QueueList";
 import { ApplicationDetail } from "./components/ApplicationDetail";
+import type { QueueData } from "./hooks/queries";
 import { QUEUE_KEY, useProducts, useReviewMutation, useReviewQueue } from "./hooks/queries";
 import type { LoanApplication, ReviewAudit } from "./domain/types";
 
@@ -15,7 +16,8 @@ function decisionLabel(audit: ReviewAudit): string {
 function AnalystView() {
   const { session, signOut } = useSession();
   const token = session?.token ?? null;
-  const queue = useReviewQueue(token);
+  const [limit, setLimit] = useState(50);
+  const queue = useReviewQueue(token, limit);
   const products = useProducts(token);
   const reviewMutation = useReviewMutation();
   const client = useQueryClient();
@@ -31,17 +33,25 @@ function AnalystView() {
 
   const items = queue.data?.items ?? [];
   const total = queue.data?.meta.total ?? items.length;
+  const hasMore = queue.data?.hasMore ?? false;
   const selected: LoanApplication | null =
     items.find((a) => a.id === selectedId) ?? null;
 
   const removeFromQueue = (applicationId: string) => {
-    client.setQueryData(QUEUE_KEY, (prev: { items: LoanApplication[]; meta: { total: number; limit: number; offset: number } } | undefined) => {
+    client.setQueriesData<QueueData>({ queryKey: QUEUE_KEY }, (prev) => {
       if (!prev) return prev;
       const next = prev.items.filter((a) => a.id !== applicationId);
-      return { items: next, meta: { ...prev.meta, total: Math.max(0, prev.meta.total - 1) } };
+      return {
+        items: next,
+        meta: { ...prev.meta, total: Math.max(0, prev.meta.total - 1) },
+        hasMore: prev.hasMore,
+      };
     });
     setSelectedId((cur) => (cur === applicationId ? null : cur));
   };
+
+  const sessionExpired =
+    queue.error instanceof ApiError && queue.error.code === "NOT_AUTHENTICATED";
 
   const forbidden =
     denied ||
@@ -64,14 +74,35 @@ function AnalystView() {
       <div className="layout">
         <aside className="sidebar" aria-label="Navegación del panel">
           <h2>Panel Créditos</h2>
-          <div className="nav-item active">Bandeja IN_REVIEW ({total})</div>
-          <div className="nav-item">Aprobados hoy</div>
-          <div className="nav-item">Rechazados</div>
-          <div className="nav-item">Auditoría</div>
-          <div className="role-foot">Rol: Analista de crédito</div>
+          <div className="nav-item active">Bandeja IN_REVIEW ({total}{hasMore ? "+" : ""})</div>
+          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
+            Aprobados hoy <span className="nav-soon">próximamente</span>
+          </div>
+          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
+            Rechazados <span className="nav-soon">próximamente</span>
+          </div>
+          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
+            Auditoría <span className="nav-soon">próximamente</span>
+          </div>
+          <div className="role-foot">
+            <span>Rol: Analista de crédito</span>
+            <button type="button" className="btn btn-secondary btn-logout" onClick={signOut}>
+              Cerrar sesión
+            </button>
+          </div>
         </aside>
         <div className="main">
           <div className="queue-pane">
+            <div className="queue-toolbar">
+              <button
+                type="button"
+                className="btn btn-secondary btn-refresh"
+                onClick={() => void queue.refetch()}
+                disabled={queue.isFetching}
+              >
+                {queue.isFetching ? "Actualizando…" : "Refrescar"}
+              </button>
+            </div>
             {queue.isPending && (
               <div aria-label="Cargando bandeja">
                 <h1>En revisión manual</h1>
@@ -84,20 +115,26 @@ function AnalystView() {
               <div className="state-box" role="alert">
                 <h1>En revisión manual</h1>
                 <p className="error-text">
-                  {queue.error instanceof ApiError && queue.error.code === "NOT_AUTHENTICATED"
+                  {sessionExpired
                     ? "Tu sesión expiró. Vuelve a ingresar."
                     : `No se pudo cargar la bandeja. ${queue.error instanceof Error ? queue.error.message : ""}`}
                 </p>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    setDenied(false);
-                    void queue.refetch();
-                  }}
-                >
-                  Reintentar
-                </button>
+                {sessionExpired ? (
+                  <button type="button" className="btn btn-primary" onClick={signOut}>
+                    Volver a ingresar
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setDenied(false);
+                      void queue.refetch();
+                    }}
+                  >
+                    Reintentar
+                  </button>
+                )}
               </div>
             )}
             {queue.isSuccess && items.length === 0 && (
@@ -114,17 +151,31 @@ function AnalystView() {
               </div>
             )}
             {queue.isSuccess && items.length > 0 && (
-              <QueueList
-                items={items}
-                total={total}
-                selectedId={selectedId}
-                onSelect={(id) => {
-                  setSelectedId(id);
-                  setLastAudit(null);
-                  setNotice(null);
-                }}
-                productName={resolveProduct}
-              />
+              <>
+                <QueueList
+                  items={items}
+                  total={total}
+                  selectedId={selectedId}
+                  onSelect={(id) => {
+                    setSelectedId(id);
+                    setLastAudit(null);
+                    setNotice(null);
+                  }}
+                  productName={resolveProduct}
+                />
+                {hasMore && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary load-more"
+                    onClick={() => setLimit((cur) => cur + 50)}
+                    disabled={queue.isFetching}
+                  >
+                    {queue.isFetching
+                      ? "Cargando más…"
+                      : `Cargar más (${items.length} cargados)`}
+                  </button>
+                )}
+              </>
             )}
           </div>
           <div className="detail-pane">

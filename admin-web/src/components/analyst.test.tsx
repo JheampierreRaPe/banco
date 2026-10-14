@@ -50,7 +50,7 @@ function json(data: unknown, status = 200): Response {
 }
 
 interface MockRoutes {
-  queue?: () => Response;
+  queue?: (url: string) => Response;
   review?: (url: string, body: unknown) => Response;
   products?: () => Response;
 }
@@ -67,7 +67,7 @@ function mockApi(routes: MockRoutes) {
     }
     calls.push({ url, method, body });
     if (url.includes("/credits/applications?status=IN_REVIEW")) {
-      return routes.queue ? routes.queue() : json({ data: [], meta: { total: 0 } });
+      return routes.queue ? routes.queue(url) : json({ data: [], meta: { total: 0 } });
     }
     if (url.includes("/credits/products")) {
       return routes.products
@@ -304,5 +304,114 @@ describe("vista de Analista de crédito", () => {
     expect(await screen.findByLabelText("Cargando bandeja")).toBeInTheDocument();
     release(json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }));
     expect(await screen.findByText(/Personal S\/ 10,000\.00/)).toBeInTheDocument();
+  });
+
+  it("401 NOT_AUTHENTICATED: 'Volver a ingresar' sale al login y limpia la sesión", async () => {
+    const user = userEvent.setup();
+    mockApi({
+      queue: () =>
+        json(
+          {
+            error: {
+              code: "NOT_AUTHENTICATED",
+              message: "Sesión expirada",
+              details: {},
+              request_id: "req-1",
+            },
+          },
+          401,
+        ),
+    });
+    renderApp();
+    await signInAs(user);
+    await screen.findByText("Tu sesión expiró. Vuelve a ingresar.");
+    expect(sessionStorage.getItem("admin-web.session-token")).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Volver a ingresar" }));
+
+    expect(await screen.findByLabelText("Token de sesión")).toBeInTheDocument();
+    expect(sessionStorage.getItem("admin-web.session-token")).toBeNull();
+    expect(screen.queryByText("Tu sesión expiró. Vuelve a ingresar.")).not.toBeInTheDocument();
+  });
+
+  it("cerrar sesión desde el panel vuelve al login y limpia la sesión", async () => {
+    const user = userEvent.setup();
+    mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+    });
+    renderApp();
+    await signInAs(user);
+    await screen.findByText(/Personal S\/ 10,000\.00/);
+
+    await user.click(screen.getByRole("button", { name: "Cerrar sesión" }));
+
+    expect(await screen.findByLabelText("Token de sesión")).toBeInTheDocument();
+    expect(sessionStorage.getItem("admin-web.session-token")).toBeNull();
+  });
+
+  it("botón Refrescar vuelve a consultar la bandeja sin recargar la página", async () => {
+    const user = userEvent.setup();
+    const { calls } = mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+    });
+    renderApp();
+    await signInAs(user);
+    await screen.findByText(/Personal S\/ 10,000\.00/);
+
+    const before = calls.filter((c) => c.url.includes("status=IN_REVIEW")).length;
+    await user.click(screen.getByRole("button", { name: "Refrescar" }));
+
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url.includes("status=IN_REVIEW")).length).toBeGreaterThan(before),
+    );
+  });
+
+  it("navegación no implementada se muestra deshabilitada (próximamente)", async () => {
+    const user = userEvent.setup();
+    mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+    });
+    renderApp();
+    await signInAs(user);
+    await screen.findByText(/Personal S\/ 10,000\.00/);
+
+    const soon = screen.getAllByTitle("Próximamente");
+    expect(soon).toHaveLength(3);
+    for (const item of soon) {
+      expect(item).toHaveAttribute("aria-disabled", "true");
+      expect(item.className).toContain("disabled");
+    }
+    expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
+  });
+
+  it("bandeja acotada: contador '50+' y 'Cargar más' trae el resto (paginación por offset)", async () => {
+    const user = userEvent.setup();
+    const all = Array.from({ length: 60 }, (_, i) =>
+      view({
+        id: `app-${String(i).padStart(4, "0")}`,
+        requested_amount_minor: (i + 1) * 1000,
+      }),
+    );
+    mockApi({
+      queue: (url) => {
+        const parsed = new URL(url, "http://localhost");
+        const limit = Number(parsed.searchParams.get("limit"));
+        const offset = Number(parsed.searchParams.get("offset"));
+        const page = all.slice(offset, offset + limit);
+        return json({ data: page, meta: { total: page.length, limit, offset } });
+      },
+    });
+    renderApp();
+    await signInAs(user);
+
+    // Página llena (50) y puede haber más -> contador "50+" y botón Cargar más.
+    await screen.findByText(/S\/ 10\.00/);
+    expect(screen.getByText(/Bandeja IN_REVIEW \(50\+\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/S\/ 510\.00/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Cargar más/ }));
+
+    expect(await screen.findByText(/S\/ 510\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/Bandeja IN_REVIEW \(60\)/)).toBeInTheDocument();
   });
 });

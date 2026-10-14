@@ -43,16 +43,21 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AUDIT_ACTION_BLOCKED",
     "AUDIT_ACTION_FAILED",
+    "AUDIT_ACTION_UNRECOGNIZED",
     "AUTH_FAILED_ATTEMPT_EVENT",
     "CONSUMER",
+    "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
     "SCORE_EXTRA_ON_BLOCK",
     "SCORE_MAX",
     "SCORE_PER_FAILED_ATTEMPT",
+    "SCORE_PER_UNRECOGNIZED_REPORT",
     "TEMPLATE_BLOCKED",
     "TEMPLATE_FAILED",
+    "UNRECOGNIZED_REPORT_EVENT",
     "get_or_create_profile",
     "handle_auth_failed_attempt",
+    "handle_unrecognized_operation_report",
     "update_behavior",
 ]
 
@@ -74,9 +79,20 @@ SCORE_EXTRA_ON_BLOCK = 4
 #: Tope del contador (el perfil solo senala; el motor HU20 decide).
 SCORE_MAX = 100
 
+#: Evento de reporte "no reconozco" que consume este modulo (lo emite
+#: `notifications` por outbox, E6-T14 HU22).
+UNRECOGNIZED_REPORT_EVENT = "security.operation_reported"
+#: Consumidor para `shared.processed_events` (idempotencia del consumo).
+CONSUMER_UNRECOGNIZED = "risk-unrecognized-reports"
+#: Severidad minima por reporte "no reconozco" (provisional E6-T14;
+#: HU20 sintoniza; D-16: sin escribir `risk.alerts`).
+SCORE_PER_UNRECOGNIZED_REPORT = 10
+
 #: Acciones de auditoria del consumo (sin PII en `metadata`).
 AUDIT_ACTION_FAILED = "risk.auth_failed_attempt"
 AUDIT_ACTION_BLOCKED = "risk.auth_preventive_block"
+#: Auditoria del reporte "no reconozco" (E6-T14; sin PII en `metadata`).
+AUDIT_ACTION_UNRECOGNIZED = "risk.unrecognized_operation"
 
 #: Motivos genericos aceptados en el payload (otros -> `"unknown"`).
 _KNOWN_REASONS = frozenset({"invalid", "expired", "blocked"})
@@ -270,4 +286,137 @@ def handle_auth_failed_attempt(
         "attempt": signal["attempt"],
         "score": new_score,
         "notification_id": str(notification.id),
+    }
+
+
+def _parse_unrecognized_report(payload: Any) -> dict[str, Any]:
+    """Normaliza el payload de `security.operation_reported` (tolerante).
+
+    Campos desconocidos se ignoran; tipos invalidos se degradan a `None`
+    (lo malformado se registra como procesado sin efectos, para no
+    envenenar el worker). Sin PII: solo ids y `reference` no PII.
+    """
+    data = dict(payload) if isinstance(payload, dict) else {}
+    try:
+        user_id = uuid.UUID(str(data.get("user_id"))) if data.get("user_id") else None
+    except (ValueError, AttributeError, TypeError):
+        user_id = None
+    try:
+        notification_id = (
+            uuid.UUID(str(data.get("notification_id"))) if data.get("notification_id") else None
+        )
+    except (ValueError, AttributeError, TypeError):
+        notification_id = None
+    reference = data.get("reference")
+    reference = (
+        " ".join(str(reference).split())[:64]
+        if isinstance(reference, str) and str(reference).strip()
+        else None
+    )
+    at = data.get("at")
+    at_iso = (
+        at.isoformat()
+        if isinstance(at, datetime)
+        else (" ".join(str(at).split())[:64] if at is not None and str(at).strip() else None)
+    )
+    return {
+        "user_id": user_id,
+        "notification_id": notification_id,
+        "reference": reference or (str(notification_id)[:8] if notification_id else None),
+        "at": at_iso or datetime.now(UTC).isoformat(),
+    }
+
+
+def handle_unrecognized_operation_report(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Consume `security.operation_reported` (E6-T14, HU22 CA-02).
+
+    Idempotente por `event_id` (consumidor `CONSUMER_UNRECOGNIZED`): el
+    primer consumo sube la severidad del titular en `risk_profiles`,
+    audita (`risk.unrecognized_operation`) y emite `fraud.alert.raised`
+    por `outbox` (lo consume `identity`, que revoca las sesiones); el
+    replay retorna `consumed=False` sin efectos. **No** crea
+    `risk.alerts` (tabla reservada a HU20, D-16): la alerta queda como
+    evento + auditoria + severidad. Nunca mueve dinero. `flush` sin
+    `commit` (el llamante decide la transaccion).
+    """
+    from app.core import events as domain_events
+    from app.modules.shared import repository as shared_repo
+
+    signal = _parse_unrecognized_report(payload)
+    if not shared_repo.try_mark_processed(
+        session, event_id=event_id, consumer=CONSUMER_UNRECOGNIZED
+    ):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_UNRECOGNIZED)
+        return {"consumed": False, "reason": "duplicate"}
+    if signal["user_id"] is None:
+        _record_audit(
+            session,
+            {
+                "user_id": None,
+                "transaction_id": signal["notification_id"],
+                "attempt": 0,
+                "blocked": True,
+                "reason": "unknown",
+                "device_id": None,
+            },
+            action=AUDIT_ACTION_UNRECOGNIZED,
+        )
+        logger.warning("risk reporte sin user_id: registrado sin perfil ni alerta")
+        return {"consumed": True, "reason": "missing-user-id"}
+    profile = risk_repo.get_or_create(session, signal["user_id"])
+    current = int(profile.score or 0)
+    new_score = min(SCORE_MAX, max(0, current + SCORE_PER_UNRECOGNIZED_REPORT))
+    risk_repo.update_behavior(session, signal["user_id"], score=new_score)
+    try:
+        from app.modules.audit.service import record as audit_record
+    except ImportError:  # pragma: no cover - el modulo existe en el repo
+        logger.warning("risk audit no disponible: reporte sin auditoria")
+        audit_record = None
+    if audit_record is not None:
+        try:
+            audit_record(
+                session,
+                actor=signal["user_id"],
+                action=AUDIT_ACTION_UNRECOGNIZED,
+                entity="notification",
+                entity_id=signal["notification_id"],
+                metadata={
+                    "notification_id": (
+                        str(signal["notification_id"]) if signal["notification_id"] else None
+                    ),
+                    "reference": signal["reference"],
+                    "score": new_score,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort documentado
+            logger.warning("risk auditoria no registrada error=%s", type(exc).__name__)
+    alert = shared_repo.insert_event(
+        session,
+        aggregate_type="risk",
+        aggregate_id=signal["user_id"],
+        event_type=domain_events.FRAUD_ALERT_RAISED,
+        payload={
+            "user_id": str(signal["user_id"]),
+            "notification_id": (
+                str(signal["notification_id"]) if signal["notification_id"] else None
+            ),
+            "reference": signal["reference"],
+            "reason": "unrecognized_operation",
+            "at": signal["at"],
+        },
+    )
+    logger.info(
+        "risk reporte registrado score=%s alert=%s",
+        new_score,
+        alert.id,
+    )
+    return {
+        "consumed": True,
+        "score": new_score,
+        "alert_event_id": str(alert.id),
     }

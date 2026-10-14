@@ -65,4 +65,50 @@ def on_auth_failed_attempt(
             pass
 
 
-__all__ = ["on_auth_failed_attempt"]
+def on_unrecognized_operation_reported(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `security.operation_reported` (D-04, E6-T14).
+
+    Abre su propia sesion (`session_factory` o `SessionLocal`), deriva
+    `event_id = entry.id`, mapea `entry.payload` y delega en
+    `risk.service.handle_unrecognized_operation_report` (idempotente por
+    `processed_events`, consumidor `"risk-unrecognized-reports"`).
+    `commit` propio si escala; `rollback` y re-lanza ante fallo (el
+    worker reintenta). Retorna `True` en el primer consumo, `False` ante
+    duplicado ignorado. Sin PII ni secretos en logs. No mueve dinero
+    (regla de oro 1): solo registra severidad, audita y emite
+    `fraud.alert.raised`. Nunca escribe `risk.alerts` (HU20, D-16).
+    """
+    from app.modules.risk.service import handle_unrecognized_operation_report
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    payload = dict(entry.payload or {})
+    session = session_factory()
+    try:
+        outcome = handle_unrecognized_operation_report(
+            session,
+            event_id=entry.id,
+            payload=payload,
+        )
+        session.commit()
+        return bool(outcome.get("consumed"))
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+__all__ = ["on_auth_failed_attempt", "on_unrecognized_operation_reported"]

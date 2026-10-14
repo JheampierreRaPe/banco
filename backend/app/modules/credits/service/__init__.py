@@ -36,6 +36,29 @@ emite `credit.contract.signed` por `outbox`. Sin router propio.
 Firma idempotente + copia por correo (E3-T14, HU11): `contract_signing`
 (`sign_contract_idempotent`) orquesta `signing` + `notifications.send`
 (`channel="email"`, best-effort) con `Idempotency-Key` obligatoria.
+
+Prestamo y cronograma definitivo (E3-T18, HU12): `loans`
+(`create_loan`, `create_loan_with_schedule`, `create_schedules`,
+`get_loan`, `list_loans_by_user`, `list_schedule`,
+`next_due_installment`, `mark_installment_paid[_partial]`,
+`record_payment`, `flag_overdue_installments`, `set_auto_debit`,
+`set_own_auto_debit` (titular, lo expone `E3-T19`),
+`update_outstanding_principal`, `link_contracts_to_loan`,
+`build_definitive_schedule`) une el dominio puro con el repositorio
+del mismo schema. Sin endpoints ni eventos: **no mueve dinero**.
+
+Desembolso transaccional (E3-T17, HU12): `disbursement`
+(`disburse_application_idempotent`, `list_own_loans`,
+`get_own_schedule`) orquesta `loans` + el motor
+`transactions.service.disbursement` en una sola transaccion, emite
+`credit.disbursed` por `outbox` y audita best-effort.
+
+Pago de cuota (E3-T20, HU12): `loan_payments`
+(`pay_installment_idempotent`) cobra la cuota indicada (o la proxima
+exigible) por el motor `transactions.service.loan_payment` en la
+misma transaccion, registra `loan_payments`, marca la cuota `PAID`,
+baja el saldo de capital (y cierra el prestamo a `PAID` si no quedan
+cuotas) y emite `loan.installment.paid` por `outbox`.
 """
 
 from __future__ import annotations
@@ -68,6 +91,14 @@ from app.modules.credits.service.contract_signing import (
     IDEMPOTENCY_ENDPOINT as SIGN_IDEMPOTENCY_ENDPOINT,
 )
 from app.modules.credits.service.contract_signing import sign_contract_idempotent
+from app.modules.credits.service.disbursement import (
+    IDEMPOTENCY_ENDPOINT as DISBURSE_IDEMPOTENCY_ENDPOINT,
+)
+from app.modules.credits.service.disbursement import (
+    disburse_application_idempotent,
+    get_own_schedule,
+    list_own_loans,
+)
 from app.modules.credits.service.documents import (
     download_contract_pdf,
     generate_contracts,
@@ -75,6 +106,39 @@ from app.modules.credits.service.documents import (
     get_contract_set,
 )
 from app.modules.credits.service.evaluation import evaluate_application
+from app.modules.credits.service.loan_payments import (
+    IDEMPOTENCY_ENDPOINT as PAY_IDEMPOTENCY_ENDPOINT,
+)
+from app.modules.credits.service.loan_payments import pay_installment_idempotent
+from app.modules.credits.service.loans import (
+    DefinitiveInstallment,
+    Loan,
+    LoanConflictError,
+    LoanError,
+    LoanNotFoundError,
+    LoanPayment,
+    LoanSchedule,
+    LoanValidationError,
+    ScheduleValidationError,
+    build_definitive_schedule,
+    create_loan,
+    create_loan_with_schedule,
+    create_schedules,
+    first_due_date_for,
+    flag_overdue_installments,
+    get_loan,
+    get_schedule_installment,
+    link_contracts_to_loan,
+    list_loans_by_user,
+    list_schedule,
+    mark_installment_paid,
+    mark_installment_partial,
+    next_due_installment,
+    record_payment,
+    set_auto_debit,
+    set_own_auto_debit,
+    update_outstanding_principal,
+)
 from app.modules.credits.service.signing import (
     ContractNonceExpiredError,
     ContractNotAuthorizedError,
@@ -84,31 +148,64 @@ from app.modules.credits.service.signing import (
 )
 
 __all__ = [
+    "DISBURSE_IDEMPOTENCY_ENDPOINT",
+    "PAY_IDEMPOTENCY_ENDPOINT",
     "SIGN_EMAIL_TEMPLATE_CODE",
     "SIGN_IDEMPOTENCY_ENDPOINT",
     "ContractNonceExpiredError",
     "ContractNotAuthorizedError",
+    "DefinitiveInstallment",
+    "Loan",
+    "LoanConflictError",
+    "LoanError",
+    "LoanNotFoundError",
+    "LoanPayment",
     "LoanProductConflictError",
     "LoanProductError",
     "LoanProductNotFoundError",
     "LoanProductValidationError",
+    "LoanSchedule",
+    "LoanValidationError",
+    "ScheduleValidationError",
+    "build_definitive_schedule",
+    "create_loan",
+    "create_loan_with_schedule",
+    "create_schedules",
+    "disburse_application_idempotent",
     "download_contract_pdf",
     "evaluate_application",
+    "first_due_date_for",
+    "flag_overdue_installments",
     "generate_contracts",
     "generate_contracts_idempotent",
     "get_contract_set",
+    "get_loan",
     "get_own_application",
+    "get_own_schedule",
     "get_product",
+    "get_schedule_installment",
+    "link_contracts_to_loan",
+    "list_loans_by_user",
+    "list_own_loans",
     "list_products",
     "list_review_queue",
+    "list_schedule",
+    "mark_installment_paid",
+    "mark_installment_partial",
+    "next_due_installment",
+    "pay_installment_idempotent",
+    "record_payment",
     "request_signature_challenge",
     "review_application",
+    "set_auto_debit",
+    "set_own_auto_debit",
     "sign_contract",
     "sign_contract_idempotent",
     "sign_contract_with_pin",
     "submit_application",
     "submit_application_idempotent",
     "to_dict",
+    "update_outstanding_principal",
 ]
 
 

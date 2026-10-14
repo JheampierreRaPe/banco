@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/widgets/error_view.dart';
+import '../accounts/data/accounts_service.dart';
 import 'data/credit_applications_service.dart';
 import 'data/credit_contract_service.dart';
+import 'data/credit_disbursement_service.dart';
 import 'data/credit_sign_controller.dart';
 import 'data/credits_service.dart';
+import 'data/loan_schedule_service.dart';
 import 'data/my_credits_service.dart';
 import 'models/credit.dart';
 import 'models/loan_application.dart';
@@ -14,6 +17,8 @@ import 'presentation/credit_contract_page.dart';
 import 'presentation/credit_sign_page.dart';
 import 'presentation/credit_status_page.dart';
 import 'presentation/credits_home_page.dart';
+import 'presentation/loan_list_page.dart';
+import 'presentation/loan_schedule_page.dart';
 
 /// Rutas del feature `credits` (E3-T04 / HU09 + E3-T09 / HU10).
 ///
@@ -38,6 +43,11 @@ import 'presentation/credits_home_page.dart';
 /// - `/credits/sign` -> [CreditSignPage] (firma con biometria + fallback
 ///   PIN, E3-T15): recibe por `extra` el `String` con el id o un `Map` con
 ///   `applicationId` (+ `summary` opcional con la linea del servidor).
+/// - `/credits/loans` -> [LoanListPage] (mis prestamos desembolsados,
+///   E3-T21): filas con saldo de capital y debito automatico.
+/// - `/credits/loans/:id` -> [LoanSchedulePage] (cronograma definitivo +
+///   toggle de debito automatico + pago de cuota, E3-T21): recibe el
+///   `loanId` por path param (o por `extra` como `String`).
 ///
 /// Las paginas reciben los servicios desde las fabricas (cableadas por el
 /// orquestador con el `ApiClient` compartido). Si una fabrica es `null`, la
@@ -113,8 +123,33 @@ final List<GoRoute> creditsRoutes = [
         deviceId: deps?.deviceId ?? '',
         applicationId: applicationId,
         summary: summary,
+        // M-1 (HU12): disparador de desembolso en el éxito de la firma.
+        // Cada fábrica resuelve el servicio con el `ApiClient` compartido;
+        // `null` = DI no configurada (la sección degrada a aviso honesto).
+        disburseService: creditDisbursementServiceFactory?.call(),
+        loansService: loanScheduleServiceFactory?.call(),
+        accountsService: accountsServiceFactory?.call(),
       );
     },
+  ),
+  GoRoute(
+    path: '/credits/loans',
+    builder: (context, state) {
+      return LoanListPage(service: loanScheduleServiceFactory?.call());
+    },
+    routes: [
+      GoRoute(
+        path: ':id',
+        builder: (context, state) {
+          final extra = state.extra;
+          return LoanSchedulePage(
+            service: loanScheduleServiceFactory?.call(),
+            loanId: state.pathParameters['id'] ??
+                (extra is String ? extra : null),
+          );
+        },
+      ),
+    ],
   ),
 ];
 

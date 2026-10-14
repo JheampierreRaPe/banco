@@ -1,4 +1,4 @@
-"""Dominio puro de credits (E3-T01/E3-T07/E3-T13): motores sin BD ni I/O."""
+"""Dominio puro de credits (E3-T01/E3-T07/E3-T13/E3-T18): motores sin BD ni I/O."""
 
 from app.modules.credits.domain.financial import (
     FinancialValidationError,
@@ -33,6 +33,12 @@ from app.modules.credits.domain.rules import (
     compute_dti,
     evaluate,
 )
+from app.modules.credits.domain.schedule import (
+    DefinitiveInstallment,
+    ScheduleValidationError,
+    build_definitive_schedule,
+    first_due_date_for,
+)
 from app.modules.credits.domain.signing import (
     SEAL_VERSION,
     TOKEN_VERSION,
@@ -61,14 +67,18 @@ __all__ = [
     "TOKEN_VERSION",
     "CreditDecision",
     "CreditRulesValidationError",
+    "DefinitiveInstallment",
     "FinancialValidationError",
     "LoanSimulation",
     "ScheduleRow",
+    "ScheduleValidationError",
     "annual_rate_from_monthly",
+    "build_definitive_schedule",
     "build_schedule",
     "compute_dti",
     "compute_tcea",
     "evaluate",
+    "first_due_date_for",
     "french_payment",
     "monthly_rate_from_annual",
     "schedule_cashflows",

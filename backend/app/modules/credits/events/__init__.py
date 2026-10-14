@@ -19,12 +19,23 @@ CREDIT_CONTRACT_GENERATED = "credit.contract.generated"
 # `outbox` al sellar (payload sin PII: `contract_ids`,
 # `application_id`, `user_id`, `status=SIGNED` y `signed_at`).
 CREDIT_CONTRACT_SIGNED = "credit.contract.signed"
+# Desembolso del prestamo (E3-T17, HU12; `docs/18`): se emite por
+# `outbox` al liquidar (payload sin PII: `loan_id`,
+# `application_id`, `user_id`, `transaction_id`, `amount_minor`,
+# `currency`).
+CREDIT_DISBURSED = "credit.disbursed"
+# Cuota pagada (E3-T20, HU12; `docs/18`): se emite por `outbox` al
+# liquidar (payload sin PII: `loan_id`, `schedule_id`, `user_id`,
+# `transaction_id`, `amount_minor`, `currency`).
+LOAN_INSTALLMENT_PAID = "loan.installment.paid"
 
 __all__ = [
     "CREDIT_APPLICATION_SUBMITTED",
     "CREDIT_APPROVED",
     "CREDIT_CONTRACT_GENERATED",
     "CREDIT_CONTRACT_SIGNED",
+    "CREDIT_DISBURSED",
     "CREDIT_REJECTED",
     "CREDIT_REVIEW_REQUIRED",
+    "LOAN_INSTALLMENT_PAID",
 ]

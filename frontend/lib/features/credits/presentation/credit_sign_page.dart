@@ -12,9 +12,13 @@ import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../../biometrics/biometric_reader.dart';
+import '../../accounts/data/accounts_service.dart';
 import '../data/credit_contract_service.dart';
+import '../data/credit_disbursement_service.dart';
+import '../data/loan_schedule_service.dart';
 import '../data/credit_sign_controller.dart';
 import '../models/credit_contract.dart';
+import 'credit_disburse_section.dart';
 
 /// Pantalla de firma del contrato (E3-T15, HU11; spec
 /// `docs/design/creditos-pantallas.md` §6, mockup `creditos-firma.png` +
@@ -33,6 +37,11 @@ import '../models/credit_contract.dart';
 ///   card error (`EXPIRED_NONCE` se rota y reintenta solo, con clave nueva).
 /// - En éxito: botón `Volver al inicio` (→ `/home`, misma jerarquía que los
 ///   CTA existentes).
+/// - En éxito (`APPROVED` + `SIGNED` + sin préstamo desembolsado): sección
+///   de desembolso (M-1, HU12, `CreditDisburseSection` + spec
+///   `creditos-pantallas.md` §8c): CTA `Desembolsar a mi cuenta`
+///   (`POST .../disburse` con `Idempotency-Key` + cuenta elegida o
+///   principal por defecto) y `Ver cronograma` tras el éxito.
 /// - 4 estados (`docs/20` §7) con `LoadingView`/`EmptyView`/`ErrorView` y
 ///   mensajes en espanol accionables.
 ///
@@ -49,6 +58,9 @@ class CreditSignPage extends StatefulWidget {
     this.applicationId,
     this.summary,
     this.initialChallenge,
+    this.disburseService,
+    this.loansService,
+    this.accountsService,
   });
 
   final CreditContractServiceBase? service;
@@ -58,6 +70,13 @@ class CreditSignPage extends StatefulWidget {
   final String? applicationId;
   final String? summary;
   final SignChallenge? initialChallenge;
+
+  /// Servicios del disparador de desembolso (M-1, HU12): si son `null`, la
+  /// sección degrada a aviso honesto (inyectados por `credits_routes.dart`
+  /// desde las fábricas del orquestador; en tests se pasan fakes).
+  final CreditDisbursementServiceBase? disburseService;
+  final LoanScheduleServiceBase? loansService;
+  final AccountsServiceBase? accountsService;
 
   @override
   State<CreditSignPage> createState() => _CreditSignPageState();
@@ -336,6 +355,16 @@ class _CreditSignPageState extends State<CreditSignPage> {
         if (_signed != null) ...[
           _successCard(),
           const SizedBox(height: AppSpacing.stackSm),
+          // M-1 (HU12): disparador de desembolso (solo `APPROVED` +
+          // `SIGNED` + sin préstamo: la sección verifica el préstamo y se
+          // oculta sola si ya se desembolsó).
+          CreditDisburseSection(
+            applicationId: _applicationId,
+            disburseService: widget.disburseService,
+            loansService: widget.loansService,
+            accountsService: widget.accountsService,
+          ),
+          const SizedBox(height: AppSpacing.stackSm),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
@@ -345,6 +374,20 @@ class _CreditSignPageState extends State<CreditSignPage> {
                 minimumSize: const Size(88, 52),
               ),
               child: const Text('Volver al inicio'),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.stackSm),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              key: const Key('sign-loans-cta'),
+              // E3-T21 (HU12): tras firmar, el cronograma vive en
+              // `/credits/loans` (el desembolso crea el préstamo).
+              onPressed: () => context.push('/credits/loans'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(88, 52),
+              ),
+              child: const Text('Ver mis préstamos'),
             ),
           ),
           const SizedBox(height: AppSpacing.stackMd),

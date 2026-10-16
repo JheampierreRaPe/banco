@@ -8,7 +8,10 @@ Dominio puro: sin BD, sin red, sin `float`, sin PII en logs. El render usa
 from __future__ import annotations
 
 import logging
+import re
 import string
+from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -19,25 +22,34 @@ BASE_TEMPLATES: dict[str, dict] = {
         "code": "otp_code",
         "channel": "sms",
         "subject": None,
-        "body_template": "Tu codigo de verificacion es {code}. Vence en {ttl_minutes} minutos.",
+        "body_template": "Tu código de verificación es {code}. Vence en {ttl_minutes} minutos.",
     },
     "otp_code_email": {
         "code": "otp_code_email",
         "channel": "email",
-        "subject": "Tu codigo de verificacion",
-        "body_template": "Tu codigo de verificacion es {code}. Vence en {ttl_minutes} minutos.",
+        "subject": "Tu código de verificación",
+        "body_template": (
+            "Tu código de verificación es {code}. Vence en {ttl_minutes} minutos. "
+            "Si no solicitaste este código, ignora este mensaje."
+        ),
     },
     "account_activated": {
         "code": "account_activated",
         "channel": "email",
-        "subject": "Tu cuenta esta activa",
-        "body_template": "Tu cuenta {account_masked} fue activada. Bienvenido/a.",
+        "subject": "Tu cuenta está activa",
+        "body_template": (
+            "Tu cuenta {account_masked} fue activada. "
+            "Ya puedes ingresar a tu banca en línea. ¡Bienvenido/a!"
+        ),
     },
     "login_alert": {
         "code": "login_alert",
         "channel": "push",
         "subject": None,
-        "body_template": "Nuevo inicio de sesion desde {device} el {at}.",
+        "body_template": (
+            "Nuevo inicio de sesión desde {device} el {at}. "
+            "Si no fuiste tú, revisa tu actividad."
+        ),
     },
     # Seguridad de pagos sensibles (E2-T20, HU08 CA-04/CA-02): un canal
     # natural por codigo. Cuerpo generico sin PII (solo el instante `{at}`;
@@ -98,10 +110,10 @@ BASE_TEMPLATES: dict[str, dict] = {
     "credit_contract_signed": {
         "code": "credit_contract_signed",
         "channel": "email",
-        "subject": "Tu contrato de credito fue firmado",
+        "subject": "Tu contrato de crédito fue firmado",
         "body_template": (
-            "Tu contrato de credito {application_ref} fue firmado el {signed_at}. "
-            "La copia certificada queda disponible en tu expediente."
+            "Tu contrato de crédito {application_ref} fue firmado el {signed_at}. "
+            "La copia certificada está disponible en tu expediente."
         ),
     },
     # Cuotas del prestamo (E3-T19, HU12 CA-03/CA-04): un canal natural
@@ -161,30 +173,35 @@ BASE_TEMPLATES: dict[str, dict] = {
     # Alertas de seguridad multicanal (E6-T12, HU22 CA-01/CA-02):
     # las invoca la fachada `notify_security_event` (push inmediato +
     # correo de respaldo en paralelo, ventana < 5 s). Cuerpo generico
-    # sin PII ni cifras: solo la operacion (codigo de evento, no
-    # narrativa libre), el instante `{at}` (ISO), la etiqueta de
+    # sin PII ni cifras: solo la operacion (**etiqueta humana**, no el
+    # codigo tecnico crudo), el instante `{at}` (**fecha local legible
+    # `DD/MM/YYYY HH:MM`**, no ISO crudo), la etiqueta de
     # dispositivo `{device}` (acotada) y la ubicacion aproximada
     # `{location}` (ciudad/region o "no disponible"; jamas
     # coordenadas, PAN, montos, firmas, `nonce` ni biometria). El
     # detalle completo vive en la app/centro, no en el push ni en el
     # correo. El `{reference}` (no PII) solo viaja en el correo para
-    # que `E6-T14` correlacione el reporte "no reconozco".
+    # que `E6-T14` correlacione el reporte "no reconozco". El codigo
+    # tecnico crudo se conserva en el `payload` (`event_type`) para
+    # correlacion, nunca en el texto visible.
     "security_operation_alert": {
         "code": "security_operation_alert",
         "channel": "push",
         "subject": None,
         "body_template": (
-            "Alerta de seguridad: {operation} el {at} desde {device} "
-            "({location}). Si no fuiste tu, revisa tu actividad."
+            "Alerta de seguridad: {operation} el {at}. "
+            "Dispositivo: {device}. Ubicación: {location}. "
+            "Si no fuiste tú, revisa tu actividad en la app."
         ),
     },
     "security_operation_email": {
         "code": "security_operation_email",
         "channel": "email",
-        "subject": "Alerta de seguridad en tu cuenta",
+        "subject": "Nueva operación en tu cuenta: {operation}",
         "body_template": (
-            "Detectamos {operation} el {at} desde {device} ({location}). "
-            "Referencia {reference}. Si no reconoces esta operacion, "
+            "Detectamos {operation} el {at}. "
+            "Dispositivo: {device}. Ubicación: {location}. "
+            "Referencia: {reference}. Si no reconoces esta operación, "
             "revisa tu actividad en la app."
         ),
     },
@@ -232,3 +249,107 @@ def render_template(body_template: str, data: dict) -> str:
 def get_base_template(code: str) -> dict:
     """Devuelve la plantilla base `code` (copia). `KeyError` si no existe."""
     return dict(BASE_TEMPLATES[code])
+
+
+# --------------------------------------- contenido humano (pulido de correos)
+#
+# Los emisores aportan el codigo tecnico del evento (`transfer.settled`,
+# `auth.failed_attempt`, ...) y el instante ISO; la fachada
+# `notify_security_event` los convierte a texto legible ANTES de renderizar
+# (el codigo crudo se conserva en el `payload` como `event_type` para
+# correlacion, nunca en el texto visible). Dominio puro: sin BD, sin red,
+# sin PII en logs.
+
+#: Etiqueta humana por codigo de evento de seguridad (los seis eventos de
+#: `SENSITIVE_BUSINESS_EVENTS` + el intento de login + respaldo generico).
+OPERATION_LABELS: dict[str, str] = {
+    "transfer.settled": "Transferencia realizada",
+    "credit.disbursed": "Desembolso de crédito",
+    "loan.installment.paid": "Pago de cuota de crédito",
+    "qr.payment.confirmed": "Pago con QR",
+    "service.paid": "Pago de servicio",
+    "topup.completed": "Recarga completada",
+    "auth.failed_attempt": "Intento de inicio de sesión",
+    "auth.blocked": "Bloqueo preventivo de seguridad",
+    "sensitive.operation": "Operación sensible",
+}
+
+#: Largo maximo de la etiqueta sustituta de un codigo desconocido.
+OPERATION_LABEL_MAX_LEN = 64
+
+
+def humanize_operation(code: object) -> str:
+    """Etiqueta humana para el codigo tecnico `code` (puro).
+
+    Codigo conocido -> etiqueta fija (ver `OPERATION_LABELS`); codigo
+    desconocido -> sustituto legible (separadores `.`/`_`/`-`/`/` por
+    espacios, acotado); vacio -> generico. Jamas devuelve el codigo
+    crudo con puntos cuando hay etiqueta conocida.
+    """
+    text = str(code or "").strip()
+    if not text:
+        return "Operación de tu cuenta"
+    label = OPERATION_LABELS.get(text)
+    if label:
+        return label
+    fallback = re.sub(r"[._\-/]+", " ", text).strip()
+    collapsed = " ".join(fallback.split())
+    if not collapsed:
+        return "Operación de tu cuenta"
+    return collapsed[:OPERATION_LABEL_MAX_LEN]
+
+
+def _lima_tz():
+    """Zona `America/Lima` (UTC-5 sin horario de verano); respaldo fijo."""
+    try:
+        return ZoneInfo("America/Lima")
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone(timedelta(hours=-5), "America/Lima")
+
+
+def format_at_legible(value: object, now: datetime | None = None) -> str:
+    """Fecha/hora local legible `DD/MM/YYYY HH:MM` (puro).
+
+    Acepta `datetime` (naive = UTC, como SQLite) o texto ISO (con `Z`,
+    offset o microsegundos); convierte a hora de Lima. Si no se puede
+    interpretar, devuelve el texto saneado acotado (jamas vacio ni con
+    microsegundos crudos cuando el parseo tiene exito).
+    """
+    moment = now or datetime.now(UTC)
+    parsed: datetime | None = None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if text:
+            candidate = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+            try:
+                parsed = datetime.fromisoformat(candidate[:64])
+            except ValueError:
+                return text[:64]
+    if parsed is None:
+        parsed = moment
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    try:
+        local = parsed.astimezone(_lima_tz())
+    except (ValueError, OverflowError):
+        return str(value or "")[:64] or moment.isoformat()[:64]
+    return local.strftime("%d/%m/%Y %H:%M")
+
+
+def render_subject(subject: str | None, data: dict) -> str | None:
+    """Renderiza el asunto con `data` cuando trae placeholders (puro).
+
+    `None` (push/sms) o texto sin `{...}` se devuelve tal cual (contrato
+    intacto para las plantillas de asunto estatico); con placeholders se
+    aplica la misma validacion estricta que `render_template`.
+    """
+    if subject is None:
+        return None
+    text = str(subject)
+    if "{" not in text or "}" not in text:
+        return text
+    if not isinstance(data, dict):
+        raise TypeError("data debe ser dict")
+    return render_template(text, data)

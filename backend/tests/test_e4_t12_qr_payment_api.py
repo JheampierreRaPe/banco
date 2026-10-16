@@ -786,9 +786,15 @@ def test_migration_head_still_single_0040():
     assert revisions.get("0040_wallet_qr_payments") == "0039_wallet_qr"
     # Head vigente tras la guarda de doble cobro (`0041`, fix ALTO-2)
     # + el catalogo de servicios (`0042`, E4-T16) + las preferencias
-    # de notificaciones (`0044`, E6-T12).
+    # de notificaciones (`0044`, E6-T12) + el pulido de correos
+    # (`0045`, 2026-10-15).
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
     assert revisions.get("0041_wallet_qr_payment_guard") == "0040_wallet_qr_payments"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"

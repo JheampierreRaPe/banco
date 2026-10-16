@@ -49,6 +49,7 @@ ERROR_CATALOG = frozenset(
         "REFRESH_REUSED",
         "RESEND_LIMIT",
         "SESSION_INACTIVE",
+        "SETTLEMENT_UNAVAILABLE",
         "VALIDATION_ERROR",
     }
 )

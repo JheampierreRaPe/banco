@@ -127,8 +127,12 @@ def create_qr_charge(
     session: Session,
     *,
     id: uuid.UUID,
-    merchant_id: uuid.UUID,
-    amount_minor: int,
+    merchant_id: uuid.UUID | None = None,
+    owner_user_id: uuid.UUID | None = None,
+    payee_account_id: uuid.UUID | None = None,
+    payee_type: str = "MERCHANT",
+    reusable: bool = False,
+    amount_minor: int | None,
     currency: str,
     concept: str | None,
     mode: str,
@@ -136,10 +140,21 @@ def create_qr_charge(
     signature: str,
     expires_at: datetime | None,
 ) -> QrCharge:
-    """Persiste el cargo QR `ACTIVE` (la firma ya viene calculada)."""
+    """Persiste el cargo QR `ACTIVE` (la firma ya viene calculada).
+
+    Comercio (`MERCHANT`, E4-T06): `merchant_id` obligatorio y
+    `amount_minor > 0`. Personal (`PERSONAL`, E4-T21, estatico):
+    `owner_user_id` obligatorio, `amount_minor = None` (lo digita el
+    pagador), `expires_at = None` (sin caducidad) y `reusable = True`
+    (multiples cobros).
+    """
     row = QrCharge(
         id=id,
         merchant_id=merchant_id,
+        owner_user_id=owner_user_id,
+        payee_account_id=payee_account_id,
+        payee_type=payee_type,
+        reusable=reusable,
         amount_minor=amount_minor,
         currency=currency,
         concept=concept,
@@ -151,8 +166,20 @@ def create_qr_charge(
     )
     session.add(row)
     session.flush()
-    logger.debug("qr charge creado charge_id=%s mode=%s", row.id, mode)
+    logger.debug("qr charge creado charge_id=%s mode=%s payee=%s", row.id, mode, payee_type)
     return row
+
+
+def list_charges_by_owner(
+    session: Session, owner_user_id: uuid.UUID | str, *, status: str | None = None
+) -> list[QrCharge]:
+    """Cargos personales del titular (opcional por `status`), orden estable."""
+    owner = _coerce_uuid(owner_user_id, "owner_user_id")
+    stmt = sa.select(QrCharge).where(QrCharge.owner_user_id == owner)
+    if status is not None:
+        stmt = stmt.where(QrCharge.status == status)
+    stmt = stmt.order_by(QrCharge.created_at, QrCharge.id)
+    return list(session.scalars(stmt).all())
 
 
 def get_qr_charge(session: Session, charge_id: uuid.UUID | str) -> QrCharge | None:
@@ -232,6 +259,7 @@ __all__ = [
     "get_merchant_by_user",
     "get_qr_charge",
     "list_charges_by_merchant",
+    "list_charges_by_owner",
     "list_expired_charges",
     "mark_cancelled",
     "mark_expired",

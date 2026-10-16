@@ -280,8 +280,8 @@ def test_qa_alert_content_has_device_time_location_without_pii(db):
     push_data = (rows["push"].payload_json or {}).get("data", {})
     email_data = (rows["email"].payload_json or {}).get("data", {})
     assert push_data == {
-        "operation": "transfer.settled",
-        "at": AT_ISO,
+        "operation": "Transferencia realizada",
+        "at": "13/10/2026 07:00",
         "device": "Pixel 8",
         "location": "Lima",
     }
@@ -294,7 +294,9 @@ def test_qa_alert_content_has_device_time_location_without_pii(db):
         BASE_TEMPLATES["security_operation_email"]["body_template"], email_data
     )
     for body in (push_body, email_body):
-        assert "Pixel 8" in body and AT_ISO in body and "Lima" in body
+        assert "Pixel 8" in body and "13/10/2026 07:00" in body and "Lima" in body
+        assert "Transferencia realizada" in body
+        assert "transfer.settled" not in body and "2026-10-13T12:00:00" not in body
         assert "{" not in body and "}" not in body
     assert "op-qa16-contenido" in email_body
     assert "op-qa16-contenido" not in push_body

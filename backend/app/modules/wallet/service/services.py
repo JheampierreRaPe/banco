@@ -87,6 +87,20 @@ class ServicePaymentError(ServiceCatalogError):
     """Error base del pago/recarga (-> 422 salvo mapeo especifico)."""
 
 
+class ServiceSettlementUnavailableError(ServicePaymentError):
+    """Cuenta de liquidacion del proveedor ausente/no viable (fail-closed).
+
+    El pago/recarga no es responsabilidad del formulario del titular: si
+    la cuenta de liquidacion no esta configurada o no esta disponible
+    (`ACTIVE`/moneda), el servicio no puede operar. Se mapea a `503`
+    `SETTLEMENT_UNAVAILABLE` (no a `422` del formulario) para que el
+    cliente muestre un mensaje honesto ("servicio de pagos no disponible
+    por ahora"); sin exponer detalles internos (regla de oro 7).
+    """
+
+    code = "SETTLEMENT_UNAVAILABLE"
+
+
 class ServicePaymentConflictError(ServicePaymentError):
     """Misma clave con cuerpo distinto u operacion en curso (-> 409)."""
 
@@ -394,17 +408,17 @@ def resolve_settlement_account(
         wanted = uuid.UUID(str(raw).strip())
     except (ValueError, AttributeError, TypeError) as exc:
         logger.error("liquidacion de servicios sin cuenta configurada")
-        raise ServicePaymentError("cuenta de liquidacion no configurada") from exc
+        raise ServiceSettlementUnavailableError("cuenta de liquidacion no configurada") from exc
     try:
         view = accounts_get_account(session, wanted)
     except (ValueError, AttributeError, TypeError) as exc:
-        raise ServicePaymentError("cuenta de liquidacion no disponible") from exc
+        raise ServiceSettlementUnavailableError("cuenta de liquidacion no disponible") from exc
     if (
         view is None
         or str(view.get("status")) != "ACTIVE"
         or str(view.get("currency") or "").upper() != str(currency).upper()
     ):
-        raise ServicePaymentError("cuenta de liquidacion no disponible")
+        raise ServiceSettlementUnavailableError("cuenta de liquidacion no disponible")
     return wanted
 
 
@@ -1105,6 +1119,7 @@ __all__ = [
     "ServicePaymentError",
     "ServiceProviderDownError",
     "ServiceProviderGatewayTimeoutError",
+    "ServiceSettlementUnavailableError",
     "TopupOperatorNotFoundError",
     "build_receipt_no",
     "finalize_service_payment",

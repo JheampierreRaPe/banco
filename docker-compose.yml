@@ -96,6 +96,11 @@ services:
       WALLET_SERVICE_JOBS_ENABLED: ${WALLET_SERVICE_JOBS_ENABLED:-1}
       WALLET_SERVICE_REMINDERS_ENABLED: ${WALLET_SERVICE_REMINDERS_ENABLED:-1}
       WALLET_SERVICE_JOBS_INTERVAL_SECONDS: ${WALLET_SERVICE_JOBS_INTERVAL_SECONDS:-3600}
+      # Cuenta interna de liquidacion del proveedor de servicios/recargas
+      # (HU16, docs/04#7.10). UUID fijo de la cuenta demo sembrada por la
+      # migracion `0046_services_settlement` (PEN, ACTIVE); sin ella el pago/
+      # recarga se rechaza fail-closed. Rotable por `.env` sin tocar codigo.
+      WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID: ${WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID:-d0000000-0000-4000-8000-000000000001}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -139,6 +144,9 @@ services:
       WALLET_SERVICE_JOBS_ENABLED: ${WALLET_SERVICE_JOBS_ENABLED:-1}
       WALLET_SERVICE_REMINDERS_ENABLED: ${WALLET_SERVICE_REMINDERS_ENABLED:-1}
       WALLET_SERVICE_JOBS_INTERVAL_SECONDS: ${WALLET_SERVICE_JOBS_INTERVAL_SECONDS:-3600}
+      # Misma cuenta de liquidacion que el backend (HU16): el worker la
+      # necesita si alguna pasada de jobs dispara cobros de servicios.
+      WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID: ${WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID:-d0000000-0000-4000-8000-000000000001}
     depends_on:
       postgres:
         condition: service_healthy

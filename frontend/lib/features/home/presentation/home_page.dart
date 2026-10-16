@@ -277,6 +277,10 @@ class _HomePageState extends State<HomePage> {
                         // re-entrar a `/home` lo recargue (E2-T35).
                         const _WalletCard(),
                         const SizedBox(height: AppSpacing.stackMd),
+                        const _LoansCard(),
+                        const SizedBox(height: AppSpacing.stackMd),
+                        const _ServicesCard(),
+                        const SizedBox(height: AppSpacing.stackMd),
                         const _SecurityBanner(),
                       ],
                     ),
@@ -870,6 +874,130 @@ class _WalletCard extends StatelessWidget {
                 const SizedBox(height: AppSpacing.unit),
                 Text(
                   'Cobros QR, recargas y servicios',
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right,
+            color: AppColors.secondaryText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Entrada persistente al cronograma (descubribilidad sprint-3).
+///
+/// Punto de entrada a `/credits/loans` (Mis préstamos + cronograma
+/// definitivo): card compacta con `Key('home-loans')`. No duplica la
+/// quick-action `Crédito` (que va a `/credits`: simulador + expedientes).
+class _LoansCard extends StatelessWidget {
+  const _LoansCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppCard(
+      onTap: () => context.push('/credits/loans'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.successContainer,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            child: Icon(
+              Icons.calendar_month_outlined,
+              size: 24,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Mis préstamos',
+                  key: const Key('home-loans'),
+                  style: AppTypography.bodyLg.copyWith(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.unit),
+                Text(
+                  'Cronograma y cuotas',
+                  style: AppTypography.bodyMd.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(
+            Icons.chevron_right,
+            color: AppColors.secondaryText,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Entrada a servicios (descubribilidad sprint-3).
+///
+/// Punto de entrada a `/wallet/services` (búsqueda y pago de empresas):
+/// card compacta con `Key('home-services')`. Mantiene la quick-action
+/// `Recargar` (→ `/wallet/topups`) sin tocarla.
+class _ServicesCard extends StatelessWidget {
+  const _ServicesCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AppCard(
+      onTap: () => context.push('/wallet/services'),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.warningContainer,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+            ),
+            child: Icon(
+              Icons.receipt_long_outlined,
+              size: 24,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.stackSm + AppSpacing.unit),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Pagar servicios',
+                  key: const Key('home-services'),
+                  style: AppTypography.bodyLg.copyWith(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.unit),
+                Text(
+                  'Luz, agua, internet y más',
                   style: AppTypography.bodyMd.copyWith(
                     color: AppColors.secondaryText,
                   ),

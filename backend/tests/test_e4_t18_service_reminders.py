@@ -611,9 +611,16 @@ def test_migration_chain_has_single_head_0043():
     assert revisions.get("0043_wallet_service_reminder") == "0042_wallet_services"
     assert "0043_wallet_service_reminder_param" not in revisions
     # E6-T12 (2026-10-13): la cabeza avanza a 0044_notifications_preferences
-    # (preferencias por canal + claves de seguridad, tras 0043).
+    # (preferencias por canal + claves de seguridad, tras 0043). Pulido de
+    # correos (2026-10-15): la cabeza avanza a
+    # 0045_notification_email_content (textos de semillas, tras 0044).
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0044_notifications_preferences") == "0043_wallet_service_reminder"
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
     content = (
         backend_dir / "migrations" / "versions" / "0043_wallet_service_reminder_param.py"
     ).read_text(encoding="utf-8")

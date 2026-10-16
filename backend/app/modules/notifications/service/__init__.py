@@ -53,7 +53,13 @@ from app.adapters.notification_sender import (
     TwilioNotificationSender,
 )
 from app.modules.notifications import repository as repo
-from app.modules.notifications.domain.templates import BASE_TEMPLATES, render_template
+from app.modules.notifications.domain.templates import (
+    BASE_TEMPLATES,
+    format_at_legible,
+    humanize_operation,
+    render_subject,
+    render_template,
+)
 from app.modules.notifications.models import Notification
 from app.modules.shared.config import parameters as config_params
 
@@ -298,6 +304,9 @@ def send(
             f"recibido: {channel!r}"
         )
     body = render_template(template["body_template"], data)
+    # Asunto dinamico cuando la plantilla lo trae (p. ej. el correo de
+    # seguridad incluye la etiqueta humana); estatico si no hay `{...}`.
+    subject = render_subject(template["subject"], data)
     logger.info("notifications.render channel=%s template=%s", channel, template_code)
 
     row = repo.save_notification(
@@ -313,7 +322,7 @@ def send(
         session,
         row,
         sender=sender,
-        subject=template["subject"],
+        subject=subject,
         body=body,
         recipient=str(recipient),
         max_attempts=max_attempts,
@@ -394,6 +403,7 @@ def retry_notification(
     stored = row.payload_json or {}
     data = stored.get("data", {}) if isinstance(stored, dict) else {}
     body = render_template(template["body_template"], data if isinstance(data, dict) else {})
+    subject = render_subject(template["subject"], data if isinstance(data, dict) else {})
     to = recipient if recipient is not None else (stored.get("recipient", "") or "")
     if not str(to).strip():
         raise ValueError("reintento sin destinatario")
@@ -404,7 +414,7 @@ def retry_notification(
         session,
         row,
         sender=sender,
-        subject=template["subject"],
+        subject=subject,
         body=body,
         recipient=str(to),
         max_attempts=max_attempts,
@@ -557,10 +567,14 @@ def notify_security_event(
       (`FAILED` con `error`, reimpulsable con `retry_notification`);
       nunca retrasa ni impide al otro canal (la entrega corre en
       paralelo y las marcas se aplican despues, en un solo hilo).
-    - Contenido sin PII innecesaria: operacion (codigo de evento),
-      instante ISO, etiqueta de dispositivo acotada y ubicacion
-      aproximada; el `reference` (no PII) solo viaja en el correo para
-      que `E6-T14` correlacione el reporte "no reconozco".
+    - Contenido sin PII innecesaria y legible: operacion como etiqueta
+      humana ("Transferencia realizada", no el codigo crudo) e instante
+      como fecha local legible (`DD/MM/YYYY HH:MM`, no ISO crudo),
+      etiqueta de dispositivo acotada y ubicacion aproximada; el
+      `reference` (no PII) solo viaja en el correo para
+      que `E6-T14` correlacione el reporte "no reconozco". El codigo
+      tecnico crudo se conserva en el `payload` (`event_type`) para
+      correlacion, nunca en el texto visible.
     - Sin PII en logs: solo ids, canal y codigo de plantilla.
     """
     try:
@@ -579,6 +593,17 @@ def notify_security_event(
     at_iso = _as_iso_at(at, moment)
     device_label = _sanitize_label(device, UNKNOWN_DEVICE, 64)
     location_label = _sanitize_label(location, UNKNOWN_LOCATION, 120)
+    # Contenido humano: el codigo tecnico crudo (`transfer.settled`, ...)
+    # y el ISO con microsegundos jamas llegan al texto visible; se
+    # muestran la etiqueta (`Transferencia realizada`, ...) y la fecha
+    # local legible (`DD/MM/YYYY HH:MM`). El codigo crudo se conserva en
+    # el `payload` (`event_type`) y en el `outbox` para correlacion.
+    display_data = {
+        "operation": humanize_operation(operation),
+        "at": format_at_legible(at_iso, moment),
+        "device": device_label,
+        "location": location_label,
+    }
 
     stored = repo.get_preferences(session, uid)
     want_push = (stored.push if stored is not None else DEFAULT_PUSH_ENABLED) and bool(include_push)
@@ -588,15 +613,12 @@ def notify_security_event(
 
     push_template = _resolve_template(session, PUSH_SECURITY_TEMPLATE)
     email_template = _resolve_template(session, EMAIL_SECURITY_TEMPLATE)
-    push_data = {
-        "operation": operation,
-        "at": at_iso,
-        "device": device_label,
-        "location": location_label,
-    }
-    email_data = dict(push_data, reference=ref)
+    push_data = dict(display_data)
+    email_data = dict(display_data, reference=ref)
     push_body = render_template(push_template["body_template"], push_data)
     email_body = render_template(email_template["body_template"], email_data)
+    push_subject = render_subject(push_template["subject"], push_data)
+    email_subject = render_subject(email_template["subject"], email_data)
     logger.info(
         "notifications.security.render event=%s template_push=%s template_email=%s",
         operation,
@@ -620,7 +642,7 @@ def notify_security_event(
             },
             user_id=uid,
         )
-        jobs.append(("push", push_row, push_sender, push_template["subject"], str(uid), push_body))
+        jobs.append(("push", push_row, push_sender, push_subject, str(uid), push_body))
     if want_email:
         email_sender = sender_email if sender_email is not None else sender_for_channel("email")
         # Destinatario del respaldo (A3): el que aporta el emisor
@@ -643,7 +665,7 @@ def notify_security_event(
             },
             user_id=uid,
         )
-        jobs.append(("email", email_row, email_sender, email_template["subject"], to, email_body))
+        jobs.append(("email", email_row, email_sender, email_subject, to, email_body))
 
     outcomes: dict[str, tuple[bool, str | None, str | None]] = {}
     channels: dict[str, dict] = {}

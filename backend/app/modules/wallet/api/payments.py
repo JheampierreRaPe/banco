@@ -2,7 +2,9 @@
 
 - `POST /payments/qr` (Bearer, `Idempotency-Key` obligatoria, solo el
   titular pagador): recibe el `qr_content` escaneado + el vinculo de
-  pago y, en una sola llamada, **decodifica/valida** el QR y **paga por
+  pago (+ `amount_minor` opcional: obligatorio cuando el QR no trae
+  monto —personal, E4-T21—) y, en una sola llamada,
+  **decodifica/valida** el QR y **paga por
   el motor** delegando en el servicio de `E4-T11`
   (`wallet.service.pay_qr_charge`; sin duplicar logica), con
   **autorizacion biometrica condicional**: dentro del limite base el
@@ -117,13 +119,22 @@ def _authorization_challenge(tx) -> dict | None:
 
 def _pay_data(session: Session, payment, tx) -> dict:
     """Serializa el cobro al `data` de `QrPayResponse` (solo `id`s)."""
-    merchant_name = ""
-    try:
-        merchant = qr_repo.get_merchant(session, payment.merchant_id)
-    except Exception:  # noqa: BLE001 - best-effort: el nombre es presentacion
-        merchant = None
-    if merchant is not None and isinstance(getattr(merchant, "business_name", None), str):
-        merchant_name = merchant.business_name
+    merchant_block: dict | None = None
+    payee_block: dict | None = None
+    if getattr(payment, "merchant_id", None) is not None:
+        merchant_name = ""
+        try:
+            merchant = qr_repo.get_merchant(session, payment.merchant_id)
+        except Exception:  # noqa: BLE001 - best-effort: el nombre es presentacion
+            merchant = None
+        if merchant is not None and isinstance(getattr(merchant, "business_name", None), str):
+            merchant_name = merchant.business_name
+        merchant_block = {
+            "merchant_id": str(payment.merchant_id),
+            "business_name": merchant_name,
+        }
+    if getattr(payment, "payee_user_id", None) is not None:
+        payee_block = {"owner_user_id": str(payment.payee_user_id)}
     status = str(payment.status)
     if status == "PAID":
         # Cobro liquidado: la operacion del motor esta `SETTLED` (el
@@ -133,10 +144,8 @@ def _pay_data(session: Session, payment, tx) -> dict:
         "transaction_id": str(payment.transaction_id),
         "qr_payment_id": str(payment.id),
         "charge_id": str(payment.charge_id),
-        "merchant": {
-            "merchant_id": str(payment.merchant_id),
-            "business_name": merchant_name,
-        },
+        "merchant": merchant_block,
+        "payee": payee_block,
         "amount_minor": int(payment.amount_minor),
         "currency": str(payment.currency),
         "status": status,
@@ -259,6 +268,7 @@ def pay_qr(
             qr_content=body.qr_content,
             link_id=body.link_id,
             idempotency_key=key,
+            amount_minor=body.amount_minor,
         )
         if str(payment.status) == "PENDING_AUTHORIZATION" and str(tx.status) == "SETTLED":
             payment = wallet_service.finalize_qr_payment(

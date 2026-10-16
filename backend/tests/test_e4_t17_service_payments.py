@@ -72,9 +72,12 @@ DAILY = 500_000
 
 LUZ_ID = "c1111111-1111-4111-8111-111111111111"
 SOL_ID = "c5555555-5555-4555-8555-555555555555"
+LUNA_ID = "c6666666-6666-4666-8666-666666666666"
 SOL_NAME = "Recarga Movil Sol Demo"
+LUNA_NAME = "Recarga Movil Luna Demo"
 SUPPLY = "10293847"
 PHONE = "999888777"
+LUNA_PHONE = "922598475"
 
 TABLES = [
     "wallet.wallets",
@@ -411,6 +414,75 @@ def test_topup_happy_path_moves_money_and_emits_event(env):
     assert balances[str(env["payer"])] == (FUNDED - 3_000, 0)
     assert balances[str(env["settlement"])] == (3_000, 0)
     assert _tx_count(session) == 1
+    assert _topup_count(session) == 1
+
+
+def test_recarga_happy_path_with_seeded_settlement_account(env, monkeypatch):
+    """Regresion BUG HU16 (critico): la recarga liquida con la cuenta de
+    liquidacion demo determinista (UUID fijo de la migracion
+    `0046_services_settlement`) inyectada por la env
+    `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID`.
+
+    Antes del fix, en runtime (docker) faltaba la env y no habia cuenta
+    sembrada: TODA recarga/pago respondia `422 VALIDATION_ERROR` ("algun
+    campo es invalido") sin mover dinero. Ahora la recarga se crea y el
+    motor mueve el dinero (asiento cuadrado) hacia la cuenta de liquidacion.
+    """
+    from tests.factories import (
+        SETTLEMENT_ACCOUNT_ID,
+        SETTLEMENT_ACCOUNT_NUMBER,
+        SETTLEMENT_OWNER_ID,
+    )
+
+    session = env["session"]
+    settlement_id = uuid.UUID(SETTLEMENT_ACCOUNT_ID)
+    session.add(
+        _accounts.Account(
+            id=settlement_id,
+            user_id=uuid.UUID(SETTLEMENT_OWNER_ID),
+            account_number=SETTLEMENT_ACCOUNT_NUMBER,
+            type="CORRIENTE",
+            currency="PEN",
+            status="ACTIVE",
+        )
+    )
+    session.add(
+        _accounts.AccountBalance(
+            account_id=settlement_id,
+            currency="PEN",
+            available_minor=0,
+            held_minor=0,
+            version=0,
+        )
+    )
+    session.commit()
+    monkeypatch.setenv(wallet_service.SETTLEMENT_ACCOUNT_ENV_VAR, SETTLEMENT_ACCOUNT_ID)
+
+    before = _balances(session, env["payer"])
+    topup, tx = wallet_service.pay_topup(
+        session,
+        USER,
+        **_topup_kwargs(
+            env,
+            operator=LUNA_NAME,
+            phone=LUNA_PHONE,
+            amount_minor=2_000,
+            idempotency_key="hu16-bugfix-topup-1",
+        ),
+    )
+    session.commit()
+    assert topup.status == "PAID"
+    assert tx.status == "SETTLED"
+    assert topup.operator == LUNA_NAME
+    assert topup.phone == LUNA_PHONE
+    receipt = wallet_service.to_topup_receipt(topup)
+    assert receipt is not None
+    assert receipt["concept"] == f"Recarga {LUNA_NAME}"
+    assert LUNA_PHONE not in json.dumps(receipt)
+    assert _balanced_postings(session, tx.id)
+    balances = _balances(session, env["payer"], settlement_id)
+    assert balances[str(env["payer"])] == (before[str(env["payer"])][0] - 2_000, 0)
+    assert balances[str(settlement_id)] == (2_000, 0)
     assert _topup_count(session) == 1
 
 
@@ -876,6 +948,20 @@ def test_settlement_unconfigured_is_fail_closed(env, monkeypatch):
     assert _balances(session, env["payer"]) == before
 
 
+def test_settlement_unconfigured_uses_dedicated_code(env, monkeypatch):
+    """El fallo de liquidacion es un subtipo dedicado con `code`
+    `SETTLEMENT_UNAVAILABLE` (no `VALIDATION_ERROR`), sigue siendo
+    fail-closed y no mueve dinero."""
+    session = env["session"]
+    monkeypatch.delenv(wallet_service.SETTLEMENT_ACCOUNT_ENV_VAR, raising=False)
+    with pytest.raises(wallet_service.ServiceSettlementUnavailableError) as exc:
+        wallet_service.resolve_settlement_account(session, "PEN")
+    assert exc.value.code == "SETTLEMENT_UNAVAILABLE"
+    assert isinstance(exc.value, wallet_service.ServicePaymentError)
+    session.rollback()
+    assert _tx_count(session) == 0
+
+
 def test_missing_key_is_rejected(env):
     session = env["session"]
     with pytest.raises(wallet_service.ServicePaymentError):
@@ -1110,6 +1196,29 @@ def test_api_topup_requires_key(api_client, env):
     assert resp.status_code == 422, resp.text
 
 
+def test_api_topup_without_settlement_is_503_positive_code(api_client, env, monkeypatch):
+    """Sin cuenta de liquidacion la recarga falla fail-closed con un codigo
+    propio (`503 SETTLEMENT_UNAVAILABLE`, no `422 VALIDATION_ERROR`): el
+    frontend muestra un mensaje honesto, no "algun campo es invalido". El
+    mensaje no expone detalles internos."""
+    monkeypatch.delenv(wallet_service.SETTLEMENT_ACCOUNT_ENV_VAR, raising=False)
+    resp = _post_topup(
+        api_client,
+        env,
+        key="hu16-bugfix-api-1",
+        operator=LUNA_NAME,
+        phone=LUNA_PHONE,
+        amount_minor=2_000,
+    )
+    assert resp.status_code == 503, resp.text
+    error = resp.json()["error"]
+    assert error["code"] == "SETTLEMENT_UNAVAILABLE"
+    assert "liquidacion" not in error["message"].lower()
+    session = env["session"]
+    assert _tx_count(session) == 0
+    assert _topup_count(session) == 0
+
+
 def test_api_topup_replay_and_conflict(api_client, env):
     first = _post_topup(api_client, env, key="api-topup-replay-1")
     assert first.status_code == 201, first.text
@@ -1142,5 +1251,27 @@ def test_migration_chain_has_single_head_0042():
     script = ScriptDirectory.from_config(cfg)
     revisions = {rev.revision: rev.down_revision for rev in script.walk_revisions()}
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
     heads = [rev for rev in script.get_heads() if rev not in ()]
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
+
+
+def test_migration_0046_seeds_demo_settlement_account():
+    """La migracion `0046_services_settlement` siembra la MISMA cuenta
+    determinista que usa la env/factories (PEN, `accounts.accounts` +
+    `accounts.account_balances`), idempotente y reversible."""
+    from tests.db_utils import BACKEND_DIR
+    from tests.factories import SETTLEMENT_ACCOUNT_ID
+
+    content = (BACKEND_DIR / "migrations" / "versions" / "0046_services_settlement.py").read_text(
+        encoding="utf-8"
+    )
+    assert len("0046_services_settlement") <= 32  # limite de alembic_version
+    assert f'SETTLEMENT_ACCOUNT_ID = "{SETTLEMENT_ACCOUNT_ID}"' in content
+    assert "accounts.accounts" in content
+    assert "accounts.account_balances" in content
+    assert "def upgrade" in content and "def downgrade" in content

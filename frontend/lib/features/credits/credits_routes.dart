@@ -86,6 +86,9 @@ final List<GoRoute> creditsRoutes = [
         service: creditApplicationsServiceFactory?.call(),
         applicationId: extra is String ? extra : null,
         initialResult: extra is LoanApplicationResult ? extra : null,
+        disburseService: creditDisbursementServiceFactory?.call(),
+        loansService: loanScheduleServiceFactory?.call(),
+        accountsService: accountsServiceFactory?.call(),
       );
     },
   ),

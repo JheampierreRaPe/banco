@@ -23,7 +23,8 @@
 ///   parametro efimero del request, jamas en logs ni en disco.
 library;
 
-/// Resultado del pago QR tal cual del backend (E4-T12, `docs/05` §6.5).
+/// Resultado del pago QR tal cual del backend (E4-T12, `docs/05` §6.5;
+/// E4-T21 agrega `payee` en QR personal).
 class QrPaymentResult {
   const QrPaymentResult({
     required this.transactionId,
@@ -31,6 +32,7 @@ class QrPaymentResult {
     required this.chargeId,
     required this.merchantId,
     required this.merchantName,
+    this.payeeOwnerId,
     required this.amountMinor,
     required this.currency,
     required this.status,
@@ -46,8 +48,12 @@ class QrPaymentResult {
   final String chargeId;
   final String merchantId;
 
-  /// Razon social / nombre del comercio (tal cual del backend).
+  /// Razon social / nombre del comercio (tal cual del backend; vacio
+  /// en QR personal).
   final String merchantName;
+
+  /// Titular destino de un QR personal (E4-T21; `null` en comercio).
+  final String? payeeOwnerId;
   final int amountMinor;
   final String currency;
 
@@ -72,6 +78,14 @@ class QrPaymentResult {
   bool get isSettled => status == 'SETTLED';
   bool get isPendingAuth => status == 'PENDING_AUTHORIZATION';
   bool get isRejected => status == 'REJECTED';
+
+  /// `true` cuando el cobro fue a un QR personal (E4-T21).
+  bool get isPersonal => (payeeOwnerId ?? '').isNotEmpty;
+
+  /// Nombre a mostrar: comercio o etiqueta neutra del QR personal
+  /// (presentacion; el destino real lo decidio el backend).
+  String get displayName =>
+      merchantName.isEmpty ? 'QR personal' : merchantName;
 
   /// Etiqueta en español para el badge (presentacion del `status` del
   /// servidor; no decide nada).
@@ -106,12 +120,15 @@ class QrPaymentResult {
 
     final merchant = merchantOf(json['merchant']);
     final auth = authOf(json['authorization']);
+    final payee = merchantOf(json['payee']);
+    final ownerId = payee['owner_user_id']?.toString();
     return QrPaymentResult(
       transactionId: json['transaction_id']?.toString() ?? '',
       qrPaymentId: json['qr_payment_id']?.toString() ?? '',
       chargeId: json['charge_id']?.toString() ?? '',
       merchantId: merchant['merchant_id']?.toString() ?? '',
       merchantName: merchant['business_name']?.toString() ?? '',
+      payeeOwnerId: (ownerId == null || ownerId.isEmpty) ? null : ownerId,
       amountMinor: _asInt(json['amount_minor']),
       currency: (json['currency']?.toString() ?? 'PEN').toUpperCase(),
       status: (json['status']?.toString() ?? '').toUpperCase(),
@@ -140,6 +157,7 @@ class QrChargePreview {
     required this.chargeId,
     required this.merchantId,
     required this.merchantName,
+    this.payeeOwnerId,
     required this.amountMinor,
     required this.currency,
     this.expiresAt,
@@ -149,8 +167,15 @@ class QrChargePreview {
   final String chargeId;
   final String merchantId;
 
-  /// Razon social / nombre del comercio (tal cual del backend).
+  /// Razon social / nombre del comercio (tal cual del backend; vacio
+  /// en QR personal).
   final String merchantName;
+
+  /// Titular destino de un QR personal (E4-T21; `null` en comercio).
+  final String? payeeOwnerId;
+
+  /// Monto fijo del cargo en centimos (`0` + [isPersonal] cuando el QR
+  /// no trae monto: el pagador lo digita al confirmar).
   final int amountMinor;
   final String currency;
 
@@ -160,6 +185,14 @@ class QrChargePreview {
   /// `ACTIVE` (lo decide el backend).
   final String status;
 
+  /// `true` cuando el QR es personal sin monto (E4-T21): el pagador
+  /// digita el monto en soles en el resumen.
+  bool get isPersonal => (payeeOwnerId ?? '').isNotEmpty;
+
+  /// Nombre a mostrar: comercio o etiqueta neutra del QR personal.
+  String get displayName =>
+      merchantName.isEmpty ? 'QR personal' : merchantName;
+
   factory QrChargePreview.fromJson(Map<String, dynamic> json) {
     Map<String, dynamic> merchantOf(Object? value) {
       if (value is Map<String, dynamic>) return value;
@@ -168,10 +201,13 @@ class QrChargePreview {
     }
 
     final merchant = merchantOf(json['merchant']);
+    final payee = merchantOf(json['payee']);
+    final ownerId = payee['owner_user_id']?.toString();
     return QrChargePreview(
       chargeId: json['charge_id']?.toString() ?? '',
       merchantId: merchant['merchant_id']?.toString() ?? '',
       merchantName: merchant['business_name']?.toString() ?? '',
+      payeeOwnerId: (ownerId == null || ownerId.isEmpty) ? null : ownerId,
       amountMinor: _asInt(json['amount_minor']),
       currency: (json['currency']?.toString() ?? 'PEN').toUpperCase(),
       expiresAt: json['expires_at']?.toString(),

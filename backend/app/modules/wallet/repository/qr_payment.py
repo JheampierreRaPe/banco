@@ -39,23 +39,38 @@ def create_qr_payment(
     transaction_id: uuid.UUID | str,
     charge_id: uuid.UUID | str,
     payer_user_id: uuid.UUID | str,
-    merchant_id: uuid.UUID | str,
+    merchant_id: uuid.UUID | str | None = None,
+    payee_user_id: uuid.UUID | str | None = None,
+    reusable: bool = False,
     amount_minor: int,
     currency: str,
     status: str = "PENDING",
 ) -> QrPayment:
-    """Persiste el registro del cobro (el dinero vive en el motor)."""
+    """Persiste el registro del cobro (el dinero vive en el motor).
+
+    Comercio (E4-T11): `merchant_id` obligatorio. Personal (E4-T21):
+    `merchant_id = None`, `payee_user_id` con el titular destino y
+    `reusable = True` (denormalizado del cargo; la guarda de doble
+    cobro solo aplica con `false`). Exactamente uno de los dos
+    destinos es obligatorio.
+    """
     if isinstance(amount_minor, bool) or not isinstance(amount_minor, int):
         raise TypeError("amount_minor debe ser entero de centimos")
     if amount_minor <= 0:
         raise ValueError("amount_minor debe ser > 0")
     if not isinstance(currency, str) or len(currency.strip()) != 3:
         raise ValueError("currency debe ser ISO-4217 (3 letras)")
+    if (merchant_id is None) == (payee_user_id is None):
+        raise ValueError("exactamente uno de merchant_id / payee_user_id es obligatorio")
     row = QrPayment(
         transaction_id=_coerce_uuid(transaction_id, "transaction_id"),
         charge_id=_coerce_uuid(charge_id, "charge_id"),
         payer_user_id=_coerce_uuid(payer_user_id, "payer_user_id"),
-        merchant_id=_coerce_uuid(merchant_id, "merchant_id"),
+        merchant_id=_coerce_uuid(merchant_id, "merchant_id") if merchant_id is not None else None,
+        payee_user_id=(
+            _coerce_uuid(payee_user_id, "payee_user_id") if payee_user_id is not None else None
+        ),
+        reusable=reusable,
         amount_minor=amount_minor,
         currency=currency.strip().upper(),
         status=status,

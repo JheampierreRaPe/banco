@@ -139,6 +139,13 @@ simulado, cero PII real:
 - 4 cuentas en centimos: `ana-pen`, `bruno-pen`, `bruno-usd`, `carmen-pen`.
 - Catalogo contable minimo (8 cuentas), 2 comercios QR (`cafe-central`,
   `libreria-norte`), 3 billers, 2 asientos cuadrados, llaves de idempotencia.
+- **Cuenta de liquidacion demo de servicios/recargas (HU16):** UUID fijo
+  `d0000000-0000-4000-8000-000000000001` (PEN, `ACTIVE`), sembrada por la
+  migracion `0046_services_settlement` e inyectada por
+  `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID` a `backend`/`worker`
+  (`docker-compose.yml`). El motor acredita aqui al pagar/recargar
+  (`docs/04#7.10`); sin ella el pago/recarga se rechaza fail-closed. Con
+  esto, las recargas y pagos funcionan en la demo **sin configuracion manual**.
 
 Comandos reales (desde `backend/`, ver docstring del script):
 

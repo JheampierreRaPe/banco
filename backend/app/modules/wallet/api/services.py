@@ -153,6 +153,16 @@ def _payment_errors(exc: Exception, db: Session) -> AppError:
         return AppError(code="SERVICE_PROVIDER_UNAVAILABLE", message=str(exc), status_code=503)
     if isinstance(exc, wallet_service.ServiceProviderGatewayTimeoutError):
         return AppError(code="SERVICE_PROVIDER_TIMEOUT", message=str(exc), status_code=502)
+    if isinstance(exc, wallet_service.ServiceSettlementUnavailableError):
+        # Configuracion de liquidacion del proveedor ausente/no viable: no es
+        # un error de formulario (422). Mensaje neutro, sin detalles internos
+        # (regla de oro 7): el frontend lo traduce a "servicio de pagos no
+        # disponible por ahora".
+        return AppError(
+            code="SETTLEMENT_UNAVAILABLE",
+            message="servicio de pagos no disponible",
+            status_code=503,
+        )
     return AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422)
 
 

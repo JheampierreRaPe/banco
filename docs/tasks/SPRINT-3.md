@@ -167,6 +167,43 @@ vencer se **invalida**; el QR respeta un **formato interoperable**; al confirmar
 > **G69** (sin alta de `merchant_accounts` en el alcance), **G71** (sin mockups/spec de las pantallas de
 > comercio), **G72** (la notificacion de abono depende del pago de HU15 / `qr.payment.confirmed`).
 
+## HU14 (incremento post-cierre) - QR personal estatico (Must, `wallet` + `frontend`)
+
+**Requisito del dueno (nuevo):** la generacion de QR no debe ser **unica para negocios** sino tambien
+para **personas**, y debe ser **estatico**. Hoy `POST /merchants/qr` exige rol de comercio
+(`require_merchant_for_user` -> `403`) y el modo `STATIC` aun exige monto; `pay_qr_charge` abona a la
+cuenta del comercio. Falta un **QR personal** (cualquier titular) y **estatico** (sin monto,
+reutilizable).
+
+**Logica:** cualquier titular `ACTIVE` genera un QR personal que **recibe dinero en su propia cuenta**
+(sin rol comercial); el payload es `qr_content` (`BO-QR1`) escaneable; el QR es **estatico** (sin monto
+—lo digita el pagador— y sin caducidad, reutilizable); el pago (`POST /payments/qr`) abona a la cuenta
+del titular personal via el motor.
+
+| Tarea | Descripcion | Tipo | Brief | Estado |
+|---|---|---|---|---|
+| `E4-T21` | **QR personal estatico:** endpoint `POST /api/v1/wallet/qr` (+ `GET /wallet/qr/{id}`); `amount_minor` nullable + destino personal (`payee_type`/`owner_user_id`/`payee_account_id`) y `reusable` en `qr_charges`; guarda de doble cobro acotada a `reusable = false` en `qr_payments`; pago sin monto (pagador aporta `amount_minor`) y abono a la cuenta del titular personal; migracion `0047_wallet_personal_qr` (tras `0046_services_settlement`; correccion de numeracion: `0045`/`0046` ya tomadas); UI Flutter "Mi QR personal" + reencuadre del copy "Soy comercio" en `wallet_page.dart` | `dominio` + `datos` + `frontend` | `docs/tasks/E4-T21.md` | `Hecho` |
+
+> **Fronteras (E4-T21):** `wallet` es dueno de `qr_charges`/`qr_payments` y genera/valida el QR, pero
+> **no** mueve dinero por su cuenta: usa la fachada `pay_express` (`E4-T02` -> `transactions` ->
+> `ledger`, asiento `docs/04#7.4`) y resuelve la cuenta de abono por la fachada `accounts`; el aviso
+> va por `notifications.send(...)`. El frontend feature `wallet` solo captura/muestra (cliente delgado).
+
+> **Cambio de esquema (E4-T21):** `qr_charges.merchant_id` y `amount_minor` pasan a **nullable**
+> (`CHECK amount_minor IS NULL OR > 0`) + columnas `payee_type`/`owner_user_id`/`payee_account_id`/
+> `reusable`; `qr_payments.merchant_id` nullable + `payee_user_id`/`reusable`; el indice unico parcial
+> `uq_qr_payments_charge_active` se recrea con predicado `status <> 'REJECTED' AND reusable = false`.
+> **Gaps de HU14/E4-T21 (`docs/18#9`, tras `G83`):** **G84** (semantica del QR estatico sin monto en
+> `BO-QR1`/`qr_charges`), **G85** (destino personal + guarda de doble cobro vs QR reutilizable),
+> **G86** (decision de esquema/migracion `0047` y ownership del endpoint `/wallet/qr`; `Hecho`).
+
+> **Dependencias (`E4-T06`/`E4-T08`/`E4-T11`/`E4-T12` `Hecho`):** reutiliza la firma/`qr_charges`
+> (`E4-T06`), el endpoint/estado de comercio (`E4-T08`), el cobro por el motor (`E4-T11`) y el endpoint
+> `POST /payments/qr` + `preview` (`E4-T12`); concurrencia critica `wallet`/`ledger` (un modulo de dinero
+> a la vez). Decisiones del dueno adoptadas (`Hecho`): personal sin rol comercial, estatico sin
+> monto/caducidad y reutilizable, esquema de menor impacto, endpoint aditivo `POST /wallet/qr`,
+> limite diario de billetera (sin topes nuevos) y plantilla `qr_charge_paid` reutilizada.
+
 ## HU15 - Lectura y Confirmacion de Pago QR (Must, 5 SP) - `wallet`
 
 **Logica** (`docs/09#hu15---lectura-y-confirmacion-de-pago-qr-must-5-sp-sprint-3`): el cliente escanea el

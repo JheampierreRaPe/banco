@@ -12,6 +12,7 @@ import '../../payment_authorization/data/payment_authorization_service.dart';
 import '../../payment_authorization/payment_authorization_controller.dart';
 import '../data/qr_payment_service.dart';
 import '../data/wallet_service.dart';
+import '../models/merchant_qr.dart' show parseSolesToMinor;
 import '../models/qr_payment.dart';
 import '../models/wallet.dart';
 
@@ -153,6 +154,17 @@ class _QrPayPageState extends State<QrPayPage> {
   final TextEditingController _pinController = TextEditingController();
   String? _pinError;
 
+  /// Monto digitado por el pagador (soles) cuando el QR no trae monto
+  /// (personal, E4-T21): solo captura y muestra; el backend valida y
+  /// decide el cobro (cliente delgado, docs/19 §4).
+  final TextEditingController _amountController = TextEditingController();
+  String? _amountError;
+
+  /// Monto en centimos confirmado para el intento vigente (se reusa en
+  /// la finalizacion del diferido con la misma `Idempotency-Key`: el
+  /// backend exige el cuerpo exacto en el replay).
+  int? _confirmedAmountMinor;
+
   @override
   void initState() {
     super.initState();
@@ -172,6 +184,7 @@ class _QrPayPageState extends State<QrPayPage> {
   @override
   void dispose() {
     _pinController.dispose();
+    _amountController.dispose();
     super.dispose();
   }
 
@@ -275,6 +288,22 @@ class _QrPayPageState extends State<QrPayPage> {
       });
       return;
     }
+    // QR personal sin monto (E4-T21): el pagador digita el monto en
+    // soles; se codifica a centimos exactos sin `double` (solo
+    // transporte; el backend valida `> 0` y decide el cobro).
+    int? amountMinor;
+    if (_preview?.isPersonal ?? false) {
+      amountMinor = parseSolesToMinor(_amountController.text);
+      if (amountMinor == null || amountMinor <= 0) {
+        setState(() {
+          _amountError = 'Ingresa el monto a pagar en soles (mayor a S/ 0.00).';
+        });
+        return;
+      }
+      _confirmedAmountMinor = amountMinor;
+    } else {
+      amountMinor = _confirmedAmountMinor;
+    }
     setState(() {
       _stage = _Stage.paying;
       _failure = null;
@@ -283,6 +312,7 @@ class _QrPayPageState extends State<QrPayPage> {
       final result = await service.payQr(
         qrContent: widget.qrContent,
         linkId: linkId,
+        amountMinor: amountMinor,
         idempotencyKey: _payKey,
       );
       if (!mounted) return;
@@ -490,6 +520,7 @@ class _QrPayPageState extends State<QrPayPage> {
       final finalResult = await service.payQr(
         qrContent: widget.qrContent,
         linkId: linkId,
+        amountMinor: _confirmedAmountMinor,
         idempotencyKey: _payKey,
       );
       if (!mounted) return;
@@ -730,19 +761,53 @@ class _QrPayPageState extends State<QrPayPage> {
           ] else if (_preview != null) ...[
             Text(
               _preview!.merchantName.isEmpty
-                  ? 'Comercio confirmado por el servidor'
+                  ? 'QR personal confirmado por el servidor'
                   : _preview!.merchantName,
               key: const Key('qr-pay-preview-merchant'),
               style: AppTypography.titleMd.copyWith(fontSize: 16),
             ),
             const SizedBox(height: 4),
-            Text(
-              formatQrMinor(_preview!.amountMinor, _preview!.currency),
-              key: const Key('qr-pay-preview-amount'),
-              style: AppTypography.displayLg.copyWith(
-                color: AppColors.primary,
+            if (_preview!.isPersonal) ...[
+              Text(
+                'Este QR no trae monto: digita cuánto quieres pagar. '
+                'El servidor valida y confirma el cobro.',
+                style: AppTypography.bodyMd.copyWith(
+                  fontSize: 13,
+                  color: AppColors.secondaryText,
+                ),
               ),
-            ),
+              const SizedBox(height: 8),
+              TextField(
+                key: const Key('qr-pay-amount-field'),
+                controller: _amountController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'Monto a pagar (soles)',
+                  hintText: 'Ej. 25.50',
+                  filled: true,
+                  fillColor: AppColors.surfaceContainerLowest,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  errorText: _amountError,
+                ),
+                onChanged: (_) {
+                  if (_amountError != null) {
+                    setState(() => _amountError = null);
+                  }
+                },
+              ),
+            ] else ...[
+              Text(
+                formatQrMinor(_preview!.amountMinor, _preview!.currency),
+                key: const Key('qr-pay-preview-amount'),
+                style: AppTypography.displayLg.copyWith(
+                  color: AppColors.primary,
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             Text(
               'Valores del servidor antes de confirmar. Revisa la fuente '
@@ -836,9 +901,7 @@ class _QrPayPageState extends State<QrPayPage> {
               ),
               const SizedBox(height: 4),
               Text(
-                result.merchantName.isEmpty
-                    ? 'Comercio confirmado por el servidor'
-                    : result.merchantName,
+                result.displayName,
                 key: const Key('qr-pay-merchant'),
                 style: AppTypography.titleMd.copyWith(fontSize: 16),
               ),
@@ -966,9 +1029,11 @@ class _QrPayPageState extends State<QrPayPage> {
           ),
           const SizedBox(height: 12),
           Text(
-            result.merchantName.isEmpty
-                ? 'Pago acreditado al comercio'
-                : result.merchantName,
+            result.isPersonal
+                ? 'Pago acreditado a su titular'
+                : (result.merchantName.isEmpty
+                    ? 'Pago acreditado al comercio'
+                    : result.merchantName),
             key: const Key('qr-pay-merchant'),
             textAlign: TextAlign.center,
             style: AppTypography.titleMd.copyWith(fontSize: 17),

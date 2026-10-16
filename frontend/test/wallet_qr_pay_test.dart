@@ -102,9 +102,14 @@ class FakeQrPaymentService implements QrPaymentServiceBase {
   Future<QrPaymentResult> payQr({
     required String qrContent,
     required String linkId,
+    int? amountMinor,
     String? idempotencyKey,
   }) async {
-    payBodies.add({'qr_content': qrContent, 'link_id': linkId});
+    payBodies.add({
+      'qr_content': qrContent,
+      'link_id': linkId,
+      'amount_minor': ?amountMinor,
+    });
     payKeys.add(idempotencyKey);
     if (payError != null) throw payError!;
     if (failNextPay) {

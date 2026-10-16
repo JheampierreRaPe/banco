@@ -23,8 +23,10 @@ import '../utils/format.dart';
 ///   `primary`. Aprobadas sin firmar: CTA `Continuar a la firma`
 ///   (→ `/credits/contract` con el id) + `Ver estado ›`
 ///   (→ `/credits/status` con el id); aprobadas ya firmadas
-///   (`contract_signed` del servidor): badge `Firmado` y SIN CTA de firma
-///   (solo `Ver estado ›`); no aprobadas: solo `Ver estado ›`.
+///   (`contract_signed` del servidor): badge `Firmado` + CTA
+///   `Desembolsar a mi cuenta` (→ `/credits/sign` con el id, reanuda el
+///   ciclo) + `Ver cronograma ›` (→ `/credits/loans`) + `Ver estado ›`;
+///   no aprobadas: solo `Ver estado ›`.
 /// - 4 estados (`docs/20` §7): contenido, carga (skeleton), vacío
 ///   (`Aún no tienes solicitudes` + `Ir al simulador`) y error accionable
 ///   con Reintentar + pull-to-refresh.
@@ -251,6 +253,11 @@ class _ApplicationRow extends StatelessWidget {
   /// deja de ser re-firmable (múltiples accesos cerrados).
   bool get _canSign => _approved && !_signed;
 
+  /// Firmado pendiente de desembolso (descubribilidad sprint-3): el
+  /// desembolso es reanudable desde la fila (→ `/credits/sign`, que
+  /// verifica el préstamo y ofrece la CTA o `Ver cronograma`).
+  bool get _canDisburse => _approved && _signed;
+
   String _secondLine() {
     final id = item.id.length > 12 ? item.id.substring(0, 12) : item.id;
     final date = item.createdAt;
@@ -335,6 +342,39 @@ class _ApplicationRow extends StatelessWidget {
               ),
             ),
           if (_canSign) const SizedBox(height: AppSpacing.stackSm),
+          if (_canDisburse) ...[
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: Key('my-credits-disburse-${item.id}'),
+                // Reanuda el ciclo firmar → desembolsar (la firma ya
+                // muestra la sección y verifica el préstamo existente).
+                onPressed: () =>
+                    context.push('/credits/sign', extra: item.id),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Desembolsar a mi cuenta'),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.stackSm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: Key('my-credits-schedule-${item.id}'),
+                onPressed: () => context.push('/credits/loans'),
+                child: Text(
+                  'Ver cronograma ›',
+                  style: AppTypography.labelMd.copyWith(
+                    color: AppColors.accentText,
+                  ),
+                ),
+              ),
+            ),
+          ],
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(

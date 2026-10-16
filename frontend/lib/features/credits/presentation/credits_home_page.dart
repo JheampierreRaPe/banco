@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_spacing.dart';
@@ -47,7 +48,19 @@ class _CreditsHomePageState extends State<CreditsHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.surface,
-      appBar: AppBar(title: const Text('Créditos')),
+      appBar: AppBar(
+        title: const Text('Créditos'),
+        actions: [
+          // Entrada persistente al cronograma (descubribilidad sprint-3):
+          // `/credits/loans` vive fuera de las pestañas y sin esto solo
+          // se llegaba tras firmar.
+          TextButton(
+            key: const Key('credits-loans-action'),
+            onPressed: () => context.push('/credits/loans'),
+            child: const Text('Mis préstamos'),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(

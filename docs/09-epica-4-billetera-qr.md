@@ -44,6 +44,9 @@ diario).
 - `E4-T08` Endpoint `/merchants/qr` y consulta de estado. *Backend.*
 - `E4-T09` UI Flutter/web de comercio para generar y ver cobros. *Frontend.*
 - `E4-T10` Pruebas: QR vencido, firma alterada, notificacion de abono. *QA.*
+- `E4-T21` QR personal estatico (cualquier titular, sin monto, reutilizable;
+  `POST /wallet/qr` + `GET /wallet/qr/{id}`; pago con monto del pagador;
+  migracion `0047_wallet_personal_qr`; UI "Mi QR personal"). *Backend/Datos/Frontend.*
 
 ## HU15 - Lectura y Confirmacion de Pago QR (Must, 5 SP, Sprint 3)
 

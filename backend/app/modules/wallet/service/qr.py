@@ -130,12 +130,19 @@ def _audit_charge(session: Session, row: Any) -> None:
 
 
 def _record_charge_created_event(session: Session, row: Any) -> None:
-    """Registra `qr.charge.created` en el outbox (payload sin PII)."""
+    """Registra `qr.charge.created` en el outbox (payload sin PII).
+
+    Comercio (E4-T06): `merchant_id` + `amount_minor` presentes.
+    Personal (E4-T21): `merchant_id`/`amount_minor` en `None` y
+    `payee_user_id` con el titular destino.
+    """
     from app.modules.shared.repository.outbox import insert_event
 
     expires_at = row.expires_at
     if expires_at is not None and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
+    merchant_id = getattr(row, "merchant_id", None)
+    amount = getattr(row, "amount_minor", None)
     insert_event(
         session,
         aggregate_type="qr_charge",
@@ -143,8 +150,13 @@ def _record_charge_created_event(session: Session, row: Any) -> None:
         event_type=QR_CHARGE_CREATED,
         payload={
             "charge_id": str(row.id),
-            "merchant_id": str(row.merchant_id),
-            "amount_minor": int(row.amount_minor),
+            "merchant_id": str(merchant_id) if merchant_id is not None else None,
+            "payee_user_id": (
+                str(getattr(row, "owner_user_id", None))
+                if getattr(row, "owner_user_id", None) is not None
+                else None
+            ),
+            "amount_minor": int(amount) if amount is not None else None,
             "currency": str(row.currency),
             "mode": str(row.mode),
             "expires_at": expires_at.isoformat() if expires_at is not None else None,
@@ -167,10 +179,12 @@ def to_charge_view(
     expires_at = row.expires_at
     if expires_at is not None and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
+    merchant_id = getattr(row, "merchant_id", None)
+    amount = getattr(row, "amount_minor", None)
     view: dict[str, Any] = {
         "charge_id": str(row.id),
-        "merchant_id": str(row.merchant_id),
-        "amount_minor": int(row.amount_minor),
+        "merchant_id": str(merchant_id) if merchant_id is not None else None,
+        "amount_minor": int(amount) if amount is not None else None,
         "currency": str(row.currency),
         "concept": row.concept,
         "mode": str(row.mode),
@@ -180,6 +194,18 @@ def to_charge_view(
         "expires_at": expires_at,
         "created_at": row.created_at,
         "paid_at": row.paid_at,
+        "payee_type": str(getattr(row, "payee_type", "MERCHANT")),
+        "owner_user_id": (
+            str(getattr(row, "owner_user_id", None))
+            if getattr(row, "owner_user_id", None) is not None
+            else None
+        ),
+        "payee_account_id": (
+            str(getattr(row, "payee_account_id", None))
+            if getattr(row, "payee_account_id", None) is not None
+            else None
+        ),
+        "reusable": bool(getattr(row, "reusable", False)),
     }
     if payload is not None:
         view["payload"] = dict(payload)
@@ -541,6 +567,318 @@ def get_charge_status(
     }
 
 
+#: Endpoint logico para la idempotencia del alta del QR personal
+#: (clave `shared`, UQ por usuario; no mueve dinero).
+QR_PERSONAL_IDEMPOTENCY_ENDPOINT = "/wallet/qr"
+
+
+def resolve_holder_settlement_account(
+    session: Session, owner_user_id: uuid.UUID | str, currency: str
+) -> uuid.UUID:
+    """Cuenta de abono del titular por la fachada `accounts` (E4-T21).
+
+    Primera cuenta `ACTIVE` del titular con la moneda pedida, en orden
+    de creacion (determinista). Sin cuenta compatible ->
+    `QrMerchantNotFoundError` neutro (mismo codigo que el comercio sin
+    abono; el numero en claro jamas se loguea). Solo lectura (sin
+    `flush`/`commit`). La consume el QR personal y, por delegacion,
+    `resolve_merchant_settlement_account` de `HU15`.
+    """
+    from app.modules.accounts.service import list_active_by_user
+
+    try:
+        owner = (
+            owner_user_id if isinstance(owner_user_id, uuid.UUID) else uuid.UUID(str(owner_user_id))
+        )
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise QrMerchantNotFoundError("titular sin cuenta de abono") from exc
+    wanted = str(currency or "").strip().upper()
+    try:
+        candidates = list_active_by_user(session, owner)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise QrMerchantNotFoundError("titular sin cuenta de abono") from exc
+    for view in candidates:
+        if str(view.get("currency") or "").upper() == wanted:
+            account_id = view.get("account_id")
+            if isinstance(account_id, uuid.UUID):
+                return account_id
+            try:
+                return uuid.UUID(str(account_id))
+            except (ValueError, AttributeError, TypeError):
+                continue
+    raise QrMerchantNotFoundError("titular sin cuenta de abono")
+
+
+def create_personal_qr_charge(
+    session: Session,
+    *,
+    owner_user_id: uuid.UUID | str,
+    currency: str = "PEN",
+    concept: str | None = None,
+    now: datetime | None = None,
+    secret: str | None = None,
+) -> dict[str, Any]:
+    """Genera el QR personal estatico del titular y lo persiste `ACTIVE`.
+
+    Cualquier titular autenticado con al menos una cuenta `ACTIVE`
+    (sin rol comercial): QR `STATIC` sin monto (`amount_minor = NULL`;
+    el pagador lo digita) y sin caducidad (`expires_at = NULL`;
+    reutilizable). El abono se fija a la cuenta `ACTIVE` del titular
+    con la moneda pedida (fachada `accounts`; sin cuenta compatible
+    -> `QrMerchantNotFoundError` neutro antes de persistir).
+
+    La vista incluye `qr_content` (`str`): el sobre canonico `BO-QR1`
+    con `amount_minor = 0` ("lo define el pagador"). Solo `flush` (el
+    llamante confirma). **No mueve dinero**.
+    """
+    owner = _coerce_uuid(owner_user_id, "owner_user_id")
+    try:
+        clean_currency = qr_domain._require_currency("PEN" if currency is None else currency)
+        clean_concept = qr_domain._require_concept(concept)
+    except (TypeError, ValueError) as exc:
+        raise QrValidationError(str(exc)) from exc
+    try:
+        target_account_id = resolve_holder_settlement_account(session, owner, clean_currency)
+    except QrMerchantNotFoundError as exc:
+        raise QrValidationError("titular sin cuenta de abono") from exc
+
+    charge_id = uuid.uuid4()
+    payload = qr_domain.build_payload(
+        charge_id=charge_id,
+        owner_user_id=owner,
+        amount_minor=None,
+        currency=clean_currency,
+        concept=clean_concept,
+        mode="STATIC",
+        expires_at=None,
+    )
+    payload_hash = qr_domain.payload_hash_for(payload)
+    signature = qr_domain.sign_payload(payload, secret=secret)
+
+    row = qr_repo.create_qr_charge(
+        session,
+        id=charge_id,
+        merchant_id=None,
+        owner_user_id=owner,
+        payee_account_id=target_account_id,
+        payee_type="PERSONAL",
+        reusable=True,
+        amount_minor=None,
+        currency=clean_currency,
+        concept=clean_concept,
+        mode="STATIC",
+        payload_hash=payload_hash,
+        signature=signature,
+        expires_at=None,
+    )
+    _record_charge_created_event(session, row)
+    _audit_personal_charge(session, row)
+    logger.info("qr personal creado charge_id=%s", row.id)
+    qr_content = qr_domain.to_interop_token(payload, signature)
+    return to_charge_view(row, payload=payload, qr_content=qr_content)
+
+
+def _audit_personal_charge(session: Session, row: Any) -> None:
+    """Auditoria best-effort del QR personal (sin PII ni cifras)."""
+    try:
+        from app.modules.audit.service import record as audit_record
+
+        audit_record(
+            session,
+            actor=row.owner_user_id,
+            action=AUDIT_ACTION,
+            entity="qr_charge",
+            entity_id=row.id,
+            metadata={
+                "charge_id": str(row.id),
+                "payee_type": "PERSONAL",
+                "mode": str(row.mode),
+                "status": str(row.status),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - la auditoria no bloquea la generacion
+        logger.warning("qr personal audit best-effort omitida err=%s", type(exc).__name__)
+
+
+def _canonical_personal_body(*, currency: object, concept: object) -> dict:
+    """Cuerpo canonico del QR personal para el hash de idempotencia (sin PII)."""
+    try:
+        clean_currency = qr_domain._require_currency("PEN" if currency is None else currency)
+        clean_concept = qr_domain._require_concept(concept)
+    except (TypeError, ValueError) as exc:
+        raise QrValidationError(str(exc)) from exc
+    body: dict[str, Any] = {"currency": clean_currency, "payee_type": "PERSONAL"}
+    if clean_concept is not None:
+        body["concept"] = clean_concept
+    return body
+
+
+def _replay_personal_charge_view(session: Session, owner: uuid.UUID, stored) -> dict[str, Any]:
+    """Reconstruye la vista personal re-leyendo la fila (sin PII)."""
+    snapshot = stored.response_snapshot
+    if not isinstance(snapshot, dict):
+        raise QrIdempotencyConflictError("operacion en curso para esta Idempotency-Key")
+    charge_id = snapshot.get("charge_id")
+    if charge_id is None:
+        raise QrIdempotencyConflictError("operacion en curso para esta Idempotency-Key")
+    row = qr_repo.get_qr_charge(session, charge_id)
+    if row is None or row.owner_user_id != owner:
+        raise QrIdempotencyConflictError("cargo asociado a la clave ya no esta disponible")
+    payload = qr_domain.build_payload(
+        charge_id=row.id,
+        owner_user_id=row.owner_user_id,
+        amount_minor=None,
+        currency=str(row.currency),
+        concept=row.concept,
+        mode="STATIC",
+        expires_at=None,
+    )
+    qr_content = qr_domain.to_interop_token(payload, str(row.signature))
+    return to_charge_view(row, payload=payload, qr_content=qr_content)
+
+
+def create_personal_qr_charge_idempotent(
+    session: Session,
+    *,
+    user_id: uuid.UUID | str,
+    body: dict,
+    idempotency_key: str | None,
+) -> tuple[dict[str, Any], bool]:
+    """Genera el QR personal con `Idempotency-Key` opcional.
+
+    Sin clave: genera directo (`replayed=False`). Con clave: misma
+    clave + mismo cuerpo -> replay (`replayed=True`, un solo cargo);
+    misma clave + distinto cuerpo -> `QrIdempotencyConflictError`
+    (409). No mueve dinero. Solo `flush` (el endpoint confirma).
+    """
+    if not isinstance(body, dict):
+        raise QrValidationError("cuerpo con formato invalido")
+    owner = _coerce_uuid(user_id, "user_id")
+    canonical = _canonical_personal_body(
+        currency=body.get("currency", "PEN"),
+        concept=body.get("concept"),
+    )
+    if idempotency_key is None or not str(idempotency_key).strip():
+        return (
+            create_personal_qr_charge(
+                session,
+                owner_user_id=owner,
+                currency=canonical["currency"],
+                concept=canonical.get("concept"),
+            ),
+            False,
+        )
+    from app.modules.shared.repository.idempotency import (
+        compute_request_hash,
+        find_key,
+        is_expired,
+        renew_expired,
+        resolve_ttl_seconds,
+        store_response,
+        try_claim,
+    )
+
+    key = str(idempotency_key).strip()
+    if len(key) > 80:
+        raise QrValidationError("Idempotency-Key supera 80 caracteres")
+    digest = compute_request_hash({"owner_user_id": str(owner), **canonical})
+    row, created = try_claim(
+        session,
+        key=key,
+        user_id=owner,
+        endpoint=QR_PERSONAL_IDEMPOTENCY_ENDPOINT,
+        method="POST",
+        request_hash=digest,
+        ttl_seconds=resolve_ttl_seconds(),
+    )
+
+    def _generate() -> dict[str, Any]:
+        return create_personal_qr_charge(
+            session,
+            owner_user_id=owner,
+            currency=canonical["currency"],
+            concept=canonical.get("concept"),
+        )
+
+    if created:
+        view = _generate()
+        store_response(
+            session,
+            row,
+            response_snapshot={"charge_id": view["charge_id"]},
+            transaction_id=view["charge_id"],
+        )
+        return view, False
+    stored = find_key(session, key=key, user_id=owner)
+    if stored is None:  # pragma: no cover - carrera extrema
+        raise QrIdempotencyConflictError("clave de idempotencia en conflicto")
+    if is_expired(stored):
+        renew_expired(
+            session,
+            stored,
+            request_hash=digest,
+            endpoint=QR_PERSONAL_IDEMPOTENCY_ENDPOINT,
+            method="POST",
+        )
+        view = _generate()
+        store_response(
+            session,
+            stored,
+            response_snapshot={"charge_id": view["charge_id"]},
+            transaction_id=view["charge_id"],
+        )
+        return view, False
+    if stored.request_hash != digest:
+        raise QrIdempotencyConflictError("Idempotency-Key ya usada con un cuerpo distinto")
+    return _replay_personal_charge_view(session, owner, stored), True
+
+
+def get_personal_charge_status(
+    session: Session,
+    *,
+    user_id: uuid.UUID | str,
+    charge_id: uuid.UUID | str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Estado del QR personal del titular dueno (E4-T21).
+
+    Solo el titular dueno de un cargo `PERSONAL`: inexistente, ajeno,
+    de comercio o con id malformado -> `QrNotFoundError` neutro
+    (`404`, sin montos, sin oraculo). El personal no caduca
+    (`expires_at = NULL`) ni se agota (reutilizable): el estado es el
+    de la fila.
+    """
+    _ = now  # sin caducidad: se acepta por simetria con el comercio
+    owner = _coerce_uuid(user_id, "user_id")
+    row = qr_repo.get_qr_charge(session, charge_id)
+    if (
+        row is None
+        or str(getattr(row, "payee_type", "MERCHANT")) != "PERSONAL"
+        or row.owner_user_id != owner
+    ):
+        raise QrNotFoundError("cargo inexistente")
+    payload = qr_domain.build_payload(
+        charge_id=row.id,
+        owner_user_id=row.owner_user_id,
+        amount_minor=None,
+        currency=str(row.currency),
+        concept=row.concept,
+        mode="STATIC",
+        expires_at=None,
+    )
+    return {
+        "charge_id": str(row.id),
+        "qr_content": qr_domain.to_interop_token(payload, str(row.signature)),
+        "status": str(row.status),
+        "amount_minor": None,
+        "currency": str(row.currency),
+        "expires_at": None,
+        "paid_at": row.paid_at,
+        "payee_type": "PERSONAL",
+        "reusable": True,
+    }
+
+
 def notify_merchant_charge_paid(
     session: Session,
     *,
@@ -575,23 +913,61 @@ def notify_merchant_charge_paid(
     )
 
 
+def notify_personal_charge_paid(
+    session: Session,
+    *,
+    owner_user_id: uuid.UUID | str,
+    charge_id: uuid.UUID | str,
+    sender: Any | None = None,
+) -> Any:
+    """Avisa al titular el abono de su QR personal (E4-T21, HU14 CA-04).
+
+    Reutiliza la plantilla `qr_charge_paid` (push, sin PII ni cifras:
+    solo la referencia del cargo y el instante) con destinatario = el
+    titular personal (decision del dueno). El disparador es el pago
+    (`qr.payment.confirmed`); best-effort via la fachada
+    `notifications.send` (el llamante confirma).
+    """
+    from app.modules.notifications import service as notifications_service
+    from app.modules.notifications.service import sender_for_channel
+
+    moment = _utcnow()
+    ref = str(charge_id)
+    sender_obj = sender if sender is not None else sender_for_channel("push")
+    return notifications_service.send(
+        session,
+        channel="push",
+        recipient=str(owner_user_id),
+        template_code="qr_charge_paid",
+        data={"charge_ref": ref[:8], "at": moment.isoformat()},
+        user_id=owner_user_id,
+        sender=sender_obj,
+    )
+
+
 __all__ = [
     "AUDIT_ACTION",
     "QR_IDEMPOTENCY_ENDPOINT",
+    "QR_PERSONAL_IDEMPOTENCY_ENDPOINT",
     "QrError",
     "QrIdempotencyConflictError",
     "QrMerchantNotFoundError",
     "QrNotAuthorizedError",
     "QrNotFoundError",
     "QrValidationError",
+    "create_personal_qr_charge",
+    "create_personal_qr_charge_idempotent",
     "create_qr_charge",
     "create_qr_charge_idempotent",
     "get_charge_status",
+    "get_personal_charge_status",
     "get_qr_ttl_seconds",
     "is_charge_expired",
     "is_charge_valid",
     "notify_merchant_charge_paid",
+    "notify_personal_charge_paid",
     "require_merchant_for_user",
+    "resolve_holder_settlement_account",
     "to_charge_view",
     "verify_charge_signature",
 ]

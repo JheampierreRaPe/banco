@@ -680,19 +680,48 @@ eventos (`outbox`/`inbox`).
   `E4-T12`).
    Pruebas: `backend/tests/test_e4_t11_qr_payment.py` (22 pruebas) +
   `backend/tests/test_e4_t11b_qr_payment_guard.py` (11 pruebas del fix).
-- **Endpoint de pago QR (E4-T12, HU15 CA-01..CA-04):** `POST
-  /api/v1/payments/qr` (`{qr_content, link_id}`, `Idempotency-Key`
+- **Endpoint de pago QR (E4-T12, HU15 CA-01..CA-04; E4-T21 monto
+  del pagador + destino personal):** `POST
+  /api/v1/payments/qr` (`{qr_content, link_id, amount_minor?}`,
+  `Idempotency-Key`
   obligatoria, solo el titular pagador -> `201` con `SETTLED` en un
   toque, `PENDING_AUTHORIZATION` + reto sobre el limite base o
   `REJECTED` + `failure_code`; contrato en `docs/05#6.5`) + `POST
   /api/v1/payments/qr/preview` (`{qr_content}`, sin clave, `200` con
-  comercio/monto sin mover dinero; fix MEDIO-3). Capas:
-  `api/payments.py` (delega en `pay_qr_charge` sin duplicar logica;
+  destino/monto sin mover dinero (`amount_minor: null` + `payee` en
+  QR personal; fix MEDIO-3). Capas:
+  `api/payments.py` (delega en `pay_qr_charge` sin duplicar logica,
+  pasando `amount_minor` del body;
   finaliza el diferido con `finalize_qr_payment` cuando la operacion
-  ya liquido —cargo `PAID` + aviso `qr_charge_paid` unico, `docs/18`
+  ya liquido —cargo `PAID` (salvo reutilizable) + aviso
+  `qr_charge_paid` unico, `docs/18`
   G72 lado endpoint— y espeja a `REJECTED` si el motor rechazo;
-  `422` QR corrupto/manipulado/vencido sin descontar, `409` ya
-  pagado, `404` neutro vinculo ajeno) + `schemas/payment.py`.
+  `422` QR corrupto/manipulado/vencido/sin-monto-sin-`amount_minor`
+  sin descontar, `409` ya
+  pagado (un solo uso) / clave con cuerpo distinto, `404` neutro
+  vinculo ajeno) + `schemas/payment.py` (`merchant?`/`payee?`,
+  `amount_minor?` en el request).
+- **QR personal estatico (E4-T21, HU14 CA-01..CA-05):** cualquier
+  titular `ACTIVE` (sin rol comercial) genera su QR reutilizable
+  (`POST /api/v1/wallet/qr` `{currency?, concept?}` ->
+  `201 {charge_id, qr_content BO-QR1, payload, signature, mode:
+  "STATIC", amount_minor: null, expires_at: null, payee_type:
+  "PERSONAL", reusable: true}` + `GET /api/v1/wallet/qr/{id}` solo el
+  dueno, `404` neutro; contrato en `docs/05#6.5`). Capas:
+  `api/personal_qr.py` + `schemas/personal_qr.py` +
+  `service/qr.py::create_personal_qr_charge[_idempotent]`/
+  `get_personal_charge_status`/`resolve_holder_settlement_account` +
+  `repository/qr.py` (destino polimorfico). El cobro reutiliza el
+  motor (`docs/04#7.4` via `pay_express` con el monto digitado por el
+  pagador; limite diario de billetera `wallet_daily_limit_reader`,
+  sin topes nuevos): abono a la cuenta del titular (fachada
+  `accounts`, fijada en `payee_account_id`), cargo reutilizable que
+  sigue `ACTIVE` (guarda de doble cobro acotada a `reusable = false`,
+  migracion `0047_wallet_personal_qr`), evento `qr.payment.confirmed`
+  (con `payee_user_id`) + aviso `qr_charge_paid` reutilizado al
+  titular (< 5 s). Esquema `docs/03b#93`/`#94` + `docs/03c`.
+  Pruebas: `backend/tests/test_e4_t21_personal_qr.py` (14 pruebas) +
+  `frontend/test/personal_qr_test.dart` (10 pruebas).
   Ownership `wallet` (`docs/18` G74). El re-chequeo diario al
    autorizar usa `wallet_daily_limit_reader` en el flujo de billetera
    (`docs/18` G75). Pruebas:

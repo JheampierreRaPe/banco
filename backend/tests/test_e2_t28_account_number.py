@@ -383,10 +383,14 @@ def test_single_head_is_0030():
     # a 0042_wallet_services (catalogo `billers` + servicios, tras 0041).
     # E6-T12 (2026-10-13): la cabeza avanza a
     # 0044_notifications_preferences (preferencias por canal + claves de
-    # seguridad, tras 0043).
+    # seguridad, tras 0043). Pulido de correos (2026-10-15): la cabeza
+    # avanza a 0045_notification_email_content (textos de semillas, tras
+    # 0044). E4-T21 (2026-10-15): la cabeza avanza a
+    # 0047_wallet_personal_qr (QR personal estatico, tras 0046): un solo
+    # head.
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0044_notifications_preferences",)
+    assert get_head_revisions() == ("0047_wallet_personal_qr",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

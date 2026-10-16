@@ -36,6 +36,7 @@ import '../../features/splash/splash_routes.dart';
 import '../../features/transfers/data/transfers_service.dart';
 import '../../features/transfers/transfers_routes.dart';
 import '../../features/wallet/data/merchant_qr_service.dart';
+import '../../features/wallet/data/personal_qr_service.dart';
 import '../../features/wallet/data/qr_payment_service.dart';
 import '../../features/wallet/data/services_service.dart';
 import '../../features/wallet/data/wallet_service.dart';
@@ -142,6 +143,10 @@ GoRouter buildRouter(
   // con el `ApiClient` compartido; la guarda F-T37 no se toca
   // (`/wallet/merchant-*` exige sesion).
   merchantQrServiceFactory = () => MerchantQrService(api: client);
+  // QR personal estatico (E4-T21, HU14): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/personal-qr` exige sesion).
+  personalQrServiceFactory = () => PersonalQrService(api: client);
   // Pago QR del pagador (E4-T13, HU15): mismo patron, solo cableado
   // con el `ApiClient` compartido; la guarda F-T37 no se toca
   // (`/wallet/pay-qr*` exige sesion).

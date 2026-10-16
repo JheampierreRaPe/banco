@@ -52,6 +52,12 @@ class QrPayRequest(BaseModel):
         "verifica el servicio de E4-T11)",
     )
     link_id: uuid.UUID = Field(description="Vinculo ACCOUNT del titular a debitar")
+    amount_minor: int | None = Field(
+        default=None,
+        description="Monto en centimos digitado por el pagador: obligatorio "
+        "cuando el QR no trae monto (personal, E4-T21); se ignora cuando "
+        "el cargo trae monto fijo (comercio)",
+    )
 
 
 class QrPayMerchant(BaseModel):
@@ -72,13 +78,24 @@ class QrPayAuthorization(BaseModel):
     expires_at: str | None = Field(default=None, description="Vencimiento ISO-8601 del reto")
 
 
+class QrPayPayee(BaseModel):
+    """Titular destino de un QR personal (E4-T21, sin nombre: solo el `id`)."""
+
+    owner_user_id: uuid.UUID
+
+
 class QrPayData(BaseModel):
     """Resultado del pago QR (o rechazo sin mover dinero)."""
 
     transaction_id: uuid.UUID
     qr_payment_id: uuid.UUID
     charge_id: uuid.UUID
-    merchant: QrPayMerchant
+    merchant: QrPayMerchant | None = Field(
+        default=None, description="Comercio cobrado (`None` en QR personal)"
+    )
+    payee: QrPayPayee | None = Field(
+        default=None, description="Titular destino (`None` en QR de comercio)"
+    )
     amount_minor: int
     currency: str
     status: QrPayStatus
@@ -116,12 +133,24 @@ class QrPreviewMerchant(BaseModel):
     business_name: str
 
 
+class QrPreviewPayee(BaseModel):
+    """Titular destino de un QR personal en el preview (E4-T21)."""
+
+    owner_user_id: uuid.UUID
+
+
 class QrPreviewData(BaseModel):
-    """Vista previa del cobro (comercio + monto, sin mover dinero)."""
+    """Vista previa del cobro (destino + monto, sin mover dinero).
+
+    Comercio: `merchant` presente y `amount_minor` fijo. Personal
+    (E4-T21): `merchant` en `None`, `payee` con el titular destino y
+    `amount_minor` en `None` (el pagador digita el monto al confirmar).
+    """
 
     charge_id: uuid.UUID
-    merchant: QrPreviewMerchant
-    amount_minor: int
+    merchant: QrPreviewMerchant | None = Field(default=None)
+    payee: QrPreviewPayee | None = Field(default=None)
+    amount_minor: int | None = Field(default=None)
     currency: str
     expires_at: datetime | None = Field(
         default=None, description="Vencimiento ISO-8601 (`None` en STATIC)"
@@ -139,11 +168,13 @@ __all__ = [
     "QrPayAuthorization",
     "QrPayData",
     "QrPayMerchant",
+    "QrPayPayee",
     "QrPayRequest",
     "QrPayResponse",
     "QrPayStatus",
     "QrPreviewData",
     "QrPreviewMerchant",
+    "QrPreviewPayee",
     "QrPreviewRequest",
     "QrPreviewResponse",
 ]

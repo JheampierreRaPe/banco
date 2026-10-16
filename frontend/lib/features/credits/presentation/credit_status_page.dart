@@ -10,8 +10,12 @@ import '../../../core/widgets/empty_view.dart';
 import '../../../core/widgets/error_view.dart';
 import '../../../core/widgets/loading_view.dart';
 import '../data/credit_applications_service.dart';
+import '../data/credit_disbursement_service.dart';
+import '../data/loan_schedule_service.dart';
+import '../../accounts/data/accounts_service.dart';
 import '../models/loan_application.dart';
 import '../utils/format.dart';
+import 'credit_disburse_section.dart';
 
 /// Pantalla de estado del expediente (E3-T09, HU10; spec
 /// `docs/design/creditos-pantallas.md` §3, mockup `creditos-estado.png`).
@@ -37,11 +41,20 @@ class CreditStatusPage extends StatefulWidget {
     this.service,
     this.applicationId,
     this.initialResult,
+    this.disburseService,
+    this.loansService,
+    this.accountsService,
   });
 
   final CreditApplicationsServiceBase? service;
   final String? applicationId;
   final LoanApplicationResult? initialResult;
+
+  /// Servicios del desembolso reanudable (descubribilidad sprint-3): si son
+  /// `null`, la sección degrada a aviso honesto en vez de romper.
+  final CreditDisbursementServiceBase? disburseService;
+  final LoanScheduleServiceBase? loansService;
+  final AccountsServiceBase? accountsService;
 
   @override
   State<CreditStatusPage> createState() => _CreditStatusPageState();
@@ -510,6 +523,30 @@ class _CreditStatusPageState extends State<CreditStatusPage> {
                   ),
                 ),
                 child: const Text('Ver contrato'),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.stackSm),
+            // Descubribilidad sprint-3: el desembolso es reanudable. Si el
+            // titular salió del éxito de la firma, aquí retoma el ciclo
+            // (la sección verifica el préstamo y se oculta sola si ya se
+            // desembolsó, mostrando `Ver cronograma`).
+            CreditDisburseSection(
+              key: const Key('credit-status-disburse'),
+              applicationId: result.id,
+              disburseService: widget.disburseService,
+              loansService: widget.loansService,
+              accountsService: widget.accountsService,
+            ),
+            const SizedBox(height: AppSpacing.stackSm),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: const Key('credit-status-loans-cta'),
+                onPressed: () => context.push('/credits/loans'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                ),
+                child: const Text('Ver mis préstamos'),
               ),
             ),
             const SizedBox(height: AppSpacing.stackSm),

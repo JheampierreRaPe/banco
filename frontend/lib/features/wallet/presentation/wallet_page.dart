@@ -89,10 +89,28 @@ class _WalletPageState extends State<WalletPage> {
     context.push('/wallet/merchant-qr');
   }
 
+  /// Entrada al QR personal estatico (E4-T21, HU14): generar y mostrar
+  /// el QR reutilizable del titular (sin monto ni caducidad).
+  void _openPersonalQr() {
+    context.push('/wallet/personal-qr');
+  }
+
   /// Entrada al pago QR del pagador (E4-T13, HU15): escaner -> resumen ->
   /// confirmacion -> resultado.
   void _openQrPay() {
     context.push('/wallet/pay-qr');
+  }
+
+  /// Entrada a servicios (descubribilidad sprint-3): catálogo/búsqueda de
+  /// empresas (→ `/wallet/services`, ruta real, sin "Próximamente").
+  void _openServices() {
+    context.push('/wallet/services');
+  }
+
+  /// Entrada a recargas (→ `/wallet/topups`, se mantiene junto a
+  /// servicios para no perderla).
+  void _openTopups() {
+    context.push('/wallet/topups');
   }
 
   /// Baja logica del vinculo con confirmacion previa.
@@ -205,10 +223,20 @@ class _WalletPageState extends State<WalletPage> {
                   ),
                   Center(
                     child: TextButton.icon(
+                      key: const Key('wallet-personal-qr-empty'),
+                      onPressed: _openPersonalQr,
+                      icon: const Icon(Icons.person_outline, size: 20),
+                      label: const Text('Mi QR personal'),
+                    ),
+                  ),
+                  Center(
+                    child: TextButton.icon(
                       key: const Key('wallet-merchant-qr-empty'),
                       onPressed: _openMerchantQr,
                       icon: const Icon(Icons.qr_code_2, size: 20),
-                      label: const Text('Soy comercio: generar cobro QR'),
+                      label: const Text(
+                        'Tengo un comercio: generar cobro QR',
+                      ),
                     ),
                   ),
                   Center(
@@ -217,6 +245,22 @@ class _WalletPageState extends State<WalletPage> {
                       onPressed: _openQrPay,
                       icon: const Icon(Icons.qr_code_scanner, size: 20),
                       label: const Text('Pagar con QR'),
+                    ),
+                  ),
+                  Center(
+                    child: TextButton.icon(
+                      key: const Key('wallet-services-empty'),
+                      onPressed: _openServices,
+                      icon: const Icon(Icons.receipt_long_outlined, size: 20),
+                      label: const Text('Pagar servicios'),
+                    ),
+                  ),
+                  Center(
+                    child: TextButton.icon(
+                      key: const Key('wallet-topups-empty'),
+                      onPressed: _openTopups,
+                      icon: const Icon(Icons.smartphone_outlined, size: 20),
+                      label: const Text('Recargar'),
                     ),
                   ),
                 ],
@@ -248,10 +292,20 @@ class _WalletPageState extends State<WalletPage> {
                         SizedBox(
                           width: double.infinity,
                           child: OutlinedButton.icon(
+                            key: const Key('wallet-personal-qr-action'),
+                            onPressed: _openPersonalQr,
+                            icon: const Icon(Icons.person_outline, size: 20),
+                            label: const Text('Mi QR personal'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
                             key: const Key('wallet-merchant-qr-action'),
                             onPressed: _openMerchantQr,
                             icon: const Icon(Icons.qr_code_2, size: 20),
-                            label: const Text('Cobrar con QR (comercio)'),
+                            label: const Text('Cobrar como comercio'),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -262,6 +316,32 @@ class _WalletPageState extends State<WalletPage> {
                             onPressed: _openQrPay,
                             icon: const Icon(Icons.qr_code_scanner, size: 20),
                             label: const Text('Pagar con QR'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            key: const Key('wallet-services-action'),
+                            onPressed: _openServices,
+                            icon: const Icon(
+                              Icons.receipt_long_outlined,
+                              size: 20,
+                            ),
+                            label: const Text('Pagar servicios'),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            key: const Key('wallet-topups-action'),
+                            onPressed: _openTopups,
+                            icon: const Icon(
+                              Icons.smartphone_outlined,
+                              size: 20,
+                            ),
+                            label: const Text('Recargar'),
                           ),
                         ),
                       ],

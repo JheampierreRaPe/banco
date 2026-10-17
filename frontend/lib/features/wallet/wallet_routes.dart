@@ -3,10 +3,12 @@ import 'package:go_router/go_router.dart';
 import '../accounts/data/accounts_service.dart';
 import '../payment_authorization/payment_authorization_routes.dart';
 import 'data/merchant_qr_service.dart';
+import 'data/personal_qr_service.dart';
 import 'data/qr_payment_service.dart';
 import 'data/wallet_service.dart';
 import 'presentation/merchant_qr_page.dart';
 import 'presentation/merchant_qr_status_page.dart';
+import 'presentation/personal_qr_page.dart';
 import 'presentation/qr_pay_page.dart';
 import 'presentation/qr_scan_page.dart';
 import 'presentation/wallet_link_page.dart';
@@ -29,6 +31,9 @@ import 'services_routes.dart';
 ///   cobro QR con monto + concepto y verlo con su vigencia, E4-T09).
 /// - `/wallet/merchant-charges/:chargeId` -> [MerchantQrStatusPage]
 ///   (estado efectivo del cobro: pendiente/pagado/vencido, E4-T09).
+/// - `/wallet/personal-qr` -> [PersonalQrPage] (titular: generar y
+///   mostrar su QR personal estatico, sin monto ni caducidad,
+///   reutilizable, E4-T21).
 /// - `/wallet/pay-qr` -> [QrScanPage] (pagador: escanea el QR e inyecta
 ///   el `qr_content` leido, E4-T13).
 /// - `/wallet/pay-qr/confirm` -> [QrPayPage] (resumen + confirmacion en
@@ -66,6 +71,12 @@ final List<GoRoute> walletRoutes = [
     builder: (context, state) => MerchantQrStatusPage(
       chargeId: state.pathParameters['chargeId'] ?? '',
       service: merchantQrServiceFactory?.call(),
+    ),
+  ),
+  GoRoute(
+    path: '/wallet/personal-qr',
+    builder: (context, state) => PersonalQrPage(
+      service: personalQrServiceFactory?.call(),
     ),
   ),
   GoRoute(

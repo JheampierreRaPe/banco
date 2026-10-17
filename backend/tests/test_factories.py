@@ -1,8 +1,10 @@
 """Pruebas unitarias de factories y dataset semilla (Q-T01, sin BD)."""
 
 from tests.factories import (
+    SETTLEMENT_ACCOUNT_ID,
     build_seed_dataset,
     dataset_fingerprint,
+    demo_settlement_account,
     det_uuid,
     idempotency_key,
     validate_dataset,
@@ -65,3 +67,21 @@ def test_asientos_cuadrados() -> None:
 def test_idempotency_keys_unicas() -> None:
     assert idempotency_key("transfer", 1) != idempotency_key("transfer", 2)
     assert idempotency_key("transfer", 1) == idempotency_key("transfer", 1)
+
+
+def test_cuenta_liquidacion_demo_sembrada() -> None:
+    """La semilla incluye la cuenta de liquidacion demo (HU16, UUID fijo).
+
+    Es el espejo de `0046_services_settlement` y del default de
+    `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID`: la demo no debe depender de
+    una env apuntando a una cuenta inexistente.
+    """
+    dataset = build_seed_dataset()
+    by_id = {a["id"]: a for a in dataset["accounts"]}
+    assert SETTLEMENT_ACCOUNT_ID in by_id, "falta la cuenta de liquidacion demo"
+    account = by_id[SETTLEMENT_ACCOUNT_ID]
+    assert account == demo_settlement_account()
+    assert account["currency"] == "PEN"
+    assert account["balance_minor"] == 0
+    owners = {u["id"] for u in dataset["users"]}
+    assert account["owner_id"] in owners

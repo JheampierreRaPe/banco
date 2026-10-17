@@ -92,17 +92,40 @@ def decode_qr_content(qr_content: object) -> Any:
     return envelope
 
 
+def is_personal_charge(charge: Any) -> bool:
+    """Indica si el cargo es un QR personal (destino `PERSONAL`, E4-T21).
+
+    Acepta la fila ORM o un dict con las columnas de `qr_charges`
+    (por compatibilidad tambien vale `merchant_id` nulo con
+    `owner_user_id` presente).
+    """
+    if isinstance(charge, dict):
+        payee = charge.get("payee_type")
+        if payee is not None:
+            return str(payee) == "PERSONAL"
+        return charge.get("merchant_id") is None and charge.get("owner_user_id") is not None
+    payee = getattr(charge, "payee_type", None)
+    if payee is not None:
+        return str(payee) == "PERSONAL"
+    return getattr(charge, "merchant_id", None) is None and bool(
+        getattr(charge, "owner_user_id", None)
+    )
+
+
 def expected_payload_for_charge(charge: Any) -> dict[str, Any]:
     """Reconstruye el payload canonico esperado desde la fila del cargo.
 
     Determinista: mismo cargo -> mismo payload -> misma firma. Acepta
-    la fila ORM o un dict con las columnas de `qr_charges`.
+    la fila ORM o un dict con las columnas de `qr_charges`. Un QR
+    personal (E4-T21) reconstruye el payload sin monto (`amount_minor
+    = None`, viaja como `0` en el sobre) con `owner_user_id`.
     """
     from app.modules.wallet.domain import qr as qr_domain
 
     if isinstance(charge, dict):
         charge_id = charge.get("id", charge.get("charge_id"))
         merchant_id = charge.get("merchant_id")
+        owner_user_id = charge.get("owner_user_id")
         amount_minor = charge.get("amount_minor")
         currency = charge.get("currency")
         concept = charge.get("concept")
@@ -111,12 +134,23 @@ def expected_payload_for_charge(charge: Any) -> dict[str, Any]:
     else:
         charge_id = getattr(charge, "id", None)
         merchant_id = getattr(charge, "merchant_id", None)
+        owner_user_id = getattr(charge, "owner_user_id", None)
         amount_minor = getattr(charge, "amount_minor", None)
         currency = getattr(charge, "currency", None)
         concept = getattr(charge, "concept", None)
         mode = getattr(charge, "mode", "DYNAMIC")
         expires_at = getattr(charge, "expires_at", None)
     try:
+        if is_personal_charge(charge):
+            return qr_domain.build_payload(
+                charge_id=charge_id,
+                owner_user_id=owner_user_id,
+                amount_minor=None,
+                currency=currency,
+                concept=concept,
+                mode="STATIC",
+                expires_at=None,
+            )
         return qr_domain.build_payload(
             charge_id=charge_id,
             merchant_id=merchant_id,
@@ -216,5 +250,6 @@ __all__ = [
     "decode_qr_content",
     "ensure_charge_payable",
     "expected_payload_for_charge",
+    "is_personal_charge",
     "verify_charge_integrity",
 ]

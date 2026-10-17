@@ -71,7 +71,8 @@ abstract class WalletServiceBase {
 /// Servicio de billetera sobre [ApiClient] (docs/05 §6.5, E4-T04).
 ///
 /// Endpoints (base `/api/v1` ya incluida en el cliente):
-/// - `GET /wallet` -> `200 {"data": {wallet_id, status, links[]}}`
+/// - `GET /wallet` -> `200 {"data": {wallet_id, status, links[],
+///   is_merchant, merchant_status?}}` (E4-T23: rol de comercio fail-closed)
 /// - `POST /wallet/links` (+ `Idempotency-Key` opcional) ->
 ///   `201 {"data": {vinculo enmascarado}}`
 /// - `DELETE /wallet/links/{id}` (sin `Idempotency-Key`: no mueve dinero,

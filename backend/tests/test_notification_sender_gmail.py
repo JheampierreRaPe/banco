@@ -33,8 +33,8 @@ NO_SLEEP = lambda _seconds: None  # backoff sin espera en tests
 GMAIL_USER = "emisor-test@gmail.com"
 APP_PASSWORD = "apppassword16xx"
 RECIPIENT = "cliente@example.com"
-BODY = "Tu codigo de verificacion es 123456. Vence en 10 minutos."
-SUBJECT = "Tu codigo de verificacion"
+BODY = "Tu código de verificación es 123456. Vence en 10 minutos."
+SUBJECT = "Tu código de verificación"
 
 
 # ---------------------------------------------------- SMTP simulado (sin red)

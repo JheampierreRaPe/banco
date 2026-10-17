@@ -47,6 +47,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.events import QR_PAYMENT_CONFIRMED
+from app.modules.wallet.domain import masking as masking_domain
 from app.modules.wallet.domain import qr_payment as qr_payment_domain
 from app.modules.wallet.domain.qr_payment import (
     InvalidQrError,
@@ -132,6 +133,13 @@ def _coerce_uuid(value: uuid.UUID | str, field: str) -> uuid.UUID:
         raise InvalidQrError("QR con formato invalido") from exc
 
 
+class _SimplePayee:
+    """Destino minimo para el aviso (`user_id`; E4-T21, titular personal)."""
+
+    def __init__(self, user_id: Any) -> None:
+        self.user_id = user_id
+
+
 def _require_key(idempotency_key: object) -> str:
     key = str(idempotency_key).strip() if isinstance(idempotency_key, str) else ""
     if not key:
@@ -150,25 +158,58 @@ def resolve_merchant_settlement_account(
     con la moneda del cargo, en orden de creacion (determinista). Sin
     cuenta compatible -> `QrMerchantUnknownError` neutro (sin oraculo
     sobre cuentas ajenas; el numero en claro jamas se loguea).
-    Solo lectura (sin `flush`/`commit`).
+    Solo lectura (sin `flush`/`commit`). Delega en el resolutor
+    generico de `service/qr.py` (E4-T21).
     """
-    from app.modules.accounts.service import list_active_by_user
+    from app.modules.wallet.service.qr import QrMerchantNotFoundError as _NotFound
+    from app.modules.wallet.service.qr import resolve_holder_settlement_account
+
+    try:
+        return resolve_holder_settlement_account(session, merchant.user_id, currency)
+    except _NotFound as exc:
+        raise QrMerchantUnknownError("comercio sin cuenta de abono") from exc
+
+
+def resolve_personal_settlement_account(session: Session, charge: Any, currency: str) -> uuid.UUID:
+    """Cuenta de abono del QR personal (E4-T21, HU14 CA-03).
+
+    Respeta el destino fijado al generar (`payee_account_id`) cuando
+    sigue `ACTIVE` y en la moneda del cobro; si no, resuelve la
+    primera cuenta `ACTIVE` del titular con esa moneda por la fachada
+    `accounts` (sin columna nueva en `accounts`). Sin cuenta
+    compatible -> `QrMerchantUnknownError` neutro (mismo codigo que
+    el comercio sin abono) antes de operar. Solo lectura.
+    """
+    from app.modules.accounts.service import get_account as accounts_get_account
+    from app.modules.wallet.service.qr import QrMerchantNotFoundError as _NotFound
+    from app.modules.wallet.service.qr import resolve_holder_settlement_account
 
     wanted = str(currency or "").strip().upper()
-    try:
-        candidates = list_active_by_user(session, merchant.user_id)
-    except (ValueError, AttributeError, TypeError) as exc:
-        raise QrMerchantUnknownError("comercio sin cuenta de abono") from exc
-    for view in candidates:
-        if str(view.get("currency") or "").upper() == wanted:
+    preferred = getattr(charge, "payee_account_id", None)
+    if preferred is not None:
+        try:
+            view = accounts_get_account(session, preferred)
+        except (ValueError, AttributeError, TypeError):
+            view = None
+        if (
+            isinstance(view, dict)
+            and view.get("user_id") == getattr(charge, "owner_user_id", None)
+            and str(view.get("status")) == "ACTIVE"
+            and str(view.get("currency") or "").upper() == wanted
+        ):
             account_id = view.get("account_id")
-            if isinstance(account_id, uuid.UUID):
-                return account_id
             try:
-                return uuid.UUID(str(account_id))
+                return (
+                    account_id if isinstance(account_id, uuid.UUID) else uuid.UUID(str(account_id))
+                )
             except (ValueError, AttributeError, TypeError):
-                continue
-    raise QrMerchantUnknownError("comercio sin cuenta de abono")
+                pass
+    try:
+        return resolve_holder_settlement_account(
+            session, getattr(charge, "owner_user_id", None), currency
+        )
+    except _NotFound as exc:
+        raise QrMerchantUnknownError("titular sin cuenta de abono") from exc
 
 
 def _record_payment_confirmed_event(session: Session, payment: Any, charge: Any) -> None:
@@ -179,6 +220,8 @@ def _record_payment_confirmed_event(session: Session, payment: Any, charge: Any)
     """
     from app.modules.shared.repository.outbox import insert_event
 
+    merchant_id = getattr(payment, "merchant_id", None)
+    payee_user_id = getattr(payment, "payee_user_id", None)
     insert_event(
         session,
         aggregate_type="qr_payment",
@@ -187,7 +230,8 @@ def _record_payment_confirmed_event(session: Session, payment: Any, charge: Any)
         payload={
             "qr_payment_id": str(payment.id),
             "charge_id": str(charge.id),
-            "merchant_id": str(payment.merchant_id),
+            "merchant_id": str(merchant_id) if merchant_id is not None else None,
+            "payee_user_id": str(payee_user_id) if payee_user_id is not None else None,
             "amount_minor": int(payment.amount_minor),
             "currency": str(payment.currency),
             "status": str(payment.status),
@@ -201,6 +245,8 @@ def _audit_payment(session: Session, payment: Any, charge: Any) -> None:
     try:
         from app.modules.audit.service import record as audit_record
 
+        merchant_id = getattr(payment, "merchant_id", None)
+        payee_user_id = getattr(payment, "payee_user_id", None)
         audit_record(
             session,
             actor=payment.payer_user_id,
@@ -210,7 +256,8 @@ def _audit_payment(session: Session, payment: Any, charge: Any) -> None:
             metadata={
                 "qr_payment_id": str(payment.id),
                 "charge_id": str(charge.id),
-                "merchant_id": str(payment.merchant_id),
+                "merchant_id": str(merchant_id) if merchant_id is not None else None,
+                "payee_user_id": str(payee_user_id) if payee_user_id is not None else None,
                 "status": str(payment.status),
             },
         )
@@ -218,22 +265,31 @@ def _audit_payment(session: Session, payment: Any, charge: Any) -> None:
         logger.warning("qr payment audit best-effort omitida err=%s", type(exc).__name__)
 
 
-def _notify_merchant(
-    session: Session, merchant: Any, charge: Any, *, sender: Any | None = None
-) -> None:
-    """Aviso de abono al comercio, best-effort (no revierte el dinero).
+def _notify_payee(session: Session, charge: Any, payee: Any, *, sender: Any | None = None) -> None:
+    """Aviso de abono al destino, best-effort (no revierte el dinero).
 
-    Ruta `wallet.service.qr.notify_merchant_charge_paid` (plantilla
-    `qr_charge_paid`, push, sin PII ni cifras del pagador). Un fallo
+    Comercio: `notify_merchant_charge_paid`; titular personal (E4-T21):
+    `notify_personal_charge_paid`. Ambos reutilizan la plantilla
+    `qr_charge_paid` (push, sin PII ni cifras del pagador). Un fallo
     del proveedor no anula el pago ya liquidado (`docs/04#12`
     post-commit asincrono).
     """
     try:
+        if qr_payment_domain.is_personal_charge(charge):
+            from app.modules.wallet.service.qr import notify_personal_charge_paid
+
+            notify_personal_charge_paid(
+                session,
+                owner_user_id=payee.user_id,
+                charge_id=charge.id,
+                sender=sender,
+            )
+            return
         from app.modules.wallet.service.qr import notify_merchant_charge_paid
 
         notify_merchant_charge_paid(
             session,
-            merchant_user_id=merchant.user_id,
+            merchant_user_id=payee.user_id,
             charge_id=charge.id,
             sender=sender,
         )
@@ -246,18 +302,33 @@ def _settle_payment(
     *,
     payment: Any,
     charge: Any,
-    merchant: Any,
+    payee: Any,
     now: datetime,
     sender: Any | None,
 ) -> Any:
-    """Marca `PAID` + evento + aviso (solo al liquidar `SETTLED`)."""
-    qr_repo.mark_paid(session, charge, paid_at=now)
+    """Marca `PAID` + evento + aviso (solo al liquidar `SETTLED`).
+
+    Un cargo reutilizable (QR personal, E4-T21) queda `ACTIVE` para
+    admitir mas cobros: solo el pago se marca `PAID` (el cargo no se
+    agota). Un cargo de un solo uso se marca `PAID` como siempre.
+    """
+    if not bool(getattr(charge, "reusable", False)):
+        qr_repo.mark_paid(session, charge, paid_at=now)
     qr_payment_repo.mark_paid(session, payment)
     _record_payment_confirmed_event(session, payment, charge)
     _audit_payment(session, payment, charge)
-    _notify_merchant(session, merchant, charge, sender=sender)
+    _notify_payee(session, charge, payee, sender=sender)
     logger.info("qr payment liquidado status=PAID")
     return payment
+
+
+def _require_payer_amount(value: object) -> int:
+    """Monto digitado por el pagador: entero de centimos `> 0` (nunca `float`)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidQrError("el QR no trae monto: el pagador debe indicarlo")
+    if value <= 0:
+        raise InvalidQrError("el QR no trae monto: el pagador debe indicarlo")
+    return value
 
 
 def pay_qr_charge(
@@ -267,6 +338,7 @@ def pay_qr_charge(
     qr_content: str,
     link_id: uuid.UUID | str,
     idempotency_key: str,
+    amount_minor: int | None = None,
     secret: str | None = None,
     now: datetime | None = None,
     notify_sender: Any | None = None,
@@ -281,25 +353,31 @@ def pay_qr_charge(
        (`decode_payload`); imposible -> `InvalidQrError` (422).
     2. Verifica firma (`verify_charge_signature`) + `payload_hash` +
        envelope + estado `ACTIVE`/no vencido (`is_charge_valid`):
-       vencido -> `QrExpiredError`, ya cobrado -> `QrAlreadyPaidError`,
-       resto -> `InvalidQrError`. Todo **antes de operar** (sin
-       retencion, sin asiento).
-    3. Resuelve la cuenta de abono del comercio por la fachada
-       `accounts` (cuenta `ACTIVE` del titular comercio con la moneda
-       del cargo; sin ella -> `QrMerchantUnknownError`).
+       vencido -> `QrExpiredError`, ya cobrado (un solo uso) ->
+       `QrAlreadyPaidError`, resto -> `InvalidQrError`. Todo **antes
+       de operar** (sin retencion, sin asiento).
+    3. Resuelve el monto efectivo: el del cargo (comercio) o el
+       digitado por el pagador (`amount_minor`, E4-T21) cuando el QR
+       no trae monto; sin monto -> `InvalidQrError` (422). Resuelve
+       la cuenta de abono por la fachada `accounts`: comercio (cuenta
+       `ACTIVE` del titular comercio) o titular personal (cuenta
+       fijada al generar o primera `ACTIVE` con la moneda); sin ella
+       -> `QrMerchantUnknownError`.
     4. Mueve el dinero **solo** por `pay_express` (`E4-T02`) con la
        misma `Idempotency-Key` (el gate del motor aplica base/diario;
        `CARD`/ajeno y conflictos los informa el express).
     5. Persiste `qr_payments`: `SETTLED` -> `PAID` (+ cargo `PAID`/
-       `paid_at`, evento `qr.payment.confirmed`, aviso
-       `qr_charge_paid`); `PENDING_AUTHORIZATION` -> pago pendiente
-       (sin marcar `PAID` aun; `E4-T12` autoriza y finaliza con
-       `finalize_qr_payment` pasando
-       `daily_limit_reader=wallet_daily_limit_reader`, G75);
+       `paid_at` salvo QR reutilizable, evento
+       `qr.payment.confirmed`, aviso `qr_charge_paid` al destino);
+       `PENDING_AUTHORIZATION` -> pago pendiente (sin marcar `PAID`
+       aun; `E4-T12` autoriza y finaliza con `finalize_qr_payment`
+       pasando `daily_limit_reader=wallet_daily_limit_reader`, G75);
        `REJECTED` -> pago `REJECTED` sin tocar el cargo.
     6. Idempotencia por (`Idempotency-Key`, titular): misma clave +
        mismo cuerpo = replay (un solo pago); cuerpo distinto =
-       `QrPaymentConflictError` (409).
+       `QrPaymentConflictError` (409). Un QR reutilizable admite
+       varios cobros (uno por clave); un QR de un solo uso conserva
+       la guarda (`409` al segundo cobro).
 
     Retorna `(QrPayment, Transaction)`. Solo `flush` (el llamante
     confirma o revierte toda la operacion: todo o nada).
@@ -333,12 +411,27 @@ def pay_qr_charge(
         raise InvalidQrError("QR con formato invalido")
     qr_payment_domain.verify_charge_integrity(charge, envelope, secret=secret)
 
-    # 6. Idempotencia del cobro (clave `shared`, UQ por titular).
+    # Monto efectivo: el del cargo (comercio) o el digitado por el
+    # pagador cuando el QR no trae monto (personal, E4-T21). Sin monto
+    # -> 422 antes de operar (nunca se confia en el cliente: el sobre
+    # trae `0` y la fila `NULL`).
+    personal = qr_payment_domain.is_personal_charge(charge)
+    if personal:
+        if getattr(charge, "amount_minor", None) is not None:
+            raise InvalidQrError("QR con formato invalido")
+        effective_amount = _require_payer_amount(amount_minor)
+    else:
+        effective_amount = int(charge.amount_minor)
+
+    # 6. Idempotencia del cobro (clave `shared`, UQ por titular). El
+    # monto efectivo entra al digest: misma clave + distinto monto =
+    # `CONFLICT` (el replay exige el cuerpo exacto).
     digest = compute_request_hash(
         {
             "payer_user_id": str(payer),
             "qr_content": str(qr_content).strip(),
             "link_id": str(link_ref),
+            "amount_minor": effective_amount,
         }
     )
     row, created = try_claim(
@@ -388,14 +481,29 @@ def pay_qr_charge(
     locked = qr_payment_repo.lock_charge(session, charge.id)
     payable = locked if locked is not None else charge
     qr_payment_domain.ensure_charge_payable(payable, moment)
-    if qr_payment_repo.get_active_by_charge(session, charge.id) is not None:
+    reusable = bool(getattr(charge, "reusable", False))
+    if not reusable and qr_payment_repo.get_active_by_charge(session, charge.id) is not None:
         raise QrAlreadyPaidError("el QR ya fue cobrado")
 
-    # 3. Cuenta de abono del comercio (fachada `accounts`, decision 1a).
-    merchant = qr_repo.get_merchant(session, charge.merchant_id)
-    if merchant is None or str(merchant.status) != "ACTIVE":
-        raise QrMerchantUnknownError("comercio sin cuenta de abono")
-    target_account_id = resolve_merchant_settlement_account(session, merchant, str(charge.currency))
+    # 3. Cuenta de abono por la fachada `accounts`: comercio (decision
+    # 1a) o titular personal (destino fijado al generar, E4-T21).
+    if personal:
+        payee_user_id = getattr(charge, "owner_user_id", None)
+        target_account_id = resolve_personal_settlement_account(
+            session, charge, str(charge.currency)
+        )
+        merchant_id: uuid.UUID | None = None
+        payee: Any = _SimplePayee(payee_user_id)
+    else:
+        merchant = qr_repo.get_merchant(session, charge.merchant_id)
+        if merchant is None or str(merchant.status) != "ACTIVE":
+            raise QrMerchantUnknownError("comercio sin cuenta de abono")
+        target_account_id = resolve_merchant_settlement_account(
+            session, merchant, str(charge.currency)
+        )
+        merchant_id = merchant.id
+        payee = merchant
+        payee_user_id = None
 
     # 4. Dinero solo por el motor via `pay_express` (misma clave: el
     # motor resuelve su propio replay sin duplicar asientos).
@@ -404,7 +512,7 @@ def pay_qr_charge(
         initiator_user_id=payer,
         link_id=link_ref,
         target_account_id=target_account_id,
-        amount_minor=int(charge.amount_minor),
+        amount_minor=effective_amount,
         currency=str(charge.currency),
         idempotency_key=key,
         fee_minor=fee_minor,
@@ -417,7 +525,9 @@ def pay_qr_charge(
     # decide la carrera (ALTO-2): si otro pago del cargo gano primero,
     # el indice unico parcial aborta con `CONFLICT` (el llamante
     # revierte toda la operacion, incluido el `tx` del motor: todo o
-    # nada, un solo asiento).
+    # nada, un solo asiento). En un QR reutilizable el indice no
+    # aplica (`reusable = true`, migracion `0047`): varios cobros
+    # coexisten.
     status = str(tx.status)
     if status == "SETTLED":
         payment = _persist_payment_or_conflict(
@@ -425,8 +535,10 @@ def pay_qr_charge(
             transaction_id=tx.id,
             charge_id=charge.id,
             payer_user_id=payer,
-            merchant_id=merchant.id,
-            amount_minor=int(charge.amount_minor),
+            merchant_id=merchant_id,
+            payee_user_id=payee_user_id,
+            reusable=reusable,
+            amount_minor=effective_amount,
             currency=str(charge.currency),
             status="PAID",
         )
@@ -434,7 +546,7 @@ def pay_qr_charge(
             session,
             payment=payment,
             charge=charge,
-            merchant=merchant,
+            payee=payee,
             now=moment,
             sender=notify_sender,
         )
@@ -444,8 +556,10 @@ def pay_qr_charge(
             transaction_id=tx.id,
             charge_id=charge.id,
             payer_user_id=payer,
-            merchant_id=merchant.id,
-            amount_minor=int(charge.amount_minor),
+            merchant_id=merchant_id,
+            payee_user_id=payee_user_id,
+            reusable=reusable,
+            amount_minor=effective_amount,
             currency=str(charge.currency),
             status="PENDING_AUTHORIZATION",
         )
@@ -460,8 +574,10 @@ def pay_qr_charge(
             transaction_id=tx.id,
             charge_id=charge.id,
             payer_user_id=payer,
-            merchant_id=merchant.id,
-            amount_minor=int(charge.amount_minor),
+            merchant_id=merchant_id,
+            payee_user_id=payee_user_id,
+            reusable=reusable,
+            amount_minor=effective_amount,
             currency=str(charge.currency),
             status="REJECTED",
         )
@@ -487,6 +603,7 @@ def preview_qr_charge(
     qr_content: str,
     secret: str | None = None,
     now: datetime | None = None,
+    profile_resolver: Any | None = None,
 ) -> dict[str, Any]:
     """Previsualiza un QR para el consentimiento informado (MEDIO-3, HU15 CA-01).
 
@@ -497,10 +614,23 @@ def preview_qr_charge(
     confirmar**. Estrictamente read-only: **no mueve dinero**, no crea
     pagos ni eventos (sin `flush`/`commit`; sin `Idempotency-Key`).
 
+    Un QR personal (E4-T21) devuelve `amount_minor: None` (el pagador
+    digita el monto al confirmar) y `payee` con el titular destino en
+    lugar de `merchant`.
+
+    Expone `payee_name_masked` (E4-T24, aditivo): nombre + un apellido
+    del dueno enmascarado (`DIEG••• GONZ•••`), resuelto best-effort por
+    la fachada de solo lectura de `identity` (import perezoso, D-03);
+    para el QR de comercio es el nombre natural del dueno del comercio
+    (`business_name` se conserva intacto) y para el personal el del
+    titular. Sin nombre resoluble -> `None` (fallback neutro).
+    Jamas viaja ni se loguea el nombre completo (reglas 7/9).
+
     Errores neutros (mismo mapeo que el cobro): QR
-    corrupto/manipulado/ajeno o comercio sin cuenta de abono ->
+    corrupto/manipulado/ajeno o destino sin cuenta de abono ->
     `InvalidQrError`/`QrMerchantUnknownError` (422); vencido ->
-    `QrExpiredError` (422); ya cobrado -> `QrAlreadyPaidError` (409).
+    `QrExpiredError` (422); ya cobrado (un solo uso) ->
+    `QrAlreadyPaidError` (409).
     La respuesta nunca expone `qr_content` crudo, firma, secreto ni
     RUC (solo el nombre publico del comercio, como `POST /payments/qr`).
     """
@@ -513,6 +643,21 @@ def preview_qr_charge(
         raise InvalidQrError("QR con formato invalido")
     qr_payment_domain.verify_charge_integrity(charge, envelope, secret=secret)
     qr_payment_domain.ensure_charge_payable(charge, moment)
+    if qr_payment_domain.is_personal_charge(charge):
+        resolve_personal_settlement_account(session, charge, str(charge.currency))
+        logger.debug("qr preview personal ok")
+        return {
+            "charge_id": str(charge.id),
+            "merchant": None,
+            "payee": {"owner_user_id": str(getattr(charge, "owner_user_id", None))},
+            "payee_name_masked": masking_domain.resolve_payee_name_masked(
+                session, getattr(charge, "owner_user_id", None), profile_resolver=profile_resolver
+            ),
+            "amount_minor": None,
+            "currency": str(charge.currency),
+            "expires_at": None,
+            "status": str(charge.status),
+        }
     merchant = qr_repo.get_merchant(session, charge.merchant_id)
     if merchant is None or str(merchant.status) != "ACTIVE":
         raise QrMerchantUnknownError("comercio sin cuenta de abono")
@@ -526,6 +671,10 @@ def preview_qr_charge(
             "merchant_id": str(merchant.id),
             "business_name": str(merchant.business_name),
         },
+        "payee": None,
+        "payee_name_masked": masking_domain.resolve_payee_name_masked(
+            session, getattr(merchant, "user_id", None), profile_resolver=profile_resolver
+        ),
         "amount_minor": int(charge.amount_minor),
         "currency": str(charge.currency),
         "expires_at": expires_at,
@@ -581,9 +730,14 @@ def finalize_qr_payment(
     if str(charge.status) == "PAID":
         qr_payment_repo.mark_paid(session, payment)
         return payment
-    merchant = qr_repo.get_merchant(session, charge.merchant_id)
-    if merchant is None or str(merchant.status) != "ACTIVE":
-        raise QrMerchantUnknownError("comercio sin cuenta de abono")
+    if qr_payment_domain.is_personal_charge(charge):
+        payee: Any = _SimplePayee(getattr(charge, "owner_user_id", None))
+        resolve_personal_settlement_account(session, charge, str(charge.currency))
+    else:
+        merchant = qr_repo.get_merchant(session, charge.merchant_id)
+        if merchant is None or str(merchant.status) != "ACTIVE":
+            raise QrMerchantUnknownError("comercio sin cuenta de abono")
+        payee = merchant
     moment = now if isinstance(now, datetime) else _utcnow()
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
@@ -591,7 +745,7 @@ def finalize_qr_payment(
         session,
         payment=payment,
         charge=charge,
-        merchant=merchant,
+        payee=payee,
         now=moment,
         sender=notify_sender,
     )
@@ -611,5 +765,6 @@ __all__ = [
     "pay_qr_charge",
     "preview_qr_charge",
     "resolve_merchant_settlement_account",
+    "resolve_personal_settlement_account",
     "wallet_daily_limit_reader",
 ]

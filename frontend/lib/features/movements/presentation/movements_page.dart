@@ -218,10 +218,20 @@ class _MovementsPageState extends State<MovementsPage> {
       appBar: AppBar(
         backgroundColor: AppColors.surfaceContainerLow,
         title: const Text('Historial de movimientos'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.canPop() ? context.pop() : null,
-        ),
+        // E4-T25: el retroceso solo se muestra cuando hay a donde volver
+        // (`push` apilado). En raiz (p. ej. tras `go('/movements')` desde
+        // la confirmacion, o enlace profundo) no hay pila: sin back muerto
+        // y sin salto forzado a Home (criterio 2/4). Se usa el `Navigator`
+        // (patron de `qr_pay_page.dart::_rescan`) para que el `build` no
+        // dependa del `GoRouter` (tests con `MaterialApp` simple).
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                key: const Key('movements-back'),
+                tooltip: 'Volver',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(context).pop(),
+              )
+            : null,
         // H6: sin atajo a `/profile` desde el historial (destino incoherente
         // en contexto de movimientos): la ayuda es el reintento/limpiar
         // filtros de la pantalla, no el perfil.

@@ -442,6 +442,133 @@ void main() {
       expect(find.text('Inactiva'), findsOneWidget);
       expect(find.byKey(const Key('wallet-unlink-l-9')), findsNothing);
     });
+
+    testWidgets('cuenta personal no ve la entrada de comercio (E4-T23)',
+        (tester) async {
+      // Seed por defecto: `isMerchant: false` (fail-closed).
+      await _pumpWallet(
+        tester,
+        FakeWalletService(),
+        FakeAccountsService(),
+      );
+
+      expect(find.byKey(const Key('wallet-merchant-qr-action')), findsNothing);
+      expect(find.byKey(const Key('wallet-merchant-qr-empty')), findsNothing);
+      // "Mi QR personal" (E4-T21) y las demas acciones siguen visibles.
+      expect(find.byKey(const Key('wallet-personal-qr-action')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-pay-qr-action')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-services-action')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-topups-action')), findsOneWidget);
+    });
+
+    testWidgets('cuenta de comercio si ve la entrada de comercio (E4-T23)',
+        (tester) async {
+      const seed = Wallet(
+        walletId: 'w-1',
+        status: 'ACTIVE',
+        links: [
+          WalletLink(
+            id: 'l-1',
+            type: 'ACCOUNT',
+            accountMasked: '****1234',
+            status: 'ACTIVE',
+          ),
+        ],
+        isMerchant: true,
+        merchantStatus: 'ACTIVE',
+      );
+      await _pumpWallet(
+        tester,
+        FakeWalletService(seed: seed),
+        FakeAccountsService(),
+      );
+
+      expect(find.byKey(const Key('wallet-merchant-qr-action')), findsOneWidget);
+      expect(find.text('Cobrar como comercio'), findsOneWidget);
+      expect(find.byKey(const Key('wallet-personal-qr-action')), findsOneWidget);
+    });
+
+    testWidgets('vacio personal no muestra entrada de comercio (E4-T23)',
+        (tester) async {
+      await _pumpWallet(
+        tester,
+        FakeWalletService(seed: Wallet.empty),
+        FakeAccountsService(),
+      );
+
+      expect(find.byKey(const Key('wallet-merchant-qr-empty')), findsNothing);
+      expect(find.byKey(const Key('wallet-personal-qr-empty')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-pay-qr-empty')), findsOneWidget);
+    });
+
+    testWidgets('vacio de comercio si muestra la entrada (E4-T23)',
+        (tester) async {
+      const seed = Wallet(
+        walletId: null,
+        status: 'NONE',
+        links: [],
+        isMerchant: true,
+        merchantStatus: 'ACTIVE',
+      );
+      await _pumpWallet(
+        tester,
+        FakeWalletService(seed: seed),
+        FakeAccountsService(),
+      );
+
+      expect(find.byKey(const Key('wallet-merchant-qr-empty')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-personal-qr-empty')), findsOneWidget);
+    });
+  });
+
+  group('Wallet model (E4-T23)', () {
+    test('fromJson parsea is_merchant true y merchant_status', () {
+      final wallet = Wallet.fromJson({
+        'wallet_id': 'w-1',
+        'status': 'ACTIVE',
+        'links': [],
+        'is_merchant': true,
+        'merchant_status': 'ACTIVE',
+      });
+
+      expect(wallet.isMerchant, isTrue);
+      expect(wallet.merchantStatus, 'ACTIVE');
+    });
+
+    test('fromJson con is_merchant false es cuenta personal', () {
+      final wallet = Wallet.fromJson({
+        'wallet_id': 'w-1',
+        'status': 'ACTIVE',
+        'links': [],
+        'is_merchant': false,
+        'merchant_status': null,
+      });
+
+      expect(wallet.isMerchant, isFalse);
+      expect(wallet.merchantStatus, isNull);
+    });
+
+    test('fromJson sin flag degrada a personal (fail-closed)', () {
+      final wallet = Wallet.fromJson({
+        'wallet_id': 'w-1',
+        'status': 'ACTIVE',
+        'links': [],
+      });
+
+      expect(wallet.isMerchant, isFalse);
+      expect(wallet.merchantStatus, isNull);
+    });
+
+    test('fromJson con flag no booleano degrada a personal', () {
+      final wallet = Wallet.fromJson({
+        'wallet_id': 'w-1',
+        'status': 'ACTIVE',
+        'links': [],
+        'is_merchant': 'yes',
+      });
+
+      expect(wallet.isMerchant, isFalse);
+    });
   });
 
   group('WalletLinkPage', () {
@@ -708,6 +835,42 @@ void main() {
       expect(wallet.links, hasLength(1));
       expect(wallet.links.single.accountMasked, '****1234');
       expect(wallet.links.single.maskedLabel, 'Cuenta ****1234');
+    });
+
+    test('getWallet parsea is_merchant del servidor (E4-T23)', () async {
+      final api = stubClient(
+        (o) => Response(
+          requestOptions: o,
+          statusCode: 200,
+          data: {
+            'data': {
+              'wallet_id': 'w-1',
+              'status': 'ACTIVE',
+              'links': [],
+              'is_merchant': true,
+              'merchant_status': 'ACTIVE',
+            },
+            'meta': {'request_id': 'r-1'},
+          },
+        ),
+      );
+
+      final wallet = await WalletService(api: api).getWallet();
+
+      expect(wallet.isMerchant, isTrue);
+      expect(wallet.merchantStatus, 'ACTIVE');
+    });
+
+    test('getWallet sin flag degrada a personal (fail-closed, E4-T23)',
+        () async {
+      final api = stubClient(
+        (o) => Response(requestOptions: o, statusCode: 200, data: walletBody),
+      );
+
+      final wallet = await WalletService(api: api).getWallet();
+
+      expect(wallet.isMerchant, isFalse);
+      expect(wallet.merchantStatus, isNull);
     });
 
     test('linkAccount envia account_id con Idempotency-Key reutilizable',

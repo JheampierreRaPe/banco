@@ -19,6 +19,8 @@ import 'package:banca_online/features/transfers/presentation/interbank_form_page
 import 'package:banca_online/features/transfers/presentation/receipt_page.dart';
 import 'package:banca_online/features/transfers/presentation/tracking_page.dart';
 import 'package:banca_online/features/transfers/transfers_routes.dart';
+import 'package:banca_online/features/wallet/data/wallet_service.dart';
+import 'package:banca_online/features/wallet/models/wallet.dart';
 import 'package:banca_online/features/welcome/onboarding_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,6 +104,31 @@ class _OkProfile implements ProfileServiceBase {
   @override
   Future<Profile> getProfile() async =>
       const Profile(firstName: 'Ana', lastName: 'Lopez');
+}
+
+/// Billetera de comercio (E4-T23): el inicio solo muestra "Cobrar QR"
+/// (`qa-qr`) con `is_merchant == true`.
+class _MerchantWallet implements WalletServiceBase {
+  @override
+  Future<Wallet> getWallet() async => const Wallet(
+        walletId: 'w-1',
+        status: 'ACTIVE',
+        links: [],
+        isMerchant: true,
+        merchantStatus: 'ACTIVE',
+      );
+
+  @override
+  Future<WalletLink> linkAccount(AccountLinkInput input,
+          {String? idempotencyKey}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<WalletLink> linkCard(CardLinkInput input, {String? idempotencyKey}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<WalletLink> unlink(String id) => throw UnimplementedError();
 }
 
 class _FakeConsent implements BiometricConsentServiceBase {
@@ -255,6 +282,7 @@ void main() {
             builder: (context, state) => HomePage(
               service: _OkAccounts(),
               profileService: _OkProfile(),
+              walletService: _MerchantWallet(),
             ),
           ),
           GoRoute(

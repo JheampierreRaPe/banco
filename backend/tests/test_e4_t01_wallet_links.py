@@ -330,6 +330,8 @@ def test_isolation_by_holder(sqlite_session, monkeypatch):
         "wallet_id": None,
         "status": "NONE",
         "links": [],
+        "is_merchant": False,  # E4-T23: sin fila en `merchant_accounts`
+        "merchant_status": None,
     }
 
 
@@ -394,7 +396,14 @@ def test_auth_rejects_without_bearer():
 def test_api_get_empty_wallet(api_client):
     resp = api_client.get("/api/v1/wallet")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"wallet_id": None, "status": "NONE", "links": []}
+    # E4-T23: el contrato aditivo suma `is_merchant`/`merchant_status`.
+    assert resp.json()["data"] == {
+        "wallet_id": None,
+        "status": "NONE",
+        "links": [],
+        "is_merchant": False,
+        "merchant_status": None,
+    }
 
 
 def test_api_link_account_happy_path(api_client, monkeypatch):

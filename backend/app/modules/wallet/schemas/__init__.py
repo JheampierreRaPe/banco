@@ -18,10 +18,16 @@ Contrato fijado (`docs/05#6.5`, cierra `docs/18` G66 en lo que toca a
   (`EXPIRED` on-read si vencio). Re-exportados aqui.
 - Pago QR del pagador (`E4-T12`, HU15; detalle en
   `schemas/payment.py`, contrato en `docs/05#6.5`):
-  `POST /payments/qr {qr_content, link_id}` ->
-  `201 {transaction_id, qr_payment_id, charge_id, merchant,
-  amount_minor, currency, status, failure_code?, authorization?}`.
-  Re-exportados aqui.
+  `POST /payments/qr {qr_content, link_id, amount_minor?}` ->
+  `201 {transaction_id, qr_payment_id, charge_id, merchant?,
+  payee?, amount_minor, currency, status, failure_code?,
+  authorization?}` (`amount_minor` obligatorio solo si el QR no trae
+  monto —personal, E4-T21—). Re-exportados aqui.
+- QR personal estatico (`E4-T21`, HU14; detalle en
+  `schemas/personal_qr.py`, contrato en `docs/05#6.5`):
+  `POST /wallet/qr {currency?, concept?}` -> `201` con el QR
+  reutilizable sin monto ni caducidad; `GET /wallet/qr/{id}` ->
+  `200` con el estado (solo el titular dueno). Re-exportados aqui.
 """
 
 from __future__ import annotations
@@ -37,9 +43,18 @@ from app.modules.wallet.schemas.payment import (
     QrPayAuthorization,
     QrPayData,
     QrPayMerchant,
+    QrPayPayee,
     QrPayRequest,
     QrPayResponse,
     QrPayStatus,
+    QrPreviewPayee,
+)
+from app.modules.wallet.schemas.personal_qr import (
+    PersonalQrCreate,
+    PersonalQrCreateData,
+    PersonalQrCreateResponse,
+    PersonalQrStatusData,
+    PersonalQrStatusResponse,
 )
 from app.modules.wallet.schemas.qr import (
     QrCreate,
@@ -113,11 +128,21 @@ class WalletLinkData(BaseModel):
 
 
 class WalletData(BaseModel):
-    """Billetera del titular (`wallet_id` nulo = aun sin billetera)."""
+    """Billetera del titular (`wallet_id` nulo = aun sin billetera).
+
+    `is_merchant` (E4-T23) es el rol de comercio derivado server-side
+    (fila propia `ACTIVE` en `wallet.merchant_accounts`); `false` por
+    defecto (incluido el estado sin billetera `NONE`). `merchant_status`
+    expone el estado de la fila propia (`ACTIVE`/`BLOCKED`/`CLOSED`) o
+    `None` si el titular no tiene cuenta de comercio. Solo rol, sin PII
+    (ni RUC ni nombre comercial).
+    """
 
     wallet_id: uuid.UUID | None = None
     status: str
     links: list[WalletLinkData] = Field(default_factory=list)
+    is_merchant: bool = False
+    merchant_status: str | None = None
 
 
 class WalletResponse(BaseModel):
@@ -136,6 +161,11 @@ __all__ = [
     "CatalogResponse",
     "LinkCreate",
     "LinkType",
+    "PersonalQrCreate",
+    "PersonalQrCreateData",
+    "PersonalQrCreateResponse",
+    "PersonalQrStatusData",
+    "PersonalQrStatusResponse",
     "QrCreate",
     "QrCreateData",
     "QrCreateResponse",
@@ -144,9 +174,11 @@ __all__ = [
     "QrPayAuthorization",
     "QrPayData",
     "QrPayMerchant",
+    "QrPayPayee",
     "QrPayRequest",
     "QrPayResponse",
     "QrPayStatus",
+    "QrPreviewPayee",
     "QrStatusData",
     "QrStatusResponse",
     "ReceiptData",

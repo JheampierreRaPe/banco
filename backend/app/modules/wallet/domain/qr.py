@@ -99,11 +99,19 @@ def _epoch(expires_at: datetime | None) -> int:
 
 
 # ------------------------------------------------------------------ payload
+def _require_optional_minor(name: str, value: object) -> int | None:
+    """Centimos `None` (monto variable) o entero `> 0` (nunca `float`)."""
+    if value is None:
+        return None
+    return _require_minor(name, value)
+
+
 def build_payload(
     *,
     charge_id: object,
-    merchant_id: object,
-    amount_minor: int,
+    merchant_id: object | None = None,
+    owner_user_id: object | None = None,
+    amount_minor: int | None = None,
     currency: str,
     concept: object = None,
     mode: str = "DYNAMIC",
@@ -111,15 +119,44 @@ def build_payload(
 ) -> dict[str, Any]:
     """Construye el payload canonico del QR (dict JSON-serializable).
 
-    Campos fijos (orden canonico al serializar): `v` (version del
-    formato), `charge_id`, `merchant_id`, `amount_minor`, `currency`,
-    `concept` (o `None`), `mode`, `exp` (epoch, `0` = sin caducidad).
+    Comercio (`merchant_id`, E4-T06): campos fijos (orden canonico al
+    serializar) `v` (version del formato), `charge_id`,
+    `merchant_id`, `amount_minor` (`> 0`), `currency`, `concept` (o
+    `None`), `mode`, `exp` (epoch, `0` = sin caducidad). El dict de
+    comercio es byte-identico al historico (la firma vigente no
+    cambia).
+
+    Personal (`owner_user_id`, E4-T21): QR estatico sin monto
+    (`amount_minor = None`; el pagador lo digita) y sin caducidad
+    (`expires_at = None`); el payload lleva `owner_user_id` en lugar
+    de `merchant_id` y `mode = "STATIC"`. Exactamente uno de
+    `merchant_id`/`owner_user_id` es obligatorio; el personal exige
+    `amount_minor = None` y `mode = "STATIC"`.
+
     Manipular cualquier campo invalida la firma.
     """
     charge = str(charge_id)
-    merchant = str(merchant_id)
-    if not charge.strip() or not merchant.strip():
-        raise ValueError("charge_id y merchant_id son obligatorios")
+    if not charge.strip():
+        raise ValueError("charge_id es obligatorio")
+    merchant = str(merchant_id).strip() if merchant_id is not None else ""
+    owner = str(owner_user_id).strip() if owner_user_id is not None else ""
+    if bool(merchant) == bool(owner):
+        raise ValueError("exactamente uno de merchant_id / owner_user_id es obligatorio")
+    if owner:
+        if amount_minor is not None:
+            raise ValueError("el QR personal es sin monto (amount_minor debe ser None)")
+        if mode != "STATIC":
+            raise ValueError('el QR personal es STATIC (mode debe ser "STATIC")')
+        return {
+            "v": QR_FORMAT_VERSION,
+            "charge_id": charge,
+            "owner_user_id": owner,
+            "amount_minor": None,
+            "currency": _require_currency(currency),
+            "concept": _require_concept(concept),
+            "mode": "STATIC",
+            "exp": _epoch(expires_at),
+        }
     return {
         "v": QR_FORMAT_VERSION,
         "charge_id": charge,
@@ -130,6 +167,11 @@ def build_payload(
         "mode": _require_mode(mode),
         "exp": _epoch(expires_at),
     }
+
+
+def is_personal_payload(payload: dict[str, Any]) -> bool:
+    """Indica si el payload es de un QR personal (`owner_user_id`)."""
+    return isinstance(payload, dict) and bool(payload.get("owner_user_id"))
 
 
 def canonical_bytes(payload: dict[str, Any]) -> bytes:
@@ -278,7 +320,11 @@ def to_interop_token(payload: dict[str, Any], signature: str) -> str:
     Mapeo al sobre del adaptador (`issuer`/`peer` fijos del ecosistema
     local; `ref` = `charge_id`; `exp` = epoch; `sig` opaco con la firma
     local). El token resultante lo decodifica `wallet_interop`
-    (`decode_payload`) sin conocer este dominio (CA-03).
+    (`decode_payload`) sin conocer este dominio (CA-03). Un QR
+    personal sin monto (`amount_minor = None`, E4-T21) viaja como
+    `amount_minor = 0` en el sobre ("lo define el pagador"; el
+    adaptador admite `>= 0` y el pago verifica contra la fila, nunca
+    se confia en el cliente).
     """
     if not isinstance(payload, dict):
         raise TypeError("payload debe ser dict")
@@ -290,7 +336,7 @@ def to_interop_token(payload: dict[str, Any], signature: str) -> str:
         issuer="CUYCASH",
         peer="CUYCASH",
         ref=str(payload.get("charge_id") or ""),
-        amount_minor=payload.get("amount_minor"),
+        amount_minor=payload.get("amount_minor") or 0,
         currency=str(payload.get("currency") or ""),
         expires_at=int(payload.get("exp") or 0),
         sig=signature,
@@ -324,6 +370,7 @@ __all__ = [
     "envelope_fields",
     "hash_tax_id",
     "is_expired",
+    "is_personal_payload",
     "payload_hash_for",
     "resolve_secret",
     "sign_payload",

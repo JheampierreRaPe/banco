@@ -871,6 +871,14 @@ void main() {
       );
     });
 
+    test('liquidacion no disponible no se muestra como error del formulario', () {
+      final failure = serviceFailureFor(code: 'SETTLEMENT_UNAVAILABLE');
+      expect(failure.message, contains('El servicio de pagos no está disponible'));
+      expect(failure.message, isNot(contains('campo es inválido')));
+      expect(failure.message, isNot(contains('liquidación')));
+      expect(failure.retry, isTrue);
+    });
+
     test('formatea centimos del servidor sin recalculo', () {
       expect(formatServiceMinor(2550, 'PEN'), 'S/ 25.50');
       expect(formatServiceMinor(1000, 'PEN'), 'S/ 10.00');

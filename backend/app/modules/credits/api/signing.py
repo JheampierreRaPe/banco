@@ -5,12 +5,16 @@
   rota el reto, no mueve dinero, patron G39).
 - `POST /credits/applications/{id}/sign` (Bearer, `Idempotency-Key`
   obligatoria; firma por biometria del dispositivo **o** fallback PIN
-  —mutuamente excluyentes— y encola la copia certificada por correo).
+  —mutuamente excluyentes—, encola la copia certificada por correo y
+  desembolsa **automaticamente** a la cuenta principal (E3-T24, HU12:
+  inline idempotente `auto-disburse:<application_id>`, asiento
+  `docs/04#7.5`; si el automatico falla la firma queda `SIGNED` con el
+  bloque `disbursement: {FAILED}` para reintento por `POST .../disburse`).
 
 Sin logica en el router (`05#1`): valida, traduce y delega al
 `service/` (`contract_signing`, que orquesta `signing` de E3-T13 +
-`notifications.send` best-effort). Solo el titular (ajeno/inexistente
--> `404` neutro). **No mueve dinero** (el desembolso es HU12).
+`notifications.send` best-effort + desembolso automatico en
+`savepoint`). Solo el titular (ajeno/inexistente -> `404` neutro).
 
 Respuestas segun `05#4` (`{"data", "meta"}`) y errores problem+json
 via `AppError` (`NOT_AUTHENTICATED` 401, `NOT_AUTHORIZED` 403,
@@ -132,14 +136,19 @@ def sign_credit_contract(
     db: Session = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
-    """Firma el juego y remite la copia certificada al correo (HU11).
+    """Firma el juego, remite la copia certificada al correo y desembolsa (HU11+HU12).
 
     `Idempotency-Key` obligatoria (crea la firma): misma clave + mismo
     cuerpo = misma respuesta (`meta.replayed`, una firma y **un**
     correo); misma clave + cuerpo distinto = `409`. El correo viaja
     por `notifications.send(channel="email")` **best-effort** (un fallo
     del proveedor no rompe la firma: queda `SIGNED` y la notificacion
-    `FAILED`). Sin PII ni secretos en logs ni respuestas.
+    `FAILED`). Tras firmar, el desembolso a la cuenta principal ocurre
+    **automaticamente** (E3-T24: inline idempotente, un prestamo por
+    expediente; la respuesta trae el bloque aditivo `disbursement` con
+    `loan_id`, `transaction_id`, `amount_minor`, `account_masked` y
+    `disbursed_at`, o `status="FAILED"` para reintento por
+    `POST .../disburse`). Sin PII ni secretos en logs ni respuestas.
     """
     try:
         data, replayed = sign_service.sign_contract_idempotent(

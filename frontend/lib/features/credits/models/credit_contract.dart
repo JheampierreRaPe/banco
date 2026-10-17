@@ -164,7 +164,60 @@ class SignChallenge {
   }
 }
 
-/// Resultado de `POST .../sign` (firma sellada + copia encolada).
+/// Desembolso automático informado en la respuesta de la firma (E3-T24,
+/// HU12; bloque aditivo `disbursement`: `loan_id`, `transaction_id`,
+/// `amount_minor`, `account_masked` y `disbursed_at`, o `status=FAILED`
+/// con `code`/`message` cuando el automático no liquidó y queda el
+/// reintento manual).
+///
+/// Cliente delgado: todo se muestra TAL CUAL lo devuelve el servidor.
+class ContractDisbursement {
+  const ContractDisbursement({
+    required this.status,
+    this.loanId,
+    this.transactionId,
+    this.amountMinor,
+    this.accountMasked,
+    this.disbursedAt,
+    this.code,
+    this.message,
+  });
+
+  final String status;
+  final String? loanId;
+  final String? transactionId;
+  final int? amountMinor;
+  final String? accountMasked;
+  final String? disbursedAt;
+  final String? code;
+  final String? message;
+
+  /// `true` solo si el servidor acreditó el desembolso automático.
+  bool get isSettled => status.toUpperCase() == 'SETTLED';
+
+  static int? _minorOf(Object? value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse('$value');
+  }
+
+  factory ContractDisbursement.fromJson(Map<String, dynamic> json) {
+    return ContractDisbursement(
+      status: '${json['status'] ?? ''}',
+      loanId: json['loan_id']?.toString(),
+      transactionId: json['transaction_id']?.toString(),
+      amountMinor: _minorOf(json['amount_minor']),
+      accountMasked: json['account_masked']?.toString(),
+      disbursedAt: json['disbursed_at']?.toString(),
+      code: json['code']?.toString(),
+      message: json['message']?.toString(),
+    );
+  }
+}
+
+/// Resultado de `POST .../sign` (firma sellada + copia encolada +
+/// desembolso automático E3-T24).
 class ContractSignatureResult {
   const ContractSignatureResult({
     required this.applicationId,
@@ -174,6 +227,7 @@ class ContractSignatureResult {
     this.via,
     this.documents = const [],
     this.replayed = false,
+    this.disbursement,
   });
 
   final String applicationId;
@@ -186,7 +240,14 @@ class ContractSignatureResult {
   final List<ContractDocument> documents;
   final bool replayed;
 
+  /// Desembolso automático (E3-T24; `null` en respuestas viejas).
+  final ContractDisbursement? disbursement;
+
   bool get isSigned => status.toUpperCase() == 'SIGNED';
+
+  /// `true` si el automático ya acreditó (hay confirmación que mostrar
+  /// y la CTA manual no debe aparecer).
+  bool get isAutoDisbursed => disbursement?.isSettled ?? false;
 
   factory ContractSignatureResult.fromJson(
     Map<String, dynamic> json, {
@@ -201,6 +262,7 @@ class ContractSignatureResult {
                 ))
             .toList()
         : <ContractDocument>[];
+    final rawDisbursement = json['disbursement'];
     return ContractSignatureResult(
       applicationId: '${json['application_id'] ?? ''}',
       contractId: '${json['contract_id'] ?? ''}',
@@ -209,6 +271,11 @@ class ContractSignatureResult {
       via: json['via']?.toString(),
       documents: docs,
       replayed: replayed,
+      disbursement: rawDisbursement is Map
+          ? ContractDisbursement.fromJson(
+              Map<String, dynamic>.from(rawDisbursement),
+            )
+          : null,
     );
   }
 }

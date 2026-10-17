@@ -552,8 +552,13 @@ def test_migration_chain_has_single_head_0042():
     script = ScriptDirectory.from_config(cfg)
     revisions = {rev.revision: rev.down_revision for rev in script.walk_revisions()}
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
     heads = [rev for rev in script.get_heads() if rev not in ()]
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
     content = (BACKEND_DIR / "migrations" / "versions" / "0042_wallet_services.py").read_text(
         encoding="utf-8"
     )

@@ -16,6 +16,7 @@ __all__ = [
     "ChallengeData",
     "ChallengeRequest",
     "ChallengeResponse",
+    "DisbursementSummary",
     "SignContractData",
     "SignContractRequest",
     "SignContractResponse",
@@ -82,6 +83,29 @@ class SignedDocumentOut(BaseModel):
     seal: str = Field(description="Sello de no repudio (derivado, verificable)")
 
 
+class DisbursementSummary(BaseModel):
+    """Resultado aditivo del desembolso automatico (E3-T24, HU12).
+
+    En exito: `status` (`SETTLED`) + `loan_id`, `transaction_id`,
+    `amount_minor`, `account_masked` (`****dddd`) y `disbursed_at` (del
+    servidor; el cliente solo muestra). Si el automatico no liquido:
+    `status="FAILED"` + `code`/`message` (la firma queda `SIGNED` y el
+    reintento va por `POST .../disburse`). Todo opcional salvo
+    `status`: los clientes viejos lo ignoran.
+    """
+
+    model_config = ConfigDict(from_attributes=False, extra="ignore")
+
+    status: str = Field(description="SETTLED en exito, FAILED si no liquido")
+    loan_id: str | None = Field(default=None)
+    transaction_id: str | None = Field(default=None)
+    amount_minor: int | None = Field(default=None)
+    account_masked: str | None = Field(default=None)
+    disbursed_at: str | None = Field(default=None)
+    code: str | None = Field(default=None)
+    message: str | None = Field(default=None)
+
+
 class SignContractData(BaseModel):
     """Juego firmado (una firma sella los tres documentos)."""
 
@@ -93,6 +117,10 @@ class SignContractData(BaseModel):
     signed_at: str = Field(description="Instante del servidor (ISO-8601)")
     via: str = Field(description="device (biometria) o pin (fallback)")
     documents: list[SignedDocumentOut] = Field(min_length=3, max_length=3)
+    disbursement: DisbursementSummary | None = Field(
+        default=None,
+        description="Desembolso automatico (E3-T24, aditivo; ausente en snapshots viejos)",
+    )
 
 
 class SignContractResponse(BaseModel):

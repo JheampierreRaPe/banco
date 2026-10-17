@@ -22,6 +22,17 @@ NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "banca-online-qa")
 
 CURRENCIES = ("PEN", "USD")
 
+#: Cuenta `accounts` interna de liquidacion del proveedor de servicios/
+#: recargas (HU16). UUID fijo y determinista, **espejo** de la siembra de
+#: la migracion `0046_services_settlement` y del default de
+#: `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID` (`.env.example` raiz y
+#: `backend/.env.example`, `docker-compose.yml`). El titular es un usuario
+#: sintetico interno del proveedor (sin usuario ni cuenta reales en el
+#: core). El motor acredita aqui al liquidar (`docs/04#7.10`).
+SETTLEMENT_ACCOUNT_ID = "d0000000-0000-4000-8000-000000000001"
+SETTLEMENT_OWNER_ID = "d0000000-0000-4000-8000-0000000000ff"
+SETTLEMENT_ACCOUNT_NUMBER = "00990000000001"
+
 
 def det_uuid(name: str) -> str:
     """UUID determinista (v5) a partir de un nombre estable."""
@@ -63,6 +74,17 @@ def demo_users() -> list[dict]:
             "kyc_status": "rejected",
             "role": "titular",
         },
+        {
+            # Titular sintetico interno del proveedor externo de servicios
+            # (HU16): duena de la cuenta de liquidacion demo. No es un
+            # usuario real del core (solo datos simulados).
+            "id": SETTLEMENT_OWNER_ID,
+            "alias": "sistema",
+            "email": "sistema.servicios@example.com",
+            "doc_number": "00000000",
+            "kyc_status": "approved",
+            "role": "sistema",
+        },
     ]
 
 
@@ -89,6 +111,24 @@ def demo_accounts(users: list[dict], seed: int = DEFAULT_SEED) -> list[dict]:
             }
         )
     return accounts
+
+
+def demo_settlement_account() -> dict:
+    """Cuenta demo de liquidacion interna del proveedor de servicios (HU16).
+
+    UUID fijo (mismo que la migracion `0046_services_settlement`); el
+    motor la acredita al liquidar el pago/recarga. Moneda `PEN` (MVP),
+    saldo inicial cero. La senaliza `seed_demo.py`/`dump` para que la
+    huella documente la cuenta que espera `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID`.
+    """
+    return {
+        "id": SETTLEMENT_ACCOUNT_ID,
+        "alias": "settlement-pen",
+        "owner_id": SETTLEMENT_OWNER_ID,
+        "currency": "PEN",
+        "balance_minor": 0,
+        "status": "active",
+    }
 
 
 def chart_of_accounts() -> list[dict]:
@@ -214,7 +254,7 @@ def build_seed_dataset(seed: int = DEFAULT_SEED) -> dict:
     return {
         "meta": {"version": DATASET_VERSION, "seed": seed},
         "users": users,
-        "accounts": demo_accounts(users, seed),
+        "accounts": [*demo_accounts(users, seed), demo_settlement_account()],
         "chart_of_accounts": chart_of_accounts(),
         "merchants": demo_merchants(users),
         "billers": demo_billers(),

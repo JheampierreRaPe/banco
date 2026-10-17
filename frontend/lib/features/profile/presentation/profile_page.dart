@@ -317,6 +317,14 @@ class _ProfilePageState extends State<ProfilePage> {
                           onTap: () => context.push('/credits'),
                         ),
                         const Divider(height: 1),
+                        _StaticRow(
+                          icon: Icons.calendar_month_outlined,
+                          title: 'Mis préstamos',
+                          subtitle: 'Cronograma y cuotas',
+                          tapKey: const Key('profile-loans'),
+                          onTap: () => context.push('/credits/loans'),
+                        ),
+                        const Divider(height: 1),
                         const _StaticRow(
                           icon: Icons.menu_book_outlined,
                           iconBackground: AppColors.surfaceContainerHigh,

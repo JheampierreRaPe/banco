@@ -198,12 +198,19 @@ dispositivo, `sign_contract_with_pin` como fallback) +
   .../contract?format=pdf`): adjuntar el PDF exigiria ampliar el
   adaptador (fuera de `credits`, `docs/18` G57).
 - Snapshot de idempotencia minimo y sin PII (`application_id` +
-  `status`/`documents`; del PIN/firma solo digests en el
-  `request_hash`, patron E2-T31).
-- **No mueve dinero**: sin `loans`/`loan_schedules`, sin
-  `transactions`/`ledger`, sin asientos.
+  `status`/`documents` (+ `disbursement` desde E3-T24); del PIN/firma
+  solo digests en el `request_hash`, patron E2-T31).
+- **Desembolso automatico (E3-T24, HU12, decision del dueno: inline,
+  no consumidor):** tras firmar, `_try_auto_disburse` invoca en
+  `savepoint` `disburse_application_idempotent` con `account_id=None`
+  (cuenta principal) y clave estable `auto-disburse:<application_id>`
+  (un prestamo por expediente). La respuesta trae el bloque aditivo
+  `disbursement` (`loan_id`, `transaction_id`, `amount_minor`,
+  `account_masked`, `disbursed_at`; o `status="FAILED"` + `code`/
+  `message` si no liquido: la firma queda `SIGNED` y el reintento va
+  por `POST .../disburse`, contrato intacto).
 - Contrato detallado en `docs/05-contratos-api.md#64-creditos-credits---hu09-hu12`;
-  gaps en `docs/18` (G57).
+  gaps en `docs/18` (G57, G90 cerrado).
 
 ## Prestamo y cronograma definitivo (E3-T18, HU12 CA-02)
 
@@ -274,8 +281,15 @@ dispositivo, `sign_contract_with_pin` como fallback) +
   (`****dddd`); sin PII en logs; dinero en centimos, sin `float`.
 - `credits` no escribe tablas de `transactions`/`ledger`/`accounts`
   (solo fachadas); `ledger` solo escribe asientos via su fachada.
+- **Notificacion dedicada (E3-T24):** en desembolso real (no replay),
+  `_notify_disbursed` envia por la fachada `notifications.send`
+  `credit_disbursed` (push) + `credit_disbursed_email` (email), sin PII
+  (referencia + monto + cuenta enmascarada + instante), best-effort. Es
+  la UNICA notificacion del desembolso: la alerta generica de seguridad
+  se suprime para `credit.disbursed` (`DEDICATED_ONLY_EVENTS`, no
+  duplica push+email; `docs/18` G90).
 - Contrato detallado en `docs/05-contratos-api.md#64-creditos-credits---hu09-hu12`;
-  gaps en `docs/18` (G54 cerrado, G62 parcial para estas rutas).
+  gaps en `docs/18` (G54 cerrado, G62 parcial para estas rutas, G90 cerrado).
 
 ## Pago de cuota (E3-T20, HU12 CA-02 parte de cuotas)
 

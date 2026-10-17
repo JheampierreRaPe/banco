@@ -102,9 +102,14 @@ class FakeQrPaymentService implements QrPaymentServiceBase {
   Future<QrPaymentResult> payQr({
     required String qrContent,
     required String linkId,
+    int? amountMinor,
     String? idempotencyKey,
   }) async {
-    payBodies.add({'qr_content': qrContent, 'link_id': linkId});
+    payBodies.add({
+      'qr_content': qrContent,
+      'link_id': linkId,
+      'amount_minor': ?amountMinor,
+    });
     payKeys.add(idempotencyKey);
     if (payError != null) throw payError!;
     if (failNextPay) {
@@ -250,18 +255,39 @@ Future<void> _toSummary(WidgetTester tester) async {
 
 void main() {
   group('QrScanPage (escaner)', () {
-    testWidgets('muestra el lector y el campo de inyeccion', (tester) async {
+    QrScannerBuilder fakePreview() {
+      return (context, _, _) =>
+          const SizedBox(key: Key('qr-pay-fake-scanner'));
+    }
+
+    testWidgets('muestra la vista previa real y el campo de inyeccion',
+        (tester) async {
       String? scanned;
       await tester.pumpWidget(
-        MaterialApp(home: QrScanPage(onScanned: (v) => scanned = v)),
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (v) => scanned = v,
+            scannerBuilder: fakePreview(),
+          ),
+        ),
       );
       await tester.pumpAndSettle();
 
       expect(find.text('Pagar con QR'), findsOneWidget);
+      // E4-T22: ya no hay placeholder; hay vista previa real (fake aquí).
       expect(
-        find.byKey(const Key('qr-pay-camera-placeholder')),
+        find.byKey(const Key('qr-pay-camera-preview')),
         findsOneWidget,
       );
+      expect(
+        find.byKey(const Key('qr-pay-camera-placeholder')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('qr-pay-camera-denied')),
+        findsNothing,
+      );
+      expect(find.byKey(const Key('qr-pay-fake-scanner')), findsOneWidget);
       expect(find.byKey(const Key('qr-pay-scan-input')), findsOneWidget);
       expect(scanned, isNull);
     });
@@ -269,7 +295,12 @@ void main() {
     testWidgets('vacio muestra error accionable sin avanzar', (tester) async {
       var called = false;
       await tester.pumpWidget(
-        MaterialApp(home: QrScanPage(onScanned: (_) => called = true)),
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (_) => called = true,
+            scannerBuilder: fakePreview(),
+          ),
+        ),
       );
       await tester.pumpAndSettle();
 
@@ -284,13 +315,124 @@ void main() {
         (tester) async {
       String? scanned;
       await tester.pumpWidget(
-        MaterialApp(home: QrScanPage(onScanned: (v) => scanned = v)),
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (v) => scanned = v,
+            scannerBuilder: fakePreview(),
+          ),
+        ),
       );
       await tester.pumpAndSettle();
 
       await tester.enterText(
         find.byKey(const Key('qr-pay-scan-input')),
         '  $kQrContent  ',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('qr-pay-scan-continue')));
+      await tester.pump();
+
+      expect(scanned, kQrContent);
+    });
+
+    testWidgets('deteccion del lector -> _continue una sola vez (E4-T22)',
+        (tester) async {
+      ValueChanged<String>? captured;
+      var calls = 0;
+      String? scanned;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (v) {
+              calls++;
+              scanned = v;
+            },
+            scannerBuilder: (context, onCode, _) {
+              captured = onCode;
+              return const SizedBox(key: Key('qr-pay-fake-scanner'));
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qr-pay-camera-preview')), findsOneWidget);
+      expect(captured, isNotNull);
+
+      // El lector emite callbacks repetidos: solo la primera navega.
+      captured!(kQrContent);
+      await tester.pump();
+      captured!(kQrContent);
+      await tester.pump();
+
+      expect(calls, 1);
+      expect(scanned, kQrContent);
+    });
+
+    testWidgets('permiso denegado muestra aviso y el campo sigue usable',
+        (tester) async {
+      String? scanned;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (v) => scanned = v,
+            cameraDenied: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('qr-pay-camera-denied')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('qr-pay-camera-preview')),
+        findsNothing,
+      );
+      expect(find.textContaining('Sin acceso a la cámara'), findsOneWidget);
+      // Degradacion: el campo manual sigue usable y continua.
+      expect(find.byKey(const Key('qr-pay-scan-input')), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('qr-pay-scan-input')),
+        kQrContent,
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('qr-pay-scan-continue')));
+      await tester.pump();
+
+      expect(scanned, kQrContent);
+    });
+
+    testWidgets('el seam degrada si el lector niega el permiso (E4-T22)',
+        (tester) async {
+      String? scanned;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScanPage(
+            onScanned: (v) => scanned = v,
+            scannerBuilder: (context, _, onDenied) => TextButton(
+              key: const Key('qr-pay-fake-deny'),
+              onPressed: onDenied,
+              child: const Text('denegar'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qr-pay-camera-preview')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('qr-pay-fake-deny')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('qr-pay-camera-denied')),
+        findsOneWidget,
+      );
+      await tester.enterText(
+        find.byKey(const Key('qr-pay-scan-input')),
+        kQrContent,
       );
       await tester.pump();
       await tester.tap(find.byKey(const Key('qr-pay-scan-continue')));

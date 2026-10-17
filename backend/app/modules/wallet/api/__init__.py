@@ -32,10 +32,21 @@
 
 - Preview del QR (MEDIO-3, HU15 CA-01): `POST /payments/qr/preview`
   (`{qr_content}`, Bearer, sin `Idempotency-Key`: no mueve dinero ->
-  `200` con comercio/monto `{charge_id, merchant, amount_minor,
-  currency, expires_at, status}`; `422` vencido/corrupto/manipulado
-  sin efectos, `409` ya cobrado). Solo lectura via
+  `200` con destino/monto `{charge_id, merchant?, payee?,
+  amount_minor, currency, expires_at, status}` (`amount_minor: null`
+  + `payee` en QR personal, E4-T21); `422` vencido/corrupto/
+  manipulado sin efectos, `409` ya cobrado). Solo lectura via
   `preview_qr_charge` (misma ruta `api/payments.py`).
+- QR personal estatico (`E4-T21`, HU14): `POST /wallet/qr`
+  (`{currency?, concept?}`, `Idempotency-Key` opcional, cualquier
+  titular con cuenta `ACTIVE`, sin rol comercial -> `201` con el QR
+  reutilizable sin monto ni caducidad) y `GET /wallet/qr/{id}`
+  (estado, solo el titular dueno, `404` neutro si ajeno/de
+  comercio). Rutas definidas en `api/personal_qr.py` e incluidas aqui
+  (mismo `router` bajo `/api/v1`). **No mueve dinero** (el pago con
+  el monto del pagador es `POST /payments/qr`); el aviso de abono al
+  titular (`qr_charge_paid` reutilizada, `docs/18` G85) lo dispara el
+  pago (`HU15`).
 - Catalogo de servicios (`E4-T16`, HU16 CA-01/CA-03 base):
   `GET /services/catalog` (filtrable por `category`/`q`, solo
   lectura -> `200` con `billers` habilitados +
@@ -242,9 +253,11 @@ def delete_wallet_link(
 __all__ = ["get_current_user_id", "router"]
 
 from app.modules.wallet.api.payments import router as _payments_router
+from app.modules.wallet.api.personal_qr import router as _personal_qr_router
 from app.modules.wallet.api.qr import router as _qr_router
 from app.modules.wallet.api.services import router as _services_router
 
 router.include_router(_payments_router)
+router.include_router(_personal_qr_router)
 router.include_router(_qr_router)
 router.include_router(_services_router)

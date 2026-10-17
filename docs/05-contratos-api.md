@@ -797,8 +797,20 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > >   ventana), `404 NOT_FOUND` (ajeno/inexistente, neutro), `409 CONFLICT`
 > >   (no `GENERATED`/ya `SIGNED`), `422 VALIDATION_ERROR` (sin
 > >   `Idempotency-Key`, esquema o ambos/ningun factor; el `422` sanitario
-> >   no refleja el cuerpo, el PIN nunca fuga). **No mueve dinero** (sin
-> >   `loans`, sin asientos; el desembolso es HU12).
+> >   no refleja el cuerpo, el PIN nunca fuga).
+> > - Desembolso automatico (E3-T24 `Hecho`, 2026-10-17; HU12 CA-01/CA-02;
+> >   decision del dueno: **inline, no consumidor**): tras firmar, el
+> >   desembolso a la **cuenta principal** ocurre sin accion del usuario
+> >   (en `savepoint`, clave estable `auto-disburse:<application_id>`: un
+> >   prestamo por expediente, asiento `docs/04#7.5`). La respuesta trae el
+> >   bloque **aditivo** `disbursement` (`status` + `loan_id`,
+> >   `transaction_id`, `amount_minor`, `account_masked` (`****dddd`),
+> >   `disbursed_at`; o `status="FAILED"` + `code`/`message` si no liquido:
+> >   la firma queda `SIGNED` y el reintento va por `POST .../disburse`,
+> >   contrato intacto). En desembolso real se envia la notificacion
+> >   dedicada `credit_disbursed` (push) + `credit_disbursed_email`
+> >   (email), sin PII (UNICA notificacion: la alerta generica de
+> >   seguridad se suprime para `credit.disbursed`, `docs/18` G90).
 > >
 > > Detalle del desembolso + lectura de prestamos (E3-T17 `Hecho`,
 > > 2026-10-13; HU12 CA-01/CA-02/CA-03-tiempo; gap G62 cerrado para estas
@@ -903,6 +915,8 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | DELETE | `/wallet/links/{id}` | Desvincular fuente (baja logica a `INACTIVE`, solo titular). |
 | POST | `/merchants/qr` | Generar QR de cobro (HU14). |
 | GET | `/merchants/qr/{id}` | Consultar estado del QR. |
+| POST | `/wallet/qr` | Generar QR personal estatico (HU14, E4-T21). |
+| GET | `/wallet/qr/{id}` | Consultar estado del QR personal (E4-T21). |
 | GET | `/services/catalog` | Catalogo de servicios y operadores. |
 | POST | `/services/subscriptions` | Registrar un servicio a recordar. |
 | POST | `/services/payments` | Pago de servicio. |
@@ -916,7 +930,16 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > El PAN, el numero completo y el `token_ref` jamas viajan en respuestas
 > (solo `account_masked`/`last4`/`brand`).
 > - `GET /wallet` (solo lectura, aislada por `sub` del JWT) ->
->   `200 {"data": {wallet_id, status, links[]}, "meta": {"request_id"}}`.
+>   `200 {"data": {wallet_id, status, links[], is_merchant, merchant_status},
+>   "meta": {"request_id"}}` (E4-T23: `is_merchant: bool` es el rol de
+>   comercio derivado server-side —`true` solo con fila propia `ACTIVE` en
+>   `wallet.merchant_accounts`, mismo criterio que `require_merchant_for_user`;
+>   `false` por defecto, incluido el estado sin billetera `NONE`— y
+>   `merchant_status: ACTIVE|BLOCKED|CLOSED|null` es el estado de la fila
+>   propia (`null` sin cuenta de comercio). Solo rol, sin PII: ni RUC ni
+>   nombre comercial. Aditivo: los clientes que ignoran el campo no rompen.
+>   El frontend lo usa para ocultar la entrada de comercio a las cuentas
+>   personales (fail-closed); el `403` real de `/merchants/qr*` no cambia).
 >   Sin billetera aun -> `200` con `wallet_id: null`, `status: "NONE"` y
 >   `links: []` (la fila se crea on-demand en la primera vinculacion).
 >   Vinculo = `{id, type (ACCOUNT|CARD), account_masked? (****1234, solo
@@ -1000,6 +1023,35 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   `409 IDEMPOTENCY_CONFLICT`, `422 VALIDATION_ERROR`
 >   (`amount_minor <= 0`, moneda invalida, `mode` fuera de
 >   `DYNAMIC`/`STATIC`, `concept` > 120) + `422` de esquema Pydantic.
+> - QR personal estatico (`E4-T21` `Hecho`, 2026-10-15; HU14; cierra
+>   `docs/18` G84/G85/G86): cualquier titular con cuenta `ACTIVE`
+>   (sin rol comercial) genera su QR reutilizable.
+>   - `POST /wallet/qr` (cuerpo `{currency? (default `PEN`), concept?
+>     (<= 120)}`; cabecera `Idempotency-Key` opcional: no mueve dinero)
+>     -> `201 {"data": {charge_id, qr_content, payload, payload_hash,
+>     signature, amount_minor: null, currency, concept, mode: "STATIC",
+>     status ("ACTIVE"), expires_at: null, created_at, payee_type:
+>     "PERSONAL", owner_user_id, payee_account_id, reusable: true},
+>     "meta": {"request_id", "replayed"}}`. `qr_content` es el sobre
+>     `BO-QR1` con `amount_minor = 0` ("lo define el pagador"). Misma
+>     clave + mismo cuerpo = replay (`replayed: true`); cuerpo distinto
+>     = `409 IDEMPOTENCY_CONFLICT`. Emite `qr.charge.created` por
+>     `outbox` (payload sin PII, con `payee_user_id` y
+>     `merchant_id`/`amount_minor` en `null`).
+>   - `GET /wallet/qr/{id}` (solo el titular dueno; ajeno/inexistente/
+>     de comercio -> `404 NOT_FOUND` neutro) -> `200 {"data":
+>     {charge_id, qr_content, status, amount_minor: null, currency,
+>     expires_at: null, paid_at?, payee_type, reusable, payee_name_masked},
+>     "meta": {"request_id"}}` (sin caducidad: el estado es el de la
+>     fila). `payee_name_masked` (E4-T24, aditivo): nombre + un apellido
+>     del titular enmascarado (`DIEG••• GONZ•••` = primeros 4 por parte +
+>     resto oculto con `•••`, partes separadas por un espacio; parte
+>     `<= 4` completa; razon social como una sola parte); `null` si no
+>     se pudo resolver (fallback neutro). El nombre completo jamas viaja
+>     ni se loguea (reglas 7/9).
+>   - Codigos: `401 NOT_AUTHENTICATED`, `404 NOT_FOUND` neutro,
+>     `409 IDEMPOTENCY_CONFLICT`, `422 VALIDATION_ERROR` (moneda/
+>     concepto o titular sin cuenta `ACTIVE` de abono).
 >
 > Detalle del catalogo de servicios (E4-T16 `Hecho`, 2026-10-13; HU16
 > CA-01/CA-03 base; cierra `docs/18` G77 en lo que toca a
@@ -1126,8 +1178,15 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   - Codigos: `404 NOT_FOUND` neutro (`biller`/operador/vinculo
 >     ajeno o inexistente), `409 CONFLICT` (clave con cuerpo
 >     distinto), `422 VALIDATION_ERROR` (sin clave, suministro/
->     telefono/monto/moneda invalidos, liquidacion sin configurar)
->     + `422` de esquema Pydantic, `502`/`503` del proveedor.
+>     telefono/monto/moneda invalidos del formulario)
+>     + `422` de esquema Pydantic, `502 SERVICE_PROVIDER_TIMEOUT`/
+>     `503 SERVICE_PROVIDER_UNAVAILABLE` del proveedor y
+>     **`503 SETTLEMENT_UNAVAILABLE`** si la cuenta de liquidacion
+>     del proveedor no esta configurada o no esta `ACTIVE` (fail-
+>     closed antes de mover dinero; mensaje neutro; no es un error
+>     del formulario). La cuenta de liquidacion demo se siembra con
+>     la migracion `0046_services_settlement` y se inyecta por
+>     `WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID` (`docs/18` G87).
 >   - Pruebas: `backend/tests/test_e4_t17_service_payments.py`
 >   (feliz con asiento cuadrado + evento + aviso de saldos,
 >   pendiente + autorizacion/finalizacion, diario/fondos sin tocar
@@ -1179,12 +1238,19 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   titular pagador** (el vinculo debe ser suyo: ajeno/inexistente/
 >   inactivo -> `404 NOT_FOUND` neutro). Request `{qr_content
 >   (`String` `BO-QR1` escaneado), link_id (UUID del vinculo `ACCOUNT`
->   a debitar)}` con cabecera `Idempotency-Key` **obligatoria** (mueve
->   dinero; sin ella -> `422 VALIDATION_ERROR`) -> `201 {"data":
->   {transaction_id, qr_payment_id, charge_id, merchant {merchant_id,
->   business_name}, amount_minor (entero), currency, status
+>   a debitar), amount_minor? (entero `> 0`, opcional: **obligatorio**
+>   cuando el QR no trae monto —personal, E4-T21—; se ignora cuando el
+>   cargo trae monto fijo —comercio—)}` con cabecera `Idempotency-Key`
+>   **obligatoria** (mueve dinero; sin ella -> `422 VALIDATION_ERROR`)
+>   -> `201 {"data": {transaction_id, qr_payment_id, charge_id,
+>   merchant? {merchant_id, business_name} (`None` en personal),
+>   payee? {owner_user_id} (`None` en comercio), amount_minor (entero:
+>   el cobrado), currency, status
 >   (SETTLED/PENDING_AUTHORIZATION/REJECTED), failure_code?,
->   authorization?}, "meta": {"request_id", "replayed"}}`.
+>   authorization?}, "meta": {"request_id", "replayed"}}`. Un QR personal
+>   admite varios cobros (uno por clave; el cargo sigue `ACTIVE`); un QR
+>   de un solo uso conserva el `409` al segundo cobro. Sin
+>   `amount_minor` sobre un QR sin monto -> `422 VALIDATION_ERROR`.
 >   `<=` limite base -> `SETTLED` en un toque (comercio y monto en la
 >   respuesta, < 2 s; cargo `PAID` + `qr.payment.confirmed` + aviso
 >   `qr_charge_paid` unico, < 5 s); `>` base ->
@@ -1213,14 +1279,21 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   confirmar**. Auth: `Authorization: Bearer <jwt>` (401
 >   `NOT_AUTHENTICATED` sin token valido). Request `{qr_content
 >   (`String` `BO-QR1` escaneado)}`, **sin** cabecera `Idempotency-Key`
->   (no mueve dinero) -> `200 {"data": {charge_id, merchant
->   {merchant_id, business_name}, amount_minor (entero), currency,
->   expires_at (`None` en `STATIC`), status (`ACTIVE`)}, "meta":
->   {"request_id"}}`. Decodifica y verifica el `qr_content` (adaptador
+>   (no mueve dinero) -> `200 {"data": {charge_id, merchant?
+>   {merchant_id, business_name} (`None` en personal), payee?
+>   {owner_user_id} (`None` en comercio), payee_name_masked, amount_minor
+>   (entero o `null`: `null` en QR personal —el pagador digita el
+>   monto—), currency, expires_at (`None` en `STATIC`), status
+>   (`ACTIVE`)}, "meta": {"request_id"}}`. `payee_name_masked` (E4-T24,
+>   aditivo): nombre + un apellido del dueno enmascarado (mismo formato
+>   que en `GET /wallet/qr/{id}`; en comercio es el nombre natural del
+>   dueno y `business_name` se conserva intacto; `null` si no se pudo
+>   resolver). Decodifica y verifica el `qr_content` (adaptador
 >   `E4-T03` + `verify_charge_signature` + caducidad/estado) en **solo
 >   lectura**: sin retencion, sin asiento, sin pagos ni eventos.
->   Vencido/corrupto/manipulado/ajeno o comercio sin cuenta de abono ->
->   `422 VALIDATION_ERROR` sin efectos; ya cobrado -> `409 CONFLICT`.
+>   Vencido/corrupto/manipulado/ajeno o destino sin cuenta de abono ->
+>   `422 VALIDATION_ERROR` sin efectos; ya cobrado (un solo uso) ->
+>   `409 CONFLICT`.
 >   La respuesta nunca incluye el `qr_content` crudo, la firma, el
 >   secreto ni el RUC (solo el nombre publico del comercio, como `POST
 >   /payments/qr`). Se elige `POST` sobre `GET`: el `qr_content` (hasta

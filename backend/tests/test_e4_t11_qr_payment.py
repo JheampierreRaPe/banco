@@ -855,12 +855,19 @@ def test_migration_0040_chained_after_0039_with_single_head():
     # el head vigente vive en `test_e4_t11b_qr_payment_guard.py`.
     # E4-T16 (2026-10-13): la cabeza avanza a 0042 (catalogo `billers`).
     # E6-T12 (2026-10-13): la cabeza avanza a 0044_notifications_preferences
-    # (preferencias por canal + claves de seguridad, tras 0043).
+    # (preferencias por canal + claves de seguridad, tras 0043). Pulido de
+    # correos (2026-10-15): la cabeza avanza a
+    # 0045_notification_email_content (textos de semillas, tras 0044).
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
     assert revisions.get("0041_wallet_qr_payment_guard") == "0040_wallet_qr_payments"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
     content = (versions_dir / "0040_wallet_qr_payments.py").read_text(encoding="utf-8")
     assert "qr_payments" in content
     assert "uq_qr_payments_transaction_id" in content

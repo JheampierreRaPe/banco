@@ -223,9 +223,11 @@ def test_happy_path_registers_two_rows_push_sent_within_window(db):
         for secret in ("4242424242424242", "nonce", "biometr", "firma-secreta"):
             assert secret not in raw
     data = (by_channel["push"].payload_json or {}).get("data", {})
+    # Contenido humano persistido: etiqueta legible + fecha local (el
+    # codigo crudo vive en `event_type` para correlacion, no en el texto).
     assert data == {
-        "operation": "transfer.settled",
-        "at": AT_ISO,
+        "operation": "Transferencia realizada",
+        "at": "13/10/2026 07:00",
         "device": "Pixel 8",
         "location": "Lima",
     }
@@ -630,7 +632,7 @@ def test_no_pii_in_logs(db, caplog):
     assert "security_operation_alert" in caplog.text
 
 
-# ------------------------------------------------- migracion 0044
+# ------------------------------------------------- migracion 0045
 def test_migration_chain_has_single_head_0044():
     from pathlib import Path
 
@@ -643,19 +645,28 @@ def test_migration_chain_has_single_head_0044():
     script = ScriptDirectory.from_config(cfg)
     revisions = {rev.revision: rev.down_revision for rev in script.walk_revisions()}
     heads = [rev for rev in revisions if rev not in revisions.values()]
-    # E6-T12 (2026-10-13): la cabeza avanza a 0044_notifications_preferences
-    # (preferencias por canal + claves de seguridad, tras 0043).
+    # Contenido pulido (2026-10-15): `0045_notification_email_content`
+    # (textos de las semillas, tras 0044). La cabeza vigente es
+    # `0046_services_settlement` (wallet, tras 0045): un solo head.
+    assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
+    assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0044_notifications_preferences") == "0043_wallet_service_reminder"
     assert revisions.get("0043_wallet_service_reminder") == "0042_wallet_services"
-    assert heads == ["0044_notifications_preferences"], f"heads inesperados: {heads}"
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
+    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
     content = (
-        backend_dir / "migrations" / "versions" / "0044_notifications_preferences.py"
+        backend_dir / "migrations" / "versions" / "0045_notification_email_content.py"
     ).read_text(encoding="utf-8")
     assert "def upgrade" in content and "def downgrade" in content
-    assert len("0044_notifications_preferences") <= 32
-    assert "user_channel_preferences" in content
-    assert "notifications.security_delivery_window_seconds" in content
-    assert "notifications.security_alerts_email_backup" in content
+    assert len("0045_notification_email_content") <= 32
+    content_0044 = (
+        backend_dir / "migrations" / "versions" / "0044_notifications_preferences.py"
+    ).read_text(encoding="utf-8")
+    assert "user_channel_preferences" in content_0044
+    assert "notifications.security_delivery_window_seconds" in content_0044
+    assert "notifications.security_alerts_email_backup" in content_0044
 
 
 def test_migration_0044_upgrade_downgrade_roundtrip():

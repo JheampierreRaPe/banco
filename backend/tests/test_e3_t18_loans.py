@@ -387,8 +387,13 @@ def test_migration_single_head_chained():
     # (2026-10-13): la cabeza avanza a 0042_wallet_services
     # (catalogo `billers` + servicios, tras 0041). E6-T12
     # (2026-10-13): la cabeza avanza a 0044_notifications_preferences
-    # (preferencias por canal + claves de seguridad, tras 0043).
-    assert tuple(heads) == ("0044_notifications_preferences",)
+    # (preferencias por canal + claves de seguridad, tras 0043). Pulido de
+    # correos (2026-10-15): la cabeza avanza a
+    # 0045_notification_email_content (textos de semillas, tras 0044). La
+    # cabeza vigente es 0046_services_settlement (wallet, tras 0045).
+    # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
+    # (QR personal estatico, tras 0046).
+    assert tuple(heads) == ("0047_wallet_personal_qr",)
     script = ScriptDirectory.from_config(cfg).get_revision("0042_wallet_services")
     assert script.down_revision == "0041_wallet_qr_payment_guard"
     script = ScriptDirectory.from_config(cfg).get_revision("0041_wallet_qr_payment_guard")

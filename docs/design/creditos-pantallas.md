@@ -377,10 +377,13 @@ actualizó con el mismo segmento (pestaña `Simulador` activa, TopBar `Créditos
       Sin antigüedad relativa ni cuota: la cuota queda **fuera de alcance
       del listado** (el endpoint no la entrega; cliente delgado, `docs/19`).
       El mockup conserva un texto ilustrativo anterior; vale lo descrito aquí.
-   - Acciones: fila `Aprobado` → CTA primario `Continuar a la firma`
-     (52px, → `/credits/contract` con el id) + link `Ver estado ›`
-     (`accent-text`, → `/credits/status` con el id). Filas no aprobadas →
-     solo `Ver estado ›`, **sin CTA de firma**.
+    - Acciones: fila `Aprobado` → CTA primario `Continuar a la firma`
+      (52px, → `/credits/contract` con el id) + link `Ver estado ›`
+      (`accent-text`, → `/credits/status` con el id). Fila `Aprobado` firmada
+      (`contract_signed`) → CTA `Desembolsar a mi cuenta` (→ `/credits/sign`
+      con el id, reanuda el ciclo) + `Ver cronograma ›` (→ `/credits/loans`)
+      + `Ver estado ›`. Filas no aprobadas → solo `Ver estado ›`, **sin CTA
+      de firma**.
 4. **Badges de estado** (mismo set que §3 Estado):
    | Etiqueta | Fondo | Texto |
    |---|---|---|
@@ -432,6 +435,11 @@ Mockup: `(pendiente)` `docs/design/creditos-cronograma.png` (fila en
 éxito de la firma (`/credits/sign`) + navegación directa a las rutas.
 
 ### 8a. Mis préstamos (`/credits/loans`, `GET /credits/loans`)
+
+Entradas persistentes (descubribilidad sprint-3): acción `Mis préstamos`
+en el `AppBar` de `/credits`, card `Mis préstamos` en `/home`, fila
+`Mis préstamos` en `/profile` y `Ver cronograma ›` en la fila firmada de
+"Mis créditos" — todas a `/credits/loans` (ruta real, sin "Próximamente").
 
 1. **Header**: TopBar `Mis préstamos`.
 2. **Fila por préstamo** (card blanca, radio 16, borde `outline-variant`;
@@ -488,10 +496,14 @@ Mockup: `(pendiente)` `docs/design/creditos-cronograma.png` (fila en
 ### 8c. M-1 — Disparador de desembolso (HU12, CTA en el éxito de la firma)
 
 Mockup: `(pendiente)` `docs/design/creditos-desembolso.png` (fila en
-`docs/design/mockups.md`). Punto de entrada ÚNICO: bloque de éxito de
-`/credits/sign` (`credit_sign_page.dart` + `CreditDisburseSection`), junto a
-los CTA `Volver al inicio` / `Ver mis préstamos`. No se duplica en el
-listado: el listado (§8a) solo muestra préstamos ya desembolsados.
+`docs/design/mockups.md`). Entradas (descubribilidad sprint-3, el ciclo
+firmar → desembolsar es reanudable): bloque de éxito de `/credits/sign`
+(`credit_sign_page.dart` + `CreditDisburseSection`), rama firmada de
+`/credits/status` (misma sección + `Ver mis préstamos` → `/credits/loans`)
+y fila firmada de "Mis créditos" (`Desembolsar a mi cuenta` →
+`/credits/sign` + `Ver cronograma ›` → `/credits/loans`). Sin duplicar de
+forma confusa: una CTA de desembolso por pantalla y la sección se oculta
+sola si ya hay préstamo (card `Desembolso completado` + `Ver cronograma`).
 
 1. **Visibilidad**: la sección aparece cuando el expediente está `APPROVED`
    y el contrato `SIGNED` (el bloque de éxito de la firma lo garantiza) y

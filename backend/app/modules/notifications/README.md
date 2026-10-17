@@ -18,7 +18,13 @@ Estado: implementado (modelos `notifications`/`notification_templates` con `push
   `sms` nunca participa en la ruta de seguridad.
 - Plantillas (`domain/templates.py`): `security_operation_alert` (push),
   `security_operation_email` (email, con `reference` no PII) y `security_report_received`
-  (acuse para `E6-T14`). Sin PII ni cifras: operacion + `{at}` + `{device}` + `{location}`.
+  (acuse para `E6-T14`). Sin PII ni cifras. Contenido humano (pulido 2026-10-15):
+  la operacion se muestra como etiqueta (`Transferencia realizada`, no el codigo
+  crudo) y el instante como fecha local legible (`DD/MM/YYYY HH:MM`, hora de Lima,
+  no ISO crudo); el asunto del correo incluye la etiqueta
+  (`Nueva operación en tu cuenta: {etiqueta}`). Helpers puros
+  `humanize_operation`/`format_at_legible`/`render_subject`; el codigo crudo se
+  conserva en el `payload` (`event_type`) para correlacion, nunca en el texto.
 - Preferencias: `repository.get_preferences/upsert_preferences` (idempotente por `user_id` PK) +
   `service.get/set_channel_preferences`; migracion `0044_notifications_preferences`.
 - Centro (solo titular, `api/`): `GET /notifications` (filtros `channel`/`unread`, paginado),
@@ -45,8 +51,13 @@ Estado: implementado (modelos `notifications`/`notification_templates` con `push
   `notifications.security_alerts_email_backup` (`true`); sembradas por `0044`.
 - Pruebas: `backend/tests/test_e6_t12_notifications_security.py` (26 pruebas: feliz < 5 s,
   paralelismo por rendezvous, preferencias con respaldo garantizado, aislamiento por canal,
-  centro aislado por titular, consumidor idempotente, sin PII en logs, cadena `0044` +
-  roundtrip en Postgres).
+  centro aislado por titular, consumidor idempotente, sin PII en logs, cadena `0046` +
+  roundtrip en Postgres) + `backend/tests/test_notifications_email_content.py` (14 pruebas
+  del pulido: etiquetas, fecha legible, asunto dinamico, tildes, coincidencia
+  semilla<->BASE y roundtrip `0045`). Migracion DATA-ONLY
+  `0045_notification_email_content` (textos pulidos de las 4 semillas con
+  `subject`/`body`: `otp_code`, `otp_code_email`, `account_activated`,
+  `login_alert`; reversible).
 
 ## Reporte "no reconozco" (E6-T14, HU22)
 

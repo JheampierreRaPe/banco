@@ -622,17 +622,23 @@ Indices: `(account_id, created_at DESC)`.
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
-| merchant_id | UUID | No | - | FK merchant_accounts, IDX | - |
-| amount_minor | BIGINT | No | - | CK >0 | Monto. |
+| merchant_id | UUID | Si | - | FK merchant_accounts, IDX | `NULL` en QR personal (E4-T21, migracion `0047`). |
+| amount_minor | BIGINT | Si | - | CK `IS NULL OR > 0` | Monto fijo (comercio) o `NULL` = lo digita el pagador (personal, E4-T21). |
 | currency | CHAR(3) | No | - | | Moneda. |
 | concept | VARCHAR(120) | Si | - | | - |
-| mode | VARCHAR(10) | No | 'DYNAMIC' | CK | `DYNAMIC`/`STATIC`. |
+| mode | VARCHAR(10) | No | 'DYNAMIC' | CK | `DYNAMIC`/`STATIC` (el personal es `STATIC`). |
+| payee_type | VARCHAR(10) | No | 'MERCHANT' | CK | `MERCHANT`/`PERSONAL` (E4-T21, migracion `0047`). |
+| owner_user_id | UUID | Si | - | REF users, IDX | Titular destino del QR personal (E4-T21). |
+| payee_account_id | UUID | Si | - | REF accounts | Cuenta de abono fijada al generar (E4-T21). |
+| reusable | BOOLEAN | No | false | | `true` = admite varios cobros (personal, E4-T21). |
 | payload_hash | VARCHAR(64) | No | - | | Hash del contenido. |
 | signature | VARCHAR(256) | No | - | | Firma del QR. |
 | status | VARCHAR(12) | No | 'ACTIVE' | IDX, CK | `qr_charge_status`. |
-| expires_at | TIMESTAMPTZ | Si | - | IDX | - |
+| expires_at | TIMESTAMPTZ | Si | - | IDX | `NULL` en personal (sin caducidad, E4-T21). |
 | created_at | TIMESTAMPTZ | No | now() | | - |
-| paid_at | TIMESTAMPTZ | Si | - | | - |
+| paid_at | TIMESTAMPTZ | Si | - | | `NULL` en personal reutilizable (no se agota). |
+
+`CHECK` (migracion `0047`): destino `(payee_type = 'MERCHANT' AND merchant_id IS NOT NULL) OR (payee_type = 'PERSONAL' AND owner_user_id IS NOT NULL)`; personal-estatico `payee_type <> 'PERSONAL' OR (amount_minor IS NULL AND expires_at IS NULL AND reusable = true)`.
 
 ### 9.4 `qr_payments`
 
@@ -640,10 +646,12 @@ Indices: `(account_id, created_at DESC)`.
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | transaction_id | UUID | No | - | REF transactions, UQ | - |
-| charge_id | UUID | No | - | FK qr_charges, UQ parcial (`uq_qr_payments_charge_active`: unico donde `status <> 'REJECTED'`; fix ALTO-2/MEDIO-2, migracion `0041`) | Un cargo admite un solo cobro real/pendiente; los `REJECTED` admiten reintento. |
+| charge_id | UUID | No | - | FK qr_charges, UQ parcial (`uq_qr_payments_charge_active`: unico donde `status <> 'REJECTED' AND reusable = false`; fix ALTO-2/MEDIO-2 + E4-T21, migracion `0047`) | Un cargo de un solo uso admite un solo cobro real/pendiente; los `REJECTED` admiten reintento y los `reusable = true` (personal) admiten varios. |
 | payer_user_id | UUID | No | - | REF users, IDX | - |
-| merchant_id | UUID | No | - | FK merchant_accounts | - |
-| amount_minor | BIGINT | No | - | | - |
+| merchant_id | UUID | Si | - | FK merchant_accounts | `NULL` en pago de QR personal (E4-T21). |
+| payee_user_id | UUID | Si | - | REF users, IDX | Titular destino del QR personal (E4-T21). |
+| reusable | BOOLEAN | No | false | | Denormalizado del cargo (E4-T21). |
+| amount_minor | BIGINT | No | - | | Monto realmente cobrado (sigue `NOT NULL`). |
 | currency | CHAR(3) | No | - | | - |
 | status | VARCHAR(15) | No | 'PENDING' | | - |
 | created_at | TIMESTAMPTZ | No | now() | | - |
@@ -962,7 +970,8 @@ Indices: `(account_id, created_at DESC)`.
 | journal_entries | `(transaction_id)`, `(value_date)`, `(created_at)` |
 | postings | `(journal_entry_id)`, `(ledger_account_id, created_at)` |
 | loan_schedules | `(loan_id, due_date, status)` |
-| qr_charges | `(merchant_id, status)`, `(expires_at)` |
+| qr_charges | `(merchant_id, status)`, `(expires_at)`, `(owner_user_id)` (E4-T21) |
+| qr_payments | `uq_qr_payments_charge_active` UQ parcial (`charge_id` donde `status <> 'REJECTED' AND reusable = false`; E4-T21), `(payee_user_id)` |
 | fx_rates | `(base, quote, fetched_at DESC)` |
 | alerts | `(status, severity, created_at DESC)`, `(user_id)` |
 | clearing_items | `(file_id)`, `(external_ref)` |

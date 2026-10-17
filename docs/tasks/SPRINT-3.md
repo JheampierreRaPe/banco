@@ -167,6 +167,103 @@ vencer se **invalida**; el QR respeta un **formato interoperable**; al confirmar
 > **G69** (sin alta de `merchant_accounts` en el alcance), **G71** (sin mockups/spec de las pantallas de
 > comercio), **G72** (la notificacion de abono depende del pago de HU15 / `qr.payment.confirmed`).
 
+## HU14 (incremento post-cierre) - QR personal estatico (Must, `wallet` + `frontend`)
+
+**Requisito del dueno (nuevo):** la generacion de QR no debe ser **unica para negocios** sino tambien
+para **personas**, y debe ser **estatico**. Hoy `POST /merchants/qr` exige rol de comercio
+(`require_merchant_for_user` -> `403`) y el modo `STATIC` aun exige monto; `pay_qr_charge` abona a la
+cuenta del comercio. Falta un **QR personal** (cualquier titular) y **estatico** (sin monto,
+reutilizable).
+
+**Logica:** cualquier titular `ACTIVE` genera un QR personal que **recibe dinero en su propia cuenta**
+(sin rol comercial); el payload es `qr_content` (`BO-QR1`) escaneable; el QR es **estatico** (sin monto
+—lo digita el pagador— y sin caducidad, reutilizable); el pago (`POST /payments/qr`) abona a la cuenta
+del titular personal via el motor.
+
+| Tarea | Descripcion | Tipo | Brief | Estado |
+|---|---|---|---|---|
+| `E4-T21` | **QR personal estatico:** endpoint `POST /api/v1/wallet/qr` (+ `GET /wallet/qr/{id}`); `amount_minor` nullable + destino personal (`payee_type`/`owner_user_id`/`payee_account_id`) y `reusable` en `qr_charges`; guarda de doble cobro acotada a `reusable = false` en `qr_payments`; pago sin monto (pagador aporta `amount_minor`) y abono a la cuenta del titular personal; migracion `0047_wallet_personal_qr` (tras `0046_services_settlement`; correccion de numeracion: `0045`/`0046` ya tomadas); UI Flutter "Mi QR personal" + reencuadre del copy "Soy comercio" en `wallet_page.dart` | `dominio` + `datos` + `frontend` | `docs/tasks/E4-T21.md` | `Hecho` |
+
+> **Fronteras (E4-T21):** `wallet` es dueno de `qr_charges`/`qr_payments` y genera/valida el QR, pero
+> **no** mueve dinero por su cuenta: usa la fachada `pay_express` (`E4-T02` -> `transactions` ->
+> `ledger`, asiento `docs/04#7.4`) y resuelve la cuenta de abono por la fachada `accounts`; el aviso
+> va por `notifications.send(...)`. El frontend feature `wallet` solo captura/muestra (cliente delgado).
+
+> **Cambio de esquema (E4-T21):** `qr_charges.merchant_id` y `amount_minor` pasan a **nullable**
+> (`CHECK amount_minor IS NULL OR > 0`) + columnas `payee_type`/`owner_user_id`/`payee_account_id`/
+> `reusable`; `qr_payments.merchant_id` nullable + `payee_user_id`/`reusable`; el indice unico parcial
+> `uq_qr_payments_charge_active` se recrea con predicado `status <> 'REJECTED' AND reusable = false`.
+> **Gaps de HU14/E4-T21 (`docs/18#9`, tras `G83`):** **G84** (semantica del QR estatico sin monto en
+> `BO-QR1`/`qr_charges`), **G85** (destino personal + guarda de doble cobro vs QR reutilizable),
+> **G86** (decision de esquema/migracion `0047` y ownership del endpoint `/wallet/qr`; `Hecho`).
+
+> **Dependencias (`E4-T06`/`E4-T08`/`E4-T11`/`E4-T12` `Hecho`):** reutiliza la firma/`qr_charges`
+> (`E4-T06`), el endpoint/estado de comercio (`E4-T08`), el cobro por el motor (`E4-T11`) y el endpoint
+> `POST /payments/qr` + `preview` (`E4-T12`); concurrencia critica `wallet`/`ledger` (un modulo de dinero
+> a la vez). Decisiones del dueno adoptadas (`Hecho`): personal sin rol comercial, estatico sin
+> monto/caducidad y reutilizable, esquema de menor impacto, endpoint aditivo `POST /wallet/qr`,
+> limite diario de billetera (sin topes nuevos) y plantilla `qr_charge_paid` reutilizada.
+
+## Incremento post-cierre (2026-10-16) - correcciones de la prueba del dueno (`wallet`)
+
+**Requisito del dueno (2 problemas reportados al probar):** (1) el **escaner QR de la app es un
+placeholder** (no lee con camara real); (2) **"Cobrar QR como negocio" aparece en cuentas personales**
+(la entrada de comercio se muestra siempre). Ambas son correcciones sobre HU13/HU14/HU15 ya `Hecho`;
+**ninguna mueve dinero**.
+
+| Tarea | Descripcion | Tipo | Brief | Estado |
+|---|---|---|---|---|
+| `E4-T22` | **Camara real de escaneo QR:** agrega `mobile_scanner` y sustituye el placeholder `qr-pay-camera-placeholder` por `MobileScanner`, mapeando `barcode.rawValue` -> `_continue(qr_content)` -> `/wallet/pay-qr/confirm`; conserva el `TextField` `qr-pay-scan-input` como fallback; permiso iOS `NSCameraUsageDescription` (Android ya declara `CAMERA`); degradacion si se niega el permiso | `frontend` | `docs/tasks/E4-T22.md` | `Hecho` |
+| `E4-T23` | **Ocultar comercio segun rol:** `GET /wallet` expone `is_merchant` (y opcional `merchant_status`) derivado de `get_merchant_by_user`; el frontend lo parsea en `models/wallet.dart` y **oculta** la entrada de comercio (`wallet-merchant-qr-action`/`-empty`, `qa-qr`) cuando `!isMerchant`. Solo lectura | `dominio` (lectura) + `frontend` | `docs/tasks/E4-T23.md` | `Hecho` |
+
+> **Fronteras (incremento post-cierre):** `E4-T22` es **frontend-only** (`frontend/lib/features/wallet/**`,
+> `pubspec.yaml`, iOS `Info.plist`, Android manifest; sin backend). `E4-T23` cambia el contrato de
+> **lectura** `GET /wallet` (aditivo, sin migracion) y toca `backend/app/modules/wallet/**` +
+> `frontend/lib/features/wallet/**` + `frontend/lib/features/home/**`. Ninguna escribe tablas de
+> `transactions`/`ledger`/`accounts` ni mueve dinero; `POST /merchants/qr*` (y su `403`) no se toca.
+
+> **Dependencias (incremento post-cierre):** `E4-T22` reutiliza el seam `onScanned`/`initialContent` y el
+> flujo de pago de `E4-T13`/`E4-T14`/`E4-T12` (`Hecho`); `E4-T23` reutiliza `get_wallet_view` (`E4-T01`,
+> `Hecho`) y `require_merchant_for_user`/`get_merchant_by_user` (`E4-T08`, `Hecho`); la lectura del
+> `qr_content` del escaner tambien sirve al QR personal (`E4-T21`, `Hecho`).
+
+> **Gaps del incremento (`docs/18#9`, continuando tras `G87`):** **G88** (`GET /wallet` no exponia el rol
+> de comercio; lo agrega `E4-T23`) y **G89** (dependencia nativa de camara: `mobile_scanner` + permisos;
+> `E4-T22`).
+
+## Incremento post-cierre (2026-10-16) - feedback de UX del dueno (`credits` + `wallet`)
+
+**Requisito del dueno (3 mejoras de UX pedidas al probar):** (1) que el **desembolso sea automatico al
+firmar** (hoy es manual) y se **notifique** al titular; (2) **nombre del dueno del QR enmascarado**
+(primeros 4 caracteres) en el QR personal y en el resumen de pago; (3) **botones de retroceso** en las
+pantallas que realmente los necesiten. Son mejoras sobre HU12 (`credits`) y HU13/HU14 (`wallet`) ya
+`Hecho`; **solo (1) mueve dinero**, y reusa el desembolso idempotente existente.
+
+| Tarea | Descripcion | Tipo | Brief | Estado |
+|---|---|---|---|---|
+| `E3-T24` | **Desembolso automatico al firmar + notificacion:** inline en el flujo de firma (`contract_signing._try_auto_disburse` en `savepoint`, decision del dueno) que ejecuta `disburse_application_idempotent` a la **cuenta principal** con clave estable `auto-disburse:<application_id>` (un prestamo por expediente) y devuelve el bloque aditivo `disbursement` en la respuesta de la firma; notificacion dedicada `credit_disbursed` (push+email) como UNICA (generica suprimida para `credit.disbursed`); UI de confirmacion (monto + cuenta enmascarada) con foco al cronograma y CTA manual solo como **reintento**. Sin migracion | `backend` (firma+desembolso) + `frontend` | `docs/tasks/E3-T24.md` | `Hecho` |
+| `E4-T24` | **Nombre del dueno del QR enmascarado:** campo `payee_name_masked` (`DIEG••• GONZ•••`, primeros 4 + resto oculto) en `GET /wallet/qr/{id}` y `POST /payments/qr/preview`, resuelto por fachada de `identity` (solo lectura); UI en "Mi QR personal" (dueno) y resumen de pago (pagador). Sin migracion | `dominio` (lectura) + `frontend` | `docs/tasks/E4-T24.md` | `Hecho` |
+| `E4-T25` | **Botones de retroceso (UX):** inventario (archivo:pantalla) de las pantallas que carecen de back + back funcional (`pop`) solo donde se requiere; respeta raiz/tab y terminales/de exito; sin botones redundantes a Home | `frontend` | `docs/tasks/E4-T25.md` | `Hecho` |
+
+> **Fronteras (feedback UX):** `E3-T24` toca `backend/app/modules/credits/**` (+ consumo de
+> `notifications` por fachada, `composition` y plantillas aditivas) y `frontend/lib/features/credits/**`;
+> su unico contacto con el dinero es el caso de uso idempotente existente (`transactions` -> `ledger`
+> por fachada). `E4-T24` cambia el contrato de **lectura** de `GET /wallet/qr/{id}` y
+> `POST /payments/qr/preview` (aditivo, sin migracion) y toca `backend/app/modules/wallet/**` +
+> `frontend/lib/features/wallet/**`. `E4-T25` es **frontend-only** (`frontend/lib/features/**`,
+> presentacion). Ninguna escribe tablas de `transactions`/`ledger`/`accounts`/`identity`/`notifications`.
+
+> **Dependencias (feedback UX):** `E3-T24` depende de `E3-T14` (firma + evento `credit.contract.signed`),
+> `E3-T17` (caso de uso de desembolso) y `E3-T21` (UI cronograma), todos `Hecho`; reutiliza la infra de
+> `notifications` (`E6-T12`/`E6-T13`, `Hecho`). `E4-T24` depende de `E4-T21` (QR personal) y `E4-T13`
+> (resumen de pago), mas la fachada `identity.service.profile.get_profile` (`E1-T44`, `Hecho`).
+> `E4-T25` no tiene dependencias tecnicas.
+
+> **Gaps del incremento (`docs/18#9`, continuando tras `G89`):** **G90** (desembolso automatico al
+> firmar: mecanismo consumidor vs inline + notificacion dedicada vs alerta de seguridad; `E3-T24`),
+> **G91** (`payee_name_masked` + formato de mascara + fachada de nombre; `E4-T24`) y **G92** (pantallas
+> sin boton de retroceso y criterio de decision; `E4-T25`).
+
 ## HU15 - Lectura y Confirmacion de Pago QR (Must, 5 SP) - `wallet`
 
 **Logica** (`docs/09#hu15---lectura-y-confirmacion-de-pago-qr-must-5-sp-sprint-3`): el cliente escanea el

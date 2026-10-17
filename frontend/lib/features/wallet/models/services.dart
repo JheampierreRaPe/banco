@@ -310,6 +310,15 @@ ServiceFailure serviceFailureFor({
             'Inténtalo de nuevo en unos minutos. No se cobró nada.',
         retry: true,
       );
+    case 'SETTLEMENT_UNAVAILABLE':
+      // Liquidacion del proveedor no configurada/no disponible: NO es un
+      // error del formulario del titular (por eso no se muestra "algún
+      // campo es inválido"). Mensaje honesto y neutro, sin detalles internos.
+      return const ServiceFailure(
+        message: 'El servicio de pagos no está disponible por ahora. '
+            'Inténtalo más tarde. No se cobró nada.',
+        retry: true,
+      );
     case 'SERVICE_PROVIDER_TIMEOUT':
       return const ServiceFailure(
         message: 'La consulta al proveedor tardó demasiado. Inténtalo de '

@@ -24,6 +24,13 @@
 - La API key de servicios nunca se embebe en la app.
 - Toda accion que mueve dinero usa `Idempotency-Key` generada en el cliente.
 - Los datos sensibles se muestran enmascarados; el detalle exige autenticacion.
+- El nombre del dueño del QR solo se muestra enmascarado tal cual del
+  servidor (`payee_name_masked`, E4-T24); ausente/`null` -> se oculta la
+  fila (cliente delgado: la app no calcula la máscara).
+- Retroceso (E4-T25): las pantallas no terminales apiladas (`push`)
+  muestran back con `pop` real; las pantallas raiz/tab y las
+  terminales/de exito (con CTA propia) no llevan back; nunca se fuerza
+  un salto a Home como retroceso.
 
 ### 1.3 Pantallas por modulo
 

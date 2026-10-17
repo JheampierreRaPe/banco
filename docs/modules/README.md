@@ -547,8 +547,20 @@ eventos (`outbox`/`inbox`).
    `app.composition.run_credit_loan_jobs_once` /
    `start_credit_loan_jobs_worker` (hilo daemon + parada por evento,
    mismo mecanismo que el outbox; env `CREDIT_LOAN_JOBS_ENABLED` +
-   flags por job + periodicidad `CREDIT_LOANS_JOBS_INTERVAL_SECONDS`).
-   Sin evento nuevo (basta el push best-effort).
+    flags por job + periodicidad `CREDIT_LOANS_JOBS_INTERVAL_SECONDS`).
+    Sin evento nuevo (basta el push best-effort).
+- **Desembolso automatico al firmar (E3-T24, HU12 CA-01/CA-02, decision
+  del dueno: inline, no consumidor):** `POST .../sign` desembolsa a la
+  cuenta principal en `savepoint` (`auto-disburse:<application_id>`,
+  un prestamo por expediente, asiento `docs/04#7.5`) y devuelve el
+  bloque aditivo `disbursement` (`loan_id`, `transaction_id`,
+  `amount_minor`, `account_masked`, `disbursed_at`; o `FAILED` para
+  reintento por `POST .../disburse`, contrato intacto). En desembolso
+  real (no replay) envia la notificacion dedicada `credit_disbursed`
+  (push) + `credit_disbursed_email` (email) por la fachada
+  `notifications.send` (best-effort, sin PII): es la UNICA
+  notificacion del desembolso (la alerta generica se suprime para
+  `credit.disbursed`, `docs/18` G90). Sin migracion.
 
 ## `wallet`
 
@@ -562,7 +574,9 @@ eventos (`outbox`/`inbox`).
   por titular, `UQ user_id`) + `wallet.wallet_links` (`docs/03b#91`,
   migracion `0037_wallet`; `CHECK` sobre `VARCHAR`, REF logicas sin FK
   entre schemas salvo `wallet_id`). `GET /api/v1/wallet` (billetera +
-  vinculos enmascarados del titular; sin billetera -> `200` vacio) y
+  vinculos enmascarados del titular + rol de comercio `is_merchant`/
+  `merchant_status` derivado server-side de `wallet.merchant_accounts`,
+  E4-T23; sin billetera -> `200` vacio con `is_merchant: false`) y
   `POST /api/v1/wallet/links` (`{type: ACCOUNT|CARD, account_id?|card?}`,
   `Idempotency-Key` opcional, `201`; contrato en `docs/05#6.5`) y
   `DELETE /api/v1/wallet/links/{id}` (baja logica a `INACTIVE`, solo
@@ -680,19 +694,53 @@ eventos (`outbox`/`inbox`).
   `E4-T12`).
    Pruebas: `backend/tests/test_e4_t11_qr_payment.py` (22 pruebas) +
   `backend/tests/test_e4_t11b_qr_payment_guard.py` (11 pruebas del fix).
-- **Endpoint de pago QR (E4-T12, HU15 CA-01..CA-04):** `POST
-  /api/v1/payments/qr` (`{qr_content, link_id}`, `Idempotency-Key`
+- **Endpoint de pago QR (E4-T12, HU15 CA-01..CA-04; E4-T21 monto
+  del pagador + destino personal):** `POST
+  /api/v1/payments/qr` (`{qr_content, link_id, amount_minor?}`,
+  `Idempotency-Key`
   obligatoria, solo el titular pagador -> `201` con `SETTLED` en un
   toque, `PENDING_AUTHORIZATION` + reto sobre el limite base o
   `REJECTED` + `failure_code`; contrato en `docs/05#6.5`) + `POST
   /api/v1/payments/qr/preview` (`{qr_content}`, sin clave, `200` con
-  comercio/monto sin mover dinero; fix MEDIO-3). Capas:
-  `api/payments.py` (delega en `pay_qr_charge` sin duplicar logica;
+  destino/monto sin mover dinero (`amount_minor: null` + `payee` en
+  QR personal + `payee_name_masked` enmascarado —E4-T24—; fix MEDIO-3). Capas:
+  `api/payments.py` (delega en `pay_qr_charge` sin duplicar logica,
+  pasando `amount_minor` del body;
   finaliza el diferido con `finalize_qr_payment` cuando la operacion
-  ya liquido —cargo `PAID` + aviso `qr_charge_paid` unico, `docs/18`
+  ya liquido —cargo `PAID` (salvo reutilizable) + aviso
+  `qr_charge_paid` unico, `docs/18`
   G72 lado endpoint— y espeja a `REJECTED` si el motor rechazo;
-  `422` QR corrupto/manipulado/vencido sin descontar, `409` ya
-  pagado, `404` neutro vinculo ajeno) + `schemas/payment.py`.
+  `422` QR corrupto/manipulado/vencido/sin-monto-sin-`amount_minor`
+  sin descontar, `409` ya
+  pagado (un solo uso) / clave con cuerpo distinto, `404` neutro
+  vinculo ajeno) + `schemas/payment.py` (`merchant?`/`payee?`,
+  `amount_minor?` en el request).
+- **QR personal estatico (E4-T21, HU14 CA-01..CA-05):** cualquier
+  titular `ACTIVE` (sin rol comercial) genera su QR reutilizable
+  (`POST /api/v1/wallet/qr` `{currency?, concept?}` ->
+  `201 {charge_id, qr_content BO-QR1, payload, signature, mode:
+  "STATIC", amount_minor: null, expires_at: null, payee_type:
+  "PERSONAL", reusable: true}` + `GET /api/v1/wallet/qr/{id}` solo el
+  dueno, `404` neutro (+ `payee_name_masked` enmascarado —E4-T24—);
+  contrato en `docs/05#6.5`). Capas:
+  `api/personal_qr.py` + `schemas/personal_qr.py` +
+  `service/qr.py::create_personal_qr_charge[_idempotent]`/
+  `get_personal_charge_status`/`resolve_holder_settlement_account` +
+  `repository/qr.py` (destino polimorfico) + `domain/masking.py`
+  (E4-T24: `mask_payee_name` puro —primeros 4 por parte + `•••`,
+  `None` si no resoluble— resuelto por la fachada de solo lectura
+  `identity.service.profile.get_profile`, import perezoso D-03; el
+  nombre completo jamas viaja ni se loguea). El cobro reutiliza el
+  motor (`docs/04#7.4` via `pay_express` con el monto digitado por el
+  pagador; limite diario de billetera `wallet_daily_limit_reader`,
+  sin topes nuevos): abono a la cuenta del titular (fachada
+  `accounts`, fijada en `payee_account_id`), cargo reutilizable que
+  sigue `ACTIVE` (guarda de doble cobro acotada a `reusable = false`,
+  migracion `0047_wallet_personal_qr`), evento `qr.payment.confirmed`
+  (con `payee_user_id`) + aviso `qr_charge_paid` reutilizado al
+  titular (< 5 s). Esquema `docs/03b#93`/`#94` + `docs/03c`.
+  Pruebas: `backend/tests/test_e4_t21_personal_qr.py` (14 pruebas) +
+  `frontend/test/personal_qr_test.dart` (10 pruebas).
   Ownership `wallet` (`docs/18` G74). El re-chequeo diario al
    autorizar usa `wallet_daily_limit_reader` en el flujo de billetera
    (`docs/18` G75). Pruebas:
@@ -827,6 +875,15 @@ eventos (`outbox`/`inbox`).
   por la fachada `send(...)` desde `credits` (best-effort). Envio real por
    `GmailNotificationSender` con `EMAIL_PROVIDER=gmail` + `GMAIL_USER`/
    `GMAIL_APP_PASSWORD` (solo `.env`); `mock` por defecto.
+- **Desembolso del prestamo (E3-T24, HU12 CA-01/CA-02):**
+  `credit_disbursed` (push) + `credit_disbursed_email` (email), dos
+  codigos (uno por canal, `03b#13`), invocadas por la fachada
+  `send(...)` desde el caso de uso de desembolso de `credits`
+  (best-effort: solo en desembolso real, nunca en replay; sin PII:
+  referencia + monto + cuenta enmascarada + instante). Es la UNICA
+  notificacion del desembolso: la alerta generica de seguridad se
+  suprime para `credit.disbursed` (`DEDICATED_ONLY_EVENTS`, `docs/18`
+  G90) para no duplicar push+email del mismo evento.
 - **Cuotas del prestamo (E3-T19, HU12 CA-03/CA-04):**
   `loan_installment_reminder` (recordatorio de cuota proxima, push) y
   `loan_auto_debit_failed` (fallo del debito automatico, push), canal
@@ -842,7 +899,7 @@ eventos (`outbox`/`inbox`).
   detalle vive en el panel del comercio).
 - **Recordatorio de servicios (E4-T18, HU16 CA-03):** `service_reminder`, canal push, invocada por la fachada `send(...)` desde el job `wallet/jobs/service_reminders.py` (best-effort, sin PII ni cifras: solo referencia del servicio e instante; el detalle vive en los servicios registrados).
 - **Adaptadores desacoplados por canal (E6-T13, HU22):** `sender_for_channel` resuelve `push` por `PUSH_PROVIDER` (`PushNotificationSender` mock determinista con guiones `ok`/`down`/`timeout`, sin red), `email` por `EMAIL_PROVIDER` (`mock`|`gmail`) y `sms` por `SMS_PROVIDER` (`mock`|`twilio`); `mock` por defecto y valor desconocido -> `ValueError` fail-fast; el fallo de un proveedor queda aislado por canal (`NotificationProviderError`, sin cruzar al otro; lo consume la fachada `send` de `E6-T12`).
-- **Alertas de seguridad multicanal (E6-T12 + fix A1/A2/A3/B2, HU22):** fachada `notify_security_event(...)` (push inmediato + correo de respaldo en paralelo, ventana `< 5 s` en el camino feliz; una fila `notifications` por canal, `FAILED`/reimpulsable ante caida sin afectar al otro; cada canal se marca `SENT`/`FAILED` al completarse SU futuro, sin acoplar latencias, fix B2); plantillas `security_operation_alert` (push) + `security_operation_email` (email, con `reference` no PII para `E6-T14`) + `security_report_received` (acuse "no reconozco" para `E6-T14`); contenido con dispositivo/hora/ubicacion aproximada, sin PII; preferencias `user_channel_preferences` (migracion `0044`, `push`/`email` default `true`, `sms` default `false`) con **email garantizado como respaldo de seguridad** (decision del dueno); centro del titular `GET /notifications`, `GET /notifications/{id}` (detalle read-only, fix A2), `POST /notifications/{id}/read`, `GET/PUT /notifications/preferences` (`docs/05#6.9`; el centro expone `device`/`location`/`reference` acotados, sin PII); claves `notifications.security_delivery_window_seconds` (`5`) y `notifications.security_alerts_email_backup` (`true`) en `config.parameters` (lectura best-effort con fallback); cableado E2E en el arranque (`composition.subscribe_security_alerts`, fix A1, cierra `docs/18` G80): `on_sensitive_business_event` (push + correo) suscrito a `transfer.settled`/`credit.disbursed`/`loan.installment.paid`/`qr.payment.confirmed`/`service.paid`/`topup.completed` (los emisores aportan `user_id` —y `device_id` cuando lo conocen— en el payload, sin que `notifications` importe sus modelos) y `on_auth_failed_attempt` con `include_push=False` (solo el correo de respaldo: el push de login lo emite `risk`/E2-T20, exactamente UN push por evento). Destinatario del respaldo (fix A3): `recipient_email` explicito del emisor > resolutor cableado en el arranque (`composition.wire_security_email_resolver` -> fachada de solo lectura `identity.service.holder_contact.get_holder_email`, D-03, mismo patron que la copia certificada de HU11) > fallback `str(user_id)` (los senders mock resuelven; el sender Gmail valida formato email y deja la fila `FAILED`/reimpulsable ante un no-email —el proveedor NO resuelve, corrige lo que decia esta seccion—); asi `service/` nunca importa otro modulo (guardian `test_e6_t14...frontera`).
+- **Alertas de seguridad multicanal (E6-T12 + fix A1/A2/A3/B2, HU22):** fachada `notify_security_event(...)` (push inmediato + correo de respaldo en paralelo, ventana `< 5 s` en el camino feliz; una fila `notifications` por canal, `FAILED`/reimpulsable ante caida sin afectar al otro; cada canal se marca `SENT`/`FAILED` al completarse SU futuro, sin acoplar latencias, fix B2); plantillas `security_operation_alert` (push) + `security_operation_email` (email, con `reference` no PII para `E6-T14`) + `security_report_received` (acuse "no reconozco" para `E6-T14`); contenido con dispositivo/hora/ubicacion aproximada, sin PII; preferencias `user_channel_preferences` (migracion `0044`, `push`/`email` default `true`, `sms` default `false`) con **email garantizado como respaldo de seguridad** (decision del dueno); centro del titular `GET /notifications`, `GET /notifications/{id}` (detalle read-only, fix A2), `POST /notifications/{id}/read`, `GET/PUT /notifications/preferences` (`docs/05#6.9`; el centro expone `device`/`location`/`reference` acotados, sin PII); claves `notifications.security_delivery_window_seconds` (`5`) y `notifications.security_alerts_email_backup` (`true`) en `config.parameters` (lectura best-effort con fallback); cableado E2E en el arranque (`composition.subscribe_security_alerts`, fix A1, cierra `docs/18` G80): `on_sensitive_business_event` (push + correo) suscrito a `transfer.settled`/`credit.disbursed`/`loan.installment.paid`/`qr.payment.confirmed`/`service.paid`/`topup.completed` (los emisores aportan `user_id` —y `device_id` cuando lo conocen— en el payload, sin que `notifications` importe sus modelos; excepcion E3-T24: `credit.disbursed` se marca procesado SIN alerta generica, su notificacion dedicada `credit_disbursed` push+email ya cubre el evento, `docs/18` G90) y `on_auth_failed_attempt` con `include_push=False` (solo el correo de respaldo: el push de login lo emite `risk`/E2-T20, exactamente UN push por evento). Destinatario del respaldo (fix A3): `recipient_email` explicito del emisor > resolutor cableado en el arranque (`composition.wire_security_email_resolver` -> fachada de solo lectura `identity.service.holder_contact.get_holder_email`, D-03, mismo patron que la copia certificada de HU11) > fallback `str(user_id)` (los senders mock resuelven; el sender Gmail valida formato email y deja la fila `FAILED`/reimpulsable ante un no-email —el proveedor NO resuelve, corrige lo que decia esta seccion—); asi `service/` nunca importa otro modulo (guardian `test_e6_t14...frontera`).
 - **Reporte "no reconozco" + bloqueo (E6-T14 + fix B3/B4, HU22 CA-01/CA-03):** endpoint
   `POST /notifications/{id}/report` (Bearer, solo el titular; body opcional
   `{reason?}`; `200 {reported, replayed, ...}` idempotente, `404` neutro,

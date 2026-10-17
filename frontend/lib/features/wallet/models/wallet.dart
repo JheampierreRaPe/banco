@@ -2,7 +2,10 @@
 /// `docs/05` §6.5).
 ///
 /// Shapes del backend:
-/// - `GET /wallet` -> `{"data": {wallet_id, status, links[]}, "meta": {...}}`.
+/// - `GET /wallet` -> `{"data": {wallet_id, status, links[], is_merchant,
+///   merchant_status?}, "meta": {...}}` (E4-T23: `is_merchant` es el rol
+///   de comercio derivado server-side; `false` por defecto, incluido el
+///   estado sin billetera; `merchant_status` es `ACTIVE`/`INACTIVE`/`null`).
 ///   Sin billetera aun -> `200` con `wallet_id: null`, `status: "NONE"` y
 ///   `links: []` (la fila se crea on-demand en la primera vinculacion).
 /// - `POST /wallet/links` -> `201 {"data": {vinculo}, "meta": {...}}`.
@@ -76,12 +79,25 @@ class Wallet {
     this.walletId,
     required this.status,
     required this.links,
+    this.isMerchant = false,
+    this.merchantStatus,
   });
 
   /// `null` = aun sin billetera (el backend responde `NONE` + `links: []`).
   final String? walletId;
   final String status;
   final List<WalletLink> links;
+
+  /// Rol de comercio del titular (`GET /wallet` `is_merchant`, E4-T23):
+  /// `true` solo si el servidor confirma la cuenta de comercio `ACTIVE`.
+  /// Fail-closed: ausente o con otro tipo -> `false` (cuenta personal, sin
+  /// entrada de comercio). La UI oculta por UX; el `403` real lo pone el
+  /// backend en `/merchants/qr*`.
+  final bool isMerchant;
+
+  /// Estado de la cuenta de comercio (`merchant_status`: `ACTIVE`/
+  /// `BLOCKED`/`CLOSED`/`null` sin fila propia). Solo rol, sin PII.
+  final String? merchantStatus;
 
   bool get hasWallet => walletId != null && walletId!.isNotEmpty;
 
@@ -93,10 +109,16 @@ class Wallet {
             .map((e) => WalletLink.fromJson(Map<String, dynamic>.from(e)))
             .toList()
         : <WalletLink>[];
+    final flag = json['is_merchant'];
+    final statusRaw = json['merchant_status']?.toString();
     return Wallet(
       walletId: json['wallet_id']?.toString(),
       status: (json['status']?.toString() ?? 'NONE').toUpperCase(),
       links: links,
+      isMerchant: flag is bool ? flag : false,
+      merchantStatus: (statusRaw == null || statusRaw.isEmpty || statusRaw == 'null')
+          ? null
+          : statusRaw.toUpperCase(),
     );
   }
 

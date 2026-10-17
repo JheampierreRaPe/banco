@@ -11,12 +11,16 @@ abstract class QrPaymentServiceBase {
   ///   el backend decodifica y verifica la firma, el cliente no).
   /// - [linkId]: UUID del vinculo `ACCOUNT` a debitar (de `GET
   ///   /wallet`; solo del titular).
+  /// - [amountMinor]: monto en centimos digitado por el pagador;
+  ///   obligatorio cuando el QR no trae monto (personal, E4-T21); se
+  ///   ignora cuando el cargo trae monto fijo (comercio).
   /// - [idempotencyKey]: clave del intento (obligatoria en el contrato;
   ///   el Reintentar del mismo intento reutiliza la misma clave, sin
   ///   duplicar el pago).
   Future<QrPaymentResult> payQr({
     required String qrContent,
     required String linkId,
+    int? amountMinor,
     String? idempotencyKey,
   });
 
@@ -75,11 +79,16 @@ class QrPaymentService implements QrPaymentServiceBase {
   Future<QrPaymentResult> payQr({
     required String qrContent,
     required String linkId,
+    int? amountMinor,
     String? idempotencyKey,
   }) async {
     final resp = await api.postWithIdempotency(
       '/payments/qr',
-      data: {'qr_content': qrContent, 'link_id': linkId},
+      data: {
+        'qr_content': qrContent,
+        'link_id': linkId,
+        'amount_minor': ?amountMinor,
+      },
       idempotencyKey: idempotencyKey,
     );
     return _parseResult(resp.data);

@@ -18,6 +18,7 @@ import '../data/credit_disbursement_service.dart';
 import '../data/loan_schedule_service.dart';
 import '../data/credit_sign_controller.dart';
 import '../models/credit_contract.dart';
+import '../utils/format.dart';
 import 'credit_disburse_section.dart';
 
 /// Pantalla de firma del contrato (E3-T15, HU11; spec
@@ -35,13 +36,14 @@ import 'credit_disburse_section.dart';
 ///   el PIN nunca se guarda).
 /// - Card éxito (`SIGNED` + copia enviada al correo + sello `doc_hash`) y
 ///   card error (`EXPIRED_NONCE` se rota y reintenta solo, con clave nueva).
-/// - En éxito: botón `Volver al inicio` (→ `/home`, misma jerarquía que los
-///   CTA existentes).
-/// - En éxito (`APPROVED` + `SIGNED` + sin préstamo desembolsado): sección
-///   de desembolso (M-1, HU12, `CreditDisburseSection` + spec
-///   `creditos-pantallas.md` §8c): CTA `Desembolsar a mi cuenta`
-///   (`POST .../disburse` con `Idempotency-Key` + cuenta elegida o
-///   principal por defecto) y `Ver cronograma` tras el éxito.
+/// - En éxito: confirmación del desembolso automático (E3-T24, HU12:
+///   `Tu crédito de S/ X fue desembolsado en tu cuenta ****dddd`, datos
+///   del servidor en el bloque aditivo `disbursement` de `POST .../sign`)
+///   + CTA primaria `Ver cronograma` (→ `/credits/loans`).
+/// - Si el automático NO liquidó (`disbursement` ausente o `FAILED`):
+///   la CTA manual reaparece SOLO como reintento
+///   (`CreditDisburseSection` con `isRetry`, `POST .../disburse` con
+///   `Idempotency-Key`; spec `creditos-pantallas.md` §8c).
 /// - 4 estados (`docs/20` §7) con `LoadingView`/`EmptyView`/`ErrorView` y
 ///   mensajes en espanol accionables.
 ///
@@ -355,15 +357,36 @@ class _CreditSignPageState extends State<CreditSignPage> {
         if (_signed != null) ...[
           _successCard(),
           const SizedBox(height: AppSpacing.stackSm),
-          // M-1 (HU12): disparador de desembolso (solo `APPROVED` +
-          // `SIGNED` + sin préstamo: la sección verifica el préstamo y se
-          // oculta sola si ya se desembolsó).
-          CreditDisburseSection(
-            applicationId: _applicationId,
-            disburseService: widget.disburseService,
-            loansService: widget.loansService,
-            accountsService: widget.accountsService,
-          ),
+          // E3-T24 (HU12): el desembolso automático ya ocurrió al firmar.
+          // Con `SETTLED` se muestra la confirmación (monto + cuenta
+          // enmascarada del servidor) y el foco va al cronograma; la CTA
+          // manual solo reaparece como reintento si no liquidó.
+          if (_signed!.isAutoDisbursed) ...[
+            _autoDisburseCard(_signed!.disbursement!),
+            const SizedBox(height: AppSpacing.stackSm),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                key: const Key('sign-schedule-cta'),
+                onPressed: () => context.push('/credits/loans'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(88, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                  ),
+                ),
+                child: const Text('Ver cronograma'),
+              ),
+            ),
+          ] else ...[
+            CreditDisburseSection(
+              applicationId: _applicationId,
+              disburseService: widget.disburseService,
+              loansService: widget.loansService,
+              accountsService: widget.accountsService,
+              isRetry: true,
+            ),
+          ],
           const SizedBox(height: AppSpacing.stackSm),
           SizedBox(
             width: double.infinity,
@@ -647,6 +670,49 @@ class _CreditSignPageState extends State<CreditSignPage> {
   }
 
   // --exito_y_error-----------------------------------------------------------------------
+
+  /// Confirmación del desembolso automático (E3-T24, HU12).
+  ///
+  /// `Tu crédito de S/ X fue desembolsado en tu cuenta ****dddd`
+  /// (monto + cuenta enmascarada TAL CUAL los devuelve el servidor en el
+  /// bloque aditivo `disbursement`; cliente delgado, `docs/19` §4).
+  Widget _autoDisburseCard(ContractDisbursement auto) {
+    final masked = (auto.accountMasked ?? '').trim();
+    final amount = auto.amountMinor;
+    final message = amount != null
+        ? 'Tu crédito de ${formatMinor(amount, 'PEN')} fue desembolsado'
+            '${masked.isNotEmpty ? ' en tu cuenta $masked.' : '.'}'
+        : 'Tu crédito fue desembolsado'
+            '${masked.isNotEmpty ? ' en tu cuenta $masked.' : '.'}';
+    return Container(
+      key: const Key('sign-disburse-confirm'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.containerPadding),
+      decoration: BoxDecoration(
+        color: AppColors.successContainer,
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '¡Desembolso acreditado!',
+            style: AppTypography.labelMd.copyWith(
+              fontWeight: FontWeight.w700,
+              color: AppColors.onSuccessContainer,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.stackSm),
+          Text(
+            message,
+            style: AppTypography.bodyMd.copyWith(
+              color: AppColors.onSuccessContainer,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _successCard() {
     final signed = _signed!;

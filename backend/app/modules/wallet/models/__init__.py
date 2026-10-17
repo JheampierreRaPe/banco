@@ -134,8 +134,17 @@ class MerchantAccount(Base):
     )
 
 
+QR_PAYEE_TYPES = ("MERCHANT", "PERSONAL")
+
+
 class QrCharge(Base):
-    """Cargo QR firmado (`03b#93`, E4-T06 HU14): no mueve dinero al generarse."""
+    """Cargo QR firmado (`03b#93`, E4-T06 HU14 + E4-T21 QR personal).
+
+    Destino polimorfico (`payee_type`): `MERCHANT` (comercio via
+    `merchant_id`, con monto fijo) o `PERSONAL` (titular via
+    `owner_user_id`, estatico: `amount_minor = NULL` —lo digita el
+    pagador—, `expires_at = NULL` —sin caducidad— y `reusable = true`
+    —multiples cobros). No mueve dinero al generarse."""
 
     __tablename__ = "qr_charges"
     __table_args__ = (
@@ -144,7 +153,10 @@ class QrCharge(Base):
             ["wallet.merchant_accounts.id"],
             name="fk_qr_charges_merchant",
         ),
-        sa.CheckConstraint("amount_minor > 0", name="ck_qr_charges_amount_minor"),
+        sa.CheckConstraint(
+            "amount_minor IS NULL OR amount_minor > 0",
+            name="ck_qr_charges_amount_minor",
+        ),
         sa.CheckConstraint(
             "mode IN ('DYNAMIC','STATIC')",
             name="ck_qr_charges_mode",
@@ -153,19 +165,52 @@ class QrCharge(Base):
             "status IN ('ACTIVE','PAID','EXPIRED','CANCELLED')",
             name="ck_qr_charges_status",
         ),
+        sa.CheckConstraint(
+            "payee_type IN ('MERCHANT','PERSONAL')",
+            name="ck_qr_charges_payee_type",
+        ),
+        sa.CheckConstraint(
+            "((payee_type = 'MERCHANT' AND merchant_id IS NOT NULL) "
+            "OR (payee_type = 'PERSONAL' AND owner_user_id IS NOT NULL))",
+            name="ck_qr_charges_payee",
+        ),
+        sa.CheckConstraint(
+            "(payee_type <> 'PERSONAL' OR "
+            "(amount_minor IS NULL AND expires_at IS NULL AND reusable = true))",
+            name="ck_qr_charges_personal_static",
+        ),
         sa.Index("ix_qr_charges_merchant_status", "merchant_id", "status"),
         sa.Index("ix_qr_charges_expires_at", "expires_at"),
+        sa.Index("ix_qr_charges_owner_user_id", "owner_user_id"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
-    merchant_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    # Nullable desde `0047` (E4-T21): un QR personal no tiene comercio.
+    merchant_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    # Nullable desde `0047` (E4-T21): el QR personal estatico va sin
+    # monto (`NULL`; el pagador aporta `amount_minor > 0` al pagar).
     # Dinero entero en centimos; nunca `float` (regla 3).
-    amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    amount_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
     currency: Mapped[str] = mapped_column(sa.String(3), nullable=False)
     concept: Mapped[str | None] = mapped_column(sa.String(120), nullable=True)
     mode: Mapped[str] = mapped_column(
         sa.String(10), nullable=False, default="DYNAMIC", server_default="DYNAMIC"
+    )
+    # Destino polimorfico (E4-T21, migracion `0047`): `MERCHANT` abona
+    # al comercio; `PERSONAL` abona a la cuenta del titular
+    # (`owner_user_id`, REF logica a `identity.users`; cuenta resuelta
+    # por la fachada `accounts`, fijada en `payee_account_id`, REF
+    # logica a `accounts.accounts`).
+    payee_type: Mapped[str] = mapped_column(
+        sa.String(10), nullable=False, default="MERCHANT", server_default="MERCHANT"
+    )
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    payee_account_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    # `true` = admite multiples cobros (QR personal estatico); la
+    # guarda de doble cobro solo aplica con `false` (migracion `0047`).
+    reusable: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=False, server_default=sa.text("false")
     )
     # SHA-256 hex del payload canonico (64) + firma HMAC hex (<= 256).
     payload_hash: Mapped[str] = mapped_column(sa.String(64), nullable=False)
@@ -173,15 +218,16 @@ class QrCharge(Base):
     status: Mapped[str] = mapped_column(
         sa.String(12), nullable=False, default="ACTIVE", server_default="ACTIVE"
     )
-    # `DYNAMIC`: `now + wallet.qr_ttl_seconds`; `STATIC`: NULL (sin
-    # caducidad estricta en el MVP; la fija `E4-T07`/HU15 si aplica).
+    # `DYNAMIC`: `now + wallet.qr_ttl_seconds`; `STATIC` de comercio:
+    # NULL (sin caducidad estricta); `PERSONAL`: siempre NULL (sin
+    # caducidad; el job de `E4-T07` nunca lo vence).
     expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
     paid_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
-    merchant: Mapped[MerchantAccount] = relationship(back_populates="charges")
+    merchant: Mapped[MerchantAccount | None] = relationship(back_populates="charges")
 
 
 BILLER_CATEGORIES = ("ELECTRICIDAD", "AGUA", "GAS", "INTERNET", "TELEFONIA")
@@ -345,14 +391,18 @@ QR_PAYMENT_STATUSES = ("PENDING", "PENDING_AUTHORIZATION", "PAID", "REJECTED")
 
 
 class QrPayment(Base):
-    """Pago de un QR por el motor (`03b#94`, E4-T11 HU15).
+    """Pago de un QR por el motor (`03b#94`, E4-T11 HU15 + E4-T21 personal).
 
     El dinero vive en el motor (`Transaction` + asientos `docs/04#7.4`
     via `pay_express` sin comision); aqui solo el registro del cobro:
     `transaction_id` (REF logica a `transactions`, UQ, sin FK fisica),
     `charge_id` (FK mismo schema), `payer_user_id` (REF logica a
-    `identity.users`), `merchant_id` (FK mismo schema). Dinero entero
-    en centimos; nunca `float` (regla 3).
+    `identity.users`), `merchant_id` (FK mismo schema, nullable desde
+    `0047`: el pago de un QR personal no tiene comercio y deja
+    `payee_user_id` con el titular destino). `reusable` se
+    denormaliza del cargo al insertar: la guarda de doble cobro solo
+    aplica con `false`. Dinero entero en centimos; nunca `float`
+    (regla 3).
     """
 
     __tablename__ = "qr_payments"
@@ -374,18 +424,22 @@ class QrPayment(Base):
             name="ck_qr_payments_status",
         ),
         # Guarda de doble cobro (ALTO-2, migracion
-        # `0041_wallet_qr_payment_guard`): un cargo admite UN solo pago
-        # con cobro real/pendiente (`PENDING`/`PENDING_AUTHORIZATION`/
-        # `PAID`); los `REJECTED` (sin mover dinero) quedan fuera del
-        # indice para permitir el reintento legitimo (MEDIO-2).
+        # `0041_wallet_qr_payment_guard`; acotada a un solo uso por
+        # `0047_wallet_personal_qr`, E4-T21): un cargo NO reutilizable
+        # admite UN solo pago con cobro real/pendiente
+        # (`PENDING`/`PENDING_AUTHORIZATION`/`PAID`); los `REJECTED`
+        # (sin mover dinero) quedan fuera para el reintento legitimo
+        # (MEDIO-2) y los `reusable = true` (QR personal) admiten
+        # varios cobros.
         sa.Index(
             "uq_qr_payments_charge_active",
             "charge_id",
             unique=True,
-            postgresql_where=sa.text("status <> 'REJECTED'"),
-            sqlite_where=sa.text("status <> 'REJECTED'"),
+            postgresql_where=sa.text("status <> 'REJECTED' AND reusable = false"),
+            sqlite_where=sa.text("status <> 'REJECTED' AND reusable = false"),
         ),
         sa.Index("ix_qr_payments_payer_user_id", "payer_user_id"),
+        sa.Index("ix_qr_payments_payee_user_id", "payee_user_id"),
         {"schema": SCHEMA},
     )
 
@@ -395,8 +449,19 @@ class QrPayment(Base):
     charge_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
     # REF logica a `identity.users` (sin FK fisica).
     payer_user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
-    merchant_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
-    # Dinero entero en centimos; nunca `float` (regla 3).
+    # Nullable desde `0047` (E4-T21): el pago de un QR personal no
+    # tiene comercio.
+    merchant_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    # Titular destino del QR personal (REF logica a `identity.users`;
+    # `NULL` en pagos a comercio).
+    payee_user_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    # Denormalizado del cargo al insertar (E4-T21): la guarda de doble
+    # cobro solo aplica con `false`.
+    reusable: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=False, server_default=sa.text("false")
+    )
+    # Dinero entero en centimos (el monto realmente cobrado); nunca
+    # `float` (regla 3). Sigue `NOT NULL`.
     amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
     currency: Mapped[str] = mapped_column(sa.String(3), nullable=False)
     status: Mapped[str] = mapped_column(

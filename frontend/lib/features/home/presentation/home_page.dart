@@ -14,6 +14,7 @@ import '../../accounts/data/accounts_service.dart';
 import '../../accounts/models/account.dart';
 import '../../accounts/models/movement_concept.dart';
 import '../../accounts/utils/format.dart';
+import '../../wallet/data/wallet_service.dart';
 import '../data/profile_service.dart';
 
 /// Pantalla `home` redisenada (F-T54, HU05; diseno `dash` pagina `0:3057`).
@@ -50,11 +51,15 @@ import '../data/profile_service.dart';
 /// resuelven desde `accountsServiceFactory`/`homeProfileServiceFactory`
 /// (cableadas por el orquestador); `null` degrada con elegancia (fallback
 /// `Hola` para el perfil; error accionable para las cuentas) en vez de romper.
+/// [walletService] aporta el rol de comercio (`GET /wallet` `is_merchant`,
+/// E4-T23) para mostrar/ocultar la accion rapida "Cobrar QR": solo visible
+/// con `is_merchant == true` (fail-closed: error/red/`null` = oculta).
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.service, this.profileService});
+  const HomePage({super.key, this.service, this.profileService, this.walletService});
 
   final AccountsServiceBase? service;
   final ProfileServiceBase? profileService;
+  final WalletServiceBase? walletService;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -63,6 +68,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late Future<List<Account>> _accountsFuture;
   late Future<AccountsTotals> _totalsFuture;
+
+  /// Rol de comercio del titular (`true` = ve "Cobrar QR"). Fail-closed:
+  /// sin dato o con error de red, `false` (se oculta la entrada).
+  late Future<bool> _merchantFuture;
 
   /// Llave del preview de movimientos: permite recargarlo en
   /// *pull-to-refresh* y al re-entrar a `/home` (E2-T35).
@@ -76,11 +85,13 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _accountsFuture = _loadAccounts();
     _totalsFuture = _loadTotals();
+    _merchantFuture = _loadIsMerchant();
     // El hero de totales se suscribe tarde (solo en la rama de contenido):
     // marcar los errores como manejados evita reportes de zona por futuros
     // sin suscriptor; los FutureBuilder siguen recibiendo valores/errores.
     _accountsFuture.ignore();
     _totalsFuture.ignore();
+    _merchantFuture.ignore();
   }
 
   @override
@@ -149,16 +160,33 @@ class _HomePageState extends State<HomePage> {
     return service.getAccountsTotals();
   }
 
+  /// Rol de comercio desde `GET /wallet` (E4-T23, una llamada cacheable por
+  /// montaje; cliente delgado: solo muestra lo que responde el servidor).
+  /// Fail-closed: servicio `null` o cualquier error -> `false` (la accion
+  /// rapida "Cobrar QR" se oculta).
+  Future<bool> _loadIsMerchant() async {
+    final wallet = widget.walletService;
+    if (wallet == null) return false;
+    try {
+      return (await wallet.getWallet()).isMerchant;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _refresh() async {
     final accounts = _loadAccounts();
     final totals = _loadTotals();
+    final merchant = _loadIsMerchant();
     // El preview tiene su propio estado: tambien se recarga (E2-T35).
     final preview = _previewKey.currentState?.reload() ?? Future.value();
     accounts.ignore();
     totals.ignore();
+    merchant.ignore();
     setState(() {
       _accountsFuture = accounts;
       _totalsFuture = totals;
+      _merchantFuture = merchant;
     });
     try {
       await accounts;
@@ -180,11 +208,14 @@ class _HomePageState extends State<HomePage> {
   void _retry() {
     final accounts = _loadAccounts();
     final totals = _loadTotals();
+    final merchant = _loadIsMerchant();
     accounts.ignore();
     totals.ignore();
+    merchant.ignore();
     setState(() {
       _accountsFuture = accounts;
       _totalsFuture = totals;
+      _merchantFuture = merchant;
     });
   }
 
@@ -258,7 +289,17 @@ class _HomePageState extends State<HomePage> {
                           totalsFuture: _totalsFuture,
                         ),
                         const SizedBox(height: AppSpacing.stackMd),
-                        const _QuickActions(),
+                        // Accion rapida "Cobrar QR" solo para comercio
+                        // (E4-T23, `GET /wallet` `is_merchant`; fail-closed:
+                        // sin rol confirmado no se muestra).
+                        FutureBuilder<bool>(
+                          future: _merchantFuture,
+                          initialData: false,
+                          builder: (context, merchant) =>
+                              _QuickActions(
+                            showMerchantQr: merchant.data == true,
+                          ),
+                        ),
                         const SizedBox(height: AppSpacing.stackMd),
                         _AccountsCard(accounts: accounts),
                         const SizedBox(height: AppSpacing.stackMd),
@@ -639,11 +680,16 @@ class _TotalsHeroState extends State<_TotalsHero> {
 /// `Transferir` navega a `/transfers`, `Credito` a `/credits`,
 /// `Cobrar QR` a `/wallet/merchant-qr` y `Recargar` a `/wallet/topups`
 /// (C1: entradas reales, sin "Proximamente"). `Cobrar QR` va destacado
-/// en ocre.
+/// en ocre y **solo se muestra a las cuentas con rol de comercio**
+/// (`showMerchantQr` desde `GET /wallet` `is_merchant`, E4-T23;
+/// fail-closed: oculto sin rol confirmado).
 class _QuickActions extends StatelessWidget {
-  const _QuickActions();
+  const _QuickActions({this.showMerchantQr = false});
 
-  static const _items = [
+  /// `true` = el titular es comercio y ve "Cobrar QR" (`qa-qr`).
+  final bool showMerchantQr;
+
+  static const _baseItems = [
     (
       Icons.compare_arrows_outlined,
       'Transferir',
@@ -659,13 +705,6 @@ class _QuickActions extends StatelessWidget {
       '/credits',
     ),
     (
-      Icons.qr_code_2_outlined,
-      'Cobrar QR',
-      true,
-      'qa-qr',
-      '/wallet/merchant-qr',
-    ),
-    (
       Icons.smartphone_outlined,
       'Recargar',
       false,
@@ -674,12 +713,26 @@ class _QuickActions extends StatelessWidget {
     ),
   ];
 
+  static const _merchantItem = (
+    Icons.qr_code_2_outlined,
+    'Cobrar QR',
+    true,
+    'qa-qr',
+    '/wallet/merchant-qr',
+  );
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final items = [
+      _baseItems[0],
+      _baseItems[1],
+      if (showMerchantQr) _merchantItem,
+      _baseItems[2],
+    ];
     return Row(
       children: [
-        for (final item in _items)
+        for (final item in items)
           Expanded(
             child: _QuickAction(
               storageKey: item.$4,

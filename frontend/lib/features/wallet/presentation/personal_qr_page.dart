@@ -207,6 +207,11 @@ class _PersonalQrPageState extends State<PersonalQrPage> {
 
   Widget _buildResult() {
     final created = _created!;
+    // E4-T24: nombre + un apellido del titular enmascarado tal cual del
+    // servidor (`GET /wallet/qr/{id}`, `payee_name_masked`); ausente/
+    // `null` -> se oculta la fila (cliente delgado: no se calcula nada
+    // en el cliente).
+    final payeeMasked = _refreshed?.payeeNameMasked ?? '';
     return Column(
       children: [
         AppCard(
@@ -240,6 +245,19 @@ class _PersonalQrPageState extends State<PersonalQrPage> {
                   color: AppColors.secondaryText,
                 ),
               ),
+              // E4-T24: fila del titular (solo si el servidor la resolvio).
+              if (payeeMasked.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Titular: $payeeMasked',
+                  key: const Key('personal-qr-payee-name'),
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMd.copyWith(
+                    fontSize: 13,
+                    color: AppColors.secondaryText,
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               QrPayloadView(qrContent: created.qrContent),
               const SizedBox(height: 12),

@@ -13,10 +13,20 @@ Contrato y fronteras: ver `docs/modules/README.md#wallet`.
   `service/tokenization.py` (fachada por entorno
   `WALLET_TOKENIZATION_PROVIDER`, default `mock`), `models/`,
   `repository/`, `service/` (casos de uso + idempotencia patron E2-T13),
-  `schemas/`, `api/` (`GET /wallet`, `POST /wallet/links`,
+  `schemas/`,   `api/` (`GET /wallet`, `POST /wallet/links`,
   `DELETE /wallet/links/{id}` -> baja logica a `INACTIVE`, solo titular,
   `404` neutro si ajeno/inexistente/ya dado de baja), `events/`
   (`wallet.link.created` por `outbox`, payload sin PII).
+- Rol de comercio en `GET /wallet` (E4-T23, HU13/HU14): `get_wallet_view` +
+  `WalletData` exponen `is_merchant: bool` (solo `true` con fila propia
+  `ACTIVE` en `wallet.merchant_accounts`, mismo criterio que
+  `require_merchant_for_user`) y `merchant_status: ACTIVE|BLOCKED|CLOSED|
+  null` (estado de la fila propia; `null` sin cuenta). Solo lectura, sin
+  migracion, sin PII (ni RUC ni nombre); lectura best-effort con
+  fail-closed en `savepoint` (BD anterior a `0039` -> no-comercio sin
+  tumbar la vista). El frontend lo usa para ocultar la entrada de
+  comercio a las cuentas personales (billetera + inicio); el `403` de
+  `/merchants/qr*` no cambia.
 - Tokenizacion (G67): el PAN se tokeniza server-side y se descarta; en
   BD/respuestas/logs/snapshots solo `token_ref`/`last4`/`brand` y
   `account_masked` (`****1234`). Sin PII/secretos en logs (regla 7).
@@ -27,7 +37,10 @@ Contrato y fronteras: ver `docs/modules/README.md#wallet`.
   CRUD, duplicados, idempotencia, aislamiento, evento sin PII) +
   `backend/tests/test_e4_t01d_wallet_fix_m123.py` (M-1 frontera sin
   `transactions.repository`/`models`, M-2 token ajeno no reactiva,
-  M-3 baja a `INACTIVE` + `404` neutro).
+  M-3 baja a `INACTIVE` + `404` neutro) +
+  `backend/tests/test_e4_t23_wallet_merchant_flag.py` (6 pruebas E4-T23:
+  flag personal/comercio `ACTIVE`/`CLOSED`/sin billetera, contrato sin PII
+  y `POST /merchants/qr` del no-comercio sigue `403`).
 
 ## Pago express interno (E4-T02, HU13 CA-02/CA-04)
 
@@ -95,11 +108,14 @@ la QA de HU15 es `E4-T15`), endpoint `POST /payments/qr` (`E4-T12`).
   diario, aislamiento, contrato/OpenAPI, frontera, head `0041`).
 - Preview (fix MEDIO-3, HU15 CA-01): `POST /api/v1/payments/qr/preview`
   (`{qr_content}`, Bearer, sin `Idempotency-Key`: no mueve dinero ->
-  `200 {charge_id, merchant {merchant_id, business_name}, amount_minor,
-  currency, expires_at, status}`; `422` vencido/corrupto/manipulado sin
-  efectos, `409` ya cobrado). Solo lectura via
-  `service.qr_payment.preview_qr_charge` (misma ruta `api/payments.py`;
-  contrato en `docs/05#6.5`).
+  `200 {charge_id, merchant {merchant_id, business_name}, payee?,
+  payee_name_masked, amount_minor, currency, expires_at, status}`;
+  `422` vencido/corrupto/manipulado sin efectos, `409` ya cobrado).
+  Solo lectura via `service.qr_payment.preview_qr_charge` (misma ruta
+  `api/payments.py`; contrato en `docs/05#6.5`). `payee_name_masked`
+  (E4-T24): nombre + un apellido del dueno enmascarado (personal: el
+  titular; comercio: el dueno natural, con `business_name` intacto);
+  `None` si no resoluble.
 
 ## Cobro QR por el motor (E4-T11, HU15 CA-01/CA-04)
 
@@ -270,6 +286,31 @@ la QA de HU15 es `E4-T15`), endpoint `POST /payments/qr` (`E4-T12`).
   feliz con firma/TTL/evento + estado `ACTIVE`, `STATIC`, vencido ->
   `EXPIRED` sin job, `422`/`404`/`403`/`401`, idempotencia replay +
   `409`, abono stub sin PII, frontera sin tablas de dinero).
+
+## QR personal estatico + nombre enmascarado (E4-T21/E4-T24, HU14)
+
+- Rutas (contrato en `docs/05#6.5`): `POST /api/v1/wallet/qr`
+  (`{currency?, concept?}` -> `201` con el QR reutilizable sin monto
+  ni caducidad, `payee_type: "PERSONAL"`) y
+  `GET /api/v1/wallet/qr/{id}` (solo el titular dueno; ajeno/
+  inexistente/de comercio -> `404` neutro ->
+  `200 {charge_id, qr_content, status, amount_minor: null, currency,
+  expires_at: null, paid_at?, payee_type, reusable, payee_name_masked}`).
+- `payee_name_masked` (E4-T24): nombre + un apellido del dueno
+  enmascarado (`DIEG••• GONZ•••` = primeros 4 por parte + resto oculto
+  con `•••`, partes separadas por un espacio; parte `<= 4` completa;
+  razon social como una sola parte). Helper puro y determinista
+  `domain/masking.py::mask_payee_name` + resolucion best-effort
+  `resolve_payee_name_masked` por la fachada de solo lectura
+  `identity.service.profile.get_profile` (import perezoso, D-03; sin
+  importar modelos ajenos); sin nombre resoluble -> `None` (fallback
+  neutro). Presente tambien en `POST /payments/qr/preview` (personal:
+  el titular; comercio: el dueno natural, con `business_name`
+  intacto). El nombre completo jamas viaja ni se loguea (reglas 7/9).
+- Sin migracion (solo lectura). Pruebas:
+  `backend/tests/test_e4_t24_payee_name_masked.py` (22 pruebas:
+  formato, estado, preview personal/comercio, tolerancia, no-fuga,
+  contrato aditivo) + `backend/tests/test_e4_t21_personal_qr.py`.
 
 ## Interoperabilidad con el par (E4-T03, HU13 CA-03)
 

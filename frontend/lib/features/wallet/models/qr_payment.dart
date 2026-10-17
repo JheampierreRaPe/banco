@@ -24,7 +24,8 @@
 library;
 
 /// Resultado del pago QR tal cual del backend (E4-T12, `docs/05` §6.5;
-/// E4-T21 agrega `payee` en QR personal).
+/// E4-T21 agrega `payee` en QR personal; E4-T24 agrega
+/// `payee_name_masked` donde el servidor lo exponga).
 class QrPaymentResult {
   const QrPaymentResult({
     required this.transactionId,
@@ -33,6 +34,7 @@ class QrPaymentResult {
     required this.merchantId,
     required this.merchantName,
     this.payeeOwnerId,
+    this.payeeNameMasked,
     required this.amountMinor,
     required this.currency,
     required this.status,
@@ -54,6 +56,12 @@ class QrPaymentResult {
 
   /// Titular destino de un QR personal (E4-T21; `null` en comercio).
   final String? payeeOwnerId;
+
+  /// Nombre + un apellido del dueno enmascarado tal cual del servidor
+  /// (E4-T24, `payee_name_masked`, p. ej. `DIEG••• GONZ•••`); `null`
+  /// cuando el payload no lo trae (cliente delgado: se muestra tal cual,
+  /// sin calcularlo; la UI oculta la fila).
+  final String? payeeNameMasked;
   final int amountMinor;
   final String currency;
 
@@ -129,6 +137,7 @@ class QrPaymentResult {
       merchantId: merchant['merchant_id']?.toString() ?? '',
       merchantName: merchant['business_name']?.toString() ?? '',
       payeeOwnerId: (ownerId == null || ownerId.isEmpty) ? null : ownerId,
+      payeeNameMasked: _asMaskedName(json['payee_name_masked']),
       amountMinor: _asInt(json['amount_minor']),
       currency: (json['currency']?.toString() ?? 'PEN').toUpperCase(),
       status: (json['status']?.toString() ?? '').toUpperCase(),
@@ -152,12 +161,17 @@ int _asInt(Object? value) {
 ///
 /// Solo lectura: `comercio`/`monto` tal cual del backend para el
 /// consentimiento informado. Sin `qr_content`, firma, secreto ni RUC.
+/// `payee_name_masked` (E4-T24, aditivo): nombre + un apellido del dueno
+/// enmascarado tal cual del servidor; en comercio es el nombre natural
+/// del dueno (`business_name` intacto); `null`/ausente si no resoluble
+/// (la UI oculta la fila).
 class QrChargePreview {
   const QrChargePreview({
     required this.chargeId,
     required this.merchantId,
     required this.merchantName,
     this.payeeOwnerId,
+    this.payeeNameMasked,
     required this.amountMinor,
     required this.currency,
     this.expiresAt,
@@ -173,6 +187,10 @@ class QrChargePreview {
 
   /// Titular destino de un QR personal (E4-T21; `null` en comercio).
   final String? payeeOwnerId;
+
+  /// Nombre + un apellido del dueno enmascarado tal cual del servidor
+  /// (E4-T24; `null` si no resoluble; la UI oculta la fila).
+  final String? payeeNameMasked;
 
   /// Monto fijo del cargo en centimos (`0` + [isPersonal] cuando el QR
   /// no trae monto: el pagador lo digita al confirmar).
@@ -208,12 +226,21 @@ class QrChargePreview {
       merchantId: merchant['merchant_id']?.toString() ?? '',
       merchantName: merchant['business_name']?.toString() ?? '',
       payeeOwnerId: (ownerId == null || ownerId.isEmpty) ? null : ownerId,
+      payeeNameMasked: _asMaskedName(json['payee_name_masked']),
       amountMinor: _asInt(json['amount_minor']),
       currency: (json['currency']?.toString() ?? 'PEN').toUpperCase(),
       expiresAt: json['expires_at']?.toString(),
       status: (json['status']?.toString() ?? 'ACTIVE').toUpperCase(),
     );
   }
+}
+
+/// `payee_name_masked` es opaco para el cliente (E4-T24): se muestra tal
+/// cual del servidor. Ausente/`null`/vacio -> `null` (la UI oculta la
+/// fila); nunca se calcula ni se completa en el cliente.
+String? _asMaskedName(Object? value) {
+  final text = value?.toString().trim() ?? '';
+  return text.isEmpty ? null : text;
 }
 
 /// Accion de recuperacion que acompaña a cada error de pago QR

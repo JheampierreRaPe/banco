@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.shared.config import parameters as config_params
 from app.modules.wallet import repository as wallet_repo
+from app.modules.wallet.domain import masking as masking_domain
 from app.modules.wallet.domain import qr as qr_domain
 from app.modules.wallet.events import QR_CHARGE_CREATED
 from app.modules.wallet.repository import qr as qr_repo
@@ -839,6 +840,7 @@ def get_personal_charge_status(
     user_id: uuid.UUID | str,
     charge_id: uuid.UUID | str,
     now: datetime | None = None,
+    profile_resolver: Any | None = None,
 ) -> dict[str, Any]:
     """Estado del QR personal del titular dueno (E4-T21).
 
@@ -847,6 +849,12 @@ def get_personal_charge_status(
     (`404`, sin montos, sin oraculo). El personal no caduca
     (`expires_at = NULL`) ni se agota (reutilizable): el estado es el
     de la fila.
+
+    Expone `payee_name_masked` (E4-T24): nombre + un apellido del
+    titular enmascarado (`DIEG••• GONZ•••`), resuelto best-effort por
+    la fachada de solo lectura de `identity` (import perezoso, D-03);
+    sin nombre resoluble -> `None` (fallback neutro, sin romper).
+    Jamas viaja ni se loguea el nombre completo (reglas 7/9).
     """
     _ = now  # sin caducidad: se acepta por simetria con el comercio
     owner = _coerce_uuid(user_id, "user_id")
@@ -876,6 +884,9 @@ def get_personal_charge_status(
         "paid_at": row.paid_at,
         "payee_type": "PERSONAL",
         "reusable": True,
+        "payee_name_masked": masking_domain.resolve_payee_name_masked(
+            session, row.owner_user_id, profile_resolver=profile_resolver
+        ),
     }
 
 

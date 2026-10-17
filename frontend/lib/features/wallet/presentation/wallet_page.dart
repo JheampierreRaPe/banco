@@ -207,6 +207,10 @@ class _WalletPageState extends State<WalletPage> {
           }
           final wallet = snapshot.data ?? Wallet.empty;
           final links = wallet.links;
+          // Rol de comercio del servidor (E4-T23): las cuentas personales
+          // (`!isMerchant`, fail-closed ante error/red) no ven ninguna
+          // entrada de comercio. "Mi QR personal" (E4-T21) sigue visible.
+          final isMerchant = wallet.isMerchant;
           if (links.isEmpty) {
             return RefreshIndicator(
               onRefresh: _refresh,
@@ -229,16 +233,18 @@ class _WalletPageState extends State<WalletPage> {
                       label: const Text('Mi QR personal'),
                     ),
                   ),
-                  Center(
-                    child: TextButton.icon(
-                      key: const Key('wallet-merchant-qr-empty'),
-                      onPressed: _openMerchantQr,
-                      icon: const Icon(Icons.qr_code_2, size: 20),
-                      label: const Text(
-                        'Tengo un comercio: generar cobro QR',
+                  // Solo comercio (E4-T23): oculto cuando `!isMerchant`.
+                  if (isMerchant)
+                    Center(
+                      child: TextButton.icon(
+                        key: const Key('wallet-merchant-qr-empty'),
+                        onPressed: _openMerchantQr,
+                        icon: const Icon(Icons.qr_code_2, size: 20),
+                        label: const Text(
+                          'Tengo un comercio: generar cobro QR',
+                        ),
                       ),
                     ),
-                  ),
                   Center(
                     child: TextButton.icon(
                       key: const Key('wallet-pay-qr-empty'),
@@ -299,15 +305,18 @@ class _WalletPageState extends State<WalletPage> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        SizedBox(
-                          width: double.infinity,
-                          child: OutlinedButton.icon(
-                            key: const Key('wallet-merchant-qr-action'),
-                            onPressed: _openMerchantQr,
-                            icon: const Icon(Icons.qr_code_2, size: 20),
-                            label: const Text('Cobrar como comercio'),
+                        // Solo comercio (E4-T23): oculto cuando `!isMerchant`.
+                        if (isMerchant)
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              key: const Key('wallet-merchant-qr-action'),
+                              onPressed: _openMerchantQr,
+                              icon: const Icon(Icons.qr_code_2, size: 20),
+                              label: const Text('Cobrar como comercio'),
+                            ),
                           ),
-                        ),
+                        if (isMerchant) const SizedBox(height: 8),
                         const SizedBox(height: 8),
                         SizedBox(
                           width: double.infinity,

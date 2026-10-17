@@ -9,8 +9,11 @@
 ///   owner_user_id, payee_account_id, reusable: true}, "meta": {...}}`.
 /// - `GET /wallet/qr/{id}` -> `200 {"data": {charge_id, qr_content,
 ///   status, amount_minor: null, currency, expires_at: null, paid_at?,
-///   payee_type, reusable}, "meta": {...}}` (solo el titular dueno;
-///   ajeno/de comercio -> `404` neutro).
+///   payee_type, reusable, payee_name_masked}, "meta": {...}}` (solo el
+///   titular dueno; ajeno/de comercio -> `404` neutro).
+///   `payee_name_masked` (E4-T24, aditivo): nombre + un apellido del
+///   titular enmascarado tal cual del servidor (`DIEG••• GONZ•••`);
+///   `null`/ausente cuando no se pudo resolver (la UI oculta la fila).
 ///
 /// - `qr_content` (`String`, sobre canonico `BO-QR1` base64url con
 ///   `amount_minor = 0`) es el contenido escaneable: lo que se
@@ -93,6 +96,7 @@ class PersonalQrStatus {
     required this.currency,
     this.paidAt,
     this.reusable = true,
+    this.payeeNameMasked,
   });
 
   final String chargeId;
@@ -103,6 +107,12 @@ class PersonalQrStatus {
   final String currency;
   final String? paidAt;
   final bool reusable;
+
+  /// Nombre + un apellido del titular enmascarado tal cual del servidor
+  /// (E4-T24, `payee_name_masked`, p. ej. `DIEG••• GONZ•••`); `null`
+  /// cuando el servidor no lo pudo resolver (cliente delgado: se muestra
+  /// tal cual, sin calcularlo; la UI oculta la fila).
+  final String? payeeNameMasked;
 
   bool get isActive => status == 'ACTIVE';
 
@@ -125,7 +135,16 @@ class PersonalQrStatus {
         currency: (json['currency']?.toString() ?? 'PEN').toUpperCase(),
         paidAt: json['paid_at']?.toString(),
         reusable: json['reusable'] as bool? ?? true,
+        payeeNameMasked: _asMaskedName(json['payee_name_masked']),
       );
+}
+
+/// `payee_name_masked` es opaco para el cliente (E4-T24): se muestra tal
+/// cual del servidor. Ausente/`null`/vacio -> `null` (la UI oculta la
+/// fila); nunca se calcula ni se completa en el cliente.
+String? _asMaskedName(Object? value) {
+  final text = value?.toString().trim() ?? '';
+  return text.isEmpty ? null : text;
 }
 
 /// `qr_content` es el contenido escaneable (`String` base64url

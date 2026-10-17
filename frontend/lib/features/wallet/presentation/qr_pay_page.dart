@@ -766,6 +766,20 @@ class _QrPayPageState extends State<QrPayPage> {
               key: const Key('qr-pay-preview-merchant'),
               style: AppTypography.titleMd.copyWith(fontSize: 16),
             ),
+            // E4-T24: a quien pagas (nombre + un apellido enmascarado tal
+            // cual del servidor, `payee_name_masked` del preview);
+            // ausente/`null` -> se oculta la fila (cliente delgado).
+            if ((_preview!.payeeNameMasked ?? '').isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Pagas a: ${_preview!.payeeNameMasked}',
+                key: const Key('qr-pay-payee-name'),
+                style: AppTypography.bodyMd.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             if (_preview!.isPersonal) ...[
               Text(
@@ -875,9 +889,13 @@ class _QrPayPageState extends State<QrPayPage> {
 
   /// Resumen del servidor sobre el limite (E4-T13): `comercio`/`monto`
   /// tal cual del backend + biometria o PIN para autorizar el reto.
+  /// E4-T24: si el payload trae `payee_name_masked` (o el preview lo
+  /// trajo) se muestra a quien pagas; si no, se oculta la fila.
   Widget _buildPendingAuth() {
     final result = _result;
     if (result == null) return _buildFailure();
+    final payeeMasked =
+        (result.payeeNameMasked ?? _preview?.payeeNameMasked ?? '');
     return Column(
       children: [
         AppCard(
@@ -905,6 +923,18 @@ class _QrPayPageState extends State<QrPayPage> {
                 key: const Key('qr-pay-merchant'),
                 style: AppTypography.titleMd.copyWith(fontSize: 16),
               ),
+              if (payeeMasked.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Pagas a: $payeeMasked',
+                  key: const Key('qr-pay-payee-name'),
+                  textAlign: TextAlign.center,
+                  style: AppTypography.bodyMd.copyWith(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
               const SizedBox(height: 4),
               Text(
                 formatQrMinor(result.amountMinor, result.currency),
@@ -1014,10 +1044,13 @@ class _QrPayPageState extends State<QrPayPage> {
   }
 
   /// Comprobante `SETTLED` (E4-T13): `comercio`/`monto` del servidor, sin
-  /// recalculo del cliente.
+  /// recalculo del cliente. E4-T24: muestra `Pagas a: <mascara>` cuando
+  /// el payload (o el preview) la trae; si no, oculta la fila.
   Widget _buildReceipt() {
     final result = _result;
     if (result == null) return _buildFailure();
+    final payeeMasked =
+        (result.payeeNameMasked ?? _preview?.payeeNameMasked ?? '');
     return AppCard(
       key: const Key('qr-pay-receipt'),
       padding: const EdgeInsets.all(20),
@@ -1038,6 +1071,18 @@ class _QrPayPageState extends State<QrPayPage> {
             textAlign: TextAlign.center,
             style: AppTypography.titleMd.copyWith(fontSize: 17),
           ),
+          if (payeeMasked.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Pagas a: $payeeMasked',
+              key: const Key('qr-pay-payee-name'),
+              textAlign: TextAlign.center,
+              style: AppTypography.bodyMd.copyWith(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
           const SizedBox(height: 4),
           Text(
             formatQrMinor(result.amountMinor, result.currency),

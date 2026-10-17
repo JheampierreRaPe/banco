@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/errors/api_exception.dart';
@@ -78,10 +77,18 @@ class _MovementDetailPageState extends State<MovementDetailPage> {
       appBar: AppBar(
         backgroundColor: AppColors.surfaceContainerLow,
         title: const Text('Detalle de movimiento'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.canPop() ? context.pop() : null,
-        ),
+        // E4-T25: igual que el historial (ver `movements_page.dart`): back
+        // solo cuando hay pila a la que volver; en raiz no se muestra un
+        // boton muerto ni se fuerza un salto a Home. `Navigator` directo
+        // para no depender del `GoRouter` en el `build`.
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                key: const Key('movement-detail-back'),
+                tooltip: 'Volver',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(context).pop(),
+              )
+            : null,
         // H6: sin atajo a `/profile` desde el detalle (destino incoherente
         // en contexto de movimientos): la ayuda es el reintento del
         // `ErrorView` y el reverso de la pantalla.

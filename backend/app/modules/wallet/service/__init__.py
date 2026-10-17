@@ -1,7 +1,8 @@
 """Casos de uso de billetera (E4-T01, HU13 CA-01).
 
 - `get_wallet_view`: billetera + vinculos enmascarados del titular
-  (solo lectura; si aun no tiene billetera, vista vacia `NONE`).
+  (solo lectura; si aun no tiene billetera, vista vacia `NONE`) +
+  rol de comercio (`is_merchant`/`merchant_status`, E4-T23).
 - `link_source_idempotent`: vincula una cuenta (validada por la
   fachada de `accounts`) o una tarjeta (tokenizada server-side,
   crudo descartado), con `Idempotency-Key` opcional (patron E2-T13).
@@ -157,16 +158,64 @@ def to_link_view(row) -> dict:
     return view
 
 
+def _merchant_flag(session: Session, owner: uuid.UUID) -> tuple[bool, str | None]:
+    """Rol de comercio del titular (E4-T23, solo lectura, sin PII).
+
+    `True` solo con fila propia `ACTIVE` en `wallet.merchant_accounts`
+    (mismo criterio que `require_merchant_for_user`); cualquier otro
+    caso (`None`, otro estado, error de lectura) -> `(False, ...)`.
+    `merchant_status` es el estado de la fila propia o `None` si no hay
+    fila. Nunca expone RUC ni nombre comercial (solo rol/estado).
+    La lectura es best-effort con fail-closed: si la tabla no existe
+    aun (p. ej. BD anterior a `0039`) se responde no-comercio en vez de
+    tumbar `GET /wallet` (el `403` real de `/merchants/qr*` sigue
+    intacto; un fallo real de conexion lo levanta igual la consulta
+    posterior de la billetera). Corre en `savepoint` para no alterar la
+    transaccion externa ante un fallo del motor.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from app.modules.wallet.repository import qr as qr_repo
+
+    try:
+        with session.begin_nested():
+            row = qr_repo.get_merchant_by_user(session, owner)
+    except (DBAPIError, ValueError, TypeError, AttributeError):
+        logger.debug("rol de comercio no resoluble user_id=%s", owner)
+        return False, None
+    if row is None:
+        return False, None
+    status = str(getattr(row, "status", "") or "")
+    if status != "ACTIVE":
+        return False, status or None
+    return True, status
+
+
 def get_wallet_view(session: Session, user_id: uuid.UUID | str) -> dict:
-    """Billetera del titular con vinculos enmascarados (solo lectura)."""
+    """Billetera del titular con vinculos enmascarados (solo lectura).
+
+    Incluye el rol de comercio (`is_merchant`/`merchant_status`, E4-T23)
+    para que el cliente oculte la entrada de comercio a las cuentas
+    personales (el backend sigue exigiendo el rol con `403` en
+    `/merchants/qr*`; la UI oculta por UX, no por seguridad).
+    """
     owner = _coerce_user(user_id)
+    is_merchant, merchant_status = _merchant_flag(session, owner)
     wallet = wallet_repo.get_wallet_by_user(session, owner)
     if wallet is None:
-        return {"wallet_id": None, "status": "NONE", "links": []}
+        return {
+            "wallet_id": None,
+            "status": "NONE",
+            "links": [],
+            "is_merchant": is_merchant,
+            "merchant_status": merchant_status,
+        }
     return {
         "wallet_id": str(wallet.id),
         "status": wallet.status,
         "links": [to_link_view(row) for row in wallet_repo.list_links(session, wallet.id)],
+        "is_merchant": is_merchant,
+        "merchant_status": merchant_status,
     }
 
 

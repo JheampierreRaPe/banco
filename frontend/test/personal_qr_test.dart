@@ -111,13 +111,21 @@ class FakePersonalPayService implements QrPaymentServiceBase {
 
 /// Fake de billetera para elegir fuente y para `WalletPage`.
 class FakePersonalWalletService implements WalletServiceBase {
-  FakePersonalWalletService({this.links = const []});
+  FakePersonalWalletService({this.links = const [], this.isMerchant = true});
 
   final List<WalletLink> links;
 
+  /// Rol de comercio (E4-T23): `true` por defecto porque estos tests
+  /// verifican la entrada de comercio junto a "Mi QR personal".
+  final bool isMerchant;
+
   @override
-  Future<Wallet> getWallet() async =>
-      Wallet(walletId: 'w-1', status: 'ACTIVE', links: links);
+  Future<Wallet> getWallet() async => Wallet(
+        walletId: 'w-1',
+        status: 'ACTIVE',
+        links: links,
+        isMerchant: isMerchant,
+      );
 
   @override
   Future<WalletLink> linkAccount(AccountLinkInput input,

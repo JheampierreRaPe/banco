@@ -41,6 +41,10 @@ import '../data/loan_schedule_service.dart';
 ///
 /// Los tres servicios son inyectables para tests; `null` degrada a aviso
 /// honesto en vez de romper.
+///
+/// E3-T24: la sección es SOLO reintento (el desembolso automático ya
+/// ocurrió al firmar; la página la monta únicamente cuando el automático
+/// no liquidó). Con [isRetry] la copia lo dice explícito.
 class CreditDisburseSection extends StatefulWidget {
   const CreditDisburseSection({
     super.key,
@@ -48,12 +52,14 @@ class CreditDisburseSection extends StatefulWidget {
     this.disburseService,
     this.loansService,
     this.accountsService,
+    this.isRetry = false,
   });
 
   final String applicationId;
   final CreditDisbursementServiceBase? disburseService;
   final LoanScheduleServiceBase? loansService;
   final AccountsServiceBase? accountsService;
+  final bool isRetry;
 
   @override
   State<CreditDisburseSection> createState() => _CreditDisburseSectionState();
@@ -279,7 +285,9 @@ class _CreditDisburseSectionState extends State<CreditDisburseSection> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Desembolso a tu cuenta',
+            widget.isRetry
+                ? 'Reintentar desembolso'
+                : 'Desembolso a tu cuenta',
             style: AppTypography.labelMd.copyWith(
               fontWeight: FontWeight.w700,
               color: AppColors.primary,
@@ -287,7 +295,10 @@ class _CreditDisburseSectionState extends State<CreditDisburseSection> {
           ),
           const SizedBox(height: 4),
           Text(
-            'El dinero se acredita en la cuenta que elijas.',
+            widget.isRetry
+                ? 'El desembolso automático no se completó. '
+                    'Reinténtalo aquí a tu cuenta principal.'
+                : 'El dinero se acredita en la cuenta que elijas.',
             style: AppTypography.bodyMd.copyWith(
               color: AppColors.secondaryText,
             ),
@@ -307,7 +318,11 @@ class _CreditDisburseSectionState extends State<CreditDisburseSection> {
                 ),
               ),
               child: Text(
-                _disbursing ? 'Desembolsando…' : 'Desembolsar a mi cuenta',
+                _disbursing
+                    ? 'Desembolsando…'
+                    : (widget.isRetry
+                        ? 'Reintentar desembolso'
+                        : 'Desembolsar a mi cuenta'),
               ),
             ),
           ),

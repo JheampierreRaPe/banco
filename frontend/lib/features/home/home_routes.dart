@@ -1,6 +1,7 @@
 import 'package:go_router/go_router.dart';
 
 import '../accounts/data/accounts_service.dart';
+import '../wallet/data/wallet_service.dart';
 import 'data/profile_service.dart';
 import 'presentation/home_page.dart';
 
@@ -10,12 +11,15 @@ import 'presentation/home_page.dart';
 /// se resuelven desde `accountsServiceFactory`/`homeProfileServiceFactory`
 /// (cableadas por el orquestador); `null` degrada con elegancia (fallback
 /// `Hola` para el perfil; error accionable para las cuentas).
+/// El rol de comercio para la accion rapida "Cobrar QR" (E4-T23) llega por
+/// `walletServiceFactory` (`GET /wallet` `is_merchant`; fail-closed).
 final List<GoRoute> homeRoutes = [
   GoRoute(
     path: '/home',
     builder: (context, state) => HomePage(
       service: accountsServiceFactory?.call(),
       profileService: homeProfileServiceFactory?.call(),
+      walletService: walletServiceFactory?.call(),
     ),
   ),
 ];

@@ -33,7 +33,10 @@ y `on_sensitive_business_event` a cada operacion sensible
 (`transfer.settled`, `credit.disbursed`, `loan.installment.paid`,
 `qr.payment.confirmed`, `service.paid`, `topup.completed`), que invoca
 `notify_security_event` (push + correo con dispositivo/hora/ubicacion;
-fallback aproximado cuando el evento no los trae).
+fallback aproximado cuando el evento no los trae). Excepcion E3-T24:
+`credit.disbursed` se marca procesado SIN alerta generica (su
+notificacion dedicada `credit_disbursed` push+email ya cubre el evento;
+ver `DEDICATED_ONLY_EVENTS`).
 """
 
 from __future__ import annotations
@@ -61,6 +64,18 @@ SENSITIVE_BUSINESS_EVENTS = (
     "service.paid",
     "topup.completed",
 )
+
+#: Eventos con notificacion dedicada que SUSTITUYE a la alerta generica
+#: (E3-T24, HU12, decision del dueno): `credit.disbursed` ya genera la
+#: notificacion transaccional `credit_disbursed` (push) +
+#: `credit_disbursed_email` (email) en el propio caso de uso de
+#: `credits` (monto + cuenta enmascarada + referencia, accionable). La
+#: generica solo aportaria la etiqueta ("Desembolso de crédito"): enviar
+#: ambas seria 2 push + 2 correos por el mismo evento, ruido que entierra
+#: la transaccional. `on_sensitive_business_event` marca estos eventos
+#: como procesados SIN alerta (el cableado A1 y `credit.disbursed` en el
+#: `outbox` quedan intactos).
+DEDICATED_ONLY_EVENTS = ("credit.disbursed",)
 
 
 def _first_present(payload: dict, *keys: str) -> Any | None:
@@ -194,6 +209,15 @@ def on_sensitive_business_event(
         if outbox_repo.is_processed(session, event_id=event_id, consumer=SECURITY_CONSUMER):
             logger.info("notifications.security.duplicado event=%s", event_type)
             return False
+        if event_type in DEDICATED_ONLY_EVENTS:
+            # E3-T24: `credit.disbursed` ya notifico por su via dedicada
+            # (`credit_disbursed` push+email, con monto + cuenta
+            # enmascarada + referencia). Se marca procesado sin la alerta
+            # generica para no duplicar (2 push + 2 correos por evento).
+            outbox_repo.try_mark_processed(session, event_id=event_id, consumer=SECURITY_CONSUMER)
+            session.commit()
+            logger.info("notifications.security.dedicada event=%s: sin alerta generica", event_type)
+            return True
         user_id = _first_present(payload, "user_id", "payer_user_id")
         if user_id is None:
             outbox_repo.try_mark_processed(session, event_id=event_id, consumer=SECURITY_CONSUMER)

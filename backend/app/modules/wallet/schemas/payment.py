@@ -23,7 +23,10 @@ en centimos.
 Preview (MEDIO-3, HU15 CA-01): `POST /payments/qr/preview
 {qr_content}` (Bearer, sin `Idempotency-Key`: no mueve dinero) ->
 `200 {"data": {charge_id, merchant {merchant_id, business_name},
-amount_minor, currency, expires_at, status}, "meta": {request_id}}`.
+payee? {owner_user_id}, payee_name_masked, amount_minor, currency,
+expires_at, status}, "meta": {request_id}}` (E4-T24: nombre del dueno
+enmascarado, `None` si no resoluble; en comercio `business_name`
+intacto).
 Elegido `POST` sobre `GET`: el `qr_content` (hasta 8192 chars) no cabe
 bien en una URL y no debe quedar en access logs; el cuerpo JSON lo
 transporta sin exponerlo en la respuesta (la respuesta nunca incluye
@@ -145,11 +148,21 @@ class QrPreviewData(BaseModel):
     Comercio: `merchant` presente y `amount_minor` fijo. Personal
     (E4-T21): `merchant` en `None`, `payee` con el titular destino y
     `amount_minor` en `None` (el pagador digita el monto al confirmar).
+
+    `payee_name_masked` (E4-T24, aditivo): nombre + un apellido del
+    dueno enmascarado (`DIEG••• GONZ•••` = primeros 4 por parte +
+    resto oculto, partes separadas por un espacio; en comercio es el
+    nombre natural del dueno y `business_name` se conserva intacto;
+    `None` si no se pudo resolver). Jamas viaja el nombre completo.
     """
 
     charge_id: uuid.UUID
     merchant: QrPreviewMerchant | None = Field(default=None)
     payee: QrPreviewPayee | None = Field(default=None)
+    payee_name_masked: str | None = Field(
+        default=None,
+        description="Nombre del dueno enmascarado (E4-T24); `None` si no resoluble",
+    )
     amount_minor: int | None = Field(default=None)
     currency: str
     expires_at: datetime | None = Field(

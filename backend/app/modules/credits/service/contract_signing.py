@@ -31,8 +31,16 @@ firma queda `SIGNED` igual (la notificacion queda `FAILED` u omitida;
 sin PII en logs). Sin PII ni secretos en logs ni en el snapshot
 (`pin`/`signature`/`nonce` jamas se persisten: solo digests HMAC en el
 `request_hash`, patron E2-T31 endurecido: el PIN usa HMAC con el secreto
-del servidor, no SHA-256 sin sal). **No mueve dinero** (sin `loans`,
-sin `transactions`/`ledger`, sin asientos).
+del servidor, no SHA-256 sin sal).
+
+Desembolso automatico (E3-T24, HU12, decision del dueno: inline, no
+consumidor): tras firmar, invoca en `savepoint`
+`disburse_application_idempotent` con `account_id=None` (cuenta
+principal) y clave estable `auto-disburse:<application_id>` (un
+prestamo por expediente; asiento `docs/04#7.5` por el motor). Si el
+automatico falla, la firma queda `SIGNED` y la respuesta expone el
+bloque `disbursement: {FAILED}` para reintento por
+`POST .../disburse` (contrato intacto).
 """
 
 from __future__ import annotations
@@ -59,6 +67,18 @@ IDEMPOTENCY_ENDPOINT = "/credits/applications/sign"
 
 #: Plantilla email de la copia certificada (aditiva, `notifications`, canal `email`).
 EMAIL_TEMPLATE_CODE = "credit_contract_signed"
+
+#: Prefijo de la `Idempotency-Key` estable del desembolso automatico
+#: (E3-T24, HU12): un prestamo por expediente aunque la firma se
+#: reintente o el worker re-juegue el evento (`auto-disburse:<application_id>`).
+AUTO_DISBURSE_KEY_PREFIX = "auto-disburse"
+
+#: Mensaje generico del fallo del automatico (sin PII; el reintento va
+#: por `POST .../disburse`, que se conserva con su contrato intacto).
+_AUTO_DISBURSE_RETRY_MESSAGE = (
+    "La firma quedo registrada, pero el desembolso automatico no liquido. "
+    "Reintenta el desembolso desde tu expediente."
+)
 
 #: Marca de snapshot de error (los `data` de exito llevan `status=SIGNED`).
 _ERROR_STATUS = "ERROR"
@@ -322,6 +342,14 @@ def _execute_sign(
         sender=sender,
         email_resolver=email_resolver,
     )
+    # Desembolso automatico a la cuenta principal (E3-T24, HU12,
+    # decision del dueno: inline tras firmar, no consumidor del evento).
+    # En `savepoint`: si el automatico falla, se revierte SOLO el
+    # desembolso y la firma queda `SIGNED` con el fallo expuesto para
+    # reintento (`POST .../disburse`, contrato intacto). Campos aditivos
+    # en la respuesta (`loan_id`, `transaction_id`, `amount_minor`,
+    # `account_masked`, `disbursed_at`).
+    data["disbursement"] = _try_auto_disburse(session, owner, application_id)
     first_id = data["contract_id"]
     try:
         transaction_id = uuid.UUID(str(first_id))
@@ -330,6 +358,92 @@ def _execute_sign(
     store_response(session, row, response_snapshot=data, transaction_id=transaction_id)
     logger.info("credit sign ok via=%s", data["via"])
     return data, transaction_id
+
+
+def _failure_code(exc: Exception) -> str:
+    """Codigo de negocio del fallo del automatico (sin PII, sin oraculo)."""
+    from app.modules.credits.repository.applications import (
+        ApplicationConflictError,
+        ApplicationNotFoundError,
+    )
+
+    if isinstance(exc, ApplicationNotFoundError):
+        return "NOT_FOUND"
+    if isinstance(exc, ApplicationConflictError):
+        return "CONFLICT"
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code.strip()[:32]
+    return "VALIDATION_ERROR"
+
+
+def _try_auto_disburse(
+    session: Session,
+    owner: uuid.UUID,
+    application_id: object,
+) -> dict[str, Any]:
+    """Desembolso automatico tras la firma (E3-T24, best-effort parcial).
+
+    Invoca `disburse_application_idempotent` con `account_id=None`
+    (cuenta principal: la `ACTIVE` mas antigua) y clave estable
+    `auto-disburse:<application_id>` (un prestamo por expediente). En
+    `savepoint`: el exito deja `loans`+cronograma+asiento `docs/04#7.5`
+    + `credit.disbursed` + notificacion dedicada (todo en la misma
+    transaccion de la firma); el fallo revierte solo el desembolso y
+    retorna el bloque `FAILED` para reintento, sin romper la firma.
+    Sin PII ni secretos en logs (la cuenta solo enmascarada).
+    """
+    from app.modules.credits.service import disbursement as disburse_service
+
+    key = f"{AUTO_DISBURSE_KEY_PREFIX}:{application_id}"
+    savepoint = session.begin_nested()
+    try:
+        view, _replayed = disburse_service.disburse_application_idempotent(
+            session,
+            owner,
+            application_id,
+            account_id=None,
+            idempotency_key=key,
+        )
+    except Exception as exc:  # noqa: BLE001 - el fallo no rompe la firma (reintento manual)
+        try:
+            savepoint.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        code = _failure_code(exc)
+        logger.warning("credit sign auto_disburse_failed code=%s", code)
+        return {
+            "status": "FAILED",
+            "code": code,
+            "message": _AUTO_DISBURSE_RETRY_MESSAGE,
+        }
+    else:
+        try:
+            savepoint.commit()
+        except Exception as exc:  # noqa: BLE001 - defensivo: el fallo revierte lo parcial
+            try:
+                savepoint.rollback()
+            except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+                pass
+            logger.warning("credit sign auto_disburse_failed code=%s", _failure_code(exc))
+            return {
+                "status": "FAILED",
+                "code": "VALIDATION_ERROR",
+                "message": _AUTO_DISBURSE_RETRY_MESSAGE,
+            }
+    logger.info(
+        "credit sign auto_disburse_ok status=%s account=%s",
+        view.get("status"),
+        view.get("account_masked"),
+    )
+    return {
+        "status": str(view.get("status") or "SETTLED"),
+        "loan_id": str(view.get("loan_id") or ""),
+        "transaction_id": str(view.get("transaction_id") or ""),
+        "amount_minor": int(view.get("amount_minor") or 0),
+        "account_masked": str(view.get("account_masked") or ""),
+        "disbursed_at": str(view.get("disbursed_at") or ""),
+    }
 
 
 def sign_contract_idempotent(

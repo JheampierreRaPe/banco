@@ -47,6 +47,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.events import QR_PAYMENT_CONFIRMED
+from app.modules.wallet.domain import masking as masking_domain
 from app.modules.wallet.domain import qr_payment as qr_payment_domain
 from app.modules.wallet.domain.qr_payment import (
     InvalidQrError,
@@ -602,6 +603,7 @@ def preview_qr_charge(
     qr_content: str,
     secret: str | None = None,
     now: datetime | None = None,
+    profile_resolver: Any | None = None,
 ) -> dict[str, Any]:
     """Previsualiza un QR para el consentimiento informado (MEDIO-3, HU15 CA-01).
 
@@ -615,6 +617,14 @@ def preview_qr_charge(
     Un QR personal (E4-T21) devuelve `amount_minor: None` (el pagador
     digita el monto al confirmar) y `payee` con el titular destino en
     lugar de `merchant`.
+
+    Expone `payee_name_masked` (E4-T24, aditivo): nombre + un apellido
+    del dueno enmascarado (`DIEG••• GONZ•••`), resuelto best-effort por
+    la fachada de solo lectura de `identity` (import perezoso, D-03);
+    para el QR de comercio es el nombre natural del dueno del comercio
+    (`business_name` se conserva intacto) y para el personal el del
+    titular. Sin nombre resoluble -> `None` (fallback neutro).
+    Jamas viaja ni se loguea el nombre completo (reglas 7/9).
 
     Errores neutros (mismo mapeo que el cobro): QR
     corrupto/manipulado/ajeno o destino sin cuenta de abono ->
@@ -640,6 +650,9 @@ def preview_qr_charge(
             "charge_id": str(charge.id),
             "merchant": None,
             "payee": {"owner_user_id": str(getattr(charge, "owner_user_id", None))},
+            "payee_name_masked": masking_domain.resolve_payee_name_masked(
+                session, getattr(charge, "owner_user_id", None), profile_resolver=profile_resolver
+            ),
             "amount_minor": None,
             "currency": str(charge.currency),
             "expires_at": None,
@@ -659,6 +672,9 @@ def preview_qr_charge(
             "business_name": str(merchant.business_name),
         },
         "payee": None,
+        "payee_name_masked": masking_domain.resolve_payee_name_masked(
+            session, getattr(merchant, "user_id", None), profile_resolver=profile_resolver
+        ),
         "amount_minor": int(charge.amount_minor),
         "currency": str(charge.currency),
         "expires_at": expires_at,

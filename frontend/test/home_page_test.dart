@@ -5,6 +5,8 @@ import 'package:banca_online/features/accounts/data/accounts_service.dart';
 import 'package:banca_online/features/accounts/models/account.dart';
 import 'package:banca_online/features/home/data/profile_service.dart';
 import 'package:banca_online/features/home/presentation/home_page.dart';
+import 'package:banca_online/features/wallet/data/wallet_service.dart';
+import 'package:banca_online/features/wallet/models/wallet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -209,9 +211,59 @@ class _CountingProfileFake implements ProfileServiceBase {
 
 Widget _harness(Widget child) => MaterialApp(home: Scaffold(body: child));
 
-/// Home con fakes sanos (cuentas + total del servidor + perfil).
+/// Fake de billetera con rol configurable (E4-T23): `GET /wallet`
+/// `is_merchant` decide si el inicio muestra "Cobrar QR" (`qa-qr`).
+class _RoleWalletFake implements WalletServiceBase {
+  _RoleWalletFake.merchant()
+      : wallet = const Wallet(
+          walletId: 'w-1',
+          status: 'ACTIVE',
+          links: [],
+          isMerchant: true,
+          merchantStatus: 'ACTIVE',
+        ),
+        error = null;
+
+  _RoleWalletFake.personal()
+      : wallet = const Wallet(
+          walletId: 'w-1',
+          status: 'ACTIVE',
+          links: [],
+        ),
+        error = null;
+
+  _RoleWalletFake({required this.wallet, this.error});
+
+  final Wallet wallet;
+  final ApiException? error;
+
+  @override
+  Future<Wallet> getWallet() async {
+    if (error != null) throw error!;
+    return wallet;
+  }
+
+  @override
+  Future<WalletLink> linkAccount(AccountLinkInput input,
+          {String? idempotencyKey}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<WalletLink> linkCard(CardLinkInput input, {String? idempotencyKey}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<WalletLink> unlink(String id) => throw UnimplementedError();
+}
+
+/// Home con fakes sanos (cuentas + total del servidor + perfil + rol de
+/// comercio: el dash de referencia es el de un comercio, que ve "Cobrar QR").
 Widget _okHarness({ProfileServiceBase? profile}) => _harness(
-      HomePage(service: _OkFake(), profileService: profile ?? _OkProfileFake()),
+      HomePage(
+        service: _OkFake(),
+        profileService: profile ?? _OkProfileFake(),
+        walletService: _RoleWalletFake.merchant(),
+      ),
     );
 
 void main() {
@@ -368,6 +420,7 @@ void main() {
           builder: (context, state) => HomePage(
             service: _OkFake(),
             profileService: _OkProfileFake(),
+            walletService: _RoleWalletFake.merchant(),
           ),
         ),
         GoRoute(
@@ -756,5 +809,57 @@ void main() {
 
     expect(find.text('Hola, Ana'), findsOneWidget);
     expect(profile.calls, 1);
+  });
+
+  group('rol de comercio en el inicio (E4-T23)', () {
+    Widget homeWithWallet(WalletServiceBase? wallet) => _harness(
+          HomePage(
+            service: _OkFake(),
+            profileService: _OkProfileFake(),
+            walletService: wallet,
+          ),
+        );
+
+    testWidgets('comercio ve la accion rapida Cobrar QR', (tester) async {
+      await tester.pumpWidget(homeWithWallet(_RoleWalletFake.merchant()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qa-qr')), findsOneWidget);
+      expect(find.text('Cobrar QR'), findsOneWidget);
+    });
+
+    testWidgets('cuenta personal no ve Cobrar QR (otras intactas)',
+        (tester) async {
+      await tester.pumpWidget(homeWithWallet(_RoleWalletFake.personal()));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qa-qr')), findsNothing);
+      expect(find.text('Cobrar QR'), findsNothing);
+      // Las demas quick-actions siguen visibles.
+      expect(find.byKey(const Key('qa-transferir')), findsOneWidget);
+      expect(find.byKey(const Key('qa-creditos')), findsOneWidget);
+      expect(find.byKey(const Key('qa-recargar')), findsOneWidget);
+    });
+
+    testWidgets('sin servicio de billetera no se muestra (fail-closed)',
+        (tester) async {
+      await tester.pumpWidget(homeWithWallet(null));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qa-qr')), findsNothing);
+      expect(find.byKey(const Key('qa-transferir')), findsOneWidget);
+    });
+
+    testWidgets('error de red oculta Cobrar QR (fail-closed)', (tester) async {
+      final failing = _RoleWalletFake(
+        wallet: _RoleWalletFake.merchant().wallet,
+        error: ApiException.network(),
+      );
+      await tester.pumpWidget(homeWithWallet(failing));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('qa-qr')), findsNothing);
+      expect(find.byKey(const Key('qa-recargar')), findsOneWidget);
+    });
   });
 }

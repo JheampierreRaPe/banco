@@ -214,6 +214,116 @@ def _record_disbursed_event(session: Session, owner: uuid.UUID, loan: Loan, tx) 
     )
 
 
+#: Plantillas de la notificacion dedicada del desembolso (E3-T24, HU12).
+#: Push + email (dos codigos: el codigo es unico global y de un solo
+#: canal, `docs/03b#13`). Es la UNICA notificacion del desembolso
+#: (sustituye a la alerta generica de seguridad para `credit.disbursed`).
+PUSH_DISBURSED_TEMPLATE = "credit_disbursed"
+EMAIL_DISBURSED_TEMPLATE = "credit_disbursed_email"
+
+
+def _amount_label(amount_minor: int) -> str:
+    """Monto en formato `10000.00` para la notificacion (sin `float`).
+
+    Solo digitos y punto a partir de centimos enteros; la moneda (`S/`)
+    la aporta la plantilla (los creditos del MVP son en PEN, coherente
+    con la cuenta destino que ya valido el caso de uso).
+    """
+    minor = int(amount_minor)
+    magnitude = abs(minor)
+    return f"{magnitude // 100}.{magnitude % 100:02d}"
+
+
+def _notify_disbursed(session: Session, owner: uuid.UUID, view: dict[str, Any]) -> None:
+    """Notificacion dedicada del desembolso (E3-T24, best-effort).
+
+    Push + email por la fachada `notifications.send(...)` con las
+    plantillas aditivas `credit_disbursed`/`credit_disbursed_email`
+    (sin PII: referencia del prestamo + monto + cuenta enmascarada +
+    instante). Se envia SOLO cuando el desembolso liquida de verdad
+    (el llamante no la invoca en replay de negocio). Un fallo del
+    proveedor (o sin correo resoluble) deja el desembolso intacto
+    (`FAILED` u omitida). `flush` sin `commit` (decide el llamante).
+    """
+    try:
+        from app.modules.notifications import service as notifications_service
+    except ImportError:  # pragma: no cover - el modulo existe en el repo
+        logger.warning("credit disbursement notify_skipped reason=sin_fachada")
+        return
+    data = {
+        "loan_ref": str(view.get("loan_id") or "")[:8],
+        "amount_label": _amount_label(view.get("amount_minor") or 0),
+        "account_masked": str(view.get("account_masked") or ""),
+        "disbursed_at": str(view.get("disbursed_at") or ""),
+    }
+    try:
+        notifications_service.send(
+            session,
+            channel="push",
+            recipient=str(owner),
+            template_code=PUSH_DISBURSED_TEMPLATE,
+            data=data,
+            user_id=owner,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort: no revierte el desembolso
+        logger.warning(
+            "credit disbursement notify_failed channel=push template=%s error=%s",
+            PUSH_DISBURSED_TEMPLATE,
+            type(exc).__name__,
+        )
+    try:
+        from app.modules.identity.service import holder_contact as holder_contact_service
+
+        recipient = holder_contact_service.get_holder_email(session, owner)
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado
+        logger.warning(
+            "credit disbursement notify_skipped channel=email reason=%s", type(exc).__name__
+        )
+        return
+    if not isinstance(recipient, str) or not recipient.strip():
+        logger.warning("credit disbursement notify_skipped channel=email reason=sin_destinatario")
+        return
+    try:
+        notifications_service.send(
+            session,
+            channel="email",
+            recipient=recipient.strip(),
+            template_code=EMAIL_DISBURSED_TEMPLATE,
+            data=data,
+            user_id=owner,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort: no revierte el desembolso
+        logger.warning(
+            "credit disbursement notify_failed channel=email template=%s error=%s",
+            EMAIL_DISBURSED_TEMPLATE,
+            type(exc).__name__,
+        )
+        return
+    logger.info("credit disbursement notify_queued push+email")
+
+
+def _expire_settled_view(session: Session, loan: Loan, tx) -> None:
+    """Expira `loan`/`tx` tras el desembolso real (vista determinista).
+
+    El motor carga colecciones `selectin` (`tx.history`) durante sus
+    transiciones; si un bloque best-effort posterior captura una
+    excepcion (p. ej. infra de notificaciones ausente), los tracebacks
+    retenidos por el GC mantienen vivas esas instancias con la caché
+    previa y las lecturas posteriores DE LA MISMA sesion ven estado
+    rancio aunque el commit sea correcto (el dato persistido jamas se
+    afecta). Expirar fuerza la recarga determinista en el proximo
+    acceso; en produccion nadie los relee (costo cero, perezoso).
+    """
+    try:
+        session.expire(tx)
+    except Exception:  # noqa: BLE001, S110 - higiene best-effort
+        pass
+    try:
+        session.expire(loan)
+    except Exception:  # noqa: BLE001, S110 - higiene best-effort
+        pass
+
+
 def _audit_disbursement(session: Session, owner: uuid.UUID, loan: Loan, tx) -> None:
     """Auditoria best-effort del desembolso (sin PII ni cifras)."""
     try:
@@ -316,6 +426,14 @@ def _execute_disbursement(
                 int(existing_loan.principal_minor),
                 str(loan_target["currency"]),
             )
+            # El dinero se movio de verdad (completacion hacia adelante):
+            # notificacion dedicada (E3-T24), igual que el camino feliz.
+            _notify_disbursed(
+                session,
+                owner,
+                _view_from_loan_tx(existing_loan, tx),
+            )
+            _expire_settled_view(session, existing_loan, tx)
         # Auto-reparacion del vinculo G54 (idempotente: solo rellena
         # filas aun sin vincular).
         link_contracts_to_loan(
@@ -362,7 +480,11 @@ def _execute_disbursement(
     tx = _move_money(session, owner, loan, target["account_id"], amount_minor, currency)
     view = _view_from_loan_tx(loan, tx)
     store_response(session, row, response_snapshot=view, transaction_id=tx.id)
+    # Notificacion dedicada (E3-T24): solo en desembolso real, nunca en
+    # replay de negocio (las ramas de replay retornan antes sin notificar).
+    _notify_disbursed(session, owner, view)
     logger.info("loan disbursement ok status=%s", tx.status)
+    _expire_settled_view(session, loan, tx)
     return view, False
 
 

@@ -12,13 +12,14 @@ Contrato fijado (`docs/05#6.5`):
 - `GET /wallet/qr/{id}` (solo el titular dueno; ajeno/inexistente/de
   comercio -> `404` neutro) ->
   `200 {"data": {charge_id, qr_content, status, amount_minor: null,
-  currency, expires_at: null, paid_at?, payee_type, reusable},
-  "meta": {request_id}}`.
+  currency, expires_at: null, paid_at?, payee_type, reusable, payee_name_masked},
+  "meta": {request_id}}` (E4-T24: nombre del titular enmascarado,
+  `None` si no resoluble).
 
 `qr_content` (`str`) es el sobre canonico `BO-QR1` con
 `amount_minor = 0` ("lo define el pagador"; el pagador aporta el monto
 al pagar). Dinero entero en centimos (el `None` es "sin monto", nunca
-`float`). Sin PII en respuestas (solo `id`s).
+`float`). Sin PII en respuestas (solo `id`s + `payee_name_masked`).
 """
 
 from __future__ import annotations
@@ -66,7 +67,13 @@ class PersonalQrCreateResponse(BaseModel):
 
 
 class PersonalQrStatusData(BaseModel):
-    """Estado del QR personal (respuesta del `GET`)."""
+    """Estado del QR personal (respuesta del `GET`).
+
+    `payee_name_masked` (E4-T24, aditivo): nombre + un apellido del
+    titular enmascarado (`DIEG••• GONZ•••` = primeros 4 por parte +
+    resto oculto, partes separadas por un espacio; `None` si no se
+    pudo resolver). Jamas viaja el nombre completo.
+    """
 
     charge_id: str
     qr_content: str = Field(description="Mismo sobre BO-QR1 del POST")
@@ -77,6 +84,10 @@ class PersonalQrStatusData(BaseModel):
     paid_at: datetime | None = None
     payee_type: str = Field(default="PERSONAL")
     reusable: bool = Field(default=True)
+    payee_name_masked: str | None = Field(
+        default=None,
+        description="Nombre del titular enmascarado (E4-T24); `None` si no resoluble",
+    )
 
 
 class PersonalQrStatusResponse(BaseModel):

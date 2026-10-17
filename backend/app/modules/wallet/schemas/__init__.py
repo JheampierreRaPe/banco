@@ -128,11 +128,21 @@ class WalletLinkData(BaseModel):
 
 
 class WalletData(BaseModel):
-    """Billetera del titular (`wallet_id` nulo = aun sin billetera)."""
+    """Billetera del titular (`wallet_id` nulo = aun sin billetera).
+
+    `is_merchant` (E4-T23) es el rol de comercio derivado server-side
+    (fila propia `ACTIVE` en `wallet.merchant_accounts`); `false` por
+    defecto (incluido el estado sin billetera `NONE`). `merchant_status`
+    expone el estado de la fila propia (`ACTIVE`/`BLOCKED`/`CLOSED`) o
+    `None` si el titular no tiene cuenta de comercio. Solo rol, sin PII
+    (ni RUC ni nombre comercial).
+    """
 
     wallet_id: uuid.UUID | None = None
     status: str
     links: list[WalletLinkData] = Field(default_factory=list)
+    is_merchant: bool = False
+    merchant_status: str | None = None
 
 
 class WalletResponse(BaseModel):

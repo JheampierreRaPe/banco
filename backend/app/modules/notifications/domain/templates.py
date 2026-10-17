@@ -116,6 +116,36 @@ BASE_TEMPLATES: dict[str, dict] = {
             "La copia certificada está disponible en tu expediente."
         ),
     },
+    # Desembolso del prestamo (E3-T24, HU12 CA-01/CA-02): notificacion
+    # dedicada transaccional (push + email, dos codigos porque el codigo
+    # de plantilla es unico global y de un solo canal, `docs/03b#13`).
+    # Es la UNICA notificacion del desembolso: sustituye a la alerta
+    # generica de seguridad para `credit.disbursed` (ver
+    # `notifications.events.on_sensitive_business_event`, que la omite
+    # para no duplicar push+email con el mismo evento). Cuerpo sin PII:
+    # referencia del prestamo (prefijo del `loan_id`), monto desembolsado,
+    # cuenta enmascarada (`****dddd`) e instante; el detalle vive en el
+    # cronograma, que solo consulta el titular.
+    "credit_disbursed": {
+        "code": "credit_disbursed",
+        "channel": "push",
+        "subject": None,
+        "body_template": (
+            "Tu credito {loan_ref} de S/ {amount_label} fue desembolsado "
+            "en tu cuenta {account_masked} el {disbursed_at}. "
+            "Revisa tu cronograma en la app."
+        ),
+    },
+    "credit_disbursed_email": {
+        "code": "credit_disbursed_email",
+        "channel": "email",
+        "subject": "Tu crédito fue desembolsado",
+        "body_template": (
+            "Tu credito {loan_ref} de S/ {amount_label} fue desembolsado "
+            "en tu cuenta {account_masked} el {disbursed_at}. "
+            "Revisa tu cronograma en la app."
+        ),
+    },
     # Cuotas del prestamo (E3-T19, HU12 CA-03/CA-04): un canal natural
     # por codigo (push). Cuerpo generico sin PII ni cifras (solo la
     # referencia del prestamo —prefijo del `loan_id`— y la fecha; el

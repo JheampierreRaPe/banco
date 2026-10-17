@@ -797,8 +797,20 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > >   ventana), `404 NOT_FOUND` (ajeno/inexistente, neutro), `409 CONFLICT`
 > >   (no `GENERATED`/ya `SIGNED`), `422 VALIDATION_ERROR` (sin
 > >   `Idempotency-Key`, esquema o ambos/ningun factor; el `422` sanitario
-> >   no refleja el cuerpo, el PIN nunca fuga). **No mueve dinero** (sin
-> >   `loans`, sin asientos; el desembolso es HU12).
+> >   no refleja el cuerpo, el PIN nunca fuga).
+> > - Desembolso automatico (E3-T24 `Hecho`, 2026-10-17; HU12 CA-01/CA-02;
+> >   decision del dueno: **inline, no consumidor**): tras firmar, el
+> >   desembolso a la **cuenta principal** ocurre sin accion del usuario
+> >   (en `savepoint`, clave estable `auto-disburse:<application_id>`: un
+> >   prestamo por expediente, asiento `docs/04#7.5`). La respuesta trae el
+> >   bloque **aditivo** `disbursement` (`status` + `loan_id`,
+> >   `transaction_id`, `amount_minor`, `account_masked` (`****dddd`),
+> >   `disbursed_at`; o `status="FAILED"` + `code`/`message` si no liquido:
+> >   la firma queda `SIGNED` y el reintento va por `POST .../disburse`,
+> >   contrato intacto). En desembolso real se envia la notificacion
+> >   dedicada `credit_disbursed` (push) + `credit_disbursed_email`
+> >   (email), sin PII (UNICA notificacion: la alerta generica de
+> >   seguridad se suprime para `credit.disbursed`, `docs/18` G90).
 > >
 > > Detalle del desembolso + lectura de prestamos (E3-T17 `Hecho`,
 > > 2026-10-13; HU12 CA-01/CA-02/CA-03-tiempo; gap G62 cerrado para estas
@@ -918,7 +930,16 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > El PAN, el numero completo y el `token_ref` jamas viajan en respuestas
 > (solo `account_masked`/`last4`/`brand`).
 > - `GET /wallet` (solo lectura, aislada por `sub` del JWT) ->
->   `200 {"data": {wallet_id, status, links[]}, "meta": {"request_id"}}`.
+>   `200 {"data": {wallet_id, status, links[], is_merchant, merchant_status},
+>   "meta": {"request_id"}}` (E4-T23: `is_merchant: bool` es el rol de
+>   comercio derivado server-side —`true` solo con fila propia `ACTIVE` en
+>   `wallet.merchant_accounts`, mismo criterio que `require_merchant_for_user`;
+>   `false` por defecto, incluido el estado sin billetera `NONE`— y
+>   `merchant_status: ACTIVE|BLOCKED|CLOSED|null` es el estado de la fila
+>   propia (`null` sin cuenta de comercio). Solo rol, sin PII: ni RUC ni
+>   nombre comercial. Aditivo: los clientes que ignoran el campo no rompen.
+>   El frontend lo usa para ocultar la entrada de comercio a las cuentas
+>   personales (fail-closed); el `403` real de `/merchants/qr*` no cambia).
 >   Sin billetera aun -> `200` con `wallet_id: null`, `status: "NONE"` y
 >   `links: []` (la fila se crea on-demand en la primera vinculacion).
 >   Vinculo = `{id, type (ACCOUNT|CARD), account_masked? (****1234, solo
@@ -1020,8 +1041,14 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   - `GET /wallet/qr/{id}` (solo el titular dueno; ajeno/inexistente/
 >     de comercio -> `404 NOT_FOUND` neutro) -> `200 {"data":
 >     {charge_id, qr_content, status, amount_minor: null, currency,
->     expires_at: null, paid_at?, payee_type, reusable}, "meta":
->     {"request_id"}}` (sin caducidad: el estado es el de la fila).
+>     expires_at: null, paid_at?, payee_type, reusable, payee_name_masked},
+>     "meta": {"request_id"}}` (sin caducidad: el estado es el de la
+>     fila). `payee_name_masked` (E4-T24, aditivo): nombre + un apellido
+>     del titular enmascarado (`DIEG••• GONZ•••` = primeros 4 por parte +
+>     resto oculto con `•••`, partes separadas por un espacio; parte
+>     `<= 4` completa; razon social como una sola parte); `null` si no
+>     se pudo resolver (fallback neutro). El nombre completo jamas viaja
+>     ni se loguea (reglas 7/9).
 >   - Codigos: `401 NOT_AUTHENTICATED`, `404 NOT_FOUND` neutro,
 >     `409 IDEMPOTENCY_CONFLICT`, `422 VALIDATION_ERROR` (moneda/
 >     concepto o titular sin cuenta `ACTIVE` de abono).
@@ -1254,10 +1281,14 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   (`String` `BO-QR1` escaneado)}`, **sin** cabecera `Idempotency-Key`
 >   (no mueve dinero) -> `200 {"data": {charge_id, merchant?
 >   {merchant_id, business_name} (`None` en personal), payee?
->   {owner_user_id} (`None` en comercio), amount_minor (entero o `null`:
->   `null` en QR personal —el pagador digita el monto—), currency,
->   expires_at (`None` en `STATIC`), status (`ACTIVE`)}, "meta":
->   {"request_id"}}`. Decodifica y verifica el `qr_content` (adaptador
+>   {owner_user_id} (`None` en comercio), payee_name_masked, amount_minor
+>   (entero o `null`: `null` en QR personal —el pagador digita el
+>   monto—), currency, expires_at (`None` en `STATIC`), status
+>   (`ACTIVE`)}, "meta": {"request_id"}}`. `payee_name_masked` (E4-T24,
+>   aditivo): nombre + un apellido del dueno enmascarado (mismo formato
+>   que en `GET /wallet/qr/{id}`; en comercio es el nombre natural del
+>   dueno y `business_name` se conserva intacto; `null` si no se pudo
+>   resolver). Decodifica y verifica el `qr_content` (adaptador
 >   `E4-T03` + `verify_charge_signature` + caducidad/estado) en **solo
 >   lectura**: sin retencion, sin asiento, sin pagos ni eventos.
 >   Vencido/corrupto/manipulado/ajeno o destino sin cuenta de abono ->

@@ -521,7 +521,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('éxito de firma ofrece Desembolsar a mi cuenta',
+    testWidgets('sin desembolso automático: la CTA solo reaparece como reintento',
         (tester) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -541,7 +541,11 @@ void main() {
       await scrollSignToEnd(tester);
 
       expect(find.byKey(const Key('sign-success')), findsOneWidget);
+      // E3-T24: sin automático liquidado la CTA manual es SOLO reintento
+      // (título de la sección + texto del botón comparten la copia).
       expect(find.byKey(const Key('disburse-cta')), findsOneWidget);
+      expect(find.text('Reintentar desembolso'), findsNWidgets(2));
+      expect(find.byKey(const Key('sign-disburse-confirm')), findsNothing);
       // Los CTA existentes siguen (sin duplicar ni retirar).
       expect(find.byKey(const Key('sign-home-cta')), findsOneWidget);
       expect(find.byKey(const Key('sign-loans-cta')), findsOneWidget);

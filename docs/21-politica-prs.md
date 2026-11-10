@@ -267,8 +267,9 @@ Los puntos 1-3 son de una hora y desbloquean todo lo demás.
 - **Aplicado en el repo:** 1 (`main` en `2c56ad6`, publicada y default en GitHub), 2 (CI en todos los PRs),
   3 (plantilla de PR), 4 (`docs/18` sección 10), 5 (`_PLANTILLA` con "Plan de PRs"), 6-9 (los 4 agentes)
   y 10 (`HANDOFF` cierre de sesión).
-- **Pendiente manual:** 11 (instalar `gh` o definir la creación de PR por API) y 12 (limpieza de
-  ramas integradas y binarios de la raíz).
+- **Pendiente manual:** 11 (`gh` instalado v2.103.3; falta autenticacion persistente con
+  `gh auth login` o `gh auth refresh -h github.com -s read:org`) y 12 (limpieza hecha; queda
+  `ui-flutter-documentation` por no estar mergeada).
 
 ---
 

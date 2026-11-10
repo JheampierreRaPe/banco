@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { MENU, roleLabel, visibleMenu } from "./roles";
+import { MENU, firstAllowedPath, firstPathForRole, roleLabel, visibleMenu } from "./roles";
 
 afterEach(cleanup);
 
@@ -40,5 +40,20 @@ describe("matriz de roles", () => {
     expect(roleLabel("credit_analyst")).toBe("Créditos");
     expect(roleLabel("ANALYST")).toBe("Créditos");
     expect(roleLabel("auditor")).toBe("Auditoría");
+  });
+
+  it("firstAllowedPath: primera ruta de la unión (vista inicial de `/`)", () => {
+    expect(firstAllowedPath(["fraud_analyst"])).toBe("/fraud");
+    expect(firstAllowedPath(["auditor", "operations_analyst"])).toBe("/operations");
+    expect(firstAllowedPath(["analyst"])).toBe("/credits");
+    expect(firstAllowedPath([])).toBeNull();
+    expect(firstAllowedPath(["otro_rol"])).toBeNull();
+  });
+
+  it("firstPathForRole: primera ruta de un rol (selector, Opción A)", () => {
+    expect(firstPathForRole("auditor")).toBe("/audit");
+    expect(firstPathForRole("ANALYST")).toBe("/credits");
+    expect(firstPathForRole("security_admin")).toBe("/admin");
+    expect(firstPathForRole("otro_rol")).toBeNull();
   });
 });

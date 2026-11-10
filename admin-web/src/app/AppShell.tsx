@@ -1,26 +1,31 @@
-// Shell del panel interno (F-T12 corte 1): topbar + sidebar + contenido.
-// - Sidebar con navegación por rol (entradas no implementadas: deshabilitadas
-//   con "próximamente"); colapsable en pantallas pequeñas (botón + media query).
+// Shell del panel interno (F-T12 corte 2): topbar + sidebar + contenido.
+// - Sidebar con la UNIÓN de rutas de todos los roles del JWT (`visibleMenu`);
+//   todas las entradas navegan (Opción A del dueño). Las aún sin pantalla de
+//   negocio llevan la etiqueta "próximamente" y abren su placeholder
+//   (`SoonPage` hasta `F-T13`..`F-T18`). Colapsable (botón + media query).
 // - Topbar con selector de rol visible: `select` si hay varios roles,
-//   chip si hay uno solo. Muestra `subjectShortRef` (nunca el `sub` crudo).
-// - `activePath` + `onNavigate` dejan la base lista para el router del corte 2
-//   (hoy todo el contenido es la vista de crédito bajo `/credits`).
+//   chip si hay uno solo. El selector solo resalta/cambia la vista inicial
+//   (`onRoleChange` -> primera ruta de ese rol); NO restringe permisos.
+//   Muestra `subjectShortRef` (nunca el `sub` crudo).
 
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { useSession } from "../auth/session";
-import { MENU, roleLabel } from "./roles";
+import { visibleMenu, roleLabel } from "./roles";
 
 interface Props {
   activePath?: string;
   onNavigate?: (path: string) => void;
+  /** El selector de rol eligió vista inicial (primera ruta de ese rol). */
+  onRoleChange?: (role: string) => void;
   children: ReactNode;
 }
 
-export function AppShell({ activePath = "/credits", onNavigate, children }: Props) {
+export function AppShell({ activePath = "/credits", onNavigate, onRoleChange, children }: Props) {
   const { session, signOut } = useSession();
   const [navOpen, setNavOpen] = useState(true);
   const roles = session?.roles ?? [];
+  const entries = visibleMenu(roles);
   const [activeRole, setActiveRole] = useState<string | null>(null);
   const selectedRole = activeRole && roles.includes(activeRole) ? activeRole : (roles[0] ?? null);
 
@@ -45,7 +50,10 @@ export function AppShell({ activePath = "/credits", onNavigate, children }: Prop
                 <select
                   aria-label="Rol activo"
                   value={selectedRole}
-                  onChange={(e) => setActiveRole(e.target.value)}
+                  onChange={(e) => {
+                    setActiveRole(e.target.value);
+                    onRoleChange?.(e.target.value);
+                  }}
                 >
                   {roles.map((r) => (
                     <option key={r} value={r}>
@@ -73,29 +81,20 @@ export function AppShell({ activePath = "/credits", onNavigate, children }: Prop
         >
           <nav>
             <ul className="shell-nav">
-              {MENU.map((entry) => {
+              {entries.map((entry) => {
                 const active = entry.path === activePath;
                 const soon = entry.status === "soon";
                 return (
                   <li key={entry.key}>
-                    {soon ? (
-                      <span
-                        className={`shell-nav-item disabled${active ? " active" : ""}`}
-                        aria-disabled="true"
-                        title="Próximamente"
-                      >
-                        {entry.label} <span className="nav-soon">próximamente</span>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className={`shell-nav-link${active ? " active" : ""}`}
-                        aria-current={active ? "page" : undefined}
-                        onClick={() => onNavigate?.(entry.path)}
-                      >
-                        {entry.label}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className={`shell-nav-link${active ? " active" : ""}`}
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => onNavigate?.(entry.path)}
+                    >
+                      {entry.label}
+                      {soon && <span className="nav-soon">próximamente</span>}
+                    </button>
                   </li>
                 );
               })}

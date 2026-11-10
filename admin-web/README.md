@@ -7,9 +7,12 @@ seguridad y auditoria (solo lectura).
   (`docs/20-diseno-ui.md`, solo modo claro). Sin MUI/Ant: la vista de crédito usa los
   tokens directos (bootstrap mínimo E3-T10, gap F-T12 ver `docs/18` G52).
 - Autenticacion y RBAC por rol (matriz de accesos, `docs/13#2.2`): sesión separada de la
-  app móvil; el analista pega su JWT (`Authorization: Bearer`) y el panel solo lee `sub`
-  + `roles` para el gate de UI (la verificación es del servidor). Sin rol
-  `analyst`/`credit_analyst` → pantalla denegada (equivale al `403 NOT_AUTHORIZED`).
+  app móvil; el operador pega su JWT (`Authorization: Bearer`) y el panel solo lee `sub`
+  + `roles` para el gate de UI (la verificación es del servidor). Router real con las
+  6 rutas (`/operations`, `/fraud`, `/compliance`, `/credits`, `/admin`, `/audit`):
+  sin token → sesión; rol incorrecto → `403`; ruta inexistente → `404`. El menú
+  muestra la unión de rutas de todos los roles del JWT (Opción A: el selector de
+  rol solo cambia la vista inicial, no restringe). Sin rol del panel → `403`.
 - Datos personales y cuentas enmascarados por defecto (`••••` + cola; jamás UUID/documento
   en claro); toda accion queda auditada (tira visible usuario/hora/antes-después).
 - No edita asientos contables; los ajustes son asientos nuevos autorizados.
@@ -18,12 +21,18 @@ seguridad y auditoria (solo lectura).
 Se crea en la tarea `F-T12` (`docs/13-frontend-flutter-panel.md`); la vista de Analista de
 crédito vive desde `E3-T10`.
 
-## Base del panel (F-T12, corte 1: shell + sesión + compartidos)
+## Base del panel (F-T12, corte 2: shell + sesión + router RBAC + compartidos)
 
 - **Shell** (`src/app/AppShell.tsx`): topbar (marca, selector de rol visible, `sub`
-  enmascarado) + sidebar con navegación por rol + área de contenido. Sidebar colapsable
-  (botón ☰ con `aria-expanded`; en ≤860px es off-canvas y los paneles se apilan).
-  Entradas aún no implementadas: deshabilitadas con etiqueta "próximamente".
+  enmascarado) + sidebar con la unión de rutas de los roles del JWT + área de
+  contenido. Sidebar colapsable (botón ☰ con `aria-expanded`; en ≤860px es
+  off-canvas y los paneles se apilan). Las entradas aún sin pantalla de negocio
+  llevan la etiqueta "próximamente" y navegan a su placeholder (`SoonPage`).
+- **Router** (`src/app/routes.tsx` + `App.tsx`): `ROUTES` deriva de `MENU`
+  (matriz `docs/13#2.2`); `/` redirige a la primera ruta permitida
+  (`firstAllowedPath`); cada ruta usa `RoleGuard` (`403` con pista por módulo);
+  ruta inexistente → `NotFoundPage` (`404`); sin token → `SessionGate`.
+  `401` en la bandeja ofrece "Volver a ingresar" (`signOut` → sesión).
 - **Sesión generalizada** (`src/auth/session.tsx`): lee `sub`/`roles` del JWT y expone
   `hasRole(...roles)` (insensible a mayúsculas, acepta el alias histórico `analyst`).
   Roles canónicos: `operations_analyst`, `fraud_analyst`, `compliance_officer`,
@@ -31,20 +40,25 @@ crédito vive desde `E3-T10`.
   propia `admin-web.session-token` (separada de la app móvil); `signOut` la limpia.
 - **Matriz y menú** (`src/app/roles.ts`): `MENU` con las 6 rutas
   (`/operations`, `/fraud`, `/compliance`, `/credits`, `/admin`, `/audit`),
-  `visibleMenu(roles)` y `roleLabel` (sin PII). Base lista para el corte 2.
-- **RBAC base** (`src/app/RoleGuard.tsx` + `src/app/pages.tsx`): `RoleGuard allow=[...]`
-  renderiza `ForbiddenPage` (403) si el rol no corresponde; `NotFoundPage` (404) mínima.
+  `visibleMenu(roles)` (unión), `firstAllowedPath`/`firstPathForRole` (vista
+  inicial, Opción A) y `roleLabel` (sin PII).
+- **RBAC** (`src/app/RoleGuard.tsx` + `src/app/pages.tsx`): `RoleGuard allow=[...]`
+  renderiza `ForbiddenPage` (403) si el rol no corresponde; `NotFoundPage` (404)
+  mínima. Solo `/credits` tiene pantalla real; el resto abre `SoonPage` hasta
+  `F-T13`..`F-T18`.
 - **Componentes compartidos** (`src/components/`): `DataTable` (caption, vacío
   accionable), `StatusChip` (tonos por estado del servidor), `EmptyState`/`ErrorState`
   (con Reintentar), `ConfirmDialog` (`alertdialog`), `MaskedRef` (solo `••••cola`,
   jamás el valor crudo ni en atributos del DOM).
 - **Pruebas del corte**: `session.test.tsx` (token válido/inválido, roles, `hasRole`,
-  persistencia, logout), `AppShell.test.tsx` (shell, selector, colapso, guard, 403/404),
-  `roles.test.ts` (matriz), `shared.test.tsx` (componentes + PII). Regresión de crédito
-  intacta (15 pruebas `analyst.test.tsx`).
+  persistencia, logout), `AppShell.test.tsx` (shell, menú por rol, unión multi-rol,
+  selector Opción A, colapso, guard, 403/404), `roles.test.ts` (matriz + vista
+  inicial), `router.test.tsx` (navegación por rol, `/`, 403 por ruta, 404, sin
+  token → sesión, sin rol del panel → 403, `401` → sesión), `shared.test.tsx`
+  (componentes + PII). Regresión de crédito intacta (15 pruebas `analyst.test.tsx`).
 
-> Corte 2 (pendiente): router con las 6 rutas protegidas, menú condicionado por rol
-> (`visibleMenu`), `403` por ruta y `401` → sesión. Sin login real de panel (D-S4-02).
+> Sin login real de panel (D-S4-02): se mantiene el JWT pegado del bootstrap y el
+> RBAC de UI; la verificación real es del backend.
 
 ## Vista de Analista de crédito (E3-T10, HU10)
 
@@ -67,8 +81,7 @@ Bandeja `EN_REVISION` + detalle enmascarado + dictamen manual, según
   **"Volver a ingresar"** (hace `signOut`, limpia `sessionStorage` y vuelve a la
   pantalla de sesión — sin bucle de reintentos con el token vencido).
 - **Cerrar sesión** disponible en la barra lateral (flujo normal).
-- Navegación no implementada ("Aprobados hoy", "Rechazados", "Auditoría") se
-  muestra **deshabilitada** con etiqueta "próximamente" (no parece activa).
+- Navegación por rol ("próximamente" abre el placeholder del módulo hasta `F-T13`..`F-T18`).
 - Bandeja acotada a 50 por defecto con **"Cargar más"**: el backend no expone un
   total real para la bandeja (`meta.total = tamaño de página`, `limit` topado a
   100), así que el panel pagina por `offset` y muestra el contador como **"50+"**
@@ -87,7 +100,7 @@ docker compose up --build -d   # desde la raíz; servicio `admin-web`
 
 # Calidad del panel
 cd admin-web
-npm test         # vitest: 52 pruebas (corte 1: sesión/shell/RBAC/compartidos + regresión de crédito)
+npm test         # vitest: 73 pruebas (sesión/shell/router/RBAC/compartidos + regresión de crédito)
 npm run lint     # tsc --noEmit (lint del panel)
 npm run build    # tsc + build limpio
 ```

@@ -1,7 +1,8 @@
 # Sprint 3 - Indice de briefs (creditos avanzados, billetera, QR y notificaciones)
 
-> **Estado del indice (2026-10-14):** **Sprint 3 cerrado: los 38 briefs del sprint estan `Hecho` y
-> validados** (32 en este indice + los 6 del adelanto HU11/`E3-T23`, ya archivados). El adelanto
+> **Estado del indice (actualizado 2026-11-10):** **Sprint 3 cerrado: los 44 briefs del sprint estan
+> `Hecho` y validados** (32 en este indice + 6 del adelanto HU11/`E3-T23` + 6 incrementos post-cierre;
+> los 12 fuera del indice ya archivados en `docs/tasks/archive/`). El adelanto
 > (`E3-T12`..`E3-T16` + `E3-T23`, firma de contrato y "Mis creditos") quedo `Hecho` y archivado en
 > `docs/tasks/archive/`. **HU12-HU16 `Hecho` y validados** (`E3-T17`..`E3-T22` + prerequisito
 > `E5-T23`; `E4-T01`..`E4-T20`, modulo `wallet`; QA sin defectos; ver `docs/18`): HU15 cierra el
@@ -22,8 +23,9 @@ Alcance (`docs/14#4`): **HU11** (8 SP, `credits`), **HU12** (5 SP, `credits`), *
 
 Total briefs de este indice: **32**, **todos `Hecho`** (`E3-T17`..`E3-T22` + el prerequisito
 `E5-T23`; `E4-T01`..`E4-T20` de HU13-HU16; y `E6-T12`..`E6-T16` de HU22). Sumando el adelanto de HU11
-(`E3-T12`..`E3-T16`) y `E3-T23`, el **Sprint 3 completo son 38 briefs, todos `Hecho`** (los 6 del
-adelanto ya en `docs/tasks/archive/`).
+(`E3-T12`..`E3-T16`) y `E3-T23`, mas los **6 incrementos post-cierre** (`E3-T24`, `E4-T21`..`E4-T25`),
+el **Sprint 3 completo son 44 briefs, todos `Hecho`** (los 12 fuera de este indice ya en
+`docs/tasks/archive/`).
 
 ## Cierre del Sprint 3 (2026-10-14)
 

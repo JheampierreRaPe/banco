@@ -372,3 +372,39 @@ con `AND reusable = false`). Se descarta tabla/vista separada (duplicaria servic
 > `backend/tests/test_e4_t20_services_qa.py::test_new_biller_row_lists_but_provider_gate_rejects_before_charging`
 > (falla si el proveedor aceptara el biller sin registrarlo: al conectar el proveedor
 > real con billers dinamicos, actualizar ese test).
+
+## 10. Politica de PRs (entrega por corte)
+
+> Regla: **1 brief o 1 corte declarado = 1 rama = 1 PR**. El brief se planifica por tarea
+> (`docs/tasks/`), pero se entrega en la misma granularidad. Detalle y ejemplos:
+> `21-politica-prs.md`.
+
+### 10.1 Presupuesto
+
+| Tipo de cambio | Objetivo | Tope duro | Cuenta |
+|---|---|---|---|
+| Feature (codigo de producto) | 300-500 lineas | 700 | Si |
+| Tests del feature | mismo PR | sin tope | No |
+| Bugfix | <= 150 | 250 | Si |
+| Migracion / lockfile / generado / rename | commit separado | sin tope | No |
+| Refactor puro | PR aislado | sin tope | Parcial |
+| Docs / briefs | PR propio | 500 | No |
+
+"Linea semantica" = anadidas + eliminadas en `backend/app`, `frontend/lib`, `admin-web/src`,
+excluyendo tests, `pubspec.lock`, `GeneratedPluginRegistrant`, migraciones autogeneradas y docs.
+
+### 10.2 Reglas
+
+- Un PR = un brief o un corte; un modulo; un motivo. Si el titulo necesita "y", son dos PRs.
+- El PR declara base, brief/corte, tamano y evidencia (plantilla `.github/pull_request_template.md`).
+- Si no entra en el presupuesto, se corta por "que parte se puede mergear sola sin dejar el repo
+  roto", no por cantidad de lineas.
+- Prohibido mezclar feature + fix + docs + dependencias + formateo en el mismo PR.
+- El PR debe tener CI verde; `pull_request` corre en todas las bases.
+- El cierre de sesion no termina con "PR pendiente": se abre el PR (o los PRs apilados) antes
+  de cerrar.
+
+### 10.3 Excepciones
+
+Renombres masivos, migraciones + modelo inseparable, tests que solo tienen sentido con su codigo,
+y el PR de release de cierre de sprint. Toda excepcion se justifica en la descripcion del PR.

@@ -235,6 +235,7 @@ salida de HU22 (`docs/11#hu22...`):
 ## 2. Trabajo de desarrollo
 
 - Ramas: `main` protegida; trabajo en `feature/<modulo>-<tema>`; PR obligatorio con revision.
+  Politica de tamano y cortes: `21-politica-prs.md` (1 brief o 1 corte = 1 PR).
 - Commits pequenos y descriptivos.
 - Un PR no se aprueba sin: pruebas verdes, sin secretos, sin `TODO` bloqueantes, documentado.
 - Migraciones Alembic revisadas por el responsable de datos.

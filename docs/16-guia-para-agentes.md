@@ -49,7 +49,8 @@ DoD:           <ademas del general, criterios especificos>
 5. Exponer el endpoint con su esquema y contrato OpenAPI.
 6. Escribir pruebas (camino feliz + errores + concurrencia si aplica).
 7. Actualizar documentacion de la tarea y `README.md` del modulo.
-8. Abrir PR siguiendo `15-calidad-seguridad-devops.md`.
+8. Abrir PR siguiendo `15-calidad-seguridad-devops.md` y `21-politica-prs.md` (1 brief o 1 corte
+   por PR; declarar base, tamano y evidencia).
 
 ## 5. Definition of Done (DoD)
 
@@ -65,6 +66,8 @@ Una tarea esta lista solo si:
 - [ ] Contrato/OpenAPI actualizado y validado.
 - [ ] Sin secretos, sin PII en logs, sin `TODO` bloqueantes.
 - [ ] CI verde y revision de otra persona.
+- [ ] El PR cabe en el presupuesto de `21-politica-prs.md` (300-500 lineas semanticas; tope 700)
+      o declara la excepcion y el motivo.
 - [ ] `README.md` del modulo actualizado.
 
 ## 6. Prompt modelo para asignar una tarea

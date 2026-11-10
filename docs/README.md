@@ -47,7 +47,8 @@ tarea, entender que debe hacer, por que, con que reglas y como verificar que que
 9. `15-calidad-seguridad-devops.md` - pruebas, seguridad, entornos y despliegue.
 10. `16-guia-para-agentes.md` - **leer antes de escribir una linea**: plantilla de tarea, DoD y reglas.
 11. `17-riesgos-y-decisiones-abiertas.md` - lo que falta decidir.
-12. `tasks/README.md` y `tasks/SPRINT-1.md` - protocolo de handoff y briefs del primer sprint.
+12. `21-politica-prs.md` - politica de PRs (1 brief o 1 corte por PR, presupuesto y CI).
+13. `tasks/README.md` y `tasks/SPRINT-1.md` - protocolo de handoff y briefs del primer sprint.
 
 ## 4. Mapa documento - epica
 

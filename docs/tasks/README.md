@@ -48,7 +48,7 @@ repositorio por su cuenta.
 2. **El brief** `docs/tasks/<ID>.md` (creado con `_PLANTILLA.md`).
 3. **Context pack** (L1 + secciones L2 segun la matriz 3).
 4. **Frontera de codigo**: "puedes tocar estos archivos; prohibido tocar tablas/imports de otros modulos".
-5. **Entorno**: rama `feature/<modulo>-<tema>`, `.env.example`, comando de `docker-compose`, comando de tests.
+5. **Entorno**: rama `feature/<modulo>-<tema>`, un PR por corte (`21-politica-prs.md`), `.env.example`, comando de `docker-compose`, comando de tests.
 6. **Entregables**: codigo + pruebas + OpenAPI + `README` del modulo.
 7. **DoD** (`16` §5) y **formato de reporte** (§6 de este documento).
 8. **Cierre**: indicar que NO explore todo el repo.
@@ -62,7 +62,7 @@ repositorio por su cuenta.
 5. Exponer endpoint + esquema + contrato OpenAPI.
 6. Escribir pruebas (feliz + error + concurrencia si aplica).
 7. Actualizar OpenAPI y `README` del modulo.
-8. Reportar y abrir PR.
+8. Reportar y abrir un PR por corte (ver `21-politica-prs.md`).
 
 ## 6. Formato de reporte del agente
 
@@ -88,7 +88,7 @@ Archivos/endpoints/eventos afectados: <lista>
 
 1. Tomar las tareas de los documentos de epica (`06`..`12`) y los IDs `F-T##`/`Q-T##` de `13`/`15`.
 2. Copiar `_PLANTILLA.md` a `tasks/<ID>.md`.
-3. Rellenar: meta, objetivo, alcance, contexto embebido, context pack, frontera, datos, API,
+3. Rellenar: meta, objetivo, alcance, **plan de PRs**, contexto embebido, context pack, frontera, datos, API,
    reglas, CA, pruebas, entregables.
 4. Verificar que el brief sea autosuficiente (que se entienda sin leer otro doc).
 5. Registrar estado en el propio brief (`Pendiente/En progreso/Hecho`).

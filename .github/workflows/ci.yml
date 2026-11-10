@@ -7,8 +7,10 @@ name: CI
 on:
   push:
     branches: [main, "feature/**", "sprint-*"]
+  # Politica de PRs (docs/21): todo PR debe validarse, sin importar la base.
+  # Antes solo apuntaba a `main`, que no existia: el PR #9 no corrio CI.
   pull_request:
-    branches: [main]
+    branches: ["**"]
 
 concurrency:
   group: ci-${{ github.ref }}

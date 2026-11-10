@@ -96,7 +96,9 @@ equipo prefiere un solo lenguaje (menos adecuado para grillas densas).
 
 ### 2.4 Tareas
 
-- `F-T12` Base del panel, autenticacion y RBAC por rol. *Frontend/Backend.*
+- `F-T12` Base del panel, autenticacion y RBAC por rol. *Frontend/Backend.* **Hecho**
+  (2026-11-10, corte 2: router con las 6 rutas protegidas, menú por unión de roles,
+  selector solo-vista-inicial, `403`/`404`, `401` → sesión; regresión de crédito verde).
   (Nota E3-T10, 2026-10-10: bootstrap mínimo acotado a crédito ya existe en
   `admin-web/` —Vite + React + TS + TanStack Query, solo vista de Analista—;
   F-T12 conserva la base general y el resto de vistas sin duplicar; ver `docs/18` G52.)

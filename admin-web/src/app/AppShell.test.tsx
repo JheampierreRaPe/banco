@@ -1,11 +1,11 @@
-// Pruebas del shell + RBAC base (F-T12 corte 1).
-// Cubre: sidebar/topbar/contenido, selector de rol visible, colapso de la
-// navegación, `RoleGuard` (permitido/403) y páginas mínimas 403/404.
+// Pruebas del shell + RBAC (F-T12 corte 2).
+// Cubre: sidebar/topbar/contenido, menú filtrado por rol (unión), selector de
+// rol (Opción A: solo cambia la vista inicial), colapso, `RoleGuard` y 403/404.
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionProvider } from "../auth/session";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { STORAGE_KEY, SessionProvider } from "../auth/session";
 import { AppShell } from "./AppShell";
 import { RoleGuard } from "./RoleGuard";
 import { ForbiddenPage, NotFoundPage } from "./pages";
@@ -18,14 +18,14 @@ function fakeJwt(roles: unknown = ["credit_analyst"]): string {
   return `${b64({ alg: "HS256" })}.${b64({ sub: SUB, roles })}.firma`;
 }
 
-function shell(roles: unknown = ["credit_analyst"]) {
+function shell(roles: unknown = ["credit_analyst"], props: { activePath?: string; onNavigate?: (p: string) => void; onRoleChange?: (r: string) => void } = {}) {
   sessionStorage.setItem(
     "admin-web.session-token",
     fakeJwt(roles),
   );
   return render(
     <SessionProvider>
-      <AppShell activePath="/credits">
+      <AppShell activePath={props.activePath ?? "/credits"} onNavigate={props.onNavigate} onRoleChange={props.onRoleChange}>
         <p>contenido</p>
       </AppShell>
     </SessionProvider>,
@@ -47,9 +47,36 @@ describe("AppShell", () => {
     expect(screen.getByText("Panel interno — Banca Online")).toBeInTheDocument();
     expect(screen.getByLabelText("Navegación del panel")).toBeInTheDocument();
     expect(screen.getByText("contenido")).toBeInTheDocument();
-    // Entrada activa de créditos + resto próximamente.
-    expect(screen.getByRole("button", { name: "Créditos" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getAllByTitle("Próximamente")).toHaveLength(5);
+    // Analista de crédito: solo su entrada, activa, sin "próximamente".
+    const nav = screen.getByLabelText("Navegación del panel");
+    expect(within(nav).getByRole("button", { name: "Créditos" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).queryByTitle("Próximamente")).not.toBeInTheDocument();
+  });
+
+  it("menú condicionado por rol: cada rol ve solo sus entradas", () => {
+    shell(["auditor"]);
+    const nav = screen.getByLabelText("Navegación del panel");
+    expect(within(nav).getByRole("button", { name: /Auditoría/ })).toBeInTheDocument();
+    expect(within(nav).queryByRole("button", { name: "Créditos" })).not.toBeInTheDocument();
+  });
+
+  it("multi-rol: ve la unión de rutas (Opción A), sin duplicar ni restringir", () => {
+    const onNavigate = vi.fn();
+    shell(["credit_analyst", "auditor"], { onNavigate });
+    const nav = screen.getByLabelText("Navegación del panel");
+    const buttons = within(within(nav).getByRole("list")).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      "Créditos",
+      expect.stringContaining("Auditoría"),
+    ]);
+  });
+
+  it("las entradas sin pantalla de negocio navegan a su placeholder", async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    shell(["auditor"], { activePath: "/audit", onNavigate });
+    await user.click(screen.getByRole("button", { name: /Auditoría/ }));
+    expect(onNavigate).toHaveBeenCalledWith("/audit");
   });
 
   it("selector de rol visible: chip con un rol, select con varios", () => {
@@ -63,6 +90,18 @@ describe("AppShell", () => {
     expect(select).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Créditos" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Auditoría" })).toBeInTheDocument();
+  });
+
+  it("el selector solo cambia la vista inicial (Opción A, no restringe)", async () => {
+    const user = userEvent.setup();
+    const onRoleChange = vi.fn();
+    shell(["credit_analyst", "auditor"], { onRoleChange });
+    // La unión sigue visible antes y después de cambiar el selector.
+    expect(screen.getByRole("button", { name: "Créditos" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Rol activo"), "auditor");
+    expect(onRoleChange).toHaveBeenCalledWith("auditor");
+    expect(screen.getByRole("button", { name: "Créditos" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Auditoría/ })).toBeInTheDocument();
   });
 
   it("la navegación se colapsa con el botón (pantallas pequeñas)", async () => {
@@ -97,7 +136,7 @@ describe("RoleGuard y páginas", () => {
   });
 
   function guard(roles: unknown, allow: string[]) {
-    sessionStorage.setItem("admin-web.session-token", fakeJwt(roles));
+    sessionStorage.setItem(STORAGE_KEY, fakeJwt(roles));
     return render(
       <SessionProvider>
         <RoleGuard allow={allow}>

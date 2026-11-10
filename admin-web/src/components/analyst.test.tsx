@@ -3,7 +3,7 @@
 // motivo obligatorio, 409 ya decidido, 403 sin rol, enmascaramiento y los
 // 4 estados de UI (contenido/carga/vacío/error).
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -203,12 +203,14 @@ describe("vista de Analista de crédito", () => {
     expect(screen.getByText(/no tiene rol de analista de crédito/)).toBeInTheDocument();
   });
 
-  it("sin rol en el token: denegado antes de llamar a la API", async () => {
+  it("sin rol de crédito en el token: va a su módulo sin llamar a la API", async () => {
     const user = userEvent.setup();
     const { fetchMock } = mockApi({});
     renderApp();
     await signInAs(user, ["auditor"]);
-    expect(await screen.findByText("Acceso denegado")).toBeInTheDocument();
+    // Corte 2 (Opción A): el auditor entra a `/audit` (placeholder F-T18);
+    // la bandeja de crédito ni se consulta.
+    expect(await screen.findByText(/llega en F-T18/)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -366,7 +368,7 @@ describe("vista de Analista de crédito", () => {
     );
   });
 
-  it("navegación no implementada se muestra deshabilitada (próximamente)", async () => {
+  it("menú condicionado por rol: el analista solo ve Créditos (corte 2)", async () => {
     const user = userEvent.setup();
     mockApi({
       queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
@@ -375,14 +377,14 @@ describe("vista de Analista de crédito", () => {
     await signInAs(user);
     await screen.findByText(/Personal S\/ 10,000\.00/);
 
-    // Shell F-T12: 5 módulos aún no implementados (operaciones, fraude,
-    // cumplimiento, administración, auditoría); créditos es la vista activa.
-    const soon = screen.getAllByTitle("Próximamente");
-    expect(soon).toHaveLength(5);
-    for (const item of soon) {
-      expect(item).toHaveAttribute("aria-disabled", "true");
-      expect(item.className).toContain("disabled");
-    }
+    // Corte 2: el menú muestra solo la unión de rutas del JWT; el analista
+    // ve únicamente "Créditos" (activa) y nada deshabilitado.
+    const nav = screen.getByLabelText("Navegación del panel");
+    expect(within(nav).getByRole("button", { name: "Créditos" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(nav).queryByTitle("Próximamente")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cerrar sesión" })).toBeInTheDocument();
   });
 

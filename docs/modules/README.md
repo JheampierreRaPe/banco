@@ -858,6 +858,20 @@ eventos (`outbox`/`inbox`).
   `reconciliation_exceptions`, `claims`.
 - **Expone:** `/reconciliation/*`; eventos `reconciliation.exception`, `claim.resolved`.
 - **Consume:** `transfer.settled`, `ledger.entry.posted`.
+- **Fuente de clearing (E5-T16, HU19):** adaptador `ClearingSource`
+  (`backend/app/adapters/clearing_source.py`, contrato en `docs/02#9`):
+  `fetch_files(*, since, source)` + `fetch_items(file_ref)` (+ `fetch_batch`
+  que verifica `item_count`/`checksum`) con payloads tipados
+  (`ClearingFilePayload`/`ClearingItemPayload`: `external_ref`,
+  `amount_minor` entero `> 0`, `currency` ISO-4217, `value_date`,
+  `direction` `INBOUND`/`OUTBOUND`, `raw` opaco). `mock` determinista por
+  defecto (misma entrada -> mismo lote/checksum, sin red; valor no
+  reconocido -> `mock`), `http` con timeout/reintentos/circuito
+  (`CLEARING_SOURCE_PROVIDER`, la key solo en cabecera `Authorization`).
+  Errores tipados `CLEARING_SOURCE_UNAVAILABLE` (`503`) /
+  `CLEARING_SOURCE_TIMEOUT` (`502`); payload invalido ->
+  `VALIDATION_ERROR` sin red. Sin PII/secretos en logs; no mueve dinero ni
+  persiste (la ingesta es `E5-T17`).
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

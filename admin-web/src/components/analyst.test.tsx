@@ -375,8 +375,10 @@ describe("vista de Analista de crédito", () => {
     await signInAs(user);
     await screen.findByText(/Personal S\/ 10,000\.00/);
 
+    // Shell F-T12: 5 módulos aún no implementados (operaciones, fraude,
+    // cumplimiento, administración, auditoría); créditos es la vista activa.
     const soon = screen.getAllByTitle("Próximamente");
-    expect(soon).toHaveLength(3);
+    expect(soon).toHaveLength(5);
     for (const item of soon) {
       expect(item).toHaveAttribute("aria-disabled", "true");
       expect(item.className).toContain("disabled");

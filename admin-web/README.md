@@ -18,6 +18,34 @@ seguridad y auditoria (solo lectura).
 Se crea en la tarea `F-T12` (`docs/13-frontend-flutter-panel.md`); la vista de Analista de
 crédito vive desde `E3-T10`.
 
+## Base del panel (F-T12, corte 1: shell + sesión + compartidos)
+
+- **Shell** (`src/app/AppShell.tsx`): topbar (marca, selector de rol visible, `sub`
+  enmascarado) + sidebar con navegación por rol + área de contenido. Sidebar colapsable
+  (botón ☰ con `aria-expanded`; en ≤860px es off-canvas y los paneles se apilan).
+  Entradas aún no implementadas: deshabilitadas con etiqueta "próximamente".
+- **Sesión generalizada** (`src/auth/session.tsx`): lee `sub`/`roles` del JWT y expone
+  `hasRole(...roles)` (insensible a mayúsculas, acepta el alias histórico `analyst`).
+  Roles canónicos: `operations_analyst`, `fraud_analyst`, `compliance_officer`,
+  `credit_analyst`, `security_admin`, `auditor`. Token en `sessionStorage` con clave
+  propia `admin-web.session-token` (separada de la app móvil); `signOut` la limpia.
+- **Matriz y menú** (`src/app/roles.ts`): `MENU` con las 6 rutas
+  (`/operations`, `/fraud`, `/compliance`, `/credits`, `/admin`, `/audit`),
+  `visibleMenu(roles)` y `roleLabel` (sin PII). Base lista para el corte 2.
+- **RBAC base** (`src/app/RoleGuard.tsx` + `src/app/pages.tsx`): `RoleGuard allow=[...]`
+  renderiza `ForbiddenPage` (403) si el rol no corresponde; `NotFoundPage` (404) mínima.
+- **Componentes compartidos** (`src/components/`): `DataTable` (caption, vacío
+  accionable), `StatusChip` (tonos por estado del servidor), `EmptyState`/`ErrorState`
+  (con Reintentar), `ConfirmDialog` (`alertdialog`), `MaskedRef` (solo `••••cola`,
+  jamás el valor crudo ni en atributos del DOM).
+- **Pruebas del corte**: `session.test.tsx` (token válido/inválido, roles, `hasRole`,
+  persistencia, logout), `AppShell.test.tsx` (shell, selector, colapso, guard, 403/404),
+  `roles.test.ts` (matriz), `shared.test.tsx` (componentes + PII). Regresión de crédito
+  intacta (15 pruebas `analyst.test.tsx`).
+
+> Corte 2 (pendiente): router con las 6 rutas protegidas, menú condicionado por rol
+> (`visibleMenu`), `403` por ruta y `401` → sesión. Sin login real de panel (D-S4-02).
+
 ## Vista de Analista de crédito (E3-T10, HU10)
 
 Bandeja `EN_REVISION` + detalle enmascarado + dictamen manual, según
@@ -59,8 +87,9 @@ docker compose up --build -d   # desde la raíz; servicio `admin-web`
 
 # Calidad del panel
 cd admin-web
-npm test         # vitest: 23 pruebas (feliz, errores, 401→login, logout, refrescar, enmascaramiento, 4 estados, paginación 50+)
-npm run build    # tsc + build limpio (tsc es el lint del panel)
+npm test         # vitest: 52 pruebas (corte 1: sesión/shell/RBAC/compartidos + regresión de crédito)
+npm run lint     # tsc --noEmit (lint del panel)
+npm run build    # tsc + build limpio
 ```
 
 Variables: `VITE_API_BASE_URL` (defecto `http://localhost:8000/api/v1`; ver `.env.example`).

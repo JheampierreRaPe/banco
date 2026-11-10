@@ -133,7 +133,7 @@ def test_format_at_legible_converts_iso_to_lima():
     assert format_at_legible("2026-09-17T00:00:00Z") == "16/09/2026 19:00"
     assert format_at_legible(datetime(2026, 10, 15, 19, 30, tzinfo=UTC)) == "15/10/2026 14:30"
     # Naive = UTC (mismo criterio que el resto del backend con SQLite).
-    naive = datetime(2026, 10, 15, 19, 30)  # noqa: DTZ001 - el caso naive es intencional
+    naive = datetime(2026, 10, 15, 19, 30)  # naive intencional: se interpreta como UTC
     assert format_at_legible(naive) == "15/10/2026 14:30"
 
 

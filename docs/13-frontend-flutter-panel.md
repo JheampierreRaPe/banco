@@ -105,7 +105,11 @@ equipo prefiere un solo lenguaje (menos adecuado para grillas densas).
 - `F-T13` Pantallas de operaciones/conciliacion. *Frontend.*
 - `F-T14` Pantallas de fraude. *Frontend.*
 - `F-T15` Pantallas de cumplimiento. *Frontend.*
-- `F-T16` Pantallas de credito. *Frontend.*
+- `F-T16` Pantallas de credito. *Frontend.* **Hecho** (2026-11-10: feature en
+  `admin-web/src/features/credits/` bajo el shell/RBAC de `F-T12`; bandeja
+  `IN_REVIEW` con paginación `limit`/`offset`, refresco y contador; detalle
+  enmascarado; dictamen con motivo obligatorio + confirmación + auditoría
+  `before`/`after` de la respuesta del servidor; 4 estados; 80 pruebas verdes).
 - `F-T17` Administracion de parametros, usuarios y roles. *Frontend.*
 - `F-T18` Vista de auditoria y ledger (solo lectura). *Frontend.*
 

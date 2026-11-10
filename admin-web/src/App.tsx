@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "./api/client";
 import { useSession } from "./auth/session";
+import { AppShell } from "./app/AppShell";
 import { SessionGate } from "./components/SessionGate";
 import { QueueList, productNameResolver } from "./components/QueueList";
 import { ApplicationDetail } from "./components/ApplicationDetail";
@@ -72,28 +73,10 @@ function AnalystView() {
   return (
     <div>
       <div className="layout">
-        <aside className="sidebar" aria-label="Navegación del panel">
-          <h2>Panel Créditos</h2>
-          <div className="nav-item active">Bandeja IN_REVIEW ({total}{hasMore ? "+" : ""})</div>
-          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
-            Aprobados hoy <span className="nav-soon">próximamente</span>
-          </div>
-          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
-            Rechazados <span className="nav-soon">próximamente</span>
-          </div>
-          <div className="nav-item disabled" aria-disabled="true" title="Próximamente">
-            Auditoría <span className="nav-soon">próximamente</span>
-          </div>
-          <div className="role-foot">
-            <span>Rol: Analista de crédito</span>
-            <button type="button" className="btn btn-secondary btn-logout" onClick={signOut}>
-              Cerrar sesión
-            </button>
-          </div>
-        </aside>
         <div className="main">
           <div className="queue-pane">
             <div className="queue-toolbar">
+              <span className="queue-count">Bandeja IN_REVIEW ({total}{hasMore ? "+" : ""})</span>
               <button
                 type="button"
                 className="btn btn-secondary btn-refresh"
@@ -238,11 +221,10 @@ function AnalystView() {
 function Shell() {
   const { session } = useSession();
   return (
-    <div>
-      <header className="topbar">Panel Créditos — Revisión del analista</header>
+    <AppShell activePath="/credits">
       <SessionGate />
       {session?.isAnalyst && <AnalystView />}
-    </div>
+    </AppShell>
   );
 }
 

@@ -264,10 +264,9 @@ Los puntos 1-3 son de una hora y desbloquean todo lo demás.
 
 ### Estado de implementación (2026-11-09)
 
-- **Aplicado en el repo:** 2 (CI en todos los PRs), 3 (plantilla de PR), 4 (`docs/18` sección 10),
-  5 (`_PLANTILLA` con "Plan de PRs"), 6-9 (los 4 agentes) y 10 (`HANDOFF` cierre de sesión).
-- **Parcial:** 1 (rama local `main` creada en `2c56ad6`; falta `git push -u origin main` y cambiar
-  el default en GitHub: Settings > Branches).
+- **Aplicado en el repo:** 1 (`main` en `2c56ad6`, publicada y default en GitHub), 2 (CI en todos los PRs),
+  3 (plantilla de PR), 4 (`docs/18` sección 10), 5 (`_PLANTILLA` con "Plan de PRs"), 6-9 (los 4 agentes)
+  y 10 (`HANDOFF` cierre de sesión).
 - **Pendiente manual:** 11 (instalar `gh` o definir la creación de PR por API) y 12 (limpieza de
   ramas integradas y binarios de la raíz).
 

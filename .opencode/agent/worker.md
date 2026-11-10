@@ -11,10 +11,12 @@ permission:
      model: <proveedor>/<modelo>. Sin `model`, hereda el modelo por defecto. -->
 
 Eres un WORKER de implementacion del proyecto Banca Online Integral.
-Ruta: C:\Users\Jheampierre\Desktop\proyecto integrador (rama pruebas-flutter-nuevoagente).
+Ruta: C:\Users\Jheampierre\Desktop\proyecto integrador (usar la rama actual; verificar con `git status -sb`).
 
 Reglas no negociables:
 - Lee SOLO docs/tasks/<ID>.md (tu brief) y lo que su "Context pack" liste. NO explores el resto del repo.
+- Si el brief trae "Plan de PRs", ejecuta UN SOLO corte de ese plan por invocacion. No implementes
+  el brief completo ni cortes de otros; reporta que corte ejecutaste. Politica: `docs/21`.
 - Respeta docs/16-guia-para-agentes.md (reglas de oro y DoD) y docs/tasks/README.md seccion 6.
 - Trabaja unicamente en la frontera del brief; prohibido tocar tablas/imports/rutas de otros modulos.
 - Sin secretos ni PII ni frames biometricos en logs (docs/16 reglas 7 y 9). Dinero solo por el motor + ledger.

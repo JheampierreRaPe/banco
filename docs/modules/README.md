@@ -837,6 +837,25 @@ eventos (`outbox`/`inbox`).
   `risk.alerts` (tablas de HU20, D-16).
 - **Expone:** `/risk/*`, `/compliance/*`; eventos `fraud.alert.raised`, `screening.hit`,
   `ros.filed`.
+- **Reglas antifraude configurables (E6-T01, HU20 CA-01/CA-02, cimiento de
+  `E6-T02`/`E6-T04`):** `risk.risk_rules` (`docs/03b#11.1`, migracion
+  `0048_risk_rules`: `code` UQ + `name`/`enabled`/`priority`/`params_json`/
+  `action` con `CHECK ALERT`/`HOLD`/`BLOCK` + indices por
+  `enabled`/`priority`) con modelo `RiskRule` + repositorio
+  (`list_rules` ordenado `priority, code`, `get_by_code`,
+  `update_rule` con `code` inmutable) + servicio (`list_rules`,
+  `get_rule`, `update_rule` auditado, `upsert_rule` idempotente para la
+  semilla, `evaluate_config` que lee `risk.velocity_window_seconds`
+  (`600`) y `risk.unusual_amount_factor` (`3.0`) por `shared/config`
+  con fallback). Semilla idempotente de las 5 reglas
+  (`FACIAL_SPOOFING`/`ATYPICAL_GEO`/`UNUSUAL_AMOUNT`/`VELOCITY`/
+  `NEW_DEVICE`, todas `enabled=true`, `action='ALERT'`, umbrales
+  conservadores; la calibracion es `E6-T06`). Endpoints
+  `GET /api/v1/risk/rules` + `PUT /api/v1/risk/rules/{code}` (rol
+  `fraud_analyst`/`admin`; contrato en `docs/05#6.7`; edicion parcial
+  auditada `risk.rule.updated` sin PII, `updated_by`/`updated_at`, sin
+  reinicio). **No mueve dinero** ni emite `fraud.alert.raised` aun
+  (eso es `E6-T02`/`E6-T04`); G93 cierra la parte de datos de G07.
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume

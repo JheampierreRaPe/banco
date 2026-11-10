@@ -390,7 +390,7 @@ def test_single_head_is_0030():
     # head.
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0047_wallet_personal_qr",)
+    assert get_head_revisions() == ("0048_risk_rules",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

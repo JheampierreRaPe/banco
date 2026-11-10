@@ -36,18 +36,21 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.modules.risk import repository as risk_repo
-from app.modules.risk.models import RiskProfile
+from app.modules.risk.models import RiskProfile, RiskRule
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AUDIT_ACTION_BLOCKED",
     "AUDIT_ACTION_FAILED",
+    "AUDIT_ACTION_RULE_UPDATED",
     "AUDIT_ACTION_UNRECOGNIZED",
     "AUTH_FAILED_ATTEMPT_EVENT",
     "CONSUMER",
     "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
+    "RULE_ACTIONS",
+    "RULE_CODES",
     "SCORE_EXTRA_ON_BLOCK",
     "SCORE_MAX",
     "SCORE_PER_FAILED_ATTEMPT",
@@ -55,10 +58,19 @@ __all__ = [
     "TEMPLATE_BLOCKED",
     "TEMPLATE_FAILED",
     "UNRECOGNIZED_REPORT_EVENT",
+    "UNUSUAL_AMOUNT_FACTOR_DEFAULT",
+    "UNUSUAL_AMOUNT_FACTOR_KEY",
+    "VELOCITY_WINDOW_DEFAULT_SECONDS",
+    "VELOCITY_WINDOW_KEY",
+    "evaluate_config",
     "get_or_create_profile",
+    "get_rule",
     "handle_auth_failed_attempt",
     "handle_unrecognized_operation_report",
+    "list_rules",
     "update_behavior",
+    "update_rule",
+    "upsert_rule",
 ]
 
 #: Evento de seguridad que consume este modulo (lo emite `transactions`
@@ -96,6 +108,35 @@ AUDIT_ACTION_UNRECOGNIZED = "risk.unrecognized_operation"
 
 #: Motivos genericos aceptados en el payload (otros -> `"unknown"`).
 _KNOWN_REASONS = frozenset({"invalid", "expired", "blocked"})
+
+
+# ---------------------------------------------------------------------------
+# Reglas antifraude configurables (E6-T01, HU20; cimiento de E6-T02/E6-T04).
+# ---------------------------------------------------------------------------
+
+#: Acciones validas de una regla (`docs/03b#11.1`, `docs/11#HU20`).
+RULE_ACTIONS = frozenset({"ALERT", "HOLD", "BLOCK"})
+
+#: Las 5 reglas iniciales (misma semilla que `0048_risk_rules`; la
+#: calibracion fina es de `E6-T06`). Todas nacen `enabled=true`,
+#: `action='ALERT'` con umbrales conservadores.
+RULE_CODES = (
+    "FACIAL_SPOOFING",
+    "ATYPICAL_GEO",
+    "UNUSUAL_AMOUNT",
+    "VELOCITY",
+    "NEW_DEVICE",
+)
+
+#: Auditoria de cambios de regla (best-effort, sin PII; `E6-T01`).
+AUDIT_ACTION_RULE_UPDATED = "risk.rule.updated"
+
+#: Umbrales globales leidos por `shared/config` con fallback (regla de
+#: oro 6; `params_json` guarda los propios de cada regla).
+VELOCITY_WINDOW_KEY = "risk.velocity_window_seconds"
+VELOCITY_WINDOW_DEFAULT_SECONDS = 600
+UNUSUAL_AMOUNT_FACTOR_KEY = "risk.unusual_amount_factor"
+UNUSUAL_AMOUNT_FACTOR_DEFAULT = 3.0
 
 
 def get_or_create_profile(session: Session, user_id: uuid.UUID | str) -> RiskProfile:
@@ -420,3 +461,161 @@ def handle_unrecognized_operation_report(
         "score": new_score,
         "alert_event_id": str(alert.id),
     }
+
+
+def list_rules(session: Session, *, enabled_only: bool = False) -> list[RiskRule]:
+    """Reglas ordenadas deterministicamente (`priority ASC, code ASC`).
+
+    La evaluacion (`E6-T02`) lee en este orden en cada pasada; no hay
+    cache en proceso obligatoria (si se cachea, el `PUT` la invalida
+    al escribir en la misma transaccion). `flush` sin `commit`.
+    """
+    return risk_repo.list_rules(session, enabled_only=enabled_only)
+
+
+def get_rule(session: Session, code: str) -> RiskRule:
+    """Regla por `code` o `RiskRuleNotFoundError` (`NOT_FOUND`)."""
+    return risk_repo.require_by_code(session, code)
+
+
+def _audit_rule_updated(
+    session: Session,
+    row: RiskRule,
+    *,
+    actor: uuid.UUID | str | None,
+) -> None:
+    """Auditoria best-effort del cambio (sin PII: solo umbrales/estado).
+
+    Nunca revierte el cambio: un fallo de auditoria se loguea (regla
+    de oro del modulo `audit`).
+    """
+    try:
+        from app.modules.audit.service import record as audit_record
+    except ImportError:  # pragma: no cover - el modulo existe en el repo
+        logger.warning("risk audit no disponible: regla sin auditoria")
+        return
+    try:
+        audit_record(
+            session,
+            actor=actor,
+            action=AUDIT_ACTION_RULE_UPDATED,
+            entity="risk_rule",
+            entity_id=row.id,
+            metadata={
+                "code": row.code,
+                "enabled": bool(row.enabled),
+                "priority": int(row.priority),
+                "action": row.action,
+                "params_keys": (
+                    sorted(row.params_json.keys()) if isinstance(row.params_json, dict) else []
+                ),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado
+        logger.warning("risk auditoria de regla no registrada error=%s", type(exc).__name__)
+
+
+def update_rule(
+    session: Session,
+    code: str,
+    *,
+    actor: uuid.UUID | str | None,
+    enabled: bool | None = None,
+    priority: int | None = None,
+    action: str | None = None,
+    params_json: dict | None = None,
+) -> RiskRule:
+    """Actualiza una regla editable y audita (`risk.rule.updated`).
+
+    `code` es inmutable; `None` = conservar. Se refleja en la
+    siguiente evaluacion sin reinicio (la evaluacion lee `risk_rules`
+    en cada pasada). `flush` sin `commit` (decide el llamante).
+    """
+    row = risk_repo.update_rule(
+        session,
+        code,
+        enabled=enabled,
+        priority=priority,
+        action=action,
+        params_json=params_json,
+        updated_by=actor,
+    )
+    _audit_rule_updated(session, row, actor=actor)
+    logger.info(
+        "risk regla actualizada code=%s enabled=%s priority=%s action=%s",
+        row.code,
+        row.enabled,
+        row.priority,
+        row.action,
+    )
+    return row
+
+
+def upsert_rule(
+    session: Session,
+    code: str,
+    *,
+    name: str,
+    enabled: bool = True,
+    priority: int = 100,
+    action: str = "ALERT",
+    params_json: dict | None = None,
+) -> RiskRule:
+    """Crea la regla si falta (idempotente por `code`; semilla E6-T01).
+
+    Si ya existe, la conserva intacta (no pisa personalizaciones, como
+    el `ON CONFLICT DO NOTHING` de `0048_risk_rules`). `flush` sin
+    `commit`.
+    """
+    existing = risk_repo.get_by_code(session, code)
+    if existing is not None:
+        return existing
+    row = RiskRule(
+        code=str(code).strip().upper(),
+        name=risk_repo._coerce_name(name),
+        enabled=bool(enabled),
+        priority=risk_repo._coerce_priority(priority),
+        action=risk_repo._coerce_action(action),
+        params_json=risk_repo._coerce_params(params_json if params_json is not None else {}),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def evaluate_config(session: Session) -> dict[str, object]:
+    """Umbrales globales de las reglas (via `shared/config`, con fallback).
+
+    Lee `risk.velocity_window_seconds` (entero `>= 1`, default `600`) y
+    `risk.unusual_amount_factor` (numerico `> 0`, default `3.0`).
+    Nunca lanza: clave ausente/ilegible/invalida -> fallback (mismo
+    patron best-effort que `shared/config`).
+    """
+    from app.modules.shared.config import parameters as params
+
+    window = params.get_int_parameter(
+        session, VELOCITY_WINDOW_KEY, VELOCITY_WINDOW_DEFAULT_SECONDS, minimum=1
+    )
+    raw_factor = params.get_parameter(
+        session, UNUSUAL_AMOUNT_FACTOR_KEY, UNUSUAL_AMOUNT_FACTOR_DEFAULT
+    )
+    factor = _coerce_factor(raw_factor)
+    return {
+        "velocity_window_seconds": window,
+        "unusual_amount_factor": factor,
+    }
+
+
+def _coerce_factor(raw: object) -> float:
+    """Factor numerico `> 0` o el default (nunca lanza, sin `float` sucio)."""
+    import math
+
+    if isinstance(raw, bool):
+        return UNUSUAL_AMOUNT_FACTOR_DEFAULT
+    try:
+        candidate = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return UNUSUAL_AMOUNT_FACTOR_DEFAULT
+    if candidate <= 0 or math.isnan(candidate):
+        return UNUSUAL_AMOUNT_FACTOR_DEFAULT
+    return candidate

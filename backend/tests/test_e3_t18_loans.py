@@ -393,7 +393,7 @@ def test_migration_single_head_chained():
     # cabeza vigente es 0046_services_settlement (wallet, tras 0045).
     # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
     # (QR personal estatico, tras 0046).
-    assert tuple(heads) == ("0047_wallet_personal_qr",)
+    assert tuple(heads) == ("0048_risk_rules",)
     script = ScriptDirectory.from_config(cfg).get_revision("0042_wallet_services")
     assert script.down_revision == "0041_wallet_qr_payment_guard"
     script = ScriptDirectory.from_config(cfg).get_revision("0041_wallet_qr_payment_guard")

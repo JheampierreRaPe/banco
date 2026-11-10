@@ -22,7 +22,7 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.modules.risk.models import RiskProfile
+from app.modules.risk.models import RULE_ACTIONS, RiskProfile, RiskRule
 
 logger = logging.getLogger(__name__)
 
@@ -142,5 +142,123 @@ def update_behavior(
         row.last_device_id = _coerce_device_id(last_device_id)
     if score is not None:
         row.score = _coerce_nonneg_int("score", score)
+    session.flush()
+    return row
+
+
+class RiskRuleError(ValueError):
+    """Error base de reglas antifraude (mapeable a 4xx)."""
+
+
+class RiskRuleNotFoundError(RiskRuleError):
+    """Regla inexistente (`NOT_FOUND`)."""
+
+
+class RiskRuleValidationError(RiskRuleError):
+    """Dato de regla invalido (`VALIDATION_ERROR`)."""
+
+
+def list_rules(session: Session, *, enabled_only: bool = False) -> list[RiskRule]:
+    """Reglas ordenadas deterministicamente (`priority ASC, code ASC`).
+
+    `priority` menor = se evalua antes; el empate lo rompe `code`
+    (E6-T01: la evaluacion de `E6-T02` lee en este orden, sin cache
+    obligatoria). Hace `flush`, no `commit`.
+    """
+    from sqlalchemy import select
+
+    stmt = select(RiskRule).order_by(RiskRule.priority.asc(), RiskRule.code.asc())
+    if enabled_only:
+        stmt = stmt.where(RiskRule.enabled.is_(True))
+    return list(session.scalars(stmt).all())
+
+
+def get_by_code(session: Session, code: object) -> RiskRule | None:
+    """Regla por `code` (`None` si no existe; sin lanzar por forma)."""
+    if not isinstance(code, str) or not code.strip():
+        return None
+    from sqlalchemy import select
+
+    return session.scalars(select(RiskRule).where(RiskRule.code == code.strip().upper())).first()
+
+
+def require_by_code(session: Session, code: object) -> RiskRule:
+    """Regla por `code` o `RiskRuleNotFoundError` (`NOT_FOUND`)."""
+    row = get_by_code(session, code)
+    if row is None:
+        raise RiskRuleNotFoundError(f"regla inexistente: {code!r}")
+    return row
+
+
+def _coerce_priority(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RiskRuleValidationError(f"priority debe ser entero, recibido: {value!r}")
+    if not 0 <= value <= 32767:
+        raise RiskRuleValidationError(f"priority debe estar en 0..32767, recibido: {value!r}")
+    return value
+
+
+def _coerce_action(value: object) -> str:
+    if not isinstance(value, str) or value.strip().upper() not in RULE_ACTIONS:
+        raise RiskRuleValidationError(
+            f"action debe ser una de {sorted(RULE_ACTIONS)}, recibido: {value!r}"
+        )
+    return value.strip().upper()
+
+
+def _coerce_params(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise RiskRuleValidationError(
+            f"params_json debe ser un objeto JSON, recibido: {type(value).__name__}"
+        )
+    return dict(value)
+
+
+def _coerce_name(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 120:
+        raise RiskRuleValidationError(f"name invalido: {value!r}")
+    return value.strip()
+
+
+def update_rule(
+    session: Session,
+    code: object,
+    *,
+    enabled: bool | None = None,
+    priority: int | None = None,
+    action: str | None = None,
+    params_json: dict | None = None,
+    updated_by: uuid.UUID | str | None = None,
+) -> RiskRule:
+    """Actualiza una regla (`code` inmutable; `None` = conservar).
+
+    Valida antes de escribir: un dato invalido lanza
+    `RiskRuleValidationError` sin dejar cambios; `code` inexistente
+    lanza `RiskRuleNotFoundError`. Refresca `updated_at`/`updated_by`.
+    Hace `flush`, no `commit`.
+    """
+    from datetime import UTC, datetime
+
+    row = require_by_code(session, code)
+    if enabled is not None:
+        if not isinstance(enabled, bool):
+            raise RiskRuleValidationError(f"enabled debe ser booleano, recibido: {enabled!r}")
+        row.enabled = enabled
+    if priority is not None:
+        row.priority = _coerce_priority(priority)
+    if action is not None:
+        row.action = _coerce_action(action)
+    if params_json is not None:
+        row.params_json = _coerce_params(params_json)
+    if updated_by is not None:
+        try:
+            row.updated_by = (
+                updated_by if isinstance(updated_by, uuid.UUID) else uuid.UUID(str(updated_by))
+            )
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise RiskRuleValidationError(
+                f"updated_by debe ser UUID, recibido: {updated_by!r}"
+            ) from exc
+    row.updated_at = datetime.now(UTC)
     session.flush()
     return row

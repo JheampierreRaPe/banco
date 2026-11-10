@@ -49,8 +49,10 @@ def test_baseline_esquemas_y_parametros(test_engine) -> None:
     # `wallet.service_reminder_days_before`)
     # + 2 de `0044_notifications_preferences` (E6-T12;
     # `notifications.security_delivery_window_seconds`,
-    # `notifications.security_alerts_email_backup`).
-    assert report["parameter_count"] == 32
+    # `notifications.security_alerts_email_backup`)
+    # + 2 de `0048_risk_rules` (E6-T01; `risk.velocity_window_seconds`,
+    # `risk.unusual_amount_factor`).
+    assert report["parameter_count"] == 34
 
 
 def test_carga_semilla_idempotente_y_roundtrip(test_engine, seed_dataset: dict) -> None:

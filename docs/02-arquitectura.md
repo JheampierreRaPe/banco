@@ -214,6 +214,28 @@ base64url sin padding; `decode` rechaza version distinta o campos invalidos con
 caido tras reintentos) e `INTEROP_TIMEOUT` (`502`, timeout tras reintentos). El
 adaptador no mueve dinero ni persiste nada.
 
+`ClearingSource` (E5-T16, HU19) se configura por entorno (solo nombres y defaults
+seguros; la key nunca va en el repo ni en logs, solo en la cabecera
+`Authorization`):
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `CLEARING_SOURCE_PROVIDER` | `mock` | `mock` (determinista por `(seed, source, since)`, sin red) \| `http` (real, `GET {base_url}/clearing/files` y `GET {base_url}/clearing/files/{ref}/items`). Valor no reconocido -> `mock`. |
+| `CLEARING_SOURCE_BASE_URL` | `http://localhost:8000` | Base de la red/par (rutas `GET /clearing/files` y `GET /clearing/files/{ref}/items`). |
+| `CLEARING_SOURCE_API_KEY` | (vacio) | Key server-side de la red/par (solo cabecera; jamas en la URL ni en logs). |
+| `CLEARING_SOURCE_TIMEOUT_SECONDS` | `5.0` | Timeout corto por intento (s); nunca bloquea el hilo. |
+| `CLEARING_SOURCE_MAX_RETRIES` | `2` | Reintentos con backoff exponencial tras fallo/timeout. |
+
+Payloads tipados (`ClearingFilePayload` con `source`, `file_ref` UQ,
+`checksum` SHA-256 del contenido canonico e `item_count`; `ClearingItemPayload`
+con `external_ref`, `amount_minor` entero `> 0`, `currency` ISO-4217,
+`value_date`, `direction` `INBOUND`/`OUTBOUND` y `raw` opaco); `fetch_batch`
+verifica `item_count`/`checksum` contra los items. Errores tipados:
+`CLEARING_SOURCE_UNAVAILABLE` (`503`, red caida tras agotar reintentos) y
+`CLEARING_SOURCE_TIMEOUT` (`502`, timeout tras agotar reintentos); payload o
+argumento invalido -> `VALIDATION_ERROR` (sin red). El adaptador no mueve dinero
+ni persiste nada (la ingesta es `E5-T17`).
+
 ## 10. Seguridad arquitectonica
 
 - **Autenticacion**: JWT de acceso corto (minutos) + refresh; el access token lleva `sub`,

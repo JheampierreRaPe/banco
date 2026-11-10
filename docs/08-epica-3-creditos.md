@@ -25,7 +25,9 @@ genera ningun registro crediticio real.
 - `E3-T04` UI Flutter con sliders y tabla de amortizacion. *Frontend.*
 - `E3-T05` Pruebas de exactitud contra casos de referencia. *QA.*
 
-## HU10 - Solicitud y Evaluacion Crediticia Automatica (Must, 8 SP, Sprint 3)
+## HU10 - Solicitud y Evaluacion Crediticia Automatica (Must, 8 SP, Sprint 2)
+
+> Nota de alineacion (2026-09-25): el sprint canonico es el de `docs/14` (Sprint 2, rebalanceo).
 
 **Logica**
 1. Solo se puede enviar la solicitud si el cliente **autoriza** la consulta en centrales de

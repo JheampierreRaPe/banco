@@ -31,6 +31,14 @@
       "id": "1fa0aa68-bfa5-5266-a1d9-c8a6e16dd624",
       "owner_id": "e2e3f377-ea5a-5d12-86c3-5eaca788bf67",
       "status": "active"
+    },
+    {
+      "alias": "settlement-pen",
+      "balance_minor": 0,
+      "currency": "PEN",
+      "id": "d0000000-0000-4000-8000-000000000001",
+      "owner_id": "d0000000-0000-4000-8000-0000000000ff",
+      "status": "active"
     }
   ],
   "billers": [
@@ -215,6 +223,14 @@
       "id": "1150c569-2b8a-5abe-b6e2-cd303efc5f67",
       "kyc_status": "rejected",
       "role": "titular"
+    },
+    {
+      "alias": "sistema",
+      "doc_number": "00000000",
+      "email": "sistema.servicios@example.com",
+      "id": "d0000000-0000-4000-8000-0000000000ff",
+      "kyc_status": "approved",
+      "role": "sistema"
     }
   ]
 }

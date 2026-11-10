@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="800" viewBox="0 0 1280 800">
+  <g>
+    <rect width="1280" height="800" fill="#FBF9F4"/>
+    <g>
+      <rect width="220" height="800" fill="#152A1F"/>
+      <g transform="translate(20, 20)">
+        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Panel Creditos</text>
+      </g>
+      <g transform="translate(20, 55)">
+        <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#FDAA47">Bandeja IN_REVIEW (4)</text>
+      </g>
+      <g transform="translate(20, 88)">
+        <text x="0" y="14" font-family="Inter" font-size="14" fill="#B4CCBC">Aprobados hoy</text>
+      </g>
+      <g transform="translate(20, 121)">
+        <text x="0" y="14" font-family="Inter" font-size="14" fill="#B4CCBC">Rechazados</text>
+      </g>
+      <g transform="translate(20, 154)">
+        <text x="0" y="14" font-family="Inter" font-size="14" fill="#B4CCBC">Auditoria</text>
+      </g>
+      <g transform="translate(20, 187)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#B4CCBC">Rol: Analista de credito</text>
+      </g>
+    </g>
+    <g transform="translate(220, 0)">
+      <rect width="380" height="800" fill="#F5F3EE"/>
+      <g transform="translate(20, 20)">
+        <text x="0" y="20" font-family="Inter" font-size="20" font-weight="600" fill="#152A1F">En revision manual</text>
+      </g>
+      <g transform="translate(20, 56)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Filtro: status = IN_REVIEW. Datos enmascarados.</text>
+      </g>
+      <g transform="translate(20, 83)">
+        <rect width="319" height="91" rx="16" ry="16" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">CR-2026-0841 - Personal S/ 10,000</text>
+        </g>
+        <g transform="translate(14, 35)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Solicitante J••• P••• - DNI ••••4521 - hace 12 min</text>
+        </g>
+        <g transform="translate(14, 54)">
+          <rect width="147" height="23" rx="9999" ry="9999" fill="#FFDCBC"/>
+          <g transform="translate(10, 4)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#683D00">IN_REVIEW - DTI 38%</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(20, 186)">
+        <rect width="327" height="64" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">CR-2026-0839 - Vehicular S/ 25,000</text>
+        </g>
+        <g transform="translate(14, 35)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Solicitante M••• R••• - DNI ••••8810 - hace 40 min</text>
+        </g>
+      </g>
+      <g transform="translate(20, 262)">
+        <rect width="301" height="64" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">CR-2026-0835 - Pyme S/ 15,000</text>
+        </g>
+        <g transform="translate(14, 35)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Solicitante L••• T••• - DNI ••••2204 - hace 1 h</text>
+        </g>
+      </g>
+      <g transform="translate(20, 338)">
+        <rect width="263" height="39" rx="12" ry="12" fill="#EAE8E3"/>
+        <g transform="translate(12, 12)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#424844">Vacío: sin casos. Cargando: filas skeleton.</text>
+        </g>
+      </g>
+    </g>
+    <g transform="translate(600, 0)">
+      <rect width="680" height="800" fill="#FBF9F4"/>
+      <g transform="translate(24, 24)">
+        <text x="0" y="20" font-family="Inter" font-size="20" font-weight="600" fill="#152A1F">Detalle CR-2026-0841 (enmascarado)</text>
+      </g>
+      <g transform="translate(24, 64)">
+        <g>
+          <rect width="211" height="89" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+          <g transform="translate(16, 16)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">SOLICITUD</text>
+          </g>
+          <g transform="translate(16, 35)">
+            <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Personal - S/ 10,000 - 12 m</text>
+          </g>
+          <g transform="translate(16, 56)">
+            <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Cuenta •••• 4521</text>
+          </g>
+        </g>
+        <g transform="translate(223, 0)">
+          <rect width="282" height="68" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+          <g transform="translate(16, 16)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">RIESGO (servidor)</text>
+          </g>
+          <g transform="translate(16, 35)">
+            <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Score 720 - DTI 38% - Buro: sin mora</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(24, 169)">
+        <rect width="366" height="47" rx="12" ry="12" fill="#D0E8D7"/>
+        <g transform="translate(16, 16)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#0B1F15">Consentimiento bureau: SI - 2026-10-08 10:24 (auditado)</text>
+        </g>
+      </g>
+      <g transform="translate(24, 232)">
+        <rect width="594" height="266" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Dictamen manual (motivo obligatorio *)</text>
+        </g>
+        <g transform="translate(20, 45)">
+          <rect width="554" height="80" rx="12" ry="12" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+          <g transform="translate(14, 12)">
+            <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Verificado sustento de ingresos. DTI dentro de politica...</text>
+          </g>
+        </g>
+        <g transform="translate(20, 133)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#BA1A1A">Sin motivo no se puede enviar (el servidor valida).</text>
+        </g>
+        <g transform="translate(20, 156)">
+          <g>
+            <rect width="200" height="52" rx="12" ry="12" fill="#2F6B4A"/>
+            <g transform="translate(72, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#FFFFFF">Aprobar</text>
+            </g>
+          </g>
+          <g transform="translate(212, 0)">
+            <rect width="200" height="52" rx="12" ry="12" fill="#FFFFFF" stroke="#BA1A1A" stroke-width="1"/>
+            <g transform="translate(68, 17.5)">
+              <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#BA1A1A">Rechazar</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(20, 216)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Tras dictaminar sale de la bandeja y queda auditado (usuario, hora, antes/despues). 409 si ya fue decidido.</text>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

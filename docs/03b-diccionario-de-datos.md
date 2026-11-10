@@ -31,7 +31,7 @@
 |---|---|
 | `user_status` | `PENDING_ACTIVATION`, `ACTIVE`, `BLOCKED`, `CLOSED` |
 | `kyc_status` | `PENDING`, `VERIFIED`, `REJECTED`, `MANUAL_REVIEW` |
-| `doc_type` | `DNI`, `CE`, `PASSPORT` |
+| `doc_type` | `DNI`, `CE`, `PASSPORT`, `RUC` |
 | `credential_type` | `PIN`, `PASSWORD` |
 | `otp_purpose` | `ACTIVATION`, `RECOVERY`, `PAYMENT`, `LOGIN` |
 | `account_type` | `AHORRO`, `CORRIENTE`, `WALLET`, `POCKET`, `MULTICURRENCY` |
@@ -39,7 +39,7 @@
 | `transaction_type` | `OWN_TRANSFER`, `THIRD_PARTY_TRANSFER`, `INTERBANK_TRANSFER`, `QR_PAYMENT`, `SERVICE_PAYMENT`, `TOPUP`, `LOAN_DISBURSEMENT`, `LOAN_INSTALLMENT`, `FX_EXCHANGE`, `POCKET_TRANSFER`, `SALARY_DISTRIBUTION`, `REVERSAL` |
 | `transaction_status` | `INITIATED`, `VALIDATED`, `PENDING_AUTHORIZATION`, `AUTHORIZED`, `FUNDS_HELD`, `POSTED`, `SETTLED`, `CONCILIATED`, `REJECTED`, `FAILED`, `REVERSED` |
 | `hold_status` | `ACTIVE`, `RELEASED`, `CAPTURED`, `EXPIRED` |
-| `ledger_account_type` | `ASSET`, `LIABILITY`, `EQUITY`, `INCOME`, `EXPENSE` |
+| `ledger_account_type` | `asset`, `liability`, `equity`, `income`, `expense` |
 | `posting_direction` | `DEBIT`, `CREDIT` |
 | `journal_status` | `POSTED`, `REVERSED` |
 | `loan_application_status` | `DRAFT`, `SUBMITTED`, `IN_EVALUATION`, `APPROVED`, `REJECTED`, `IN_REVIEW`, `EXPIRED` |
@@ -59,9 +59,16 @@
 | `clearing_item_status` | `PENDING`, `MATCHED`, `EXCEPTION` |
 | `exception_type` | `MISSING_INTERNAL`, `MISSING_EXTERNAL`, `AMOUNT_MISMATCH`, `DATE_MISMATCH`, `DUPLICATE` |
 | `claim_status` | `OPEN`, `IN_REVIEW`, `RESOLVED`, `REJECTED` |
-| `notification_channel` | `PUSH`, `EMAIL`, `SMS` |
-| `notification_status` | `QUEUED`, `SENT`, `FAILED`, `READ` |
+| `notification_channel` | `push`, `email`, `sms` |
+| `notification_status` | `QUEUED`, `SENT`, `FAILED` |
 | `outbox_status` | `PENDING`, `PUBLISHED`, `FAILED` |
+
+> Nota de alineacion (2026-09-25): los enums reflejan el codigo vigente (minusculas donde el
+> codigo las usa). `ledger_account_type` es `asset|liability|equity|income|expense`
+> (`ledger/models/__init__.py:25`, `ledger/domain/chart.py:36`); `notification_channel` es
+> `push|email|sms` (`notifications/models/__init__.py:29`). `notification_status` es
+> `QUEUED|SENT|FAILED` (`notifications/models/__init__.py:30`); no existe `READ` como estado:
+> la lectura se registra con `notifications.read_at` (§13).
 
 ## 2. Schema `shared` (transversal)
 
@@ -122,7 +129,19 @@
 `transfer.daily_limit_minor`, `qr.express_limit_minor`, `otp.ttl_seconds`,
 `otp.max_resends`, `auth.max_failed_attempts`, `session.inactivity_seconds`,
 `kyc.match_threshold`, `kyc.max_attempts`, `loan.max_dti_ratio`,
+`loan.max_amount_minor`, `loan.min_score`, `loan.review_margin`,
+`loan.max_debt_minor`,
 `fx.quote_ttl_seconds`, `fx.spread_base`, `fx.spread_volume_step`, `pocket.yield_rate`.
+
+> Motor de credito (E3-T07, HU10): `loan.max_dti_ratio` (`0.4`, semilla
+> `0001` como texto `"0.4"`, normalizado a numero por `0030`),
+> `loan.max_amount_minor` (`5000000`, tope generico en centimos),
+> `loan.min_score` (`650`), `loan.review_margin` (`50`, puntos de score;
+> banda de revision `[min, min + margin)`), `loan.max_debt_minor`
+> (`10000000`, deuda total maxima en centimos). Semillas `0030`
+> (idempotentes). Opcional por perfil: `loan.max_amount_{PERFIL}_minor`
+> (override del tope generico, mismo patron que
+> `transfer.daily_limit_{PERFIL}_minor`).
 
 ## 4. Schema `identity`
 
@@ -134,10 +153,11 @@
 | doc_type | VARCHAR(10) | No | - | CK `doc_type` | Tipo de documento. |
 | doc_number_hash | VARCHAR(128) | No | - | UQ | Hash del numero (no claro). |
 | doc_number_masked | VARCHAR(20) | Si | - | | Version enmascarada. |
-| first_name | VARCHAR(100) | No | - | | - |
-| last_name | VARCHAR(100) | No | - | | - |
+| first_name | VARCHAR(100) | No | - | | Nombres; `""` si RUC de persona juridica (la razon social va en `business_name`). |
+| last_name | VARCHAR(100) | No | - | | Apellidos; `""` si RUC de persona juridica. |
+| business_name | VARCHAR(150) | Si | - | | Razon social (E1-T36); solo RUC de persona juridica, el resto `NULL`. |
 | birth_date | DATE | Si | - | | - |
-| email | CITEXT | Si | - | UQ | - |
+| email | CITEXT | No | - | UQ | - |
 | phone | VARCHAR(20) | Si | - | IDX | - |
 | status | VARCHAR(20) | No | 'PENDING_ACTIVATION' | IDX, CK | `user_status`. |
 | kyc_status | VARCHAR(20) | No | 'PENDING' | IDX | `kyc_status`. |
@@ -234,6 +254,9 @@
 **Roles semilla:** `CLIENT`, `MERCHANT`, `OPS_ANALYST`, `FRAUD_ANALYST`, `CREDIT_ANALYST`,
 `COMPLIANCE_OFFICER`, `SECURITY_ADMIN`, `AUDITOR`, `TRANSACTION_SERVICE`.
 
+> Nota de alineacion (2026-09-25): `roles`/`user_roles` DIFERIDOS (fuera de alcance, sin
+> implementar en el MVP).
+
 ### 4.8 `access_recovery`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
@@ -255,7 +278,7 @@
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | user_id | UUID | No | - | REF identity.users, IDX | - |
-| account_number | VARCHAR(20) | No | - | UQ | Numero interno. |
+| account_number | VARCHAR(20) | No | - | UQ | Numero interno de 14 digitos con DV (prefijo `001`). |
 | type | VARCHAR(20) | No | - | CK | `account_type`. |
 | currency | CHAR(3) | No | 'PEN' | | ISO-4217. |
 | status | VARCHAR(20) | No | 'ACTIVE' | IDX, CK | `account_status`. |
@@ -264,6 +287,16 @@
 | opened_at | TIMESTAMPTZ | No | now() | | - |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
+
+> Formato de `account_number` (decision del dueno 2026-10-03, `E2-T28`): **14 digitos con digito
+> verificador** — `001` (prefijo de entidad, 3) + `CCCCCCCCCC` (cuerpo, 10) + `D` (DV, 1). El DV es
+> **modulo 11 con pesos ciclicos 2..7 de derecha a izquierda** sobre los 13 primeros digitos:
+> `dv = 11 - (suma mod 11)`, mapeando `10`/`11` -> `0`; `verify_account_number` exige
+> `^001[0-9]{11}$` + DV valido. La columna sigue `VARCHAR(20)` UQ (14 digitos caben). El numero en
+> claro es interno (jamas en logs ni respuestas; la API solo expone UUIDs y `account_number_masked`
+> `****` + ultimos 4). La migracion `0024_accounts_numeric_backfill` reasigna numeros de 14 digitos
+> a las cuentas existentes no conformes (incluidas las de formato hex `001-<12 hex>`), de forma
+> determinista y unica.
 
 ### 5.2 `account_balances`
 
@@ -288,13 +321,12 @@
 | account_or_cci | VARCHAR(30) | No | - | | Cuenta o CCI. |
 | holder_name | VARCHAR(150) | Si | - | | - |
 | holder_doc_hash | VARCHAR(128) | Si | - | | - |
-| preapproved_limit_minor | BIGINT | Si | - | CK >=0 | Tope sin factor extra. |
 | currency | CHAR(3) | Si | - | | - |
 | status | VARCHAR(20) | No | 'ACTIVE' | | `ACTIVE`/`DELETED`. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
 
-### 5.4 `movements_view` (vista materializada)
+### 5.4 `movements_view` (tabla + proyeccion; no vista materializada)
 
 | Columna | Tipo | Descripcion |
 |---|---|---|
@@ -305,10 +337,16 @@
 | amount_minor | BIGINT | Monto. |
 | currency | CHAR(3) | Moneda. |
 | description | TEXT | Concepto. |
+| entry_type | VARCHAR(30) | Concepto contable del asiento (E2-T35; backfill `0028` E2-T37: `NULL` solo en filas huerfanas/no resolubles, con fallback en cliente). |
 | value_date | DATE | Fecha valor. |
 | created_at | TIMESTAMPTZ | - |
 
 Indices: `(account_id, created_at DESC)`.
+
+> Nota de alineacion (2026-09-25): desviacion documentada — en el codigo es tabla
+> (`accounts.repository.movements.MovementView`, `__tablename__ = "movements_view"`) poblada
+> por proyeccion desde los postings (`record_posting`/`apply_ledger_posting`, consumidor
+> `ledger.entry.posted` en `movements.py:266`), no una vista materializada de Postgres.
 
 ### 5.5 `daily_balance_snapshots`
 
@@ -388,6 +426,11 @@ Indices: `(account_id, created_at DESC)`.
 | parent_account_id | UUID | Si | - | FK ledger_accounts | Jerarquia. |
 | is_system | BOOLEAN | No | false | | Cuenta del catalogo. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
+
+> Nota de alineacion (E2-T07, cierra G05): la cuenta canonica de comisiones es
+> **`4100-Ingresos por comisiones`** (catalogo semilla: `4000` = "Ingresos por
+> intereses"). La comision de transferencias (`transactions.fee_minor`) se acredita
+> a `4100`, nunca a `4000` (`docs/04#72/#73`).
 
 ### 7.2 `journal_entries`
 
@@ -477,7 +520,7 @@ Indices: `(account_id, created_at DESC)`.
 | bureau_authorized | BOOLEAN | No | false | | Consentimiento. |
 | bureau_authorized_at | TIMESTAMPTZ | Si | - | | - |
 | score | INTEGER | Si | - | | Score interno/bureau. |
-| dti_ratio | NUMERIC(6,4) | Si | - | | Deuda/ingreso. |
+| dti_ratio | NUMERIC(12,4) | Si | - | | Deuda/ingreso (informativo; se acota a ±99999999.9999 al persistir, el dictamen usa el DTI exacto). |
 | total_income_minor | BIGINT | Si | - | | - |
 | total_debt_minor | BIGINT | Si | - | | - |
 | decision_reason | TEXT | Si | - | | Justificacion. |
@@ -579,17 +622,23 @@ Indices: `(account_id, created_at DESC)`.
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
-| merchant_id | UUID | No | - | FK merchant_accounts, IDX | - |
-| amount_minor | BIGINT | No | - | CK >0 | Monto. |
+| merchant_id | UUID | Si | - | FK merchant_accounts, IDX | `NULL` en QR personal (E4-T21, migracion `0047`). |
+| amount_minor | BIGINT | Si | - | CK `IS NULL OR > 0` | Monto fijo (comercio) o `NULL` = lo digita el pagador (personal, E4-T21). |
 | currency | CHAR(3) | No | - | | Moneda. |
 | concept | VARCHAR(120) | Si | - | | - |
-| mode | VARCHAR(10) | No | 'DYNAMIC' | CK | `DYNAMIC`/`STATIC`. |
+| mode | VARCHAR(10) | No | 'DYNAMIC' | CK | `DYNAMIC`/`STATIC` (el personal es `STATIC`). |
+| payee_type | VARCHAR(10) | No | 'MERCHANT' | CK | `MERCHANT`/`PERSONAL` (E4-T21, migracion `0047`). |
+| owner_user_id | UUID | Si | - | REF users, IDX | Titular destino del QR personal (E4-T21). |
+| payee_account_id | UUID | Si | - | REF accounts | Cuenta de abono fijada al generar (E4-T21). |
+| reusable | BOOLEAN | No | false | | `true` = admite varios cobros (personal, E4-T21). |
 | payload_hash | VARCHAR(64) | No | - | | Hash del contenido. |
 | signature | VARCHAR(256) | No | - | | Firma del QR. |
 | status | VARCHAR(12) | No | 'ACTIVE' | IDX, CK | `qr_charge_status`. |
-| expires_at | TIMESTAMPTZ | Si | - | IDX | - |
+| expires_at | TIMESTAMPTZ | Si | - | IDX | `NULL` en personal (sin caducidad, E4-T21). |
 | created_at | TIMESTAMPTZ | No | now() | | - |
-| paid_at | TIMESTAMPTZ | Si | - | | - |
+| paid_at | TIMESTAMPTZ | Si | - | | `NULL` en personal reutilizable (no se agota). |
+
+`CHECK` (migracion `0047`): destino `(payee_type = 'MERCHANT' AND merchant_id IS NOT NULL) OR (payee_type = 'PERSONAL' AND owner_user_id IS NOT NULL)`; personal-estatico `payee_type <> 'PERSONAL' OR (amount_minor IS NULL AND expires_at IS NULL AND reusable = true)`.
 
 ### 9.4 `qr_payments`
 
@@ -597,10 +646,12 @@ Indices: `(account_id, created_at DESC)`.
 |---|---|---|---|---|---|
 | id | UUID | No | gen_random_uuid() | PK | - |
 | transaction_id | UUID | No | - | REF transactions, UQ | - |
-| charge_id | UUID | No | - | FK qr_charges, IDX | - |
+| charge_id | UUID | No | - | FK qr_charges, UQ parcial (`uq_qr_payments_charge_active`: unico donde `status <> 'REJECTED' AND reusable = false`; fix ALTO-2/MEDIO-2 + E4-T21, migracion `0047`) | Un cargo de un solo uso admite un solo cobro real/pendiente; los `REJECTED` admiten reintento y los `reusable = true` (personal) admiten varios. |
 | payer_user_id | UUID | No | - | REF users, IDX | - |
-| merchant_id | UUID | No | - | FK merchant_accounts | - |
-| amount_minor | BIGINT | No | - | | - |
+| merchant_id | UUID | Si | - | FK merchant_accounts | `NULL` en pago de QR personal (E4-T21). |
+| payee_user_id | UUID | Si | - | REF users, IDX | Titular destino del QR personal (E4-T21). |
+| reusable | BOOLEAN | No | false | | Denormalizado del cargo (E4-T21). |
+| amount_minor | BIGINT | No | - | | Monto realmente cobrado (sigue `NOT NULL`). |
 | currency | CHAR(3) | No | - | | - |
 | status | VARCHAR(15) | No | 'PENDING' | | - |
 | created_at | TIMESTAMPTZ | No | now() | | - |
@@ -855,6 +906,15 @@ Indices: `(account_id, created_at DESC)`.
 | user_channel_preferences | sms | BOOLEAN | No | false | |
 | user_channel_preferences | updated_at | TIMESTAMPTZ | No | now() | |
 
+> Nota de alineacion (2026-09-25): `user_channel_preferences` DIFERIDA (fuera de alcance, sin
+> implementar en el MVP).
+>
+> Nota de implementacion (2026-10-13, E6-T12, HU22): la tabla queda IMPLEMENTADA con la
+> migracion `0044_notifications_preferences` (`down_revision="0043_wallet_service_reminder"`;
+> `user_id` PK logica a `users` sin FK fisica; `push`/`email` default `true`, `sms` default
+> `false`). La misma migracion siembra las claves `notifications.security_delivery_window_seconds`
+> (`5`) y `notifications.security_alerts_email_backup` (`true`) en `config.parameters`.
+
 ## 14. Schema `audit`
 
 ### 14.1 `audit_log` (append-only)
@@ -888,6 +948,9 @@ Indices: `(account_id, created_at DESC)`.
 | valid | BOOLEAN | No | - | | Cadena integra. |
 | details | JSONB | Si | - | | - |
 
+> Nota de alineacion (2026-09-25): `audit_verifications` DIFERIDA (fuera del MVP, HU23 `Could`;
+> la auditoria basica `audit_log` si esta implementada).
+
 ## 15. Indices recomendados (resumen)
 
 | Tabla | Indice |
@@ -907,7 +970,8 @@ Indices: `(account_id, created_at DESC)`.
 | journal_entries | `(transaction_id)`, `(value_date)`, `(created_at)` |
 | postings | `(journal_entry_id)`, `(ledger_account_id, created_at)` |
 | loan_schedules | `(loan_id, due_date, status)` |
-| qr_charges | `(merchant_id, status)`, `(expires_at)` |
+| qr_charges | `(merchant_id, status)`, `(expires_at)`, `(owner_user_id)` (E4-T21) |
+| qr_payments | `uq_qr_payments_charge_active` UQ parcial (`charge_id` donde `status <> 'REJECTED' AND reusable = false`; E4-T21), `(payee_user_id)` |
 | fx_rates | `(base, quote, fetched_at DESC)` |
 | alerts | `(status, severity, created_at DESC)`, `(user_id)` |
 | clearing_items | `(file_id)`, `(external_ref)` |

@@ -1,0 +1,3 @@
+# Q-T05: los scripts deben conservar LF en cualquier plataforma
+# (el shebang `#!/usr/bin/env bash` se rompe con CRLF en el runner Linux).
+*.sh text eol=lf

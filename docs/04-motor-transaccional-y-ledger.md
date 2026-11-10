@@ -55,7 +55,7 @@ INITIATED ─► VALIDATED ─┬─► PENDING_AUTHORIZATION ─► AUTHORIZED 
 | `FUNDS_HELD` | Fondos reservados. | Retenidos |
 | `POSTED` | Asiento contable registrado. | Contabilizados |
 | `SETTLED` | Entregado al destino. | Entregados |
-| `CONCILIATED` | Cruzado con el tercero (terminal). | Conciliados |
+| `CONCILIATED` | Cruzado con el tercero (terminal salvo descuadre). | Conciliados |
 | `REJECTED` | No se pudo iniciar (terminal, sin movimiento). | Intactos |
 | `FAILED` | Error tecnico tras retener; el hold se libera. | Liberados |
 | `REVERSED` | Compensada con asiento inverso (terminal). | Devueltos |
@@ -121,7 +121,7 @@ Igual que 7.1 (origen -> destino). Puede llevar comision:
 Debe  2000-A          100
 Debe  2000-A          2      (comision)
 Haber 2000-B          100
-Haber 4000-Comisiones 2
+Haber 4100-Ingresos por comisiones 2
 ```
 
 ### 7.3 Transferencia interbancaria saliente (100 + 2 de comision)
@@ -132,7 +132,7 @@ Haber 4000-Comisiones 2
    Haber 2100-A          100
 2) Comision:
    Debe  2000-A          2
-   Haber 4000-Comisiones 2
+   Haber 4100-Ingresos por comisiones 2
 3) Al confirmar envio:
    Debe  2100-A          100
    Haber 2200-Transito   100
@@ -142,6 +142,15 @@ Haber 4000-Comisiones 2
 ```
 Si el tercero no confirma en el plazo: liberar el hold (`2100-A` -> `2000-A`) y marcar `FAILED`
 o `REVERSED`.
+
+> **Comision cargada en el settle (precedente E2-T07/E2-T09):** el paso 2 puede
+> ejecutarse al **liquidar**, cargando la comision desde la subcuenta retenida
+> `2100-A` hacia `4100-Ingresos por comisiones` en lugar del `2000-A` literal (el
+> total retenido cubre monto + comision). Asi una operacion fallida, expirada o
+> rechazada **nunca cobra** comision, y el reverso la anula con el asiento inverso
+> (`INTERBANK_RETURN` para devolver lo capturado al disponible). La partida doble se
+> mantiene (`sum(debitos) = sum(creditos)`); es el comportamiento vigente en
+> `transactions` (`FEE_ACCOUNT_CODE="4100"`).
 
 ### 7.4 Pago QR (50)
 
@@ -163,7 +172,7 @@ Haber 2000-Cuenta-cliente        5000   (sube el disponible)
 ```
 Debe  2000-Cuenta-cliente     300
 Haber 5000-Cartera            200
-Haber 4100-Ingresos interes    80
+Haber 4000-Ingresos por intereses  80
 Haber 4200-Ingresos seguro     20
 ```
 
@@ -175,7 +184,7 @@ Dos asientos ligados (uno por moneda), nunca uno solo cruzando monedas:
 Asiento PEN:  Debe 2000-Cuenta PEN 380 / Haber 9100-Posicion FX PEN 380
 Asiento USD:  Debe 9100-Posicion FX USD 100 / Haber 2000-Cuenta USD 100
 ```
-El spread se registra como ingreso (`4000`) dentro del asiento de la moneda que corresponda.
+El spread se registra como ingreso por comisiones (`4100`) dentro del asiento de la moneda que corresponda.
 Ambos asientos comparten `fx_operation_id`.
 
 ### 7.8 Traspaso a bolsillo de ahorro
@@ -190,6 +199,31 @@ referencia `reverses_journal_entry_id`. **Nunca** se marca el original como borr
 ```
 Debe  <lo que estaba al haber>   /   Haber <lo que estaba al debe>
 ```
+
+### 7.10 Pago de servicio y recarga (HU16, `E4-T17`, cierra `docs/18` G73)
+
+El proveedor/biller es **externo** (sin usuario ni cuenta en el core): el dinero se mueve
+por el servicio interno `wallet.service.express.pay_express` (`E4-T02`, `tx_type=
+THIRD_PARTY_TRANSFER`, **sin comision** en el MVP —`fee_minor=0` explicito—) con el mismo
+camino hold + liquidacion de `#7.2`/`#7.4` y el mismo gate (sobre el limite base ->
+`PENDING_AUTHORIZATION`; sobre el diario -> `REJECTED` sin tocar saldos). El abono no va
+a una cuenta del proveedor (no existe) sino a la **cuenta interna de liquidacion del
+proveedor** (`2000-Liquidacion`), resuelta por la fachada `accounts` desde el parametro
+`WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID` (una por moneda; debe estar `ACTIVE` y coincidir
+en moneda; sin columna nueva en `billers`; conciliacion posterior contra el extracto del
+proveedor por `#8`). Sin esa cuenta el pago se rechaza fail-closed **antes de operar**.
+
+```
+1) Retencion del pagador:  Debe 2000-Pagador        X / Haber 2100-Pagador        X
+2) Liquidacion:            Debe 2100-Pagador        X / Haber 2000-Liquidacion    X
+```
+
+Justificacion (G73): crear cuentas contables nuevas en `ledger` o columnas en `billers`
+invadiria otros modulos (regla de oro 4); el parametro deja la regla configurable fuera
+del codigo (regla de oro 6). La partida doble se mantiene (`sum(debitos) = sum(creditos)`);
+`wallet` no escribe `transactions`/`ledger` (solo persiste `service_payments`/`topups` con
+su `transaction_id` + comprobante). El comprobante usa el numero oficial `OP-…`
+(convencion `E2-T10`, `docs/05#6.3`: `OP-` + 12 hex de `sha256(transaction_id)`).
 
 ## 8. Liquidacion y conciliacion
 

@@ -22,9 +22,11 @@ from app.main import app
 from tests import seed as seed_mod
 from tests.db_utils import (
     ensure_test_database,
+    get_current_revision,
+    get_head_revisions,
     make_test_engine,
     resolve_test_database_url,
-    run_migrations,
+    run_migrations_in_process,
 )
 from tests.factories import DEFAULT_SEED, build_seed_dataset
 
@@ -45,7 +47,14 @@ def test_engine(seed_dataset):
     url = resolve_test_database_url()
     try:
         ensure_test_database(url)
-        run_migrations(url)
+        probe = make_test_engine(url)
+        try:
+            current = get_current_revision(probe)
+            heads = get_head_revisions()
+        finally:
+            probe.dispose()
+        if current not in heads:
+            run_migrations_in_process(url)
         engine = make_test_engine(url)
         seed_mod.load_seed_into_db(engine, seed_dataset)
         yield engine

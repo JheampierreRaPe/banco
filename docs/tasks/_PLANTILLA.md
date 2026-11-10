@@ -24,6 +24,20 @@
 - **Incluye:** <...>
 - **No incluye:** <...>
 
+## Plan de PRs
+
+> Un brief no siempre entra en un PR. El planificador declara los cortes; el worker ejecuta
+> uno por vez. Politica completa: `docs/21-politica-prs.md`.
+
+| # | Corte | Modulo | Incluye | Tamano estimado | Depende de |
+|---|---|---|---|---|---|
+| 1 | <dominio + pruebas> | `<modulo>` | <...> | <300-500 lineas> | - |
+| 2 | <...> | `<modulo>` | <...> | <...> | 1 |
+
+- Presupuesto por PR: 300-500 lineas semanticas (tope 700), sin tests/docs/lock.
+- Si el brief entra en un solo PR, escribir: `Un solo PR (justificar por que no se corta)`.
+- 1 corte = 1 rama = 1 PR.
+
 ## Contexto embebido (decisiones que aplican)
 
 <Copiar aqui las reglas exactas del proyecto que el agente necesita, sin obligarlo a inferirlas.>

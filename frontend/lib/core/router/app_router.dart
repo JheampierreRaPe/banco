@@ -1,0 +1,285 @@
+import 'package:flutter/foundation.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../features/accounts/accounts_routes.dart';
+import '../../features/accounts/data/accounts_service.dart';
+import '../../features/activation/activation_routes.dart';
+import '../../features/activation/activation_service.dart';
+import '../../features/beneficiaries/beneficiaries_routes.dart';
+import '../../features/beneficiaries/data/beneficiaries_service.dart';
+import '../../features/biometrics/biometric_reader.dart';
+import '../../features/credits/credits_routes.dart';
+import '../../features/credits/data/credit_applications_service.dart';
+import '../../features/credits/data/credit_contract_service.dart';
+import '../../features/credits/data/credit_disbursement_service.dart';
+import '../../features/credits/data/credit_sign_controller.dart';
+import '../../features/credits/data/credits_service.dart';
+import '../../features/credits/data/loan_schedule_service.dart';
+import '../../features/home/data/profile_service.dart';
+import '../../features/home/home_routes.dart';
+import '../../features/kyc/camera_frame_source.dart';
+import '../../features/kyc/kyc_dependencies.dart';
+import '../../features/kyc/kyc_routes.dart';
+import '../../features/kyc/kyc_service.dart';
+import '../../features/login/login_routes.dart';
+import '../../features/movements/data/movements_service.dart';
+import '../../features/movements/movements_routes.dart';
+import '../../features/notifications/data/notifications_service.dart';
+import '../../features/notifications/notifications_routes.dart';
+import '../../features/payment_authorization/data/payment_authorization_service.dart';
+import '../../features/payment_authorization/payment_authorization_routes.dart';
+import '../../features/pin_reset/pin_reset_routes.dart';
+import '../../features/pin_setup/pin_setup_routes.dart';
+import '../../features/pin_setup/pin_setup_service.dart';
+import '../../features/profile/profile_routes.dart';
+import '../../features/splash/splash_routes.dart';
+import '../../features/transfers/data/transfers_service.dart';
+import '../../features/transfers/transfers_routes.dart';
+import '../../features/wallet/data/merchant_qr_service.dart';
+import '../../features/wallet/data/personal_qr_service.dart';
+import '../../features/wallet/data/qr_payment_service.dart';
+import '../../features/wallet/data/services_service.dart';
+import '../../features/wallet/data/wallet_service.dart';
+import '../../features/wallet/wallet_routes.dart';
+import '../../features/welcome/welcome_routes.dart';
+import '../http/api_client.dart';
+import '../session/secure_key_value_storage.dart';
+import '../session/session_identity_store.dart';
+import '../session/session_repository.dart';
+
+/// Orquestador de navegación (go_router con guarda por `userRef` + sesión).
+///
+/// Flujo inicial (F-T37, decisión SCR-005 d5; solo lógica, sin UI):
+/// - Sin sesión y sin `userRef` (`null` o vacío): onboarding `/welcome`. El
+///   flag local de bienvenida se eliminó (F-T37): ya no se lee ni se
+///   escribe ninguna clave de primera vez.
+/// - Sin sesión con `userRef`: rutas públicas pre-login permitidas
+///   (`/splash`, `/welcome`, `/login`, `/login/device`, `/kyc*`, `/activate`,
+///   `/pin-setup*`, `/registration-success`, `/pin-reset*`);
+///   cualquier ruta privada -> `/login`.
+/// - Con sesión: `/home`; visitar `/splash`, `/welcome`, `/login`,
+///   `/login/device` o el legacy `/entry` redirige a `/home`.
+/// - El legacy `/entry` (retirado en F-T36) redirige a `/welcome` sin sesión.
+/// - Cada feature expone `List<GoRoute> <feature>Routes`; este archivo es el
+///   ÚNICO que las agrega al router (ningún feature toca el router global).
+/// - El cableado de dependencias reales (ApiClient compartido + sesión +
+///   identidad) se hace aquí una vez; en tests se puede pasar un `api` propio
+///   y un [SessionIdentityStore] en memoria.
+/// - El arranque de la app entra por `/splash` (ver `app.dart`): la splash
+///   delega en esta guarda, que resuelve onboarding, login o home.
+/// - [SessionIdentityStore] es [Listenable]: el `refreshListenable` combina
+///   sesión + identidad para que guardar el `userRef` (paso success del
+///   registro, F-T39) reevalúe la guarda sin navegación manual.
+bool _isPublicLocation(String location) {
+  return       location == '/splash' ||
+      location == '/welcome' ||
+      location == '/login' ||
+      // Entrada "iniciar sesion en este dispositivo" (F-T57, plomeria):
+      // publica pre-login sin `userRef` (igual que `/pin-reset*`); la
+      // pantalla del flujo de 3 pasos la monta F-T56 sobre esta ruta.
+      location == '/login/device' ||
+      location.startsWith('/login/device/') ||
+      location == '/activate' ||
+      // Cierre del registro F-T39 (PIN -> OTP -> success): todas las
+      // sub-rutas de `/pin-setup` + el paso success son publicas pre-login.
+      location == '/pin-setup' ||
+      location.startsWith('/pin-setup/') ||
+      location == '/registration-success' ||
+      // Restablecimiento de PIN F-T43 (email + DNI + OTP -> PIN nuevo):
+      // todas las sub-rutas de `/pin-reset` + el paso success son
+      // públicas pre-login (no abren sesión).
+      location == '/pin-reset' ||
+      location.startsWith('/pin-reset/') ||
+      location == '/kyc' ||
+      location == '/kyc/document' ||
+      location == '/kyc/task' ||
+      location == '/kyc/result';
+}
+
+bool _isEntryLocation(String location) {
+  return location == '/welcome' ||
+      location == '/login' ||
+      location == '/login/device' ||
+      location.startsWith('/login/');
+}
+
+GoRouter buildRouter(
+  SessionRepository session, {
+  String initialLocation = '/splash',
+  ApiClient? api,
+  SessionIdentityStore? identity,
+}) {
+  final client = api ?? ApiClient.create(session: session);
+  // Identidad local (F-T20): `user_ref` + `device_id` hidratados por `main`
+  // antes del primer frame. En tests se inyecta un store en memoria.
+  final identityStore = identity ??
+      sessionIdentityStoreFactory?.call() ??
+      SecureSessionIdentityStore(storage: FlutterSecureStorageAdapter());
+  sessionIdentityStoreFactory = () => identityStore;
+  KycDependencies.configure(
+    service: HttpKycService(client),
+    frameSource: CameraFrameSource(),
+  );
+  activationServiceFactory =
+      () => HttpActivationService(api: client, session: session);
+  pinSetupServiceFactory = () => HttpPinSetupService(api: client);
+  pinSetupResendServiceFactory =
+      () => HttpActivationService(api: client, session: session);
+  // Cuentas (F-T41): el orquestador es el unico dueno del `ApiClient`
+  // compartido, asi que cablea aqui la fabrica que resuelven `homeRoutes`
+  // y `accountsRoutes`. Solo cableado: la guarda F-T37 no se toca.
+  accountsServiceFactory = () => AccountsService(api: client);
+  // Beneficiarios (E2-T15): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/beneficiaries*` exige sesion).
+  beneficiariesServiceFactory = () => BeneficiariesService(api: client);
+  // Transferencias (E2-T11): mismo patron, solo cableado con el `ApiClient`
+  // compartido; la guarda F-T37 no se toca (`/transfers*` exige sesion).
+  transfersServiceFactory = () => TransfersService(api: client);
+  // Billetera y vinculacion (E4-T04, HU13): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca (`/wallet*`
+  // exige sesion).
+  walletServiceFactory = () => WalletService(api: client);
+  // Cobros QR del comercio (E4-T09, HU14): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/merchant-*` exige sesion).
+  merchantQrServiceFactory = () => MerchantQrService(api: client);
+  // QR personal estatico (E4-T21, HU14): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/personal-qr` exige sesion).
+  personalQrServiceFactory = () => PersonalQrService(api: client);
+  // Pago QR del pagador (E4-T13, HU15): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/pay-qr*` exige sesion).
+  qrPaymentServiceFactory = () => QrPaymentService(api: client);
+  // Servicios y recargas (E4-T19, HU16): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/wallet/services*` y `/wallet/topups` exigen sesion).
+  servicesServiceFactory = () => ServicesService(api: client);
+  // Simulador de creditos (E3-T04): mismo patron, solo cableado con el
+  // `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*` exige
+  // sesion).
+  creditsServiceFactory = () => CreditsService(api: client);
+  // Expediente de credito (E3-T09, solicitud + estado): mismo patron, solo
+  // cableado con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/credits*` exige sesion).
+  creditApplicationsServiceFactory =
+      () => CreditApplicationsService(api: client);
+  // Reto biometrico de pago (E2-T21): mismo patron, solo cableado con el
+  // `ApiClient` compartido + sesion + lector del SO + `device_id` vigente;
+  // la guarda F-T37 no se toca (`/payments/*` exige sesion).
+  paymentAuthorizationServiceFactory = () =>
+      PaymentAuthorizationService(api: client);
+  final systemReader = SystemBiometricReader();
+  // Juego contractual + firma (E3-T15, HU11): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca (`/credits*`
+  // exige sesion). El firmador del `nonce` reutiliza `BiometricService`
+  // (F-T03) con el lector del SO y el `device_id` vigente.
+  creditContractServiceFactory = () => CreditContractService(api: client);
+  creditSignDepsFactory = () => CreditSignDeps(
+        service: CreditContractService(api: client),
+        reader: systemReader,
+        session: session,
+        deviceId: identityStore.deviceId ?? '',
+      );
+  // Desembolso + cronograma de créditos (M-1 HU12 + E3-T21): mismo patrón,
+  // solo cableado con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/credits*` exige sesión). Sin este cableado `loanScheduleServiceFactory`
+  // quedaba en `null` (las pantallas de préstamos degradaban a error) y el
+  // ciclo "firmar → desembolsar → pagar" no era alcanzable en la app.
+  loanScheduleServiceFactory = () => LoanScheduleService(api: client);
+  creditDisbursementServiceFactory =
+      () => CreditDisbursementService(api: client);
+  paymentAuthorizationDepsFactory = () => PaymentAuthorizationDeps(
+    service: PaymentAuthorizationService(api: client),
+    reader: systemReader,
+    session: session,
+    deviceId: identityStore.deviceId ?? '',
+  );
+  // Historial + reverso (E2-T24/E2-T25): mismo patron, solo cableado con
+  // el `ApiClient` compartido; la guarda F-T37 no se toca (`/movements*`
+  // exige sesion).
+  movementsServiceFactory = () => MovementsService(api: client);
+  // Centro de notificaciones (E6-T15, HU22): mismo patron, solo cableado
+  // con el `ApiClient` compartido; la guarda F-T37 no se toca
+  // (`/notifications*` exige sesion).
+  notificationsServiceFactory = () => NotificationsService(api: client);
+  // Perfil del home (F-T54, saludo/avatar de `GET /me`): mismo patron, solo
+  // cableado; la guarda F-T37 no se toca.
+  homeProfileServiceFactory = () => HttpProfileService(api: client);
+  loginRouteDepsFactory = () => LoginRouteDeps(
+        api: client,
+        session: session,
+        reader: SystemBiometricReader(),
+        userRef: identityStore.userRef ?? '',
+        deviceId: identityStore.deviceId ?? '',
+      );
+  pinResetRouteDepsFactory = () => PinResetRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+      );
+  // Login en este dispositivo (F-T56, flujo email+DNI -> OTP -> PIN sobre
+  // `/login/device`, plomeria publica F-T57): mismo `ApiClient` compartido +
+  // sesion + identidad. Solo cableado: la guarda F-T37/F-T57 no se toca.
+  deviceLoginRouteDepsFactory = () => DeviceLoginRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+      );
+  // Perfil / opciones de usuario (F-T52): ruta privada con el `ApiClient`
+  // compartido (Bearer para `POST /auth/biometric/consent`), la sesion
+  // (logout via `SessionService`), la identidad (`biometricEnabled`, F-T49)
+  // y el lector biometrico del SO. Solo cableado: la guarda F-T37 no se
+  // toca (`/profile` no es publica, exige sesion).
+  profileRouteDepsFactory = () => ProfileRouteDeps(
+        api: client,
+        session: session,
+        identity: identityStore,
+        reader: SystemBiometricReader(),
+      );
+  return GoRouter(
+    initialLocation: initialLocation,
+    refreshListenable: Listenable.merge([session, identityStore]),
+    redirect: (context, state) {
+      final loggedIn = session.isAuthenticated;
+      final userRef = identityStore.userRef;
+      final hasUserRef = userRef != null && userRef.isNotEmpty;
+      final loc = state.matchedLocation;
+      // Legacy `/entry` (retirado en F-T36): redirige al onboarding; con
+      // sesión el destino es `/home`.
+      if (loc == '/entry') return loggedIn ? '/home' : '/welcome';
+      if (loggedIn) {
+        if (loc == '/splash' || _isEntryLocation(loc)) return '/home';
+        return null;
+      }
+      if (!hasUserRef) {
+        // Sin cuenta conocida: el login exige `userRef`; las rutas públicas
+        // del alta/recupero pasan, todo lo demás va al onboarding.
+        if (loc == '/login') return '/welcome';
+        if (_isPublicLocation(loc)) return null;
+        return '/welcome';
+      }
+      if (!_isPublicLocation(loc)) return '/login';
+      return null;
+    },
+    routes: [
+      ...splashRoutes,
+      ...welcomeRoutes,
+      ...kycRoutes,
+      ...activationRoutes,
+      ...pinSetupRoutes,
+      ...loginRoutes,
+      ...pinResetRoutes,
+      ...accountsRoutes,
+      ...beneficiariesRoutes,
+      ...transfersRoutes,
+      ...walletRoutes,
+      ...creditsRoutes,
+      ...paymentAuthorizationRoutes,
+      ...movementsRoutes,
+      ...notificationsRoutes,
+      ...homeRoutes,
+      ...profileRoutes,
+    ],
+  );
+}

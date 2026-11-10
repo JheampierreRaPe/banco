@@ -84,7 +84,9 @@ TTL del desafio, tolerancia de documentos.
 - `E1-T17` Registro en `audit` de cada login y de cada intento fallido. *Datos/QA.*
 - `E1-T18` Pruebas de fuerza bruta, bloqueo y expiracion de sesion. *QA.*
 
-## HU04 - Recuperacion de Cuenta con Biometria (Should, 5 SP, Sprint 1)
+## HU04 - Recuperacion de Cuenta con Biometria (Should, 5 SP, Sprint 2)
+
+> Nota de alineacion (2026-09-25): el sprint canonico es el de `docs/14` (Sprint 2, rebalanceo).
 
 **Logica**
 1. Desde el login, el cliente solicita recuperar acceso solo con su documento (sin clave).
@@ -98,8 +100,9 @@ TTL del desafio, tolerancia de documentos.
 (notificacion y revocacion).
 
 **Tareas**
-- `E1-T19` Flujo `/auth/recover` (dispositivo confiable con `nonce` firmado + OTP + cambio de
-  credencial). *Backend.*
+- `E1-T19` Flujo de recuperacion — `POST /auth/recover` DIFERIDO (sin implementar; ver nota
+  de alineacion 2026-09-25 en `05`). Flujo vigente: `POST /auth/recovery/request` +
+  `POST /auth/pin-reset` (E1-T31/E1-T34; el antiguo `verify` se retiro en SCR-005/E1-T41). *Backend.*
 - `E1-T20` Politica de recuperacion (registrar dispositivo confiable; OTP obligatorio).
   *Backend/Datos.*
 - `E1-T21` Notificacion multicanal + revocacion de sesiones. *Backend.*

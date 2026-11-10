@@ -1,5 +1,9 @@
 # Sprint 1 - Indice de briefs (fundacion)
 
+> Nota de archivo (2026-09-25): los briefs de este indice con `Estado: Hecho`
+> fueron verificados y movidos a `docs/tasks/archive/` (se citan aqui por ID,
+> sin cambios). En `docs/tasks/` quedan solo los no-`Hecho`.
+
 Objetivo del sprint: registro + KYC + activacion + login, cuentas y saldos, y el motor
 transaccional con ledger. Ver `docs/14-plan-sprints-y-ejecucion.md`.
 
@@ -64,3 +68,9 @@ esquemas base.
 - `E5-T05` (outbox) antes de notificaciones/auditoria/fraude.
 - `E1-T03` depende de `E2-T01` y `E5-T09`.
 - `E1-T13` es prerequisito de `E1-T14`/`E1-T15`.
+
+> **Nota de cierre del Sprint 1 (2026-09-26):** `E2-T04` / `movements_view` (proyeccion
+> alimentada por `ledger.entry.posted`) queda **diferida a Sprint 2** (ver
+> `docs/17-riesgos-y-decisiones-abiertas.md:113` — limitacion conocida: el consumidor no
+> esta cableado en produccion). En consecuencia, **HU05 no se da por 100% completa en
+> produccion**. Esta nota no modifica la lista de tareas de este indice.

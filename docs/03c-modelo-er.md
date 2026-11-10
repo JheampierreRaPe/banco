@@ -112,6 +112,10 @@ users (REF) ──1 wallets ──< wallet_links ──> accounts (REF)
 users (REF) ──1 merchant_accounts ──< qr_charges ──< qr_payments
                                           │              └──> (REF) transactions
                                           └── status / expires_at
+                                          └── PERSONAL (E4-T21): users (REF owner) ──<
+                                              qr_charges (payee_type, sin monto ni
+                                              caducidad, reusable) ──< qr_payments
+                                              (payee_user_id, varios cobros)
 
 billers ──< service_payments ──> (REF) transactions
        ──< service_subscriptions

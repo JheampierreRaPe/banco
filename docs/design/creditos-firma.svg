@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="390" height="1054" viewBox="0 0 390 1054">
+  <g>
+    <rect width="390" height="1054" fill="#FBF9F4"/>
+    <g>
+      <rect width="390" height="64" fill="#152A1F"/>
+      <g transform="translate(16, 20)">
+        <text x="0" y="20" font-family="Inter" font-size="20" fill="#FFFFFF">‹</text>
+      </g>
+      <g transform="translate(97, 22)">
+        <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Firma del contrato</text>
+      </g>
+      <g transform="translate(360, 22)">
+        <text x="0" y="16" font-family="Inter" font-size="16" fill="#FFFFFF">···</text>
+      </g>
+    </g>
+    <g transform="translate(0, 64)">
+      <g transform="translate(16, 16)">
+        <g transform="translate(0, 6)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">EXPEDIENTE CR-2026-0841</text>
+        </g>
+        <g transform="translate(272, 0)">
+          <rect width="86" height="27" rx="9999" ry="9999" fill="#FFDCBC"/>
+          <g transform="translate(12, 6)">
+            <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#683D00">Por firmar</text>
+          </g>
+        </g>
+      </g>
+      <g transform="translate(16, 59)">
+        <rect width="358" height="145" rx="16" ry="16" fill="#F5F3EE"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#424844">RESUMEN (del servidor)</text>
+        </g>
+        <g transform="translate(20, 43)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Personal - S/ 10,000 - 12 m - S/ 927.50/mes</text>
+        </g>
+        <g transform="translate(20, 68)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">He leído los 3 documentos y acepto firmarlos *</text>
+        </g>
+        <g transform="translate(20, 110)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Obligatorio. Sin esto no se puede firmar.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 220)">
+        <rect width="358" height="52" rx="12" ry="12" fill="#152A1F"/>
+        <g transform="translate(95, 16)">
+          <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#FFFFFF">Firmar con biometría</text>
+        </g>
+      </g>
+      <g transform="translate(16, 288)">
+        <rect width="358" height="97" rx="16" ry="16" fill="#FFFFFF" stroke="#C2C8C2" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Reto biométrico</text>
+        </g>
+        <g transform="translate(20, 41)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#1B1C19">Toca el sensor para autorizar la firma.</text>
+        </g>
+        <g transform="translate(20, 62)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#BA1A1A">Si se cancela verás Reintentar. No revela el motivo.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 401)">
+        <rect width="358" height="218" rx="16" ry="16" fill="#FFFFFF" stroke="#152A1F" stroke-width="1"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">Sin biometría? Usa tu PIN</text>
+        </g>
+        <g transform="translate(20, 45)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#152A1F">PIN (6 dígitos)</text>
+        </g>
+        <g transform="translate(20, 70)">
+          <rect width="318" height="45" rx="12" ry="12" fill="#FBF9F4" stroke="#C2C8C2" stroke-width="1"/>
+          <g transform="translate(14, 14)">
+            <text x="0" y="14" font-family="Inter" font-size="14" fill="#6B7268">••••••</text>
+          </g>
+        </g>
+        <g transform="translate(20, 123)">
+          <rect width="318" height="52" rx="12" ry="12" fill="#FBF9F4" stroke="#152A1F" stroke-width="1"/>
+          <g transform="translate(95, 16)">
+            <text x="0" y="16" font-family="Inter" font-size="16" font-weight="600" fill="#152A1F">Firmar con PIN</text>
+          </g>
+        </g>
+        <g transform="translate(20, 183)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Contingencia. El PIN nunca se guarda.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 635)">
+        <rect width="358" height="97" rx="16" ry="16" fill="#D0E8D7"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#0B1F15">Documento firmado!</text>
+        </g>
+        <g transform="translate(20, 41)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#0B1F15">Contrato SIGNED. Copia enviada al correo.</text>
+        </g>
+        <g transform="translate(20, 62)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#364B3F">Sello doc_hash verificado (no repudio).</text>
+        </g>
+      </g>
+      <g transform="translate(16, 748)">
+        <rect width="358" height="95" rx="16" ry="16" fill="#FFDAD6"/>
+        <g transform="translate(20, 20)">
+          <text x="0" y="14" font-family="Inter" font-size="14" font-weight="600" fill="#93000A">Si algo falla verás esto</text>
+        </g>
+        <g transform="translate(20, 58)">
+          <text x="0" y="14" font-family="Inter" font-size="14" fill="#93000A">Reto vencido: se rota y se reintenta solo.</text>
+        </g>
+      </g>
+      <g transform="translate(16, 859)">
+        <rect width="358" height="43" rx="12" ry="12" fill="#F5F3EE"/>
+        <g transform="translate(14, 14)">
+          <text x="0" y="12" font-family="Inter" font-size="12" fill="#424844">Cargando, vacío y error (§7) con Reintentar.</text>
+        </g>
+      </g>
+    </g>
+    <g transform="translate(0, 982)">
+      <rect width="390" height="72" fill="#FFFFFF" stroke="#E4E2DD" stroke-width="1"/>
+      <g transform="translate(32, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Inicio</text>
+      </g>
+      <g transform="translate(122.67, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" font-weight="600" fill="#152A1F">Créditos</text>
+      </g>
+      <g transform="translate(232.33, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Pagos</text>
+      </g>
+      <g transform="translate(328, 28.5)">
+        <text x="0" y="12" font-family="Inter" font-size="12" fill="#6B7268">Perfil</text>
+      </g>
+    </g>
+  </g>
+</svg>

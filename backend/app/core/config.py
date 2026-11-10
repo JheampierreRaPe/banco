@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,12 +23,129 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:3000,http://localhost:8080"
 
+    # Cifrado en reposo de beneficiarios (E2-T13, HU07): clave simetrica y
+    # pepper de indices ciegos. Se gestionan por entorno (como
+    # `DOC_HASH_PEPPER`), nunca en el repo. En `local` pueden omitirse
+    # (defaults de desarrollo con warning); fuera de `local` son
+    # obligatorias (fail-fast en `_reject_weak_beneficiary_crypto_outside_local`).
+    beneficiary_crypto_key: str = ""
+    beneficiary_index_pepper: str = ""
+    # Alias de entorno (`ENVIRONMENT`): si cualquiera de `app_env` /
+    # `environment` es no-local, el arranque exige secretos reales.
+    environment: str = ""
+
     kyc_base_url: str = "http://localhost:8000"
     kyc_api_key: str = "change-me"
+
+    # Consulta del titular por documento (E1-T35, HU01): proxy server-side a
+    # https://app.apiinti.dev/api/v1 (GET /dni/{numero}, /ruc/{numero}) con
+    # `Authorization: Bearer <APIINTI_API_KEY>`. La key vive en el `.env` de
+    # la raiz y llega al contenedor por `docker-compose.yml`; nunca al cliente.
+    apiinti_base_url: str = "https://app.apiinti.dev/api/v1"
+    apiinti_api_key: str = ""
+    doc_lookup_provider: str = "mock"
+    doc_lookup_mock_mode: str = "success"
+    doc_lookup_timeout_seconds: float = 5.0
+    doc_lookup_max_retries: int = 2
+    doc_lookup_backoff_base_seconds: float = 0.1
+    doc_lookup_breaker_failures: int = 3
+    doc_lookup_breaker_cooldown_seconds: float = 30.0
+
+    # Validacion de titular/CCI para transferencias (E2-T08, HU06):
+    # adaptador `HolderLookup` con mock determinista por defecto; el
+    # proveedor real (simulador interbancario D01) se cablea despues sin
+    # tocar el dominio. Sin PII en logs (solo hash del CCI).
+    holder_lookup_provider: str = "mock"
+    holder_lookup_mock_mode: str = "success"
+    holder_lookup_base_url: str = "http://localhost:8000"
+    holder_lookup_api_key: str = ""
+    holder_lookup_timeout_seconds: float = 5.0
+    holder_lookup_max_retries: int = 2
+    holder_lookup_backoff_base_seconds: float = 0.1
+    holder_lookup_breaker_failures: int = 3
+    holder_lookup_breaker_cooldown_seconds: float = 30.0
+    holder_lookup_cache_ttl_seconds: float = 300.0
+
+    # Interoperabilidad de billetera con el sistema par (E4-T03, HU13 CA-03):
+    # adaptador `WalletInteropGateway` con mock determinista por defecto; el
+    # contrato definitivo del par llega despues (D01). La API key es
+    # server-side (solo cabecera `Authorization`); nunca en logs ni en el repo.
+    wallet_interop_provider: str = "mock"
+    wallet_interop_mock_mode: str = "success"
+    wallet_interop_base_url: str = "http://localhost:8000"
+    wallet_interop_api_key: str = ""
+    wallet_interop_timeout_seconds: float = 5.0
+    wallet_interop_max_retries: int = 2
+
+    # Proveedor de servicios para HU16 (E4-T16, catalogo `billers`):
+    # adaptador `ServiceProviderGateway` con mock determinista por
+    # defecto (busqueda por nombre/suministro + validacion sin red); el
+    # proveedor real se cablea despues sin tocar el dominio. La API key
+    # es server-side (solo cabecera `Authorization`); nunca en logs ni
+    # en el repo. Sin PII en logs (solo hash del suministro).
+    service_provider: str = "mock"
+    service_provider_mock_mode: str = "success"
+    service_provider_base_url: str = "http://localhost:8000"
+    service_provider_api_key: str = ""
+    service_provider_timeout_seconds: float = 5.0
+    service_provider_max_retries: int = 2
+    service_provider_backoff_base_seconds: float = 0.1
+    service_provider_breaker_failures: int = 3
+    service_provider_breaker_cooldown_seconds: float = 30.0
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _reject_default_jwt_secret_outside_local(self) -> "Settings":
+        """Rechaza el arranque si `jwt_secret` es vacio o el default fuera de `local`.
+
+        Solo compara contra el valor por defecto (`change-me`); nunca registra
+        ni expone el valor configurado. En `local` se permite el default para
+        no romper tests/desarrollo.
+        """
+        if str(self.app_env).lower() != "local" and (
+            not self.jwt_secret or self.jwt_secret.strip() == "" or self.jwt_secret == "change-me"
+        ):
+            raise ValueError(
+                "JWT_SECRET debe ser un secreto aleatorio/fuerte "
+                "cuando APP_ENV no es 'local' (el valor por defecto no es valido)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_weak_beneficiary_crypto_outside_local(self) -> "Settings":
+        """Fail-fast fuera de `local`: exige `cryptography` + clave/pepper reales.
+
+        Solo compara presencia (nunca registra ni expone los valores). En
+        `local` se permiten los defaults de desarrollo (con warning en el
+        modulo de cripto). `ENVIRONMENT` se trata igual que `APP_ENV`: si
+        cualquiera es no-local, se exige configuracion real.
+        """
+        app_env = str(self.app_env or "local").strip().lower()
+        env_alias = str(self.environment or "").strip().lower()
+        is_nonlocal = app_env != "local" or (env_alias != "" and env_alias != "local")
+        if not is_nonlocal:
+            return self
+        try:
+            import cryptography.hazmat.primitives.ciphers.aead  # noqa: F401
+        except ImportError as exc:
+            raise ValueError(
+                "cryptography es obligatoria cuando APP_ENV/ENVIRONMENT no es 'local' "
+                "(el fallback B0 no esta permitido en produccion)."
+            ) from exc
+        if not (self.beneficiary_crypto_key or "").strip():
+            raise ValueError(
+                "BENEFICIARY_CRYPTO_KEY es obligatoria "
+                "cuando APP_ENV/ENVIRONMENT no es 'local' (sin defaults de desarrollo)."
+            )
+        if not (self.beneficiary_index_pepper or "").strip():
+            raise ValueError(
+                "BENEFICIARY_INDEX_PEPPER es obligatoria "
+                "cuando APP_ENV/ENVIRONMENT no es 'local' (sin defaults de desarrollo)."
+            )
+        return self
 
 
 @lru_cache

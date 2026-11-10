@@ -24,13 +24,20 @@
 - La API key de servicios nunca se embebe en la app.
 - Toda accion que mueve dinero usa `Idempotency-Key` generada en el cliente.
 - Los datos sensibles se muestran enmascarados; el detalle exige autenticacion.
+- El nombre del dueño del QR solo se muestra enmascarado tal cual del
+  servidor (`payee_name_masked`, E4-T24); ausente/`null` -> se oculta la
+  fila (cliente delgado: la app no calcula la máscara).
+- Retroceso (E4-T25): las pantallas no terminales apiladas (`push`)
+  muestran back con `pop` real; las pantallas raiz/tab y las
+  terminales/de exito (con CTA propia) no llevan back; nunca se fuerza
+  un salto a Home como retroceso.
 
 ### 1.3 Pantallas por modulo
 
 | Modulo | Pantallas |
 |---|---|
 | Onboarding | Bienvenida, captura de documento, guia de liveness por pasos, confirmacion de datos, OTP, creacion de PIN. |
-| Sesion | Login biometrico, login PIN, recuperar acceso, cuenta bloqueada, cerrar sesion. |
+| Sesion | Login biometrico, login PIN, entrada "iniciar sesión en este dispositivo" (ruta pública `/login/device`, F-T57; flujo de 3 pasos F-T56), restablecer PIN como opción secundaria "Olvidé mi PIN" (flujo `/pin-reset`), cuenta bloqueada, cerrar sesion (recuperar acceso `/recovery` retirado en F-T51). |
 | Inicio | Dashboard de cuentas, detalle de cuenta, movimientos, filtros, exportar. |
 | Transferencias | Seleccion de origen/destino, monto/concepto, agenda de beneficiarios, confirmacion, autorizacion biometrica, comprobante. |
 | Creditos | Simulador, solicitud/consentimiento, estado del expediente, contrato, firma biometrica, cronograma, pago de cuota. |
@@ -90,6 +97,9 @@ equipo prefiere un solo lenguaje (menos adecuado para grillas densas).
 ### 2.4 Tareas
 
 - `F-T12` Base del panel, autenticacion y RBAC por rol. *Frontend/Backend.*
+  (Nota E3-T10, 2026-10-10: bootstrap mínimo acotado a crédito ya existe en
+  `admin-web/` —Vite + React + TS + TanStack Query, solo vista de Analista—;
+  F-T12 conserva la base general y el resto de vistas sin duplicar; ver `docs/18` G52.)
 - `F-T13` Pantallas de operaciones/conciliacion. *Frontend.*
 - `F-T14` Pantallas de fraude. *Frontend.*
 - `F-T15` Pantallas de cumplimiento. *Frontend.*

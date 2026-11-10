@@ -1,0 +1,48 @@
+# Gitleaks — allowlist de falsos positivos (fixtures de tests).
+#
+# Contexto: el job `escaneo` del CI (`gitleaks/gitleaks-action@v2`) escanea el
+# historial completo y falla con 6 hallazgos `generic-api-key`, todos en
+# archivos de PRUEBAS con valores ficticios en español (sin acceso real a
+# ningún servicio). Verificados uno por uno el 2026-10-12 (gitleaks v8.30.1,
+# 120 commits escaneados):
+#
+#   1. backend/tests/test_mint_demo_token.py:21
+#      `TEST_SECRET = "secreto-solo-tests-mint-analyst-1234567890"` — secreto
+#      JWT ficticio inyectado por env solo para el script local de demo.
+#   2. backend/tests/test_e2_t13_beneficiaries.py:64
+#      `"otra-clave-de-prueba-diferente-123"` — clave dummy via monkeypatch
+#      para probar que descifrar con otra clave falla.
+#   3-4. backend/tests/test_e2_t13_security_fixes.py:123,159
+#      `"clave-de-prueba-123"` (+ `"pepper-de-prueba-123"`) — claves dummy via
+#      monkeypatch para validar el config en producción.
+#   5. backend/tests/test_recovery.py:261
+#      `"vencido/bloqueado colapsan al 401..."` — prosa de un assert en español,
+#      ni siquiera es un valor secreto.
+#   6. frontend/test/api_client_test.dart:106
+#      `idempotencyKey: 'clave-fija-123'` — fixture de idempotencia, no secreta.
+#
+# Los secretos REALES (backend/.env: Twilio/KYC) están gitignored y NO aparecen
+# en el historial (el escaneo no los reporta). Si algún día aparece un secreto
+# real, rotarlo y NO añadirlo aquí.
+#
+# Alcance mínimo: la allowlist exige el literal ficticio exacto (regex) Y que
+# esté en un archivo de tests (paths). Cualquier otro valor, en cualquier otro
+# archivo, sigue fallando el escaneo. No se desactiva ninguna regla global.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixtures de tests con literales ficticios en español (sin acceso real)"
+paths = [
+  '''backend/tests/.*\.py$''',
+  '''frontend/test/.*\.dart$''',
+]
+regexes = [
+  '''secreto-solo-tests-[A-Za-z0-9-]+''',
+  '''clave-de-prueba-123''',
+  '''otra-clave-de-prueba-diferente-123''',
+  '''pepper-de-prueba-123''',
+  '''clave-fija-123''',
+  '''vencido/bloqueado''',
+]

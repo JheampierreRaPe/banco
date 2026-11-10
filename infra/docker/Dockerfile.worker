@@ -1,0 +1,21 @@
+# Q-T06: imagen demo del worker (colas/tareas).
+# Valida conectividad con Postgres/Redis, expone /health y corre los jobs
+# periodicos registrados en `worker_entrypoint.py` (cuotas E3-T19).
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /srv/app
+
+COPY backend/pyproject.toml backend/alembic.ini ./
+COPY backend/app ./app
+COPY backend/migrations ./migrations
+RUN pip install .
+
+COPY infra/docker/worker_entrypoint.py ./worker_entrypoint.py
+
+EXPOSE 8100
+
+CMD ["python", "worker_entrypoint.py"]

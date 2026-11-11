@@ -795,6 +795,9 @@ def test_migration_head_still_single_0040():
     # E4-T21 (2026-10-15): la cabeza avanza a 0047_wallet_personal_qr
     # (QR personal estatico, tras 0046).
     assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
+    # E6-T01 (2026-11-10): la cabeza avanza a 0048_risk_rules
+    # (reglas antifraude configurables, tras 0047).
+    assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
+    assert heads == ["0048_risk_rules"], f"heads inesperados: {heads}"

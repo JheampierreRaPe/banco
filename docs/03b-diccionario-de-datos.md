@@ -759,13 +759,21 @@ Indices: `(account_id, created_at DESC)`.
 | id | UUID | No | gen_random_uuid() | PK | - |
 | code | VARCHAR(40) | No | - | UQ | Identificador de regla. |
 | name | VARCHAR(120) | No | - | | - |
-| enabled | BOOLEAN | No | true | IDX | - |
-| priority | SMALLINT | No | 100 | | Orden de evaluacion. |
+| enabled | BOOLEAN | No | true | IDX (`ix_risk_rules_enabled`) | - |
+| priority | SMALLINT | No | 100 | IDX (`ix_risk_rules_priority`) | Orden de evaluacion. |
 | params_json | JSONB | No | '{}' | | Umbrales. |
-| action | VARCHAR(15) | No | 'ALERT' | CK | `risk_action`. |
+| action | VARCHAR(15) | No | 'ALERT' | CK (`ck_risk_rules_action`) | `risk_action`. |
 | created_at | TIMESTAMPTZ | No | now() | | - |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
 | updated_by | UUID | Si | - | REF users | - |
+
+> `CHECK ck_risk_rules_action`: `action IN ('ALERT','HOLD','BLOCK')`.
+> La evaluacion (`E6-T02`) lee `ORDER BY priority ASC, code ASC`
+> (empate -> `code`; determinista, sin cache obligatoria). Semilla
+> `0048_risk_rules` (E6-T01, idempotente): `FACIAL_SPOOFING` (10),
+> `ATYPICAL_GEO` (20), `UNUSUAL_AMOUNT` (30), `VELOCITY` (40),
+> `NEW_DEVICE` (50); todas `enabled=true`, `action='ALERT'` con
+> umbrales conservadores (la calibracion es `E6-T06`).
 
 ### 11.2 `risk_profiles`
 

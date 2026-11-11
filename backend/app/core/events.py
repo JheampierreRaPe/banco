@@ -14,6 +14,10 @@ FUNDS_RELEASED = "funds.released"
 LEDGER_ENTRY_POSTED = "ledger.entry.posted"
 TRANSFER_SETTLED = "transfer.settled"
 FRAUD_ALERT_RAISED = "fraud.alert.raised"
+# Cambio de regla antifraude (E6-T01, HU20): lo registra `risk` como
+# auditoria best-effort (`risk.rule.updated`, sin PII) al editar
+# `risk_rules` via `PUT /risk/rules/{code}`; sin evento de negocio.
+RISK_RULE_UPDATED = "risk.rule.updated"
 # Intento fallido de autorizacion biometrica (E2-T17 emisor via outbox,
 # E2-T20 consumidor en `risk` + notificacion; mismo nombre que
 # `identity.service.device_login.AUDIT_FAILED_ATTEMPT`).

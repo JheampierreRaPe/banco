@@ -1313,8 +1313,30 @@ Detalle del flujo KYC (`identity`, E1-T29):
 
 ### 6.7 Riesgo, cumplimiento y auditoria (panel interno)
 
+> Contrato E6-T01 `GET /api/v1/risk/rules` + `PUT /api/v1/risk/rules/{code}`
+> (Bearer, rol `fraud_analyst`/`admin`; cimiento de HU20, `docs/03b#11.1`):
+> - `GET /risk/rules` -> `200 {"data": [{"code", "name", "enabled",
+>   "priority", "action", "params_json", "updated_at"}], "meta":
+>   {"request_id", "total"}}` (orden determinista `priority ASC, code
+>   ASC`; `params_json` siempre objeto con solo umbrales, sin PII).
+> - `PUT /risk/rules/{code}` body parcial `{enabled?, priority?,
+>   action?, params_json?}` (`code` inmutable; `priority` entero
+>   `0..32767`; `action` estricta `ALERT`/`HOLD`/`BLOCK`; `params_json`
+>   debe ser objeto) -> `200 {"data": {...regla...}, "meta":
+>   {"request_id"}}` (se refleja sin reinicio; fija
+>   `updated_by`/`updated_at` + auditoria best-effort
+>   `risk.rule.updated` sin PII; `code` de la ruta insensible a
+>   mayusculas). Umbrales globales por `shared/config`
+>   (`risk.velocity_window_seconds` default `600`,
+>   `risk.unusual_amount_factor` default `3.0`) con fallback.
+> - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol);
+>   `404 NOT_FOUND` (codigo inexistente); `422 VALIDATION_ERROR`.
+>   No mueve dinero ni emite evento de negocio.
+
 | Metodo | Ruta | Rol |
 |---|---|---|
+| GET | `/risk/rules` | Analista de fraude. |
+| PUT | `/risk/rules/{code}` | Analista de fraude. |
 | GET | `/risk/alerts` | Analista de fraude. |
 | POST | `/risk/alerts/{id}/resolve` | Analista de fraude. |
 | GET | `/compliance/screenings` | Oficial de cumplimiento. |

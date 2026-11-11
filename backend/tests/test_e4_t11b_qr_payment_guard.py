@@ -604,6 +604,9 @@ def test_migration_0041_chained_after_0040_with_single_head():
     # (QR personal estatico, tras 0046; la guarda se acota a
     # `reusable = false`).
     assert revisions.get("0047_wallet_personal_qr") == "0046_services_settlement"
+    # E6-T01 (2026-11-10): la cabeza avanza a 0048_risk_rules
+    # (reglas antifraude configurables, tras 0047).
+    assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
     assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
     assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
@@ -611,7 +614,7 @@ def test_migration_0041_chained_after_0040_with_single_head():
     assert revisions.get("0040_wallet_qr_payments") == "0039_wallet_qr"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0047_wallet_personal_qr"], f"heads inesperados: {heads}"
+    assert heads == ["0048_risk_rules"], f"heads inesperados: {heads}"
     content = (versions_dir / "0041_wallet_qr_payment_guard.py").read_text(encoding="utf-8")
     assert "uq_qr_payments_charge_active" in content
     assert "REJECTED" in content

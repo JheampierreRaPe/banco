@@ -61,6 +61,15 @@ def test_mint_credit_analyst_role() -> None:
     assert payload["roles"] == ["credit_analyst"]
 
 
+def test_mint_fraud_analyst_role() -> None:
+    sub = str(uuid.uuid4())
+    proc = _mint("--subject", sub, "--role", "fraud_analyst")
+    assert proc.returncode == 0, proc.stderr
+    payload = _decode(proc.stdout)
+    assert payload["sub"] == sub
+    assert payload["roles"] == ["fraud_analyst"]
+
+
 def test_mint_random_subject_is_valid_uuid() -> None:
     proc = _mint()
     assert proc.returncode == 0, proc.stderr

@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError, friendlyErrorMessage } from "../api/client";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDtiPercent, formatPEN, maskRef, shortRef } from "../domain/masking";
 import type { LoanApplication, ReviewAudit, ReviewDecision } from "../domain/types";
+import { toReviewAudit } from "../features/credits/audit";
 
 interface DetailProps {
   app: LoanApplication;
@@ -19,27 +21,31 @@ export function ApplicationDetail({ app, productLabel, onReviewed, onConflict, r
   const [reason, setReason] = useState("");
   const [touched, setTouched] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  // Dictamen pendiente de confirmación explícita (docs/13#2.3: auditada).
+  const [pending, setPending] = useState<ReviewDecision | null>(null);
 
   const ref = shortRef(app.id);
   const reasonMissing = reason.trim().length === 0;
 
-  const submit = async (decision: ReviewDecision) => {
+  // El dictamen exige motivo (la UI lo valida y el servidor lo valida con
+  // 422): sin motivo no se envía. La confirmación muestra decisión +
+  // referencia enmascarada + motivo antes de enviar.
+  const askConfirm = (decision: ReviewDecision) => {
     setTouched(true);
-    // Sin motivo no se envía (el servidor también valida: 422).
+    if (reasonMissing || reviewing) return;
+    setServerError(null);
+    setPending(decision);
+  };
+
+  const submit = async (decision: ReviewDecision) => {
+    setPending(null);
     if (reasonMissing || reviewing) return;
     setServerError(null);
     try {
+      // La auditoría visible se deriva de la RESPUESTA del servidor
+      // (cliente delgado, docs/19): `decided_at`/`status` reales.
       const decided = await review(decision, reason.trim());
-      onReviewed(
-        {
-          applicationShortRef: ref,
-          actorShortRef: "analista",
-          at: new Date().toISOString(),
-          before: "IN_REVIEW",
-          after: decision,
-        },
-        decided,
-      );
+      onReviewed(toReviewAudit(decided), decided);
       setReason("");
       setTouched(false);
     } catch (err) {
@@ -53,17 +59,19 @@ export function ApplicationDetail({ app, productLabel, onReviewed, onConflict, r
 
   const onSubmitApprove = (e: FormEvent) => {
     e.preventDefault();
-    void submit("APPROVED");
+    askConfirm("APPROVED");
   };
   const onSubmitReject = (e: FormEvent) => {
     e.preventDefault();
-    void submit("REJECTED");
+    askConfirm("REJECTED");
   };
 
   const bureauLine =
     app.bureau_authorized && app.bureau_authorized_at
       ? `Consentimiento buró: SÍ - ${app.bureau_authorized_at} (auditado)`
       : "Consentimiento buró: pendiente de registro";
+
+  const pendingLabel = pending === "APPROVED" ? "Aprobar" : "Rechazar";
 
   return (
     <section aria-label={`Detalle ${ref}`}>
@@ -139,6 +147,16 @@ export function ApplicationDetail({ app, productLabel, onReviewed, onConflict, r
         Tras dictaminar sale de la bandeja y queda auditado (usuario, hora, antes/después). 409 si
         ya fue decidido.
       </p>
+      <ConfirmDialog
+        open={pending !== null}
+        title={`Confirmar dictamen: ${pendingLabel} ${ref}`}
+        body={`Se registrará el dictamen con el motivo ingresado. Referencia ${ref} (enmascarada). Esta acción queda auditada.`}
+        confirmLabel={`Sí, ${pendingLabel.toLowerCase()}`}
+        onConfirm={() => {
+          if (pending) void submit(pending);
+        }}
+        onCancel={() => setPending(null)}
+      />
     </section>
   );
 }

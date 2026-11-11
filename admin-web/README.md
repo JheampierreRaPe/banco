@@ -60,10 +60,28 @@ crédito vive desde `E3-T10`.
 > Sin login real de panel (D-S4-02): se mantiene el JWT pegado del bootstrap y el
 > RBAC de UI; la verificación real es del backend.
 
-## Vista de Analista de crédito (E3-T10, HU10)
+## Vista de Analista de crédito (F-T16 completo sobre el bootstrap E3-T10, HU10)
 
-Bandeja `EN_REVISION` + detalle enmascarado + dictamen manual, según
-`docs/design/creditos-pantallas.md` (pantalla "Analista", desktop 1280px).
+Feature en `src/features/credits/` (`CreditsPanel` + `toReviewAudit`; la página
+`src/app/CreditsPage.tsx` solo la conecta bajo el shell/RBAC de `F-T12`):
+bandeja `EN_REVISION` + detalle enmascarado + dictamen manual con confirmación,
+según `docs/design/creditos-pantallas.md` (pantalla "Analista", desktop 1280px).
+
+- `GET /credits/applications?status=IN_REVIEW&limit&offset` → bandeja (filtro fijo,
+  paginación por `offset` con "Cargar más", contador `N`/`N+`).
+- Detalle construido con la fila de la bandeja: `GET /credits/applications/{id}` es solo
+  del titular (ajeno → `404` neutro), así que no hay segundo fetch con token de analista
+  (gap `docs/18` G52). Riesgo (score/DTI) y consentimiento buró (banner auditado) son
+  datos del servidor; el panel no recalcula nada (cliente delgado).
+- `POST /credits/applications/{id}/review` `{decision: APPROVED|REJECTED, reason 1..2000}`
+  con motivo obligatorio (sin motivo no se envía ni se abre la confirmación; el servidor
+  valida `422`). Confirmación explícita (`ConfirmDialog`: decisión + referencia
+  enmascarada + motivo) antes de enviar. Tras dictaminar sale de la bandeja y la tira
+  de auditoría (`IN_REVIEW → decisión`) usa la hora del servidor (`decided_at` de la
+  respuesta, `toReviewAudit`). `409` (ya decidido) → avisa y refresca;
+  `403` (sin rol, también en el dictamen) → pantalla denegada.
+- 4 estados de UI por pantalla (`docs/20#7`): contenido, carga (skeleton), vacío
+  ("Sin expedientes por revisar"), error accionable + Reintentar.
 
 - `GET /credits/applications?status=IN_REVIEW` → bandeja (filtro fijo).
 - Detalle construido con la fila de la bandeja: `GET /credits/applications/{id}` es solo
@@ -100,8 +118,8 @@ docker compose up --build -d   # desde la raíz; servicio `admin-web`
 
 # Calidad del panel
 cd admin-web
-npm test         # vitest: 73 pruebas (sesión/shell/router/RBAC/compartidos + regresión de crédito)
-npm run lint     # tsc --noEmit (lint del panel)
+npm test         # vitest: 80 pruebas (sesión/shell/router/RBAC/compartidos + crédito F-T16 + auditoría)
+npx tsc --noEmit # lint del panel (`npm run lint` lo ejecuta)
 npm run build    # tsc + build limpio
 ```
 

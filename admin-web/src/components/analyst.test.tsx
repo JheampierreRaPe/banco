@@ -137,9 +137,15 @@ describe("vista de Analista de crédito", () => {
     expect(screen.getByText(/Score 720 - DTI 38% - Buró:/)).toBeInTheDocument();
     expect(screen.getByText(/Consentimiento buró: SÍ - 2026-10-08/)).toBeInTheDocument();
 
-    // Dictamen con motivo obligatorio.
+    // Dictamen con motivo obligatorio + confirmación explícita.
     await user.type(screen.getByLabelText("Motivo del dictamen"), "Verificado sustento de ingresos.");
     await user.click(screen.getByRole("button", { name: "Aprobar" }));
+
+    // Confirmación: muestra decisión + referencia enmascarada, sin UUID crudo.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/Confirmar dictamen: Aprobar CR-/);
+    expect(dialog.textContent).not.toContain(APP_ID);
+    await user.click(screen.getByRole("button", { name: "Sí, aprobar" }));
 
     // Sale de la bandeja y queda auditado (usuario, hora, antes/después).
     await waitFor(() =>
@@ -147,13 +153,15 @@ describe("vista de Analista de crédito", () => {
     );
     const audit = screen.getByRole("status");
     expect(audit.textContent).toMatch(/IN_REVIEW → APPROVED/);
+    // La hora de la tira es la del servidor (`decided_at` del dictamen).
+    expect(audit.textContent).toContain("2026-10-09T12:00:00+00:00");
 
     const posts = calls.filter((c) => c.method === "POST" && c.url.endsWith("/review"));
     expect(posts).toHaveLength(1);
     expect(posts[0].body).toEqual({ decision: "APPROVED", reason: "Verificado sustento de ingresos." });
   });
 
-  it("sin motivo no envía y muestra el aviso inline", async () => {
+  it("sin motivo no envía y muestra el aviso inline (sin confirmación)", async () => {
     const user = userEvent.setup();
     const { calls } = mockApi({
       queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
@@ -164,7 +172,27 @@ describe("vista de Analista de crédito", () => {
     await user.click(await screen.findByRole("button", { name: "Aprobar" }));
 
     expect(await screen.findByText(/Sin motivo no se puede enviar/)).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+  });
+
+  it("cancelar la confirmación no envía el dictamen", async () => {
+    const user = userEvent.setup();
+    const { calls } = mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+    });
+    renderApp();
+    await signInAs(user);
+    await user.click(await screen.findByText(/Personal S\/ 10,000\.00/));
+    await user.type(screen.getByLabelText("Motivo del dictamen"), "Revisión manual.");
+    await user.click(screen.getByRole("button", { name: "Aprobar" }));
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    expect(screen.getByText(/Detalle CR-/)).toBeInTheDocument();
   });
 
   it("409 ya decidido: avisa y saca el expediente de la bandeja", async () => {
@@ -185,6 +213,7 @@ describe("vista de Analista de crédito", () => {
     await user.click(await screen.findByText(/Personal S\/ 10,000\.00/));
     await user.type(screen.getByLabelText("Motivo del dictamen"), "Doble revisión.");
     await user.click(screen.getByRole("button", { name: "Rechazar" }));
+    await user.click(await screen.findByRole("button", { name: "Sí, rechazar" }));
 
     expect(await screen.findByText(/ya fue decidido por otro analista/)).toBeInTheDocument();
     await waitFor(() =>
@@ -192,6 +221,57 @@ describe("vista de Analista de crédito", () => {
     );
   });
 
+  it("403 en el dictamen: pantalla denegada (sin rol de analista)", async () => {
+    const user = userEvent.setup();
+    mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+      review: () => json({ code: "NOT_AUTHORIZED", message: "sin rol" }, 403),
+    });
+    renderApp();
+    await signInAs(user);
+    await user.click(await screen.findByText(/Personal S\/ 10,000\.00/));
+    await user.type(screen.getByLabelText("Motivo del dictamen"), "Sin rol vigente.");
+    await user.click(screen.getByRole("button", { name: "Aprobar" }));
+    await user.click(await screen.findByRole("button", { name: "Sí, aprobar" }));
+
+    expect(await screen.findByText("Acceso denegado")).toBeInTheDocument();
+    expect(screen.getByText(/no tiene rol de analista de crédito/)).toBeInTheDocument();
+  });
+
+  it("422 del servidor: muestra el mensaje y el expediente sigue en bandeja", async () => {
+    const user = userEvent.setup();
+    mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+      review: () => json({ code: "VALIDATION_ERROR", message: "Motivo muy corto." }, 422),
+    });
+    renderApp();
+    await signInAs(user);
+    await user.click(await screen.findByText(/Personal S\/ 10,000\.00/));
+    await user.type(screen.getByLabelText("Motivo del dictamen"), "x");
+    await user.click(screen.getByRole("button", { name: "Rechazar" }));
+    await user.click(await screen.findByRole("button", { name: "Sí, rechazar" }));
+
+    expect(await screen.findByText(/Motivo muy corto\./)).toBeInTheDocument();
+    // Sigue en bandeja: la fila y el detalle persisten.
+    expect(screen.getByText(/Personal S\/ 10,000\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/Detalle CR-/)).toBeInTheDocument();
+  });
+
+  it("la bandeja pide limit/offset al servidor (paginación)", async () => {
+    const user = userEvent.setup();
+    const { calls } = mockApi({
+      queue: () => json({ data: [view()], meta: { total: 1, limit: 50, offset: 0 } }),
+    });
+    renderApp();
+    await signInAs(user);
+    await screen.findByText(/Personal S\/ 10,000\.00/);
+
+    const queued = calls.filter((c) => c.url.includes("status=IN_REVIEW"));
+    expect(queued.length).toBeGreaterThan(0);
+    expect(queued[0].url).toContain("limit=");
+    expect(queued[0].url).toContain("offset=");
+    expect(queued[0].url).toContain("status=IN_REVIEW");
+  });
   it("403 sin rol: pantalla denegada (bandeja y detalle bloqueados)", async () => {
     const user = userEvent.setup();
     mockApi({

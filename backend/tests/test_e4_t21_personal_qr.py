@@ -583,10 +583,12 @@ def test_migration_0047_chained_after_0046_with_single_head():
     # E6-T01 (2026-11-10): la cabeza avanza a 0048_risk_rules
     # (reglas antifraude configurables, tras 0047).
     assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
+    # E7-T01 (2026-11-11): la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
+    assert revisions.get("0049_fx") == "0048_risk_rules"
     assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0048_risk_rules"], f"heads inesperados: {heads}"
+    assert heads == ["0049_fx"], f"heads inesperados: {heads}"
     content = (versions_dir / "0047_wallet_personal_qr.py").read_text(encoding="utf-8")
     assert "payee_type" in content and "owner_user_id" in content
     assert "payee_account_id" in content and "reusable" in content

@@ -387,10 +387,11 @@ def test_single_head_is_0030():
     # avanza a 0045_notification_email_content (textos de semillas, tras
     # 0044). E4-T21 (2026-10-15): la cabeza avanza a
     # 0047_wallet_personal_qr (QR personal estatico, tras 0046): un solo
-    # head.
+    # head. E6-T01 (2026-11-10): 0048_risk_rules. E7-T01 (2026-11-11):
+    # la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0048_risk_rules",)
+    assert get_head_revisions() == ("0049_fx",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

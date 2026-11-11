@@ -705,6 +705,10 @@ Indices: `(account_id, created_at DESC)`.
 | fetched_at | TIMESTAMPTZ | No | now() | IDX | - |
 | ttl_seconds | INTEGER | No | 60 | | Vigencia. |
 
+> `CHECK` E7-T01 (migracion `0049_fx`): moneda ISO-4217
+> (`length(trim()) = 3`, portable), `base <> quote`, `ttl_seconds > 0`;
+> indice `(base, quote, fetched_at DESC)`.
+
 ### 10.2 `fx_quotes`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |
@@ -718,37 +722,46 @@ Indices: `(account_id, created_at DESC)`.
 | source_amount_minor | BIGINT | No | - | | Monto origen. |
 | target_amount_minor | BIGINT | No | - | | Monto destino. |
 | expires_at | TIMESTAMPTZ | No | - | IDX | 30 s. |
-| status | VARCHAR(12) | No | 'ACTIVE' | CK | `fx_quote_status`. |
+| status | VARCHAR(12) | No | 'ACTIVE' | CK | `fx_quote_status` (`ACTIVE`/`EXPIRED`/`CONSUMED`/`CANCELLED`). |
 | created_at | TIMESTAMPTZ | No | now() | | - |
+
+> `CHECK` E7-T01 (migracion `0049_fx`): moneda ISO-4217, `base <> quote`,
+> `rate > 0`, `spread >= 0`, montos origen/destino `> 0`,
+> `expires_at > created_at` (regla 16.5); indices `(user_id, status)` y
+> `(expires_at)`.
 
 ### 10.3 `fx_operations`, `savings_pockets`, `pocket_movements`
 
 | Tabla | Columna | Tipo | Nulo | Default | Clave |
 |---|---|---|---|---|---|
 | fx_operations | id | UUID | No | gen_random_uuid() | PK |
-| fx_operations | quote_id | UUID | No | - | FK fx_quotes, UQ |
+| fx_operations | quote_id | UUID | No | - | FK fx_quotes, UQ (una cotizacion se ejecuta una sola vez) |
 | fx_operations | transaction_id | UUID | No | - | REF transactions |
-| fx_operations | status | VARCHAR(15) | No | 'EXECUTED' | |
+| fx_operations | status | VARCHAR(15) | No | 'EXECUTED' | `fx_operation_status` (`EXECUTED`/`REVERSED`) |
 | fx_operations | executed_at | TIMESTAMPTZ | No | now() | |
 | savings_pockets | id | UUID | No | gen_random_uuid() | PK |
-| savings_pockets | user_id | UUID | No | - | REF users, IDX |
+| savings_pockets | user_id | UUID | No | - | REF users, IDX `(user_id, status)` |
 | savings_pockets | account_id | UUID | Si | - | REF accounts |
 | savings_pockets | name | VARCHAR(80) | No | - | |
 | savings_pockets | currency | CHAR(3) | No | - | |
 | savings_pockets | target_minor | BIGINT | Si | - | CK >=0 |
 | savings_pockets | balance_minor | BIGINT | No | 0 | CK >=0 |
 | savings_pockets | roundup_enabled | BOOLEAN | No | false | |
-| savings_pockets | yield_rate | NUMERIC(18,8) | No | 0 | |
-| savings_pockets | status | VARCHAR(15) | No | 'ACTIVE' | |
+| savings_pockets | yield_rate | NUMERIC(18,8) | No | 0 | CK >=0 |
+| savings_pockets | status | VARCHAR(15) | No | 'ACTIVE' | `pocket_status` (`ACTIVE`/`CLOSED`) |
 | savings_pockets | created_at | TIMESTAMPTZ | No | now() | |
 | pocket_movements | id | UUID | No | gen_random_uuid() | PK |
-| pocket_movements | pocket_id | UUID | No | - | FK savings_pockets |
+| pocket_movements | pocket_id | UUID | No | - | FK savings_pockets, IDX `(pocket_id, created_at)` |
 | pocket_movements | journal_entry_id | UUID | Si | - | REF ledger |
-| pocket_movements | movement_type | VARCHAR(20) | No | - | CK |
-| pocket_movements | direction | VARCHAR(6) | No | - | DEBIT/CREDIT |
+| pocket_movements | movement_type | VARCHAR(20) | No | - | CK (`DEPOSIT`/`WITHDRAWAL`/`ROUNDDUP`/`YIELD`/`TRANSFER`) |
+| pocket_movements | direction | VARCHAR(6) | No | - | CK `DEBIT`/`CREDIT` |
 | pocket_movements | amount_minor | BIGINT | No | - | CK >0 |
 | pocket_movements | currency | CHAR(3) | No | - | |
 | pocket_movements | created_at | TIMESTAMPTZ | No | now() | |
+
+> `CHECK` E7-T01 (migracion `0049_fx`): moneda ISO-4217 en `currency`;
+> `savings_pockets.target_minor IS NULL OR >= 0`; movimientos inmutables
+> (solo insercion, sin `UPDATE`/`DELETE` en el repositorio).
 
 ## 11. Schema `risk`
 

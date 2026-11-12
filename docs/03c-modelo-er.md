@@ -152,6 +152,13 @@ reconciliation_runs ──< reconciliation_exceptions ──< claims
 transactions (REF) <── reconciliation_exceptions
 ```
 
+> Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta de
+> `clearing_files`/`clearing_items` (`0050_reconciliation`) es
+> idempotente por `file_ref` (mismo checksum = replay sin duplicar;
+> checksum distinto = `FAILED`); los items nacen `PENDING` y solo el
+> matching (`E5-T18`) los mueve a `MATCHED`/`EXCEPTION`. Sin FK entre
+> modulos: el cruce con `transactions` se hace por IDs en `E5-T18`.
+
 ## 11. Modulo `notifications`
 
 ```

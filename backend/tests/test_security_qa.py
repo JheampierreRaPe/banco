@@ -134,18 +134,22 @@ def sec_session():
     )
     # Todos los schemas registrados (inmune al orden de ejecucion: si otra
     # suite importo mas modelos, sus schemas tambien se adjuntan), salvo
-    # `wallet` (E4-T01, 2026-10-13) y `fx` (E7-T01, 2026-11-11): SQLite admite
-    # maximo 10 BD adjuntas (`SQLITE_MAX_ATTACHED`, techo de compilacion sin
-    # PRAGMA que lo eleve) y con 11 schemas con tablas + `config` se llegaria
-    # a 12. Esta suite no ejercita endpoints de `wallet`/`fx` (sus tablas las
-    # cubren las fixtures propias de `tests/test_e4_t01_wallet_links.py` y
-    # `tests/test_e7_t01_fx_schema.py`; `fx` aun no expone endpoints); si un
-    # test futuro los necesitara, el fallo seria un `OperationalError`
-    # ruidoso (jamas silencioso) y habria que re-partir la fixture.
+    # `wallet` (E4-T01, 2026-10-13), `fx` (E7-T01, 2026-11-11) y
+    # `reconciliation` (E5-T17, 2026-11-12): SQLite admite maximo 10 BD
+    # adjuntas (`SQLITE_MAX_ATTACHED`, techo de compilacion sin PRAGMA que
+    # lo eleve) y con 11 schemas con tablas + `config` se llegaria a 12.
+    # Esta suite no ejercita endpoints de `wallet`/`fx`/`reconciliation`
+    # (sus tablas las cubren las fixtures propias de
+    # `tests/test_e4_t01_wallet_links.py`, `tests/test_e7_t01_fx_schema.py`
+    # y `tests/test_e5_t17_reconciliation_ingest.py`; ninguno expone aun
+    # endpoints bajo esta matriz); si un test futuro los necesitara, el
+    # fallo seria un `OperationalError` ruidoso (jamas silencioso) y
+    # habria que re-partir la fixture.
     schemas = {name.split(".")[0] for name in Base.metadata.tables if "." in name}
     schemas.add("config")
     schemas.discard("wallet")
     schemas.discard("fx")
+    schemas.discard("reconciliation")
 
     def _attach(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
@@ -157,7 +161,9 @@ def sec_session():
     Base.metadata.create_all(
         engine,
         tables=[
-            table for table in Base.metadata.tables.values() if table.schema not in ("wallet", "fx")
+            table
+            for table in Base.metadata.tables.values()
+            if table.schema not in ("wallet", "fx", "reconciliation")
         ],
     )
     with engine.begin() as conn:

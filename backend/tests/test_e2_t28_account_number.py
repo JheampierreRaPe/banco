@@ -391,7 +391,7 @@ def test_single_head_is_0030():
     # la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0049_fx",)
+    assert get_head_revisions() == ("0050_reconciliation",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

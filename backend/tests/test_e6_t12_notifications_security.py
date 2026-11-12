@@ -660,7 +660,10 @@ def test_migration_chain_has_single_head_0044():
     assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
     # E7-T01 (2026-11-11): la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
     assert revisions.get("0049_fx") == "0048_risk_rules"
-    assert heads == ["0049_fx"], f"heads inesperados: {heads}"
+    # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
+    # (esquema `reconciliation`, tras 0049).
+    assert revisions.get("0050_reconciliation") == "0049_fx"
+    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
     content = (
         backend_dir / "migrations" / "versions" / "0045_notification_email_content.py"
     ).read_text(encoding="utf-8")

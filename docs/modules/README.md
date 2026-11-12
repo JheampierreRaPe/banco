@@ -829,6 +829,15 @@ eventos (`outbox`/`inbox`).
   invalido, `Decimal` nunca `float`). **No mueve dinero** (sin
   `transactions`/`ledger`; los servicios llegan en `E7-T02`/`T09`/`T11`).
 - **Consume:** nada critico.
+- **Adaptador `FxRateProvider` (E7-T08, HU25):** `backend/app/adapters/fx_rate.py`
+  (interfaz `get_rate`/`get_rates` + `MockFxRateProvider` determinista con tasas
+  semilla `PEN/USD=3.80`, `PEN/EUR=4.10`, `USD/EUR=0.92` e inversas coherentes +
+  `HttpFxRateProvider` con `GET {base_url}/rates?base=PEN`, timeout/reintentos/
+  circuito + cache en proceso por `(base, quote)` con TTL + fallback auditable a
+  semilla D04). `rate` como `Decimal` exacto (nunca `float`); errores
+  `FX_RATE_UNAVAILABLE` (`503`) / `FX_RATE_TIMEOUT` (`502`) / par no soportado
+  -> `VALIDATION_ERROR`; key solo en cabecera `Authorization`. Configuracion
+  `FX_RATE_*` (`docs/02#9`); sin persistencia (es `E7-T09`) y sin mover dinero.
 - **Puede llamar a:** adaptador `FxRateProvider`, `transactions`, `ledger`, `audit`.
 - **Prohibido:** asentar un cambio cruzando monedas en un solo asiento.
 

@@ -762,6 +762,11 @@ Indices: `(account_id, created_at DESC)`.
 > `CHECK` E7-T01 (migracion `0049_fx`): moneda ISO-4217 en `currency`;
 > `savings_pockets.target_minor IS NULL OR >= 0`; movimientos inmutables
 > (solo insercion, sin `UPDATE`/`DELETE` en el repositorio).
+>
+> E7-T02 (HU24): `savings_pockets.account_id` referencia la cuenta `POCKET`
+> (misma moneda) creada por `accounts.service.open_customer_account`; la
+> apertura nace con `balance_minor=0`, `status=ACTIVE` y emite
+> `pocket.created` (sin PII). Sin tablas nuevas.
 
 ## 11. Schema `risk`
 

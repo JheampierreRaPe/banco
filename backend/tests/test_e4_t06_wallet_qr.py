@@ -601,6 +601,9 @@ def test_migration_0039_chained_after_0038_with_single_head():
     assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
     # E7-T01 (2026-11-11): la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
     assert revisions.get("0049_fx") == "0048_risk_rules"
+    # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
+    # (esquema `reconciliation`, tras 0049).
+    assert revisions.get("0050_reconciliation") == "0049_fx"
     assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
     assert revisions.get("0045_notification_email_content") == "0044_notifications_preferences"
     assert revisions.get("0042_wallet_services") == "0041_wallet_qr_payment_guard"
@@ -611,7 +614,7 @@ def test_migration_0039_chained_after_0038_with_single_head():
     assert revisions.get("0037_wallet") == "0036_loan_reminder_param"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0049_fx"], f"heads inesperados: {heads}"
+    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
     content = (versions_dir / "0039_wallet_qr.py").read_text(encoding="utf-8")
     assert "merchant_accounts" in content
     assert "qr_charges" in content

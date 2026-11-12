@@ -932,14 +932,18 @@ __all__ = [
     "is_security_alerts_wired",
     "is_unrecognized_reports_wired",
     "is_wired",
+    "reconciliation_ingest_enabled",
+    "reconciliation_jobs_interval_seconds",
     "resolve_account_projection",
     "resolve_balance_port",
     "run_credit_loan_jobs_once",
     "run_outbox_once",
+    "run_reconciliation_ingest_once",
     "run_wallet_qr_jobs_once",
     "run_wallet_service_jobs_once",
     "start_credit_loan_jobs_worker",
     "start_outbox_worker",
+    "start_reconciliation_ingest_worker",
     "start_wallet_qr_jobs_worker",
     "start_wallet_service_jobs_worker",
     "subscribe_accounts_movements",
@@ -957,3 +961,117 @@ __all__ = [
     "wire_ports",
     "wire_security_email_resolver",
 ]
+
+
+# ------------------------------------------------- Jobs E5-T17 (HU19 CA-04)
+# Ingesta de lotes de compensacion (`reconciliation/jobs/
+# clearing_ingest.py`). El job gestiona su propio `commit` por archivo
+# (idempotente y re-ejecutable: mismo `file_ref` + mismo checksum =
+# replay sin duplicar); aqui solo se abre/cierra la sesion y se leen
+# los flags de entorno (regla de oro 6: encendido y periodicidad fuera
+# del codigo). No mueve dinero (solo inserta `clearing_files`/
+# `clearing_items` en `PENDING`); no emite eventos. Apagado por defecto
+# (`RECONCILIATION_INGEST_ENABLED=0`) para que `main` quede verde sin
+# alterar las suites existentes. El despliegue registra
+# `start_reconciliation_ingest_worker` o invoca
+# `run_reconciliation_ingest_once` desde su programador (cron); los
+# tests llaman a `run_clearing_ingest_once` directamente con su sesion.
+
+
+def reconciliation_ingest_enabled() -> bool:
+    """Interruptor de la ingesta de clearing (`0` = apagado por defecto)."""
+    import os as _os
+
+    return (_os.getenv("RECONCILIATION_INGEST_ENABLED", "0").strip().lower() or "0") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def reconciliation_jobs_interval_seconds() -> float:
+    """Periodicidad del worker en segundos (env, defecto 300 s)."""
+    import os as _os
+
+    try:
+        return max(1.0, float(_os.getenv("RECONCILIATION_JOBS_INTERVAL_SECONDS", "300")))
+    except ValueError:
+        return 300.0
+
+
+def run_reconciliation_ingest_once(
+    *,
+    session_factory: Any | None = None,
+    source: Any | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Una pasada de la ingesta de clearing con sesion propia (E5-T17).
+
+    Delega en `run_clearing_ingest_once` (cada archivo confirma con su
+    propio `commit`). Retorna `{"processed": [...], "failed": [...],
+    "skipped": [...], "error": None | <code>}`. Ante un fallo fuera de
+    los archivos se revierte y re-lanza (los archivos ya confirmados
+    quedan; el reintento los omite por idempotencia).
+    """
+    from app.modules.reconciliation.jobs.clearing_ingest import run_clearing_ingest_once
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    session = session_factory()
+    try:
+        return run_clearing_ingest_once(session, source=source, limit=limit)
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def start_reconciliation_ingest_worker(
+    *,
+    session_factory: Any | None = None,
+    interval_seconds: float | None = None,
+    stop_event: Any | None = None,
+    **run_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Arranca el worker periodico de la ingesta en hilo daemon (E5-T17).
+
+    Cada ciclo es `run_reconciliation_ingest_once` (sesion/`commit`
+    propios por archivo); los errores del ciclo se tragan
+    (best-effort) para no matar el hilo. Retorna `(thread,
+    stop_event)`; fijar `stop_event` detiene el ciclo. No bloquea al
+    llamante. `interval_seconds` lo fija el arranque desde entorno
+    (`reconciliation_jobs_interval_seconds`).
+    """
+    import threading as _threading
+
+    if interval_seconds is None:
+        interval_seconds = reconciliation_jobs_interval_seconds()
+    if stop_event is None:
+        stop_event = _threading.Event()
+
+    def _loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            try:
+                run_reconciliation_ingest_once(
+                    session_factory=session_factory,
+                    **run_kwargs,
+                )
+            except Exception:  # noqa: BLE001, S112 - el worker nunca muere
+                continue
+
+    thread = _threading.Thread(
+        name="reconciliation-ingest",
+        target=_loop,
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop_event

@@ -1,5 +1,5 @@
 """Entrypoint del worker demo (Q-T06, jobs de cuotas E3-T19, jobs QR E4-T07/R-1,
-jobs de servicios E4-T18).
+jobs de servicios E4-T18, ingesta de clearing E5-T17).
 
 Este proceso:
 1. valida conectividad con Postgres y Redis al arrancar;
@@ -18,7 +18,12 @@ Este proceso:
    CA-03) con el mismo mecanismo (una pasada por ciclo via
    `app.composition.run_wallet_service_jobs_once`); inerte si
    `WALLET_SERVICE_JOBS_ENABLED=0`, y
-5. expone /health en WORKER_HEALTH_PORT (defecto 8100) para el healthcheck.
+5. arranca el worker periodico de ingesta de clearing (HU19 CA-04)
+   con el mismo mecanismo (una pasada por ciclo via
+   `app.composition.run_reconciliation_ingest_once`, `commit` por
+   archivo); inerte si `RECONCILIATION_INGEST_ENABLED=0`
+   (**apagado por defecto**), y
+6. expone /health en WORKER_HEALTH_PORT (defecto 8100) para el healthcheck.
 
 Sin PII ni secretos en logs (solo estado del worker e intervalo).
 """
@@ -77,6 +82,7 @@ def main() -> None:
     _thread, jobs_stop = maybe_start_credit_loan_jobs()
     _qr_thread, qr_jobs_stop = maybe_start_wallet_qr_jobs()
     _service_thread, service_jobs_stop = maybe_start_wallet_service_jobs()
+    _recon_thread, recon_jobs_stop = maybe_start_reconciliation_ingest()
 
     port = int(os.getenv("WORKER_HEALTH_PORT", "8100"))
     httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
@@ -90,6 +96,8 @@ def main() -> None:
             qr_jobs_stop.set()
         if service_jobs_stop is not None:
             service_jobs_stop.set()
+        if recon_jobs_stop is not None:
+            recon_jobs_stop.set()
 
 
 def maybe_start_credit_loan_jobs(
@@ -192,6 +200,42 @@ def maybe_start_wallet_service_jobs(
         stop_event=stop_event,
     )
     logger.info("worker wallet_service_jobs started interval_seconds=%s", interval_seconds)
+    return thread, stop
+
+
+def maybe_start_reconciliation_ingest(
+    *,
+    interval_seconds: float | None = None,
+    stop_event=None,
+):
+    """Arranca el worker periodico de ingesta de clearing si el flag lo habilita (E5-T17).
+
+    Mismo mecanismo que `app.composition.start_reconciliation_ingest_worker`
+    (hilo daemon + parada por evento; cada ciclo es una pasada con
+    sesion/`commit` propios por archivo via
+    `app.composition.run_reconciliation_ingest_once` y los errores del
+    ciclo no matan el hilo: un archivo invalido queda `FAILED` y la
+    pasada continua). Retorna `(thread, stop_event)`; con
+    `RECONCILIATION_INGEST_ENABLED=0` (defecto) retorna `(None, None)`
+    sin ejecutar nada (ingesta inerte). `interval_seconds`/`stop_event`
+    solo existen para inyeccion en pruebas. Sin PII ni secretos en logs.
+    """
+    from app.composition import (
+        reconciliation_ingest_enabled,
+        reconciliation_jobs_interval_seconds,
+        start_reconciliation_ingest_worker,
+    )
+
+    if not reconciliation_ingest_enabled():
+        logger.info("worker reconciliation_ingest disabled")
+        return None, None
+    if interval_seconds is None:
+        interval_seconds = reconciliation_jobs_interval_seconds()
+    thread, stop = start_reconciliation_ingest_worker(
+        interval_seconds=interval_seconds,
+        stop_event=stop_event,
+    )
+    logger.info("worker reconciliation_ingest started interval_seconds=%s", interval_seconds)
     return thread, stop
 
 

@@ -874,6 +874,18 @@ Indices: `(account_id, created_at DESC)`.
 | clearing_items | status | VARCHAR(15) | No | 'PENDING' | CK |
 | clearing_items | raw | JSONB | Si | - | |
 
+> Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta crea
+> ambas tablas con la migracion `0050_reconciliation`
+> (`down_revision="0049_fx"`). `clearing_files.checksum` se persiste
+> `NOT NULL` (el `Si` de la tabla es tentativo: un lote sin checksum no
+> se puede validar ni re-identificar) y el `status` efectivo es
+> `RECEIVED`/`PROCESSED`/`FAILED` (la ingesta solo escribe esos tres;
+> `PROCESSING` queda reservado al enum `clearing_status`). Los items
+> nacen `PENDING` (`INBOUND`/`OUTBOUND`) y solo el matching (`E5-T18`)
+> los mueve a `MATCHED`/`EXCEPTION`. Indices: `(source)` y `(status)`
+> en archivos; `(file_id)`, `(external_ref)` y `(status)` en items
+> (ademas de la UQ `file_ref`).
+
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
 | Tabla | Columna | Tipo | Nulo | Default | Clave |

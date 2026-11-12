@@ -1261,8 +1261,11 @@ def test_migration_chain_has_single_head_0042():
     assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
     # E7-T01 (2026-11-11): la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
     assert revisions.get("0049_fx") == "0048_risk_rules"
+    # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
+    # (esquema `reconciliation`, tras 0049).
+    assert revisions.get("0050_reconciliation") == "0049_fx"
     heads = [rev for rev in script.get_heads() if rev not in ()]
-    assert heads == ["0049_fx"], f"heads inesperados: {heads}"
+    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
 
 
 def test_migration_0046_seeds_demo_settlement_account():

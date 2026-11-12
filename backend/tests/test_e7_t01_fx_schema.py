@@ -136,7 +136,7 @@ def test_single_head_is_0049():
     """Un solo head tras el brief (`alembic check` limpio lo exige)."""
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0049_fx",)
+    assert get_head_revisions() == ("0050_reconciliation",)
 
 
 # ------------------------------------------------- tasas (camino feliz)

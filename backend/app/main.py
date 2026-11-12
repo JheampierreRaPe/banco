@@ -30,6 +30,13 @@ desactiva con `WALLET_SERVICE_JOBS_ENABLED=0` (el flag por job
 `WALLET_SERVICE_REMINDERS_ENABLED` rige cada pasada) y su intervalo
 se configura con `WALLET_SERVICE_JOBS_INTERVAL_SECONDS` (defecto
 3600 s).
+
+Ingesta de clearing (E5-T17, HU19): el `lifespan` arranca ademas el
+worker periodico de ingesta (`reconciliation/jobs/clearing_ingest.py`)
+con el mismo mecanismo. Se desactiva con
+`RECONCILIATION_INGEST_ENABLED=0` (**apagado por defecto**) y su
+intervalo se configura con `RECONCILIATION_JOBS_INTERVAL_SECONDS`
+(defecto 300 s).
 """
 
 from __future__ import annotations
@@ -142,8 +149,11 @@ async def lifespan(app: FastAPI):
     from app.composition import (
         credit_loan_jobs_enabled,
         credit_loan_jobs_interval_seconds,
+        reconciliation_ingest_enabled,
+        reconciliation_jobs_interval_seconds,
         start_credit_loan_jobs_worker,
         start_outbox_worker,
+        start_reconciliation_ingest_worker,
         start_wallet_qr_jobs_worker,
         start_wallet_service_jobs_worker,
         subscribe_accounts_movements,
@@ -198,6 +208,17 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("wallet_service_jobs_worker disabled")
+    recon_jobs_stop_event = None
+    if reconciliation_ingest_enabled():
+        _recon_thread, recon_jobs_stop_event = start_reconciliation_ingest_worker(
+            interval_seconds=reconciliation_jobs_interval_seconds()
+        )
+        logger.info(
+            "reconciliation_ingest_worker started interval_seconds=%s",
+            reconciliation_jobs_interval_seconds(),
+        )
+    else:
+        logger.info("reconciliation_ingest_worker disabled")
     try:
         yield
     finally:
@@ -209,6 +230,8 @@ async def lifespan(app: FastAPI):
             qr_jobs_stop_event.set()
         if service_jobs_stop_event is not None:
             service_jobs_stop_event.set()
+        if recon_jobs_stop_event is not None:
+            recon_jobs_stop_event.set()
 
 
 def create_app() -> FastAPI:

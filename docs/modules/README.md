@@ -970,6 +970,27 @@ eventos (`outbox`/`inbox`).
   `CLEARING_SOURCE_TIMEOUT` (`502`); payload invalido ->
   `VALIDATION_ERROR` sin red. Sin PII/secretos en logs; no mueve dinero ni
   persiste (la ingesta es `E5-T17`).
+- **Ingesta de clearing (E5-T17, HU19):** esquema `reconciliation`
+  (`clearing_files`/`clearing_items`, migracion `0050_reconciliation`,
+  `down_revision="0049_fx"`) con modelos SQLAlchemy + repositorio
+  (`get_file_by_ref`, `create_file_with_items` transaccional con `flush`
+  sin `commit`, `list_pending_items`, `mark_file_status`,
+  `record_failed_file` para la evidencia) y servicio
+  `ingest_clearing_file(session, payload) -> {file_id, status, inserted,
+  duplicates}`: valida `file_ref`, checksum SHA-256, `item_count`,
+  montos/monedas/fechas; mismo `file_ref` + mismo checksum = replay sin
+  duplicar (`DUPLICATE_FILE`); checksum distinto o `item_count`/item
+  invalido -> `VALIDATION_ERROR` y archivo `FAILED` (sin items huerfanos
+  ni parciales). Los items nacen `PENDING` (el matching es `E5-T18`).
+  Job `run_clearing_ingest_once(session, source=None)` (una pasada,
+  `commit` por archivo) cableado en `composition`
+  (`reconciliation_ingest_enabled`,
+  `reconciliation_jobs_interval_seconds`, `run_reconciliation_ingest_once`,
+  `start_reconciliation_ingest_worker`) + `lifespan` de `main.py` +
+  `worker_entrypoint.maybe_start_reconciliation_ingest`, con flags
+  `RECONCILIATION_INGEST_ENABLED=0` (apagado por defecto) y
+  `RECONCILIATION_JOBS_INTERVAL_SECONDS=300`. No mueve dinero ni emite
+  eventos; sin PII/secretos en logs.
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

@@ -868,6 +868,23 @@ eventos (`outbox`/`inbox`).
   no mueve dinero.
 - **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
 - **Puede llamar a:** adaptador `SanctionsLists`, `transactions` (bloqueo), `notifications`, `audit`.
+- **Adaptador `SanctionsLists` (E6-T07, HU21):** `backend/app/adapters/sanctions_lists.py`
+  (contrato en `docs/02#9`): `screen(*, subject_type, name, document_number=None,
+  country=None)` (mejor candidato por lista) + `list_versions()` con payloads
+  tipados (`ScreeningHit`: `list_code`, `matched`, `match_score` en `[0,1]`,
+  `matched_fields` solo con nombres de campos; `ListVersion`: `list_code`,
+  `version`, `effective_from`). `mock` determinista por defecto (sin red; valor
+  no reconocido -> `mock`) sobre semillas JSON versionadas de nombres
+  ficticios (`app/adapters/data/sanctions/*.json`: `OFAC`/`WORLDCHECK`/`PEP`,
+  sin PII real); dominio puro de similitud en `risk/domain/screening.py`
+  (normalizacion + Jaro-Winkler con tolerancia al orden, en stdlib, umbral
+  `SANCTIONS_SCREENING_THRESHOLD` default `0.85`, espejo de
+  `risk.screening_threshold`). `http` con `POST {base_url}/screen` y
+  `GET {base_url}/lists` (timeout/reintentos/circuito, key solo en cabecera).
+  Errores tipados `SANCTIONS_UNAVAILABLE` (`503`) / `SANCTIONS_TIMEOUT`
+  (`502`); argumento invalido -> `VALIDATION_ERROR` sin red. Sin PII/secretos
+  en logs (sujeto solo hasheado); no mueve dinero ni persiste (el cotejo en
+  onboarding/transaccion y `screening_results` son `E6-T09`).
 - **Prohibido:** mover dinero.
 
 ## `reconciliation`

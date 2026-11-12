@@ -236,6 +236,31 @@ verifica `item_count`/`checksum` contra los items. Errores tipados:
 argumento invalido -> `VALIDATION_ERROR` (sin red). El adaptador no mueve dinero
 ni persiste nada (la ingesta es `E5-T17`).
 
+`SanctionsLists` (E6-T07, HU21) se configura por entorno (solo nombres y defaults
+seguros; la key nunca va en el repo ni en logs, solo en la cabecera
+`Authorization`):
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `SANCTIONS_PROVIDER` | `mock` | `mock` (determinista, sin red, semillas JSON ficticias) \| `http` (real, `POST {base_url}/screen` y `GET {base_url}/lists`). Valor no reconocido -> `mock`. |
+| `SANCTIONS_BASE_URL` | `http://localhost:8000` | Base del proveedor (rutas `POST /screen` y `GET /lists`). |
+| `SANCTIONS_API_KEY` | (vacio) | Key server-side del proveedor (solo cabecera; jamas en la URL ni en logs). |
+| `SANCTIONS_TIMEOUT_SECONDS` | `5.0` | Timeout corto por intento (s); nunca bloquea el hilo (cotejo < 2 s). |
+| `SANCTIONS_MAX_RETRIES` | `2` | Reintentos con backoff exponencial tras fallo/timeout. |
+| `SANCTIONS_SCREENING_THRESHOLD` | `0.85` | Umbral `risk.screening_threshold`: `matched=true` si `match_score >= umbral` (el limite cuenta). |
+
+Dominio puro (`risk/domain/screening.py`, sin dependencias nuevas):
+normalizacion (mayusculas, sin acentos, sin puntuacion, espacios simples) y
+similitud Jaro-Winkler con tolerancia al orden de nombres (tokens ordenados),
+determinista en `[0, 1]`; documento identico normalizado -> `1.0`. El mock
+devuelve el mejor candidato por lista (`ScreeningHit` con `list_code`,
+`matched`, `match_score`, `matched_fields` con solo nombres de campos
+`name`/`document_number`/`country`, sin valores crudos) sobre semillas
+versionadas (`OFAC`/`WORLDCHECK`/`PEP`, nombres ficticios, sin PII real).
+Errores tipados: `SANCTIONS_UNAVAILABLE` (`503`) y `SANCTIONS_TIMEOUT`
+(`502`); argumento invalido -> `VALIDATION_ERROR` (sin red). Sin persistencia
+(`screening_results` es `E6-T09`) y sin mover dinero.
+
 ## 10. Seguridad arquitectonica
 
 - **Autenticacion**: JWT de acceso corto (minutos) + refresh; el access token lleva `sub`,

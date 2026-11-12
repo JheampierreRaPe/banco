@@ -909,6 +909,15 @@ eventos (`outbox`/`inbox`).
   auditada `risk.rule.updated` sin PII, `updated_by`/`updated_at`, sin
   reinicio). **No mueve dinero** ni emite `fraud.alert.raised` aun
   (eso es `E6-T02`/`E6-T04`); G93 cierra la parte de datos de G07.
+- **Motor de evaluacion puro (E6-T02 corte 1, HU20):** `risk/domain/engine.py`
+  (`evaluate(rules, profile, context) -> RiskDecision` con `action`/`score`/
+  `matched_rules`/`reason`) evalua `FACIAL_SPOOFING`/`ATYPICAL_GEO`/`UNUSUAL_AMOUNT`/
+  `VELOCITY`/`NEW_DEVICE` sobre hechos sin PII (IDs, montos, pais/dispositivo);
+  determinista (ordena por `priority, code`), `enabled=false` no participa, `score`
+  suma aportes recortada a `0..100` y `action` es la de mayor severidad
+  (`BLOCK > HOLD > ALERT > ALLOW`; sin matches -> `ALLOW` con `reason` sin PII).
+  Sin E/S, BD, red ni reloj: la fachada con BD, el hook en `transactions` y los
+  consumidores son el corte 2. **No mueve dinero**.
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume

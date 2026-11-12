@@ -204,6 +204,16 @@ eventos (`outbox`/`inbox`).
   `transactions` (`resolve_third_party_target_id`) para resolver el `account_or_cci`
   de un beneficiario a su cuenta real sin importar modelos/repositorios de `accounts`
   (D-01); el numero en claro es de uso interno (jamas en logs ni respuestas).
+- **Fachada de apertura de cuenta (E7-T02, HU24):**
+  `accounts.service.open_customer_account(session, user_id, *, currency, type="POCKET")
+  -> {account_id, account_number, currency, type, status}` (misma sesion: `flush` sin
+  `commit`). Genera el `account_number` (formato E2-T28: `001` + cuerpo de 10
+  digitos + DV modulo 11), crea la cuenta `POCKET`/`MULTICURRENCY` en `ACTIVE`
+  con balance cero y sus subcuentas ledger (`2000`/`2100`) via
+  `repository.create_account`. Solo acepta `PEN`/`USD`/`EUR`
+  (`ValueError` si `user_id`/`type`/`currency` invalidos). No mueve dinero (sin
+  asientos ni posteos). La consume `fx` (`open_pocket`) sin importar modelos de
+  `accounts`; el numero en claro es de uso interno (jamas en logs ni respuestas).
 - **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
   busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
   `PUT /{id}` (edicion parcial) y `DELETE /{id}?confirm=true`

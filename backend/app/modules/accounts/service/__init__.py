@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import io
+import secrets
 import uuid
 from datetime import UTC, date, datetime
 
@@ -695,3 +696,128 @@ def list_active_by_user(session: Session, user_id: uuid.UUID | str) -> list[dict
 
 
 __all__ += ["list_active_by_user"]
+
+
+# ------------------------------------------------- Apertura de cuenta (E7-T02)
+
+#: Tipos que la fachada `open_customer_account` puede abrir (E7-T02, HU24):
+#: `POCKET` para bolsillos de ahorro, `MULTICURRENCY` para cuentas
+#: multidivisa. Subconjunto de `ACCOUNT_TYPES` (el `CHECK`
+#: `ck_accounts_type` ya los admite: sin migracion nueva).
+OPEN_CUSTOMER_ACCOUNT_TYPES = ("POCKET", "MULTICURRENCY")
+
+#: Monedas MVP de la apertura (E7-T02, HU24): el bolsillo y su cuenta
+#: comparten moneda. Constantes del modulo (regla de oro 6).
+OPEN_CUSTOMER_ACCOUNT_CURRENCIES = ("PEN", "USD", "EUR")
+
+#: Formato del `account_number` generado por `accounts` (E2-T28, decision del
+#: dueno 2026-10-03): 14 digitos = prefijo de entidad `001` + cuerpo de 10
+#: digitos + DV modulo 11 (pesos ciclicos 2..7, `10`/`11` -> `0`). Cabe en el
+#: `String(20)` UQ de `accounts.accounts`; sin PII.
+ACCOUNT_NUMBER_PREFIX = "001"
+ACCOUNT_NUMBER_BODY_DIGITS = 10
+
+#: Reintentos acotados de generacion ante colision con el UNIQUE de
+#: `accounts.accounts.account_number` (espacio de 10^10 cuerpos: la colision
+#: es despreciable; el UQ es la guarda final ante carrera).
+ACCOUNT_NUMBER_MAX_ATTEMPTS = 10
+
+
+def compute_account_check_digit(first13: str) -> int:
+    """Calcula el DV modulo 11 de un numero de cuenta (E2-T28).
+
+    Dominio puro (sin BD): copia del algoritmo de `identity.service`
+    (misma copia congelada que la migracion `0024`; no se importa `identity`
+    para no crear una arista `accounts` -> `identity`: el contrato del modulo
+    solo admite llamar a `ledger`/`audit`). Sobre los 13 primeros digitos,
+    de derecha a izquierda con pesos `2,3,4,5,6,7,2,3,...`:
+    `dv = 11 - (suma mod 11)`; si `dv` es `10` u `11` -> `0`.
+    """
+    if not isinstance(first13, str) or len(first13) != 13 or not first13.isdigit():
+        raise ValueError("se exigen los 13 primeros digitos para calcular el DV")
+    total = 0
+    weight = 2
+    for digit in reversed(first13):
+        total += int(digit) * weight
+        weight = weight + 1 if weight < 7 else 2
+    check = 11 - (total % 11)
+    return 0 if check >= 10 else check
+
+
+def _generate_account_number() -> str:
+    """Genera un numero de cuenta de 14 digitos con DV (formato E2-T28).
+
+    Puro (sin BD): `001` + cuerpo aleatorio de 10 digitos (CSPRNG `secrets`,
+    sin PII) + DV modulo 11. El llamante verifica unicidad con
+    `get_by_number` antes de insertar.
+    """
+    body = f"{secrets.randbelow(10**ACCOUNT_NUMBER_BODY_DIGITS):0{ACCOUNT_NUMBER_BODY_DIGITS}d}"
+    first13 = f"{ACCOUNT_NUMBER_PREFIX}{body}"
+    return f"{first13}{compute_account_check_digit(first13)}"
+
+
+def open_customer_account(
+    session: Session,
+    user_id: uuid.UUID | str,
+    *,
+    currency: str,
+    type: str = "POCKET",
+) -> dict:
+    """Abre una cuenta `POCKET`/`MULTICURRENCY` del titular (E7-T02, HU24).
+
+    Fachada aditiva, duena de `accounts`: genera el `account_number` (formato
+    E2-T28: `001` + cuerpo de 10 digitos + DV), crea la cuenta con balance cero y sus subcuentas ledger
+    (`2000-<cuenta>`/`2100-<cuenta>`) via `repository.create_account`
+    (misma sesion: `flush`, sin `commit`; quien llama decide la
+    transaccion). La consume `fx` (`open_pocket`) por import perezoso
+    sin tocar modelos ni tablas de `accounts` (regla de oro 4).
+
+    No mueve dinero: solo inserta `accounts`/`account_balances` y las
+    subcuentas (sin asientos ni posteos). Sin PII/secretos en logs
+    (reglas de oro 7/9: el numero en claro solo vuelve en el dict para
+    el llamante interno, jamas se registra ni se expone en la API).
+
+    Retorna `{account_id, account_number, currency, type, status}`.
+    Lanza `ValueError` si `user_id` no es UUID, el `type` no es
+    `POCKET`/`MULTICURRENCY` o la `currency` no es `PEN`/`USD`/`EUR`.
+    """
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    if type not in OPEN_CUSTOMER_ACCOUNT_TYPES:
+        raise ValueError(f"type debe ser uno de {OPEN_CUSTOMER_ACCOUNT_TYPES}, recibido: {type!r}")
+    if currency not in OPEN_CUSTOMER_ACCOUNT_CURRENCIES:
+        raise ValueError(
+            "currency debe ser una de "
+            f"{OPEN_CUSTOMER_ACCOUNT_CURRENCIES}, recibida: {currency!r}"
+        )
+    number: str | None = None
+    for _ in range(ACCOUNT_NUMBER_MAX_ATTEMPTS):
+        candidate = _generate_account_number()
+        if accounts_repo.get_by_number(session, candidate) is None:
+            number = candidate
+            break
+    if number is None:  # pragma: no cover - espacio de 10^10 cuerpos, sin colision real
+        raise RuntimeError(
+            "no se pudo generar un account_number unico "
+            f"tras {ACCOUNT_NUMBER_MAX_ATTEMPTS} intentos"
+        )
+    account = accounts_repo.create_account(
+        session,
+        user_id=uid,
+        account_number=number,
+        type=type,
+        currency=currency,
+        status="ACTIVE",
+    )
+    return {
+        "account_id": account.id,
+        "account_number": account.account_number,
+        "currency": account.currency,
+        "type": account.type,
+        "status": account.status,
+    }
+
+
+__all__ += ["compute_account_check_digit", "open_customer_account"]

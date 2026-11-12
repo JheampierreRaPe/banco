@@ -261,6 +261,31 @@ Errores tipados: `SANCTIONS_UNAVAILABLE` (`503`) y `SANCTIONS_TIMEOUT`
 (`502`); argumento invalido -> `VALIDATION_ERROR` (sin red). Sin persistencia
 (`screening_results` es `E6-T09`) y sin mover dinero.
 
+`FxRateProvider` (E7-T08, HU25) se configura por entorno (solo nombres y defaults
+seguros; la key nunca va en el repo ni en logs, solo en la cabecera
+`Authorization`):
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `FX_RATE_PROVIDER` | `mock` | `mock` (tasas semilla deterministas, sin red) \| `http` (real, `GET {base_url}/rates?base=PEN`). Valor no reconocido -> `mock`. |
+| `FX_RATE_BASE_URL` | `http://localhost:8000` | Base del proveedor real (ruta `GET /rates?base=PEN`). |
+| `FX_RATE_API_KEY` | (vacio) | Key server-side del proveedor (solo cabecera; jamas en la URL ni en logs). |
+| `FX_RATE_TIMEOUT_SECONDS` | `5.0` | Timeout corto por intento (s); nunca bloquea el hilo. |
+| `FX_RATE_MAX_RETRIES` | `2` | Reintentos con backoff exponencial tras fallo/timeout. |
+| `FX_RATE_CACHE_TTL_SECONDS` | `60` | TTL de la cache en proceso por `(base, quote)` y `ttl_seconds` del mock. |
+| `FX_RATE_FALLBACK_SEED` | `1` | Fallback D04 a tasa semilla si el proveedor real falla (`0` lo desactiva). |
+
+Tasas semilla (`PEN/USD=3.80`, `PEN/EUR=4.10`, `USD/EUR=0.92`, inversas
+coherentes `1/rate` a 8 decimales; espejo operativo en
+`app/adapters/data/fx_rates.json`). La tasa viaja como `string` exacto
+(`Decimal`, nunca `float`; un `float` se rechaza con `VALIDATION_ERROR`) y
+el TTL no supera la vigencia de la cotizacion (30 s en `E7-T09`). Cache
+por par con refresco al expirar; errores nunca cacheados; fallback
+auditable (`source="seed"`, `warning` sin secretos). Errores tipados:
+`FX_RATE_UNAVAILABLE` (`503`) y `FX_RATE_TIMEOUT` (`502`); par no
+soportado o `base == quote` -> `VALIDATION_ERROR` (sin red). El adaptador
+no persiste (`fx_rates` es `E7-T09`) ni mueve dinero.
+
 ## 10. Seguridad arquitectonica
 
 - **Autenticacion**: JWT de acceso corto (minutos) + refresh; el access token lleva `sub`,

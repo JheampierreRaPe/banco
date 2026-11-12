@@ -14,11 +14,13 @@ _LAZY = {
     "service_provider": "app.adapters.service_provider",
     "clearing_source": "app.adapters.clearing_source",
     "sanctions_lists": "app.adapters.sanctions_lists",
+    "fx_rate": "app.adapters.fx_rate",
 }
 
 __all__ = [
     "create_clearing_source",
     "create_credit_bureau_provider",
+    "create_fx_rate_provider",
     "create_holder_lookup_provider",
     "create_sanctions_lists",
     "create_service_provider",
@@ -49,6 +51,10 @@ def __getattr__(name: str):
         return factory
     if name == "create_sanctions_lists":
         from app.adapters.sanctions_lists import create_sanctions_lists as factory
+
+        return factory
+    if name == "create_fx_rate_provider":
+        from app.adapters.fx_rate import create_fx_rate_provider as factory
 
         return factory
     raise AttributeError(f"modulo {__name__!r} sin atributo {name!r}")

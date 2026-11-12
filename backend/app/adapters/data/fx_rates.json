@@ -1,0 +1,10 @@
+{
+  "description": "Tasas semilla del adaptador FxRateProvider (E7-T08, D04). Espejo operativo de SEED_RATES en app/adapters/fx_rate.py: la canonica es el codigo; si difieren, manda el codigo y el test de coherencia falla. Tasas como string exacto (nunca float).",
+  "version": "2026-11-01",
+  "ttl_seconds": 60,
+  "rates": [
+    {"base": "PEN", "quote": "USD", "rate": "3.80"},
+    {"base": "PEN", "quote": "EUR", "rate": "4.10"},
+    {"base": "USD", "quote": "EUR", "rate": "0.92"}
+  ]
+}

@@ -1309,7 +1309,26 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | POST | `/fx/quotes` | Congela cotizacion 30 s. |
 | POST | `/fx/operations` | Ejecuta compra/venta. |
 | GET/POST | `/pockets` | Bolsillos y metas de ahorro. |
+| GET | `/pockets/{id}` | Detalle de un bolsillo (solo titular). |
 | POST | `/pockets/{id}/transfer` | Traspaso entre bolsillos/cuentas. |
+
+> Contrato E7-T02 (HU24 CA-01..CA-04, `Bearer`; el titular es el `sub` del JWT):
+> - `POST /pockets` body `{name (1..80), currency (PEN|USD|EUR), target_minor?,
+>   roundup_enabled?, yield_rate?}` -> `201 {"data": {pocket_id, account_id, name,
+>   currency, target_minor, balance_minor (= 0), roundup_enabled, yield_rate, status
+>   (= ACTIVE)}, "meta": {"replayed"}}` (sin numero de cuenta: solo UUIDs). La cuenta
+>   `POCKET` (misma moneda) la crea `accounts` por su fachada; `fx` no escribe
+>   `accounts`/`ledger`. `Idempotency-Key` opcional: misma clave + mismo cuerpo ->
+>   replay (`replayed=true`, sin duplicar); misma clave + distinto cuerpo -> `409
+>   CONFLICT`; duplicado exacto (mismo nombre + moneda) sin clave -> `409 CONFLICT`.
+> - `GET /pockets` -> `200 {"data": [...], "meta": {"total"}}` (solo bolsillos del
+>   titular, orden estable). `GET /pockets/{id}` -> `200` con el detalle; ajeno o
+>   inexistente -> `404 NOT_FOUND` neutro.
+> - Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422 VALIDATION_ERROR`
+>   (moneda/nombre/meta invalidos); `404 NOT_FOUND`; `409 CONFLICT`.
+> - Emite `pocket.created` por `outbox` (payload sin PII: `pocket_id`, `account_id`,
+>   `user_id`, `currency`, `status`) + auditoria best-effort `fx.pocket.opened`.
+>   **No mueve dinero** (sin asientos ni saldos; el primer abono es `E7-T05`).
 
 ### 6.7 Riesgo, cumplimiento y auditoria (panel interno)
 

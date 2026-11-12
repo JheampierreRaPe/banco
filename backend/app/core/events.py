@@ -64,4 +64,8 @@ WALLET_LINK_CREATED = "wallet.link.created"
 # `outbox` al generar (payload sin PII: `charge_id`, `merchant_id`,
 # `amount_minor`, `currency`, `mode`, `expires_at`).
 QR_CHARGE_CREATED = "qr.charge.created"
+# Bolsillo de ahorro abierto (E7-T02, HU24): lo emite `fx` por `outbox`
+# al abrir (payload sin PII: `pocket_id`, `account_id`, `user_id`,
+# `currency`, `status`; sin nombre ni numero de cuenta).
+POCKET_CREATED = "pocket.created"
 RECONCILIATION_EXCEPTION = "reconciliation.exception"

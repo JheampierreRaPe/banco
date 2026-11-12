@@ -212,7 +212,8 @@ eventos (`outbox`/`inbox`).
   con balance cero y sus subcuentas ledger (`2000`/`2100`) via
   `repository.create_account`. Solo acepta `PEN`/`USD`/`EUR`
   (`ValueError` si `user_id`/`type`/`currency` invalidos). No mueve dinero (sin
-  asientos ni posteos). La consume `fx` (`open_pocket`) sin importar modelos de
+  asientos ni posteos). La consume `fx` (`open_pocket`, endpoints
+  `POST/GET /pockets` y `GET /pockets/{id}`, E7-T02 corte 2) sin importar modelos de
   `accounts`; el numero en claro es de uso interno (jamas en logs ni respuestas).
 - **Beneficiarios (E2-T13, HU07):** `GET /api/v1/beneficiaries` (lista `ACTIVE` + `?q=` de
   busqueda indexada, hasta 100, `< 1 s`), `POST` (alta; `Idempotency-Key` opcional respetada),
@@ -850,6 +851,23 @@ eventos (`outbox`/`inbox`).
   `FX_RATE_*` (`docs/02#9`); sin persistencia (es `E7-T09`) y sin mover dinero.
 - **Puede llamar a:** adaptador `FxRateProvider`, `transactions`, `ledger`, `audit`.
 - **Prohibido:** asentar un cambio cruzando monedas en un solo asiento.
+- **Bolsillos de ahorro (E7-T02 corte 2, HU24 CA-01..CA-04):**
+  `fx.service` (`open_pocket`, `open_pocket_idempotent`, `list_pockets`,
+  `get_pocket`; `flush` sin `commit`) + endpoints `GET /api/v1/pockets`,
+  `POST /api/v1/pockets` (`201`; `Idempotency-Key` opcional pero
+  respetada, `meta.replayed`), `GET /api/v1/pockets/{id}` (contrato en
+  `docs/05#6.6`). Valida moneda MVP (`PEN`/`USD`/`EUR`) y nombre
+  (1..80); abre la cuenta `POCKET` (misma moneda) **solo** por la
+  fachada `accounts.service.open_customer_account` (import perezoso;
+  `fx` no escribe `accounts`/`ledger`). Crea `savings_pockets` con
+  `balance_minor=0`, `status=ACTIVE`; duplicado exacto (mismo nombre +
+  moneda en `ACTIVE`) sin clave -> `409 CONFLICT`; misma clave + mismo
+  cuerpo -> replay; misma clave + distinto cuerpo -> `409`. Solo el
+  titular ve sus bolsillos (ajeno/inexistente -> `404` neutro);
+  moneda/meta/nombre invalidos -> `422 VALIDATION_ERROR`. Emite
+  `pocket.created` por `outbox` (payload sin PII: `pocket_id`,
+  `account_id`, `user_id`, `currency`, `status`) + auditoria best-effort
+  `fx.pocket.opened`. **No mueve dinero** (sin asientos ni saldos).
 
 ## `risk`
 

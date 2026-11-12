@@ -69,7 +69,10 @@ Codigos de error reales (verificados en codigo, 2026-09-25; `DUPLICATE_BENEFICIA
 `INVALID_PIN_RESET`, `INVALID_REFRESH`, `INVALID_SETUP_CODE`, `KYC_UNAVAILABLE`,
 `NOT_AUTHENTICATED`, `NOT_AUTHORIZED`, `NOT_FOUND`, `PIN_ALREADY_SET`, `PIN_REQUIRED`,
 `RATE_LIMITED`, `RECEIPT_FORMAT_NOT_SUPPORTED` (501), `REFRESH_EXPIRED`, `REFRESH_REUSED`,
-`RESEND_LIMIT`, `SESSION_INACTIVE`, `TARGET_AMBIGUOUS` (409, E2-T27: el destino por DNI/celular
+`RESEND_LIMIT`, `RISK_BLOCKED` (solo como `data.failure_code` con `data.status=REJECTED` en
+`POST /transfers/*`, E6-T02: una regla antifraude `BLOCK` rechazo la operacion
+sin mover saldos ni crear asientos; el HTTP sigue `201`),
+`SESSION_INACTIVE`, `TARGET_AMBIGUOUS` (409, E2-T27: el destino por DNI/celular
 resuelve a un usuario con varias cuentas `ACTIVE`), `TARGET_NOT_FOUND` (404 neutro, E2-T27: DNI/
 celular inexistente o usuario sin cuenta `ACTIVE`), `VALIDATION_ERROR`.
 Fuentes: `backend/app/modules/identity/api/*` (+ `service/`), `backend/app/modules/accounts/api/__init__.py`

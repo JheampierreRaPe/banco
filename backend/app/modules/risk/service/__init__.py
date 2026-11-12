@@ -36,19 +36,27 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.modules.risk import repository as risk_repo
+from app.modules.risk.domain import engine as risk_engine
+from app.modules.risk.domain.engine import RiskDecision
 from app.modules.risk.models import RiskProfile, RiskRule
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AUDIT_ACTION_ASSESSMENT",
     "AUDIT_ACTION_BLOCKED",
     "AUDIT_ACTION_FAILED",
     "AUDIT_ACTION_RULE_UPDATED",
     "AUDIT_ACTION_UNRECOGNIZED",
     "AUTH_FAILED_ATTEMPT_EVENT",
     "CONSUMER",
+    "CONSUMER_TRANSACTION_INITIATED",
+    "CONSUMER_TRANSFER_SETTLED",
     "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
+    "RISK_BLOCKED",
+    "RISK_HOLD_REQUIRED",
+    "RISK_LEVEL_BY_ACTION",
     "RULE_ACTIONS",
     "RULE_CODES",
     "SCORE_EXTRA_ON_BLOCK",
@@ -63,11 +71,15 @@ __all__ = [
     "VELOCITY_WINDOW_DEFAULT_SECONDS",
     "VELOCITY_WINDOW_KEY",
     "evaluate_config",
+    "evaluate_pre_transaction",
     "get_or_create_profile",
     "get_rule",
     "handle_auth_failed_attempt",
+    "handle_transaction_initiated",
+    "handle_transfer_settled",
     "handle_unrecognized_operation_report",
     "list_rules",
+    "risk_level_for",
     "update_behavior",
     "update_rule",
     "upsert_rule",
@@ -315,6 +327,7 @@ def handle_auth_failed_attempt(
     )
     action = AUDIT_ACTION_BLOCKED if signal["blocked"] else AUDIT_ACTION_FAILED
     _record_audit(session, signal, action=action)
+    _assess_auth_failure_best_effort(session, signal)
     notification = _notify_customer(session, signal, sender=sender, now=now)
     logger.info(
         "risk intento registrado blocked=%s score=%s",
@@ -366,6 +379,50 @@ def _parse_unrecognized_report(payload: Any) -> dict[str, Any]:
         "reference": reference or (str(notification_id)[:8] if notification_id else None),
         "at": at_iso or datetime.now(UTC).isoformat(),
     }
+
+
+def _assess_auth_failure_best_effort(session: Session, signal: dict[str, Any]) -> None:
+    """Evaluacion antifraude del fallo de autorizacion (extension E6-T02 corte 2).
+
+    Best-effort estricto: nunca altera el consumo E2-T20 (perfil +
+    auditoria + notificacion intactos); ante cualquier fallo solo se
+    loguea y el consumo continua. Solo deja auditoria
+    `risk.assessment` (sin PII: `action`/`score`/`matched_rules`) cuando
+    alguna regla coincide con la senal (`blocked`, intentos o motivo de
+    spoofing); sin hallazgo no escribe nada (las suites E2-T20 con 0
+    reglas siguen viendo una sola auditoria).
+    """
+    try:
+        with session.begin_nested():
+            rules = list(risk_repo.list_rules(session))
+            profile = risk_repo.get_by_user(session, signal["user_id"])
+        context: dict[str, Any] = {
+            "auth_blocked": bool(signal.get("blocked")),
+            "auth_failed_attempts": max(1, int(signal.get("attempt") or 0)),
+            "auth_fail_reason": (
+                "blocked" if signal.get("blocked") else str(signal.get("reason") or "unknown")
+            ),
+            "device_id": signal.get("device_id"),
+        }
+        decision = risk_engine.evaluate(rules, profile, context)
+    except Exception as exc:  # noqa: BLE001 - extension best-effort documentada
+        logger.debug("risk assessment de auth omitida error=%s", type(exc).__name__)
+        return
+    if decision.action == risk_engine.ALLOW:
+        return
+    try:
+        from app.modules.audit.service import record as audit_record
+
+        audit_record(
+            session,
+            actor=signal["user_id"],
+            action=AUDIT_ACTION_ASSESSMENT,
+            entity="transaction",
+            entity_id=signal["transaction_id"],
+            metadata=_assessment_metadata(decision, source="auth.failed_attempt"),
+        )
+    except Exception as exc:  # noqa: BLE001 - la auditoria no bloquea el consumo
+        logger.warning("risk assessment de auth no registrada error=%s", type(exc).__name__)
 
 
 def handle_unrecognized_operation_report(
@@ -619,3 +676,359 @@ def _coerce_factor(raw: object) -> float:
     if candidate <= 0 or math.isnan(candidate):
         return UNUSUAL_AMOUNT_FACTOR_DEFAULT
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# Fachada sincrona pre-transaccion + consumidores del motor (E6-T02 corte 2).
+# ---------------------------------------------------------------------------
+
+#: Codigo de negocio cuando una regla `BLOCK` rechaza la operacion: queda
+#: `REJECTED` con `failure_reason` + `meta.failure_code = RISK_BLOCKED`,
+#: sin mover saldos ni asientos (lo fija `transactions`).
+RISK_BLOCKED = "RISK_BLOCKED"
+#: Codigo interno cuando una regla `HOLD` retiene la operacion: queda
+#: `PENDING_AUTHORIZATION` (reutiliza el gate biometrico existente; todos
+#: los flujos cubiertos lo soportan, si no quedaria `REJECTED`).
+RISK_HOLD_REQUIRED = "RISK_HOLD_REQUIRED"
+
+#: Auditoria de cada evaluacion con hallazgo (sin PII: solo `action`,
+#: `score` y `matched_rules`; jamas montos, paises ni dispositivos).
+AUDIT_ACTION_ASSESSMENT = "risk.assessment"
+
+#: Consumidores D-04 de los eventos del motor (idempotencia por
+#: `processed_events`, un consumidor por evento).
+CONSUMER_TRANSACTION_INITIATED = "risk-tx-initiated"
+CONSUMER_TRANSFER_SETTLED = "risk-tx-settled"
+
+#: Nivel de riesgo de la operacion segun la decision (evidencia en
+#: `transactions.risk_level`; `transactions` lo fija en su hook).
+RISK_LEVEL_BY_ACTION = {
+    "ALLOW": "LOW",
+    "ALERT": "MEDIUM",
+    "HOLD": "HIGH",
+    "BLOCK": "HIGH",
+}
+
+
+def risk_level_for(action: str) -> str:
+    """Nivel `transactions.risk_level` para una `action` (`LOW` por defecto)."""
+    return RISK_LEVEL_BY_ACTION.get(str(action or "").strip().upper(), "LOW")
+
+
+def _coerce_eval_user(value: uuid.UUID | str) -> uuid.UUID:
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {value!r}") from exc
+
+
+def _velocity_window_seconds(rules: list[RiskRule], config: dict[str, object]) -> int:
+    """Ventana de `VELOCITY` (regla `window_seconds` > global `config`)."""
+    for rule in rules:
+        code = getattr(rule, "code", None)
+        if not isinstance(code, str) or code.strip().upper() != "VELOCITY":
+            continue
+        params = getattr(rule, "params_json", None)
+        if isinstance(params, dict):
+            raw = params.get("window_seconds")
+            if isinstance(raw, bool):
+                continue
+            try:
+                candidate = int(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if candidate > 0:
+                return candidate
+    try:
+        return max(1, int(config.get("velocity_window_seconds", VELOCITY_WINDOW_DEFAULT_SECONDS)))
+    except (TypeError, ValueError):
+        return VELOCITY_WINDOW_DEFAULT_SECONDS
+
+
+def _recent_operations(session: Session, user_id: uuid.UUID, window_seconds: int) -> int | None:
+    """Conteo de operaciones del titular en la ventana (`None` si falla).
+
+    Solo lectura por la fachada de `transactions` (D-01: `risk` puede
+    llamar a `transactions`; jamas importa sus modelos). Un fallo de
+    lectura no bloquea: `None` = la regla `VELOCITY` no hace match.
+    """
+    try:
+        from app.modules.transactions.service import (
+            count_recent_operations as _count_recent,
+        )
+    except ImportError:
+        return None
+    try:
+        with session.begin_nested():
+            return int(_count_recent(session, user_id, window_seconds=window_seconds))
+    except Exception:  # noqa: BLE001 - lectura best-effort, rige no-match
+        logger.debug("risk velocidad sin conteo: la regla no participa")
+        return None
+
+
+def evaluate_pre_transaction(
+    session: Session,
+    *,
+    user_id: uuid.UUID | str,
+    amount_minor: int,
+    currency: str,
+    device_id: str | None = None,
+    country: str | None = None,
+    hour: int | None = None,
+    tx_type: str | None = None,
+) -> RiskDecision:
+    """Evalua las reglas antes de iniciar la operacion (solo lectura).
+
+    Relee `risk_rules` y `risk_profiles` en cada pasada (sin cache: un
+    `PUT /risk/rules/{code}` se refleja sin reiniciar); no escribe nada
+    (ni siquiera crea el perfil: sin perfil no hay habito conocido y las
+    reglas con base de comparacion simplemente no hacen match). Sin
+    llamadas externas: todo es local y determinista (< 1 s en el camino
+    local: lecturas indexadas por `user_id`/`code`).
+
+    `operations_in_window` (regla `VELOCITY`) cuenta las operaciones
+    comprometidas del titular en la ventana **incluyendo la operacion en
+    curso** (en el hook ya hizo `flush`; en los consumidores ya hizo
+    `commit`): el match dispara en la N-esima operacion de la ventana.
+    Determinista ante `autoflush` (la fila en curso siempre esta
+    flusheada al evaluar).
+
+    Fail-open documentado: ante un fallo tecnico de lectura (p. ej.
+    tablas aun no migradas) se loguea y retorna `ALLOW` —`risk` nunca
+    bloquea a ciegas; el bloqueo solo ocurre ante un match de regla.
+    La validacion de la entrada si es estricta (`ValueError`).
+    """
+    uid = _coerce_eval_user(user_id)
+    if isinstance(amount_minor, bool) or not isinstance(amount_minor, int):
+        raise TypeError(f"amount_minor debe ser entero, recibido: {amount_minor!r}")
+    if not isinstance(currency, str) or not currency.strip():
+        raise ValueError(f"currency invalida: {currency!r}")
+    clean_device = device_id.strip() if isinstance(device_id, str) and device_id.strip() else None
+    clean_country = country.strip() if isinstance(country, str) and country.strip() else None
+    try:
+        with session.begin_nested():
+            rules = list(risk_repo.list_rules(session))
+            profile = risk_repo.get_by_user(session, uid)
+            config = evaluate_config(session)
+            window = _velocity_window_seconds(rules, config)
+        operations = _recent_operations(session, uid, window)
+    except Exception as exc:  # noqa: BLE001 - fail-open documentado arriba
+        logger.warning("risk evaluacion no disponible, permite: error=%s", type(exc).__name__)
+        return RiskDecision()
+    context: dict[str, Any] = {
+        "amount_minor": int(amount_minor),
+        "currency": currency.strip().upper(),
+        "device_id": clean_device,
+        "country": clean_country,
+        "hour": hour,
+        "tx_type": tx_type,
+        "operations_in_window": operations,
+        "window_seconds": window,
+    }
+    try:
+        factor = float(config.get("unusual_amount_factor", UNUSUAL_AMOUNT_FACTOR_DEFAULT))
+    except (TypeError, ValueError):
+        factor = UNUSUAL_AMOUNT_FACTOR_DEFAULT
+    if factor > 0:
+        context["unusual_amount_factor"] = factor
+    return risk_engine.evaluate(rules, profile, context)
+
+
+def _assessment_metadata(
+    decision: RiskDecision, *, source: str, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Metadata de `risk.assessment` (sin PII: solo codigos y puntaje)."""
+    metadata: dict[str, Any] = {
+        "source": source,
+        "action": decision.action,
+        "score": int(decision.score),
+        "matched_rules": list(decision.matched_rules),
+    }
+    if extra:
+        metadata.update(extra)
+    return metadata
+
+
+def _record_assessment(
+    session: Session,
+    *,
+    actor: uuid.UUID | None,
+    entity_id: uuid.UUID | None,
+    decision: RiskDecision,
+    source: str,
+) -> None:
+    """Auditoria `risk.assessment` (estricta: un fallo revierte el consumo).
+
+    Solo se invoca con hallazgo (`action != ALLOW`): sin reglas que
+    coincidan no hay nada que evidenciar.
+    """
+    from app.modules.audit.service import record as audit_record
+
+    audit_record(
+        session,
+        actor=actor,
+        action=AUDIT_ACTION_ASSESSMENT,
+        entity="transaction",
+        entity_id=entity_id,
+        metadata=_assessment_metadata(decision, source=source),
+    )
+
+
+def _parse_tx_signal(payload: Any) -> dict[str, Any]:
+    """Referencia a la operacion del payload (tolerante, sin PII)."""
+    data = dict(payload) if isinstance(payload, dict) else {}
+    try:
+        transaction_id = (
+            uuid.UUID(str(data.get("transaction_id"))) if data.get("transaction_id") else None
+        )
+    except (ValueError, AttributeError, TypeError):
+        transaction_id = None
+    try:
+        user_id = uuid.UUID(str(data.get("user_id"))) if data.get("user_id") else None
+    except (ValueError, AttributeError, TypeError):
+        user_id = None
+    device = data.get("device_id")
+    return {
+        "transaction_id": transaction_id,
+        "user_id": user_id,
+        "device_id": (
+            device.strip()
+            if isinstance(device, str) and device.strip() and len(device) <= 128
+            else None
+        ),
+    }
+
+
+def handle_transaction_initiated(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Consume `transaction.initiated` (E6-T02 corte 2, HU20).
+
+    Idempotente por `event_id` (consumidor `CONSUMER_TRANSACTION_INITIATED`):
+    el replay retorna `consumed=False` sin efectos. Lee la operacion por la
+    fachada de `transactions` (`find_transaction_by_id`, sin importar sus
+    modelos), evalua con `evaluate_pre_transaction` y, solo con hallazgo
+    (`ALERT`/`HOLD`/`BLOCK`), deja auditoria `risk.assessment` (sin PII).
+    `flush` sin `commit` (el llamante, en general el handler del bus con
+    sesion propia, decide la transaccion); ante fallo se revierte y se
+    re-lanza para el backoff del worker.
+    """
+    from app.modules.shared import repository as shared_repo
+
+    if not shared_repo.try_mark_processed(
+        session, event_id=event_id, consumer=CONSUMER_TRANSACTION_INITIATED
+    ):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_TRANSACTION_INITIATED)
+        return {"consumed": False, "reason": "duplicate"}
+    signal = _parse_tx_signal(payload)
+    if signal["transaction_id"] is None:
+        logger.warning("risk initiated sin transaction_id: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction-id"}
+    from app.modules.transactions.service import find_transaction_by_id as _find_tx
+
+    tx = _find_tx(session, signal["transaction_id"])
+    if tx is None:
+        logger.warning("risk initiated sin operacion: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction"}
+    owner = tx.initiator_user_id
+    if owner is None:
+        logger.warning("risk initiated sin titular: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-user-id"}
+    meta = tx.meta if isinstance(tx.meta, dict) else {}
+    device = signal["device_id"]
+    if device is None and isinstance(meta.get("device_id"), str) and meta["device_id"].strip():
+        device = meta["device_id"].strip()[:128]
+    decision = evaluate_pre_transaction(
+        session,
+        user_id=owner,
+        amount_minor=int(tx.amount_minor),
+        currency=str(tx.currency),
+        device_id=device,
+        tx_type=str(tx.type),
+    )
+    if decision.action == risk_engine.ALLOW:
+        return {"consumed": True, "action": decision.action, "reason": "allow"}
+    _record_assessment(
+        session,
+        actor=owner,
+        entity_id=tx.id,
+        decision=decision,
+        source="transaction.initiated",
+    )
+    logger.info("risk assessment action=%s score=%s", decision.action, decision.score)
+    return {
+        "consumed": True,
+        "action": decision.action,
+        "score": int(decision.score),
+        "matched_rules": list(decision.matched_rules),
+    }
+
+
+def handle_transfer_settled(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Consume `transfer.settled` (E6-T02 corte 2, HU20).
+
+    Mismo contrato D-04 que `handle_transaction_initiated` (consumidor
+    `CONSUMER_TRANSFER_SETTLED`): reevalua tras liquidar (la ventana de
+    `VELOCITY` ya incluye la operacion) y audita `risk.assessment` solo
+    con hallazgo. Sin PII; `flush` sin `commit`; fallo -> rollback y
+    re-lanza.
+    """
+    from app.modules.shared import repository as shared_repo
+
+    if not shared_repo.try_mark_processed(
+        session, event_id=event_id, consumer=CONSUMER_TRANSFER_SETTLED
+    ):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_TRANSFER_SETTLED)
+        return {"consumed": False, "reason": "duplicate"}
+    signal = _parse_tx_signal(payload)
+    if signal["transaction_id"] is None:
+        logger.warning("risk settled sin transaction_id: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction-id"}
+    from app.modules.transactions.service import find_transaction_by_id as _find_tx
+
+    tx = _find_tx(session, signal["transaction_id"])
+    if tx is None:
+        logger.warning("risk settled sin operacion: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction"}
+    owner = tx.initiator_user_id if tx.initiator_user_id is not None else signal["user_id"]
+    if owner is None:
+        logger.warning("risk settled sin titular: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-user-id"}
+    meta = tx.meta if isinstance(tx.meta, dict) else {}
+    device = signal["device_id"]
+    if device is None and isinstance(meta.get("device_id"), str) and meta["device_id"].strip():
+        device = meta["device_id"].strip()[:128]
+    decision = evaluate_pre_transaction(
+        session,
+        user_id=owner,
+        amount_minor=int(tx.amount_minor),
+        currency=str(tx.currency),
+        device_id=device,
+        tx_type=str(tx.type),
+    )
+    if decision.action == risk_engine.ALLOW:
+        return {"consumed": True, "action": decision.action, "reason": "allow"}
+    _record_assessment(
+        session,
+        actor=owner,
+        entity_id=tx.id,
+        decision=decision,
+        source="transfer.settled",
+    )
+    logger.info("risk assessment action=%s score=%s", decision.action, decision.score)
+    return {
+        "consumed": True,
+        "action": decision.action,
+        "score": int(decision.score),
+        "matched_rules": list(decision.matched_rules),
+    }

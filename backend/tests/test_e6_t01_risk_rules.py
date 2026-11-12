@@ -482,7 +482,20 @@ def test_evaluate_config_invalid_values_fall_back(db):
 
 
 def test_no_money_movement():
-    """`risk` no importa el motor ni el ledger (regla de oro 1/4)."""
+    """`risk` no importa el motor ni el ledger (regla de oro 1/4).
+
+    Excepcion E6-T02 (corte 2, HU20): la fachada de solo lectura de
+    `risk.service` puede llamar a las fachadas de lectura de
+    `transactions` (`count_recent_operations`, `find_transaction_by_id`;
+    `docs/modules/README.md#risk`: "Puede llamar a ... `transactions`").
+    Siguen prohibidos `ledger`/`accounts`/`identity`, `post_entry` y
+    cualquier otro acceso a `transactions` (modelos, repositorios,
+    escritura).
+    """
+    allowed_readers = (
+        "count_recent_operations",
+        "find_transaction_by_id",
+    )
     for rel in (
         "app/modules/risk/service/__init__.py",
         "app/modules/risk/repository/__init__.py",
@@ -491,10 +504,15 @@ def test_no_money_movement():
     ):
         text = (BACKEND_DIR / rel).read_text(encoding="utf-8")
         for forbidden in (
-            "app.modules.transactions",
             "app.modules.ledger",
             "app.modules.accounts",
             "app.modules.identity",
             "post_entry",
         ):
             assert forbidden not in text, f"frontera rota en {rel}: {forbidden}"
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if "app.modules.transactions" not in line:
+                continue
+            window = "\n".join(text.splitlines()[lineno - 1 : lineno + 2])
+            if not any(reader in window for reader in allowed_readers):
+                raise AssertionError(f"frontera rota en {rel}:{lineno}: {line.strip()}")

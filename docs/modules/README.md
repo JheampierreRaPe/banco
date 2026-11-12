@@ -391,6 +391,21 @@ eventos (`outbox`/`inbox`).
   clave) y seguro ante concurrencia (exclusion por transaccion + CAS por
   `version`); `INTERBANK_TRANSFER` delega en la saga (`E2-T09`) y emite
   `transfer.reversed` por `outbox`.
+- **Pre-chequeo antifraude sincrono (E6-T02 corte 2, HU20):** `execute_transfer`
+  invoca la fachada de solo lectura `risk.service.evaluate_pre_transaction`
+  tras `INITIATED -> VALIDATED` y antes del gate biometrico (import perezoso,
+  sin ciclos; best-effort: ante fallo tecnico continua como `ALLOW` para no
+  romper el camino feliz). `BLOCK` -> `REJECTED` con `failure_reason` +
+  `meta.failure_code = RISK_BLOCKED` (sin mover saldos ni asientos; el `201`
+  con `data.failure_code` sigue el patron `INSUFFICIENT_FUNDS` de `docs/05#4`);
+  `HOLD` -> `PENDING_AUTHORIZATION` via `_pend_for_biometry` (reutiliza el gate
+  existente, con hold en rutas con hold y sin retener en la atomica propia);
+  `ALERT` -> continua con evidencia (`risk_score`/`risk_level` +
+  `risk.assessment` best-effort sin PII). Cubre transferencias propias/de
+  terceros y, por delegacion (`pay_express -> transfer_third_party`), QR y
+  servicios; nunca creditos (esas fachadas crean su `Transaction` por otro
+  camino). Expone la fachada de lectura `count_recent_operations` (ventana de
+  `VELOCITY` para `risk`, D-01).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -918,6 +933,28 @@ eventos (`outbox`/`inbox`).
   (`BLOCK > HOLD > ALERT > ALLOW`; sin matches -> `ALLOW` con `reason` sin PII).
   Sin E/S, BD, red ni reloj: la fachada con BD, el hook en `transactions` y los
   consumidores son el corte 2. **No mueve dinero**.
+- **Fachada sincrona + hook + consumidores (E6-T02 corte 2, HU20):**
+  `risk.service.evaluate_pre_transaction(session, *, user_id, amount_minor,
+  currency, device_id=None, country=None, hour=None, tx_type=None) ->
+  RiskDecision` (solo lectura: relee `risk_rules`/`risk_profiles` en cada
+  pasada, sin crear perfil; `operations_in_window` de `VELOCITY` cuenta la
+  ventana **incluyendo la operacion en curso** via la fachada de solo lectura
+  `transactions.count_recent_operations`; `< 1 s`; fail-open documentado ante
+  fallo tecnico —`risk` nunca bloquea a ciegas—). `transactions` la invoca en
+  `execute_transfer` (cubre transferencias y, por delegacion, QR/servicios via
+  `pay_express`; nunca creditos): `BLOCK` -> `REJECTED` con
+  `failure_code=RISK_BLOCKED` (sin saldos ni asientos), `HOLD` ->
+  `PENDING_AUTHORIZATION` (reutiliza el gate biometrico; la ruta atomica propia
+  tampoco retiene), `ALERT` -> continua con evidencia (`risk_score`/
+  `risk_level` + auditoria `risk.assessment` sin PII). Consumidores D-04
+  (`risk.on_transaction_initiated`/`risk.on_transfer_settled`, sesion/`commit`
+  propios, idempotentes por `processed_events`) que reevaluan y auditan
+  `risk.assessment` solo con hallazgo, mas la extension de
+  `risk.on_auth_failed_attempt` (evaluacion best-effort del fallo de
+  autorizacion con el mismo criterio); suscritos en el arranque
+  (`composition.subscribe_risk_antifraud`). **No mueve dinero** ni crea
+  `risk.alerts` (eso es `E6-T04`); E6-T02 queda `Hecho` (cierra G07 parcial:
+  quedan `alerts`/perfil para `E6-T03`/`E6-T04` y la calibracion `E6-T06`).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume

@@ -798,6 +798,8 @@ def test_migration_head_still_single_0040():
     # E6-T01 (2026-11-10): la cabeza avanza a 0048_risk_rules
     # (reglas antifraude configurables, tras 0047).
     assert revisions.get("0048_risk_rules") == "0047_wallet_personal_qr"
+    # E7-T01 (2026-11-11): la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
+    assert revisions.get("0049_fx") == "0048_risk_rules"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0048_risk_rules"], f"heads inesperados: {heads}"
+    assert heads == ["0049_fx"], f"heads inesperados: {heads}"

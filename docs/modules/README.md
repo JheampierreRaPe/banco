@@ -812,6 +812,22 @@ eventos (`outbox`/`inbox`).
 - **Responsabilidad:** tipos de cambio, cotizaciones, compra/venta, bolsillos y metas de ahorro.
 - **Dueno de:** `fx_rates`, `fx_quotes`, `fx_operations`, `savings_pockets`, `pocket_movements`.
 - **Expone:** `/fx/*`, `/pockets*`; eventos `fx.executed`, `pocket.transferred`, `pocket.yield.paid`.
+- **Esquema base (E7-T01, HU24/HU25, cimiento de `E7-T02`/`T09`/`T11`):**
+  migracion `0049_fx` (`down_revision = 0048_risk_rules`, un solo head,
+  `downgrade` reversible) con las 5 tablas (`03b#10`): `CHECK` de moneda
+  ISO-4217, `rate > 0`, montos enteros, `balance_minor >= 0`,
+  `amount_minor > 0`, `expires_at > created_at`; estados
+  `fx_quote_status`/`fx_operation_status`/`pocket_status` como `CHECK`
+  sobre `VARCHAR`; `quote_id` UQ (una cotizacion se ejecuta una sola
+  vez); FK solo dentro del schema (`quote_id`, `pocket_id`) y REF
+  logicas sin FK fisica (`user_id`, `account_id`, `transaction_id`,
+  `journal_entry_id`, regla de oro 4). Modelos ORM espejo
+  (`app/modules/fx/models`) + repositorio base (`create_rate`,
+  `get_latest_rate`, `create_quote`, `get_quote`, `expire_quote`,
+  `create_operation`, `create_pocket`, `get_pocket`, `list_pockets`,
+  `add_pocket_movement`; `flush` sin `commit`, `ValueError` por dato
+  invalido, `Decimal` nunca `float`). **No mueve dinero** (sin
+  `transactions`/`ledger`; los servicios llegan en `E7-T02`/`T09`/`T11`).
 - **Consume:** nada critico.
 - **Puede llamar a:** adaptador `FxRateProvider`, `transactions`, `ledger`, `audit`.
 - **Prohibido:** asentar un cambio cruzando monedas en un solo asiento.

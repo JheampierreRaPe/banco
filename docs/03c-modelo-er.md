@@ -185,6 +185,8 @@ audit_verifications  ── control de integridad de la cadena
 | qr_payments | transaction_id | transactions.transactions.id | N:1 |
 | service_payments / topups | transaction_id | transactions.transactions.id | N:1 |
 | fx_operations | transaction_id | transactions.transactions.id | N:1 |
+| savings_pockets | account_id | accounts.accounts.id | N:1 |
+| pocket_movements | journal_entry_id | ledger.journal_entries.id | N:1 |
 | alerts | transaction_id | transactions.transactions.id | N:1 |
 | alerts / screening_results | user_id | identity.users.id | N:1 |
 | reconciliation_exceptions | transaction_id | transactions.transactions.id | N:1 |

@@ -10,7 +10,8 @@ Uso (desde `backend/`, PowerShell):
 - El diagnostico (`sub`/`roles`/expiracion/fuente del secreto) va a stderr;
   el secreto jamas se imprime.
 - Solo emite los roles `analyst`/`credit_analyst` (los que exige
-  `get_analyst_context` en `app/modules/credits/api/applications.py`).
+  `get_analyst_context` en `app/modules/credits/api/applications.py`) y
+  `fraud_analyst` (el que exige el modulo `risk`, E6-T01).
   No es un backdoor: no crea ni toca endpoints; firma localmente con el
   `JWT_SECRET` vigente, igual que `create_access_token`.
 - Fuente del secreto (orden): `--jwt-secret` > `JWT_SECRET` ya exportado en
@@ -28,8 +29,8 @@ import sys
 import uuid
 from pathlib import Path
 
-#: Roles que el script puede emitir (los que acepta la bandeja del analista).
-ALLOWED_ROLES = ("analyst", "credit_analyst")
+#: Roles que el script puede emitir (bandeja de analista y reglas de riesgo).
+ALLOWED_ROLES = ("analyst", "credit_analyst", "fraud_analyst")
 
 #: Variables que se heredan del `.env` de la raiz si no estan en el entorno.
 INHERITED_KEYS = ("JWT_SECRET", "JWT_ALGORITHM", "ACCESS_TOKEN_MINUTES")

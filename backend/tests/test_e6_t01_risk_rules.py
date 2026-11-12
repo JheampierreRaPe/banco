@@ -282,6 +282,27 @@ def test_admin_role_also_authorized(api_client, analyst_id):
     assert resp.status_code == 200, resp.text
 
 
+def test_openapi_exposes_bearer_authorize_for_swagger(api_client):
+    """Swagger UI muestra el boton `Authorize` (HTTP Bearer) para `risk`.
+
+    Regresion de DX: antes la ruta declaraba un `Header` manual (nullable)
+    y Swagger no enviaba la cabecera; con `HTTPBearer` el usuario pega el
+    token una sola vez en `Authorize`.
+    """
+    spec = api_client.get("/openapi.json").json()
+    schemes = spec.get("components", {}).get("securitySchemes", {})
+    assert any(
+        item.get("type") == "http" and item.get("scheme") == "bearer" for item in schemes.values()
+    ), "falta securitySchemes HTTPBearer"
+    for path, method in (
+        ("/api/v1/risk/rules", "get"),
+        ("/api/v1/risk/rules/{code}", "put"),
+    ):
+        assert spec["paths"][path][method].get(
+            "security"
+        ), f"`{method.upper()} {path}` sin security: Swagger no pedira token"
+
+
 # ------------------------------------------------- errores
 def test_update_unknown_code_404(api_client, analyst_headers):
     resp = api_client.put(
@@ -304,6 +325,18 @@ def test_update_invalid_priority_422(api_client, analyst_headers):
             "/api/v1/risk/rules/VELOCITY", json={"priority": bad}, headers=analyst_headers
         )
         assert resp.status_code == 422, resp.text
+
+
+def test_update_unknown_fields_422(api_client, analyst_headers):
+    """Un campo desconocido no se ignora en silencio (evita typos 'exitosos')."""
+    for body in (
+        {"enable": False},
+        {"foo": False},
+        {"code": "NEW_DEVICE"},
+        {"enabled": False, "prio": 5},
+    ):
+        resp = api_client.put("/api/v1/risk/rules/VELOCITY", json=body, headers=analyst_headers)
+        assert resp.status_code == 422, f"{body} -> {resp.status_code}: {resp.text}"
 
 
 def test_update_non_object_params_422(api_client, analyst_headers):

@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RuleResponse(BaseModel):
@@ -36,7 +36,13 @@ class RulesListResponse(BaseModel):
 
 
 class RuleUpdateRequest(BaseModel):
-    """Edicion parcial de una regla (`code` inmutable, fuera del body)."""
+    """Edicion parcial de una regla (`code` inmutable, fuera del body).
+
+    `extra="forbid"`: un campo desconocido (p. ej. el typo `enable`) o el
+    `code` en el body devuelve `422` en vez de ignorarse en silencio.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=32767)

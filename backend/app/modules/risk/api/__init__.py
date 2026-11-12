@@ -18,7 +18,8 @@ import logging
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -36,6 +37,14 @@ logger = logging.getLogger(__name__)
 #: Roles aceptados para gestionar reglas (claim `roles` del JWT).
 RISK_ROLES = frozenset({"fraud_analyst", "admin"})
 
+#: Esquema Bearer para Swagger UI: habilita el boton global "Authorize"
+#: (se pega solo el token, Swagger antepone "Bearer "). `auto_error=False`
+#: para conservar el `401 NOT_AUTHENTICATED` propio del modulo.
+_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="JWT de analista de fraude (rol `fraud_analyst`/`admin`).",
+)
+
 
 class RiskContext:
     """Contexto autenticado del analista (`sub` + `roles` del JWT)."""
@@ -46,7 +55,7 @@ class RiskContext:
 
 
 def get_risk_context(
-    authorization: str | None = Header(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> RiskContext:
     """Exige JWT `Bearer` con rol de fraude/admin.
 
@@ -54,13 +63,13 @@ def get_risk_context(
     token es invalido/expirado o `sub` no es UUID. `403 NOT_AUTHORIZED`
     si el token es valido pero no trae rol de fraude/admin.
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise AppError(
             code="NOT_AUTHENTICATED",
             message="Se requiere Authorization: Bearer <jwt>",
             status_code=401,
         )
-    token = authorization.removeprefix("Bearer ").strip()
+    token = credentials.credentials.strip()
     try:
         payload = decode_token(token)
     except jwt.PyJWTError as exc:

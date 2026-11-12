@@ -25,6 +25,22 @@ from sqlalchemy.orm import Session
 
 from app.modules.fx import repository as fx_repo
 from app.modules.fx.models import SavingsPocket
+from app.modules.fx.service.quotes import (
+    DEFAULT_FX_QUOTE_TTL_SECONDS,
+    FX_QUOTE_TTL_SECONDS_KEY,
+    QUOTE_CREATED_AUDIT_ACTION,
+    QUOTE_CURRENCIES,
+    QUOTES_IDEMPOTENCY_ENDPOINT,
+    QuoteConflictError,
+    QuoteNotFoundError,
+    QuoteValidationError,
+    create_quote,
+    create_quote_idempotent,
+    get_quote,
+    get_rate,
+    to_quote_view,
+    to_rate_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -356,16 +372,30 @@ def get_pocket(session: Session, user_id: uuid.UUID | str, pocket_id: object) ->
 
 
 __all__ = [
+    "DEFAULT_FX_QUOTE_TTL_SECONDS",
+    "FX_QUOTE_TTL_SECONDS_KEY",
     "POCKETS_IDEMPOTENCY_ENDPOINT",
     "POCKET_ACCOUNT_TYPE",
     "POCKET_CURRENCIES",
     "POCKET_OPENED_AUDIT_ACTION",
+    "QUOTES_IDEMPOTENCY_ENDPOINT",
+    "QUOTE_CREATED_AUDIT_ACTION",
+    "QUOTE_CURRENCIES",
     "DuplicatePocketError",
     "IdempotencyConflictError",
     "PocketNotFoundError",
+    "QuoteConflictError",
+    "QuoteNotFoundError",
+    "QuoteValidationError",
+    "create_quote",
+    "create_quote_idempotent",
     "get_pocket",
+    "get_quote",
+    "get_rate",
     "list_pockets",
     "open_pocket",
     "open_pocket_idempotent",
     "to_pocket_view",
+    "to_quote_view",
+    "to_rate_view",
 ]

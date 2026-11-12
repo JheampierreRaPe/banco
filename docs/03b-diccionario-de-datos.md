@@ -729,6 +729,15 @@ Indices: `(account_id, created_at DESC)`.
 > `rate > 0`, `spread >= 0`, montos origen/destino `> 0`,
 > `expires_at > created_at` (regla 16.5); indices `(user_id, status)` y
 > `(expires_at)`.
+>
+> Nota E7-T09 (cotizacion congelada, HU25): `rate` son unidades de `base`
+> por 1 unidad de `quote` (coherente con el adaptador `E7-T08`); el destino
+> se calcula en `Decimal` como `source / (rate + spread)` cuantizado al
+> centavo con `ROUND_HALF_UP` (p. ej. `100 / 8.00 = 12.5 -> 13`) y nunca se
+> recalcula al leer; `spread` default `0` (el dinamico es `E7-T10`);
+> `expires_at = creacion + fx.quote_ttl_seconds` (default `30`,
+> `config.parameters`); el estado efectivo se calcula on-read (`ACTIVE`
+> vencida -> `EXPIRED`); una cotizacion se ejecuta una sola vez (`E7-T11`).
 
 ### 10.3 `fx_operations`, `savings_pockets`, `pocket_movements`
 

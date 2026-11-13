@@ -736,7 +736,7 @@ def test_max_cardinality_stable_under_permutation():
         assert match_items(list(perm_in), list(perm_out), tol) == expected
 
 
-def test_exact_buckets_pair_lexicographically():
+def test_exact_pairs_any_bijection_is_maximal():
     # Matching unico (F1): entre exactos equivalentes cualquier biyeccion es
     # maxima; se exige cardinalidad, calificadores y determinismo (no una
     # pareja concreta de la implementacion anterior por cubetas).
@@ -954,7 +954,7 @@ def test_max_cardinality_2x2_sweep_no_suboptimal():
                 checked += 1
                 if result.matched_count != best:
                     suboptimal += 1
-    assert checked > 0
+    assert checked == 32  # 2 tols x 2^2 combinaciones de ops x 2^2 de items
     assert suboptimal == 0
 
 
@@ -1001,3 +1001,33 @@ def test_match_result_rejects_invalid_elements():
             matches=(),
             exceptions=(ReconException(reason=MISSING_EXTERNAL, internal_id="op-1"), "x"),
         )
+
+
+# --- Fix M1 (2026-11-13): `_augment` iterativo sin `RecursionError` ---
+
+
+@pytest.mark.parametrize("n", [1000, 3000])
+def test_deep_augmenting_chain_completes_without_recursion_error(n):
+    """Cadena larga de aumento con una sola ref y tolerancia 1.
+
+    Montos consecutivos con desplazamiento +1: ops `base + i`, items
+    `base + i + 1` (misma `external_ref`). Los primeros `n - 1` items
+    toman su exacto y el ultimo solo ve una op ocupada, lo que encadena
+    la reasignacion hasta `op-00000` (profundidad `n`). Con `_augment`
+    recursivo falla con `RecursionError` desde `n = 1000` (limite 1000;
+    con 950 pasa); el iterativo con pila explicita completa con
+    cardinalidad maxima. Candidatos `~3n`, muy bajo la cota (`250_000`),
+    para ejercitar la profundidad sin dispararla.
+    """
+    import time
+
+    tol = Tolerances(amount_tolerance_minor=1, date_tolerance_days=0)
+    internal = [_op(op_id=f"op-{i:05d}", ref="REF-DEEP", amount=100_00 + i) for i in range(n)]
+    clearing = [
+        _item(item_id=f"it-{i:05d}", ref="REF-DEEP", amount=100_00 + i + 1) for i in range(n)
+    ]
+    start = time.perf_counter()
+    result = match_items(internal, clearing, tol)
+    assert time.perf_counter() - start < 10.0
+    assert result.matched_count == n
+    assert result.exception_count == 0

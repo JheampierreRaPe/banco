@@ -538,7 +538,9 @@ def _match_group_max_cardinality(
     lexicografica). Si los pares candidatos (tamano de ventana) superan
     ``max_candidate_pairs`` lanza ``ValueError``. Despues corre aumentos de
     camino en orden fijo (items por ``item_id``), lo que garantiza
-    cardinalidad maxima sobre el grafo de aristas ``Match``.
+    cardinalidad maxima sobre el grafo de aristas ``Match``. El aumento es
+    Kuhn DFS iterativo con pila explicita (misma semantica que el recursivo)
+    para no agotar la pila de Python en cadenas largas de aumento.
     """
     ops_sorted = sorted(group_ops, key=lambda o: o.amount_minor)
     op_amounts = [op.amount_minor for op in ops_sorted]
@@ -577,15 +579,42 @@ def _match_group_max_cardinality(
     entry_by_id = {e.item_id: e for e in items_sorted}
     match_for_op: dict[str, str] = {}
 
-    def _augment(item_id: str, visited: set[str]) -> bool:
-        for op_id in adjacency[item_id]:
+    def _augment(start_item_id: str, visited: set[str]) -> bool:
+        # Kuhn DFS iterativo con pila explicita: misma semantica que el
+        # recursivo (mismo orden de vecinos, mismo `visited` por raiz y
+        # misma reasignacion al desenrollar), sin limite de recursion.
+        # Cada marco guarda el item y el indice del proximo vecino;
+        # `incoming_op[depth]` es la arista por la que se llego a ese item
+        # (None en la raiz). Al hallar una op libre se reasigna toda la
+        # cadena: la op libre al item actual y cada op padre a su item.
+        stack_items: list[str] = [start_item_id]
+        stack_next: list[int] = [0]
+        stack_incoming: list[str | None] = [None]
+        while stack_items:
+            item_id = stack_items[-1]
+            idx = stack_next[-1]
+            neighbours = adjacency[item_id]
+            if idx >= len(neighbours):
+                stack_items.pop()
+                stack_next.pop()
+                stack_incoming.pop()
+                continue
+            stack_next[-1] = idx + 1
+            op_id = neighbours[idx]
             if op_id in visited:
                 continue
             visited.add(op_id)
             current = match_for_op.get(op_id)
-            if current is None or _augment(current, visited):
+            if current is None:
                 match_for_op[op_id] = item_id
+                for depth in range(len(stack_items) - 1, 0, -1):
+                    parent_op = stack_incoming[depth]
+                    assert parent_op is not None
+                    match_for_op[parent_op] = stack_items[depth - 1]
                 return True
+            stack_items.append(current)
+            stack_next.append(0)
+            stack_incoming.append(op_id)
         return False
 
     for entry in items_sorted:

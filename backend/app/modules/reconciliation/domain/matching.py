@@ -14,19 +14,24 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   tolerancia (3). La moneda distinta manda sobre un monto/fecha fuera de
   tolerancia, pero nunca sobre un ``Match`` (exacto o tolerado).
 - El cruce maximiza la **cardinalidad por ``external_ref``** (matching
-  bipartito): primero resuelve los ``EXACT`` (por construccion son
-  componentes completas por ``(monto, moneda, fecha)`` y no compiten entre
-  si: cualquier solucion optima puede transformarse para incluir el
-  emparejamiento exacto maximo sin perder cardinalidad) y consume esas
-  operaciones; despues maximiza el numero de pares tolerados
-  (``AMOUNT_DIFF``/``DATE_DIFF`` dentro de tolerancia) entre los restantes
-  con aumento de caminos (Kuhn) en orden lexicografico fijo; al final
-  clasifica los sobrantes como excepcion. Asi dos tolerados cruzados
+  bipartito maximo) sobre **todas** las aristas que clasifican como
+  ``Match`` (exactas + toleradas) en una unica pasada, con Kuhn
+  determinista (items por ``item_id`` y vecinos en orden fijo: exactos
+  primero como desempate, luego ``op_id``). Garantizado: cardinalidad
+  maxima (ningun otro emparejamiento con aristas ``Match`` tiene mas
+  pares). No garantizado formalmente: preferencia de exactos; a igual
+  cardinalidad los exactos van primero en el orden de vecinos, lo que es
+  un desempate determinista (en la practica conserva los exactos cuando
+  hay empate) pero no una prueba de maximalidad lexicografica. Los
+  sobrantes se clasifican como excepcion. Asi dos tolerados cruzados
   (``it-a``/``op-2`` + ``it-b``/``op-1``) ganan sobre un unico par mejor
-  puntuado (``it-a``/``op-1``) que dejaria un falso positivo.
+  puntuado (``it-a``/``op-1``) que dejaria un falso positivo, y un exacto
+  que compite con tolerados no se pierde cuando existe un maximo que lo
+  incluye (casos A/B del validador).
 - Determinismo: a igualdad de cardinalidad, el resultado es estable porque
   items y operaciones se ordenan por ID y los vecinos se exploran en orden
-  de ``op_id`` (Kuhn en orden fijo); el resultado sale ordenado por IDs.
+  fijo (exactos primero, luego ``op_id``; Kuhn en orden fijo); el resultado
+  sale ordenado por IDs.
 - Indice de candidatos: por cada ``external_ref`` las operaciones se ordenan
   por monto y cada item usa ``bisect`` sobre la ventana
   ``[monto - tol, monto + tol]`` (mas filtro de moneda/signo/fecha) para no
@@ -36,10 +41,13 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
 - Cota de seguridad: ``MAX_TOLERATED_CANDIDATE_PAIRS`` (default ``250_000``
   pares candidatos por grupo de ``external_ref``, aprox ``500x500``) evita que
   un grupo patologico de refs repetidas agote memoria/tiempo: superarla
-  lanza ``ValueError`` claro en vez de tardar minutos. Motivo: las refs
+  lanza ``ValueError`` claro en vez de tardar minutos, tanto en la pasada de
+  matching (ventana de tolerancia) como en la pasada de excepciones
+  (producto ``len(items_libres) * len(ops_libres)`` por grupo; mismo
+  ``max_candidate_pairs`` y mismo estilo de mensaje). Motivo: las refs
   deben ser casi unicas (decision corte 2: referencia unica por operacion);
-  un grupo gigante con tolerancia amplia es un error de datos, no un cruce
-  normal. Configurable via ``max_candidate_pairs`` de :func:`match_items`.
+  un grupo gigante con tolerancia amplia o con miles de sobrantes es un error
+  de datos, no un cruce normal. Configurable via ``max_candidate_pairs`` de :func:`match_items`.
 - Politica de signo: los montos son enteros **distintos de cero** (positivos
   para cargos/abonos, negativos para reversos/contracargos/ajustes). Un
   ``Match`` exige **mismo signo** en ambos lados; la tolerancia compara la
@@ -395,23 +403,23 @@ def match_items(
 ) -> MatchResult:
     """Cruza clearing contra operaciones internas (puro y determinista).
 
-    Maximiza la cardinalidad del emparejamiento por ``external_ref`` en dos
-    fases: primero los ``EXACT`` (componentes completas por
-    ``(monto, moneda, fecha)``, emparejados en orden lexicografico) y despues
-    los tolerados con matching bipartito maximo (Kuhn en orden fijo:
-    items por ``item_id`` y vecinos por ``op_id``). Los sobrantes se
-    clasifican como excepcion con el mejor candidato libre
-    (``CURRENCY_MISMATCH``/fuera de tolerancia/``MISSING_INTERNAL``). Asi un
-    ``EXACT`` gana sobre una excepcion con la misma operacion, y dos
-    tolerados cruzados ganan sobre un unico par mejor puntuado. El orden de
-    entrada no afecta el resultado: todo se ordena antes de emparejar y el
-    resultado sale ordenado por IDs.
+    Maximiza la cardinalidad del emparejamiento por ``external_ref`` en una
+    unica pasada bipartita sobre **todas** las aristas ``Match`` (exactas +
+    toleradas) con Kuhn determinista (items por ``item_id``, vecinos con
+    exactos primero y luego ``op_id``). Garantiza cardinalidad maxima; la
+    preferencia de exactos es solo desempate determinista, no garantia
+    formal. Los sobrantes se clasifican como excepcion con el mejor
+    candidato libre (``CURRENCY_MISMATCH``/fuera de tolerancia/
+    ``MISSING_INTERNAL``). El orden de entrada no afecta el resultado: todo
+    se ordena antes de emparejar y el resultado sale ordenado por IDs.
 
-    La fase tolerada usa un indice por monto (``bisect`` sobre la ventana de
-    tolerancia) para no generar ``O(n^2)`` pares con tolerancia 0/estrecha;
+    La fase de matching usa un indice por monto (``bisect`` sobre la ventana
+    de tolerancia) para no generar ``O(n^2)`` pares con tolerancia 0/estrecha;
     si los pares candidatos de un grupo superan ``max_candidate_pairs`` se
     lanza ``ValueError`` (cota de seguridad para refs repetidas
-    patologicas).
+    patologicas). La pasada de excepciones aplica la misma cota por grupo
+    (``len(items_libres) * len(ops_libres)``) antes de buscar el mejor
+    candidato, con el mismo estilo de ``ValueError``.
     """
     tol = _coerce_tolerances(tolerances)
     if isinstance(max_candidate_pairs, bool) or not isinstance(max_candidate_pairs, int):
@@ -455,20 +463,27 @@ def match_items(
         group_items = items_by_ref.get(ref, [])
         if not group_ops or not group_items:
             continue
-        # Fase 1: EXACT por (monto, moneda, fecha) en orden lexicografico.
-        _match_exact_group(group_ops, group_items, matches, used_ops, matched_items)
-        # Fase 2: tolerados con cardinalidad maxima (Kuhn determinista).
-        remaining_ops = [op for op in group_ops if op.op_id not in used_ops]
-        remaining_items = [e for e in group_items if e.item_id not in matched_items]
-        if remaining_ops and remaining_items:
-            _match_tolerated_group(
-                remaining_ops,
-                remaining_items,
-                tol,
-                matches,
-                used_ops,
-                matched_items,
-                max_candidate_pairs,
+        # Pasada unica: cardinalidad maxima sobre todas las aristas Match.
+        _match_group_max_cardinality(
+            group_ops,
+            group_items,
+            tol,
+            matches,
+            used_ops,
+            matched_items,
+            max_candidate_pairs,
+        )
+
+    # Cota de la pasada de excepciones: evita el producto cartesiano por grupo.
+    for ref in sorted(set(ops_by_ref) | set(items_by_ref)):
+        n_free_ops = sum(1 for op in ops_by_ref.get(ref, []) if op.op_id not in used_ops)
+        n_free_items = sum(1 for e in items_by_ref.get(ref, []) if e.item_id not in matched_items)
+        if n_free_ops * n_free_items > max_candidate_pairs:
+            raise ValueError(
+                f"grupo de external_ref {ref!r} supera la cota de seguridad "
+                f"en excepciones ({n_free_ops * n_free_items} pares "
+                f"libres > {max_candidate_pairs}): refs repetidas patologicas; "
+                "reduzca la tolerancia o exija referencia unica por operacion"
             )
 
     # Pasada final (excepciones): sobrantes; el mejor candidato libre
@@ -505,41 +520,7 @@ def match_items(
     return MatchResult(matches=tuple(matches), exceptions=tuple(exceptions))
 
 
-def _match_exact_group(
-    group_ops: list[InternalOperation],
-    group_items: list[ClearingEntry],
-    matches: list[Match],
-    used_ops: set[str],
-    matched_items: set[str],
-) -> None:
-    """Empareja el maximo de ``EXACT`` dentro de un ``external_ref``.
-
-    Los exactos forman componentes completas por ``(monto, moneda, fecha)``:
-    dentro de cada clave todos los pares son equivalentes, asi que emparejar
-    ``min(n_ops, n_items)`` en orden lexicografico es maximo y estable.
-    """
-    ops_by_key: dict[tuple[int, str, date], list[InternalOperation]] = {}
-    for op in group_ops:
-        if op.op_id in used_ops:
-            continue
-        ops_by_key.setdefault((op.amount_minor, op.currency, op.value_date), []).append(op)
-    items_by_key: dict[tuple[int, str, date], list[ClearingEntry]] = {}
-    for entry in group_items:
-        if entry.item_id in matched_items:
-            continue
-        items_by_key.setdefault((entry.amount_minor, entry.currency, entry.value_date), []).append(
-            entry
-        )
-    for key in sorted(ops_by_key):
-        bucket_ops = sorted(ops_by_key[key], key=lambda o: o.op_id)
-        bucket_items = sorted(items_by_key.get(key, []), key=lambda e: e.item_id)
-        for op, entry in zip(bucket_ops, bucket_items):
-            used_ops.add(op.op_id)
-            matched_items.add(entry.item_id)
-            matches.append(Match(internal_id=op.op_id, clearing_id=entry.item_id, qualifier=EXACT))
-
-
-def _match_tolerated_group(
+def _match_group_max_cardinality(
     group_ops: list[InternalOperation],
     group_items: list[ClearingEntry],
     tol: Tolerances,
@@ -548,16 +529,20 @@ def _match_tolerated_group(
     matched_items: set[str],
     max_candidate_pairs: int,
 ) -> None:
-    """Maximiza pares tolerados (``AMOUNT_DIFF``/``DATE_DIFF``) con Kuhn.
+    """Maximiza pares ``Match`` (exactos + tolerados) con Kuhn determinista.
 
-    Construye la adyacencia solo con candidatos en ventana de monto
-    (``bisect``) + filtros de moneda/signo/fecha; si los pares candidatos
-    superan ``max_candidate_pairs`` lanza ``ValueError``. Despues corre
-    aumentos de camino en orden fijo (items por ``item_id``, vecinos por
-    ``op_id``), determinista a igualdad de cardinalidad.
+    Construye la adyacencia solo con pares que :func:`_classify` califica
+    como ``Match``, usando la ventana de monto (``bisect``) + filtros de
+    moneda/signo/fecha; los vecinos se ordenan con exactos primero y luego
+    ``op_id`` (desempate determinista, no garantia formal de maximalidad
+    lexicografica). Si los pares candidatos (tamano de ventana) superan
+    ``max_candidate_pairs`` lanza ``ValueError``. Despues corre aumentos de
+    camino en orden fijo (items por ``item_id``), lo que garantiza
+    cardinalidad maxima sobre el grafo de aristas ``Match``.
     """
     ops_sorted = sorted(group_ops, key=lambda o: o.amount_minor)
     op_amounts = [op.amount_minor for op in ops_sorted]
+    op_by_id = {op.op_id: op for op in ops_sorted}
     items_sorted = sorted(group_items, key=lambda e: e.item_id)
 
     adjacency: dict[str, list[str]] = {}
@@ -567,21 +552,17 @@ def _match_tolerated_group(
         high = entry.amount_minor + tol.amount_tolerance_minor
         left = bisect.bisect_left(op_amounts, low)
         right = bisect.bisect_right(op_amounts, high)
-        neighbours: list[str] = []
+        neighbours: list[tuple[int, str]] = []
         for op in ops_sorted[left:right]:
+            if op.op_id in used_ops:  # pragma: no cover - grupos frescos
+                continue
             if op.currency != entry.currency:
                 continue
             if (op.amount_minor > 0) != (entry.amount_minor > 0):
                 continue
-            amount_diff = entry.amount_minor - op.amount_minor
-            date_diff = (entry.value_date - op.value_date).days
-            if amount_diff == 0 and date_diff == 0:
-                continue  # exacto: ya resuelto en la fase 1
-            if abs(amount_diff) > tol.amount_tolerance_minor:
-                continue  # pragma: no cover - la ventana ya acota
-            if abs(date_diff) > tol.date_tolerance_days:
-                continue
-            neighbours.append(op.op_id)
+            outcome = _classify(op, entry, tol)
+            if isinstance(outcome, Match):
+                neighbours.append((0 if outcome.qualifier == EXACT else 1, op.op_id))
         candidate_count += right - left
         if candidate_count > max_candidate_pairs:
             raise ValueError(
@@ -591,7 +572,7 @@ def _match_tolerated_group(
                 "reduzca la tolerancia o exija referencia unica por operacion"
             )
         neighbours.sort()
-        adjacency[entry.item_id] = neighbours
+        adjacency[entry.item_id] = [op_id for _, op_id in neighbours]
 
     entry_by_id = {e.item_id: e for e in items_sorted}
     match_for_op: dict[str, str] = {}
@@ -613,13 +594,12 @@ def _match_tolerated_group(
     for op_id, item_id in sorted(match_for_op.items(), key=lambda kv: (kv[1], kv[0])):
         used_ops.add(op_id)
         matched_items.add(item_id)
-        op = next(o for o in ops_sorted if o.op_id == op_id)
+        op = op_by_id[op_id]
         entry = entry_by_id[item_id]
         outcome = _classify(op, entry, tol)
         if isinstance(outcome, Match):
-            # Solo tolerados: la fase 1 ya consumo los exactos.
             matches.append(outcome)
-        # pragma: no cover - la adyacencia solo contiene Match tolerados;
+        # pragma: no cover - la adyacencia solo contiene Match;
         # si _classify discrepara seria un bug de construccion.
 
 

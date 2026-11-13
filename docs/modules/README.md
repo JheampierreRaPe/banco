@@ -995,11 +995,12 @@ eventos (`outbox`/`inbox`).
   `reconciliation/domain/matching.py` (`match_items(internal, clearing,
   tolerances, *, max_candidate_pairs) -> MatchResult`), determinista y sin I/O:
   empareja por `external_ref` (uno a uno, sin reutilizar) con **cardinalidad
-  maxima por ref** (matching bipartito): primero los `EXACT` (componentes
-  completas por `(monto, moneda, fecha)`, en orden lexicografico) y despues
-  los tolerados con aumento de caminos (Kuhn) en orden fijo (`item_id` /
-  `op_id`; estable a igualdad de cardinalidad); los sobrantes se clasifican
-  como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
+  maxima por ref en una unica pasada bipartita** sobre todas las aristas
+  `Match` (exactas + toleradas) con Kuhn determinista (`item_id` en orden;
+  vecinos con exactos primero como desempate y luego `op_id`; estable a
+  igualdad de cardinalidad). Garantizado: cardinalidad maxima; la
+  preferencia de exactos es solo desempate determinista, no garantia
+  formal. Los sobrantes se clasifican como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
   (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
   en `CURRENCY_MISMATCH` desempata la cercania (monto/fecha) antes que el
   `op_id`; califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o
@@ -1012,10 +1013,13 @@ eventos (`outbox`/`inbox`).
   tolerancia + filtro de moneda/signo/fecha: `O(n log n + k)`, sin `O(n^2)`
   con tolerancia 0/estrecha) y cota `MAX_TOLERATED_CANDIDATE_PAIRS`
   (`250_000` pares/grupo, `~500x500`, configurable) que falla con `ValueError`
-  claro ante refs repetidas patologicas con tolerancia amplia. El caso 2x2
-  del revisor da **2 matches** (`it-a`/`op-2` + `it-b`/`op-1`) y 0
-  excepciones (el greedy anterior daba 1 + falso positivo; en el barrido 2x2
-  hubo 0 perdidas de `EXACT`).
+  claro ante refs repetidas patologicas con tolerancia amplia, tanto en la
+  pasada de matching (ventana) como en la pasada de excepciones (producto
+  `libres x libres` por grupo; mismo `max_candidate_pairs` y mismo estilo
+  de mensaje). Casos A/B del validador (exacto que compite con tolerados)
+  dan cardinalidad maxima (A: 2/2, B: 3/3) y el barrido 2x2 da 0 suboptimas.
+  El snippet literal del revisor (`|10800-10000|=800`) requiere `tol>=800`
+  para dar 2 matches; con `tol=100` da 1 match + 1 excepcion.
   Politica de signo: montos != 0 (negativos = reversos, contracargos o ajustes);
   un `Match` exige **mismo signo** y la tolerancia compara la diferencia
   absoluta (signos opuestos nunca son `Match`). Convencion de signos:

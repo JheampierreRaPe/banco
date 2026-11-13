@@ -737,16 +737,25 @@ def test_max_cardinality_stable_under_permutation():
 
 
 def test_exact_buckets_pair_lexicographically():
+    # Matching unico (F1): entre exactos equivalentes cualquier biyeccion es
+    # maxima; se exige cardinalidad, calificadores y determinismo (no una
+    # pareja concreta de la implementacion anterior por cubetas).
     result = match_items(
         [_op(op_id="op-2"), _op(op_id="op-1")],
         [_item(item_id="it-b"), _item(item_id="it-a")],
     )
     assert result.matched_count == 2
     assert result.exception_count == 0
-    assert {(m.clearing_id, m.internal_id) for m in result.matches} == {
-        ("it-a", "op-1"),
-        ("it-b", "op-2"),
-    }
+    assert {m.qualifier for m in result.matches} == {EXACT}
+    assert {m.clearing_id for m in result.matches} == {"it-a", "it-b"}
+    assert {m.internal_id for m in result.matches} == {"op-1", "op-2"}
+    expected = result
+    import itertools as _it
+
+    internal = [_op(op_id="op-2"), _op(op_id="op-1")]
+    clearing = [_item(item_id="it-b"), _item(item_id="it-a")]
+    for perm_in, perm_out in _it.product(_it.permutations(internal), _it.permutations(clearing)):
+        assert match_items(list(perm_in), list(perm_out)) == expected
 
 
 def test_recon_exception_zero_diffs_rejected():
@@ -809,9 +818,11 @@ def test_narrow_tolerance_does_not_build_quadratic_pairs():
 
     import app.modules.reconciliation.domain.matching as matching_mod
 
+    # Desplazamiento +3: entra a la fase tolerada (AMOUNT_DIFF), no a EXACT,
+    # para que `_classify` realmente se ejerza (~n llamadas, no 0 ni n^2).
     internal = [_op(op_id=f"op-{i:03d}", ref="REF-P", amount=100_00 + i * 100) for i in range(300)]
     clearing = [
-        _item(item_id=f"it-{i:03d}", ref="REF-P", amount=100_00 + i * 100) for i in range(300)
+        _item(item_id=f"it-{i:03d}", ref="REF-P", amount=100_00 + i * 100 + 3) for i in range(300)
     ]
     tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
     calls = 0
@@ -828,8 +839,10 @@ def test_narrow_tolerance_does_not_build_quadratic_pairs():
     elapsed = time.perf_counter() - start
     assert result.matched_count == 300
     assert result.exception_count == 0
-    # Camino indexado: ~O(n) clasificaciones, no O(n^2) = 90_000 pares.
-    assert calls < 5000
+    assert {m.qualifier for m in result.matches} == {AMOUNT_DIFF}
+    # Camino indexado: ~O(n) clasificaciones, no O(n^2) = 90_000 pares;
+    # y > 0 para demostrar que la fase tolerada se ejercio.
+    assert 300 <= calls < 5000
     assert elapsed < 5.0
 
 
@@ -845,3 +858,146 @@ def test_match_result_coerces_lists_to_tuples():
     assert result.matched_count == 1
     assert result.exception_count == 1
     assert result == MatchResult(matches=result.matches, exceptions=result.exceptions)
+
+
+# --- Fix validador F1 (2026-11-13): exacto que compite con tolerados ---
+
+
+def test_max_cardinality_exact_competing_with_tolerated_case_a():
+    """Caso A del validador: exacto it-a/op-1 compite; el maximo es 2.
+
+    Falla sin el fix (1 match + 1 excepcion: el exacto greedy bloquea);
+    pasa con matching unico (it-a/op-2 + it-b/op-1).
+    """
+    tol = Tolerances(amount_tolerance_minor=1, date_tolerance_days=0)
+    result = match_items(
+        [
+            _op(op_id="op-1", ref="REF-A", amount=100_00),
+            _op(op_id="op-2", ref="REF-A", amount=100_01),
+        ],
+        [
+            _item(item_id="it-a", ref="REF-A", amount=100_00),
+            _item(item_id="it-b", ref="REF-A", amount=99_99),
+        ],
+        tol,
+    )
+    assert result.matched_count == 2
+    assert result.exception_count == 0
+    assert {(m.clearing_id, m.internal_id) for m in result.matches} == {
+        ("it-a", "op-2"),
+        ("it-b", "op-1"),
+    }
+
+
+def test_max_cardinality_exact_competing_with_tolerated_case_b():
+    """Caso B del validador: 3 ops vs 3 items con tol 1; el maximo es 3.
+
+    Falla sin el fix (2 matches: exactos primero dejan un tolerado huerfano).
+    """
+    tol = Tolerances(amount_tolerance_minor=1, date_tolerance_days=0)
+    result = match_items(
+        [
+            _op(op_id="op-1", ref="REF-B", amount=100_00),
+            _op(op_id="op-2", ref="REF-B", amount=100_00),
+            _op(op_id="op-3", ref="REF-B", amount=100_01),
+        ],
+        [
+            _item(item_id="it-1", ref="REF-B", amount=100_00),
+            _item(item_id="it-2", ref="REF-B", amount=100_01),
+            _item(item_id="it-3", ref="REF-B", amount=100_02),
+        ],
+        tol,
+    )
+    assert result.matched_count == 3
+    assert result.exception_count == 0
+
+
+def test_max_cardinality_2x2_sweep_no_suboptimal():
+    """Barrido 2x2: ninguna instancia pequeña pierde cardinalidad.
+
+    Compara contra fuerza bruta (maximo exacto por enumeracion) en una malla
+    de montos {100_00, 100_01} x tolerancias {0, 1}: 0 suboptimas.
+    """
+    import itertools
+
+    amounts = [100_00, 100_01]
+    suboptimal = 0
+    checked = 0
+    for tol_minor in (0, 1):
+        tol = Tolerances(amount_tolerance_minor=tol_minor, date_tolerance_days=0)
+        for ops_amts in itertools.product(amounts, repeat=2):
+            for items_amts in itertools.product(amounts, repeat=2):
+                internal = [
+                    _op(op_id=f"op-{i}", ref="REF-S", amount=a) for i, a in enumerate(ops_amts)
+                ]
+                clearing = [
+                    _item(item_id=f"it-{i}", ref="REF-S", amount=a)
+                    for i, a in enumerate(items_amts)
+                ]
+                result = match_items(internal, clearing, tol)
+                # Maximo por fuerza bruta sobre aristas Match.
+                from app.modules.reconciliation.domain.matching import _classify as _c
+
+                edges = [
+                    (i, j)
+                    for i, op in enumerate(internal)
+                    for j, it in enumerate(clearing)
+                    if isinstance(_c(op, it, tol), matching.Match)
+                ]
+                best = 0
+                for r in range(len(edges) + 1):
+                    for combo in itertools.combinations(edges, r):
+                        oi = [x for x, _ in combo]
+                        ji = [x for _, x in combo]
+                        if len(set(oi)) == len(oi) and len(set(ji)) == len(ji):
+                            best = max(best, len(combo))
+                checked += 1
+                if result.matched_count != best:
+                    suboptimal += 1
+    assert checked > 0
+    assert suboptimal == 0
+
+
+# --- Fix validador F2 (2026-11-13): cota tambien en la pasada de excepciones ---
+
+
+def test_exceptions_pass_bound_fails_fast():
+    """Grupo patologico sin matches: la pasada de excepciones falla rapido.
+
+    500 libres x 500 libres = 250_000+ con cota 10 -> ValueError inmediato,
+    no minutos de `min()` cartesiano.
+    """
+    import time
+
+    tol = Tolerances()
+    internal = [_op(op_id=f"op-{i:04d}", ref="REF-Q", amount=100_00 + i) for i in range(500)]
+    clearing = [_item(item_id=f"it-{i:04d}", ref="REF-Q", amount=900_00 + i) for i in range(500)]
+    start = time.perf_counter()
+    with pytest.raises(ValueError, match="cota de seguridad"):
+        match_items(internal, clearing, tol, max_candidate_pairs=10)
+    assert time.perf_counter() - start < 5.0
+
+
+# --- Fix validador F5 (2026-11-13): cobertura MatchResult ---
+
+
+def test_pair_key_priority_levels():
+    from app.modules.reconciliation.domain.matching import _pair_key
+
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=2)
+    assert _pair_key(_op(), _item(), tol)[0] == 0
+    assert _pair_key(_op(), _item(amount=100_05), tol)[0] == 1
+    assert _pair_key(_op(), _item(amount=100_05, currency="USD"), tol)[0] == 2
+    assert _pair_key(_op(), _item(amount=999_00), tol)[0] == 3
+
+
+def test_match_result_rejects_invalid_elements():
+    from app.modules.reconciliation.domain.matching import MatchResult, ReconException
+
+    with pytest.raises(TypeError, match="matches debe contener Match"):
+        MatchResult(matches=("no-un-match",), exceptions=())
+    with pytest.raises(TypeError, match="exceptions debe contener ReconException"):
+        MatchResult(
+            matches=(),
+            exceptions=(ReconException(reason=MISSING_EXTERNAL, internal_id="op-1"), "x"),
+        )

@@ -1046,6 +1046,60 @@ eventos (`outbox`/`inbox`).
   `RECONCILIATION_INGEST_ENABLED=0` (apagado por defecto) y
   `RECONCILIATION_JOBS_INTERVAL_SECONDS=300`. No mueve dinero ni emite
   eventos; sin PII/secretos en logs.
+- **Motor de matching con tolerancias (E5-T18 corte 1, HU19):** dominio puro
+  `reconciliation/domain/matching.py` (`match_items(internal, clearing,
+  tolerances, *, max_candidate_pairs) -> MatchResult`), determinista y sin I/O:
+  empareja por `external_ref` (uno a uno, sin reutilizar) con **cardinalidad
+  maxima por ref en una unica pasada bipartita** sobre todas las aristas
+  `Match` (exactas + toleradas) con Kuhn determinista (`item_id` en orden;
+  vecinos con exactos primero como desempate y luego `op_id`; estable a
+  igualdad de cardinalidad). Garantizado: cardinalidad maxima; la
+  preferencia de exactos es solo desempate determinista, no garantia
+  formal (cuantificacion del revisor, 8192 instancias 2x2: 204 casos con
+  menos `EXACT` que otro maximo alternativo y 120 con un maximo alternativo
+  100% exacto; el corte 2 puede adoptar min-cost max-flow — coste 0 exacto /
+  1 tolerado — si quiere consistencia total). Los sobrantes se clasifican como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
+  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
+  en `CURRENCY_MISMATCH` desempata la cercania (monto/fecha) antes que el
+  `op_id`; califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o
+  `DATE_DIFF` (diferencia dentro de tolerancia) y el resto como excepcion
+  tipada (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia
+  con el detalle numerico —detalle `!= 0` por invariante—, `MISSING_INTERNAL`,
+  `MISSING_EXTERNAL`). `MatchResult` expone tuplas inmutables (acepta listas
+  y las convierte).
+  **Rendimiento/cota:** indice por monto (`bisect` sobre la ventana de
+  tolerancia + filtro de moneda/signo/fecha: `O(n log n + k)`, sin `O(n^2)`
+  con tolerancia 0/estrecha) y cota `MAX_CANDIDATE_PAIRS`
+  (`250_000` pares evaluables/grupo, `~500x500`, configurable) que falla con
+  `ValueError` claro ante refs repetidas patologicas con tolerancia amplia,
+  tanto en la pasada de matching (ventana + moneda/signo/fecha: solo cuenta
+  aristas `Match`) como en la pasada de excepciones (solo pares libres con
+  misma moneda, mismo signo y fecha dentro de tolerancia; mismo
+  `max_candidate_pairs` y mismo estilo de mensaje). Un 600x600 con todas las
+  monedas distintas cuenta 0 y no aborta (todo `CURRENCY_MISMATCH`). El
+  `ValueError` nunca expone la ref literal (conteos + hash SHA-256 8 hex);
+  el corte 2 debe mapearlo a corrida `FAILED` (o degradacion por grupo) y
+  poder configurar el default por entorno. Casos A/B del validador (exacto que compite con tolerados)
+  dan cardinalidad maxima (A: 2/2, B: 3/3) y el barrido 2x2 da 0 suboptimas.
+  El snippet literal del revisor (`|10800-10000|=800`) requiere `tol>=800`
+  para dar 2 matches; con `tol=100` da 1 match + 1 excepcion.
+  Politica de signo: montos != 0 (negativos = reversos, contracargos o ajustes);
+  un `Match` exige **mismo signo** y la tolerancia compara la diferencia
+  absoluta (signos opuestos nunca son `Match`). Convencion de signos:
+  `amount_diff_minor = clearing - internal` (ej. op `100_00` vs item `99_00`
+  -> `-100`), `date_diff_days = clearing_date - internal_date`. Tolerancias
+  enteras por parametro (default `0`/`0`; mapping con claves aceptadas
+  `amount_tolerance_minor`/`date_tolerance_days`, **ausentes -> `0`**, solo
+  desconocidas lanzan `TypeError`); el corte 2 las lee de `config.parameters`
+  (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`) y debe
+  **acotarlas** (validar tipos/rangos + techo) antes de cruzar; montos en
+  centimos sin `float`; moneda ISO-4217 ASCII (`re.fullmatch(r"[A-Z]{3}")`);
+  `external_ref` obligatorio y no vacio (el fallback para refs vacias es
+  decision del corte 2); sin importar modelos de `transactions`.
+  **Reversos/fachada (verificar en el corte 2):** el corte 2 debe verificar
+  como `transactions.service.list_reconciliation_candidates` representa los
+  reversos (monto negativo vs monto positivo + `type='REVERSAL'`) antes de
+  adaptar los dicts al dominio.
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

@@ -1000,7 +1000,10 @@ eventos (`outbox`/`inbox`).
   vecinos con exactos primero como desempate y luego `op_id`; estable a
   igualdad de cardinalidad). Garantizado: cardinalidad maxima; la
   preferencia de exactos es solo desempate determinista, no garantia
-  formal. Los sobrantes se clasifican como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
+  formal (cuantificacion del revisor, 8192 instancias 2x2: 204 casos con
+  menos `EXACT` que otro maximo alternativo y 120 con un maximo alternativo
+  100% exacto; el corte 2 puede adoptar min-cost max-flow — coste 0 exacto /
+  1 tolerado — si quiere consistencia total). Los sobrantes se clasifican como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
   (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
   en `CURRENCY_MISMATCH` desempata la cercania (monto/fecha) antes que el
   `op_id`; califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o
@@ -1011,12 +1014,17 @@ eventos (`outbox`/`inbox`).
   y las convierte).
   **Rendimiento/cota:** indice por monto (`bisect` sobre la ventana de
   tolerancia + filtro de moneda/signo/fecha: `O(n log n + k)`, sin `O(n^2)`
-  con tolerancia 0/estrecha) y cota `MAX_TOLERATED_CANDIDATE_PAIRS`
-  (`250_000` pares/grupo, `~500x500`, configurable) que falla con `ValueError`
-  claro ante refs repetidas patologicas con tolerancia amplia, tanto en la
-  pasada de matching (ventana) como en la pasada de excepciones (producto
-  `libres x libres` por grupo; mismo `max_candidate_pairs` y mismo estilo
-  de mensaje). Casos A/B del validador (exacto que compite con tolerados)
+  con tolerancia 0/estrecha) y cota `MAX_CANDIDATE_PAIRS`
+  (`250_000` pares evaluables/grupo, `~500x500`, configurable) que falla con
+  `ValueError` claro ante refs repetidas patologicas con tolerancia amplia,
+  tanto en la pasada de matching (ventana + moneda/signo/fecha: solo cuenta
+  aristas `Match`) como en la pasada de excepciones (solo pares libres con
+  misma moneda, mismo signo y fecha dentro de tolerancia; mismo
+  `max_candidate_pairs` y mismo estilo de mensaje). Un 600x600 con todas las
+  monedas distintas cuenta 0 y no aborta (todo `CURRENCY_MISMATCH`). El
+  `ValueError` nunca expone la ref literal (conteos + hash SHA-256 8 hex);
+  el corte 2 debe mapearlo a corrida `FAILED` (o degradacion por grupo) y
+  poder configurar el default por entorno. Casos A/B del validador (exacto que compite con tolerados)
   dan cardinalidad maxima (A: 2/2, B: 3/3) y el barrido 2x2 da 0 suboptimas.
   El snippet literal del revisor (`|10800-10000|=800`) requiere `tol>=800`
   para dar 2 matches; con `tol=100` da 1 match + 1 excepcion.

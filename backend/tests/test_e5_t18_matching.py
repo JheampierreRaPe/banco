@@ -32,6 +32,7 @@ from app.modules.reconciliation.domain.matching import (
     CURRENCY_MISMATCH,
     DATE_DIFF,
     EXACT,
+    MAX_CANDIDATE_PAIRS,
     MISSING_EXTERNAL,
     MISSING_INTERNAL,
     ClearingEntry,
@@ -1001,6 +1002,67 @@ def test_match_result_rejects_invalid_elements():
             matches=(),
             exceptions=(ReconException(reason=MISSING_EXTERNAL, internal_id="op-1"), "x"),
         )
+
+
+# --- Fix comentario PR #25 (2026-11-13): cota cuenta solo aristas Match ---
+
+
+def test_bound_counts_only_matchable_pairs_all_currencies_differ():
+    """600x600 misma ref, monedas distintas: no aborta (0 aristas Match).
+
+    Falla sin el fix (la ventana 600x600 = 360_000 > cota default cuenta
+    pares que nunca podrian ser Match y lanza ValueError); pasa con el fix
+    (cuenta 0 evaluables) y todo queda como CURRENCY_MISMATCH.
+    """
+
+    tol = Tolerances(amount_tolerance_minor=10**9, date_tolerance_days=10**4)
+    internal = [_op(op_id=f"op-{i:04d}", ref="REF-DIFF", currency="PEN") for i in range(600)]
+    clearing = [_item(item_id=f"it-{i:04d}", ref="REF-DIFF", currency="USD") for i in range(600)]
+    result = match_items(internal, clearing, tol)
+    assert result.matched_count == 0
+    assert result.exception_count == 600
+    assert {e.reason for e in result.exceptions} == {CURRENCY_MISMATCH}
+
+
+def test_bound_error_hides_external_ref_value():
+    """El ValueError de la cota no expone el valor de external_ref literal."""
+
+    import hashlib
+
+    tol = Tolerances(amount_tolerance_minor=10**9, date_tolerance_days=10**4)
+    ref = "REF-SENSIBLE-123"
+    internal = [_op(op_id=f"op-{i}", ref=ref) for i in range(5)]
+    clearing = [_item(item_id=f"it-{i}", ref=ref) for i in range(5)]
+    with pytest.raises(ValueError) as excinfo:
+        match_items(internal, clearing, tol, max_candidate_pairs=10)
+    message = str(excinfo.value)
+    assert "cota de seguridad" in message
+    assert ref not in message
+    assert "external_ref" not in message
+    assert hashlib.sha256(ref.encode()).hexdigest()[:8] in message
+
+
+def test_bound_error_hides_external_ref_value_in_exceptions_pass():
+    """La pasada de excepciones tampoco expone la ref en su ValueError."""
+
+    ref = "REF-SENSIBLE-456"
+    tol = Tolerances()
+    internal = [_op(op_id=f"op-{i:04d}", ref=ref, amount=100_00 + i) for i in range(500)]
+    clearing = [_item(item_id=f"it-{i:04d}", ref=ref, amount=900_00 + i) for i in range(500)]
+    with pytest.raises(ValueError) as excinfo:
+        match_items(internal, clearing, tol, max_candidate_pairs=10)
+    message = str(excinfo.value)
+    assert "cota de seguridad" in message
+    assert ref not in message
+    assert "external_ref" not in message
+
+
+def test_max_candidate_pairs_default_value():
+    """La constante renombrada rige el default (aplica a exactos y tolerados)."""
+
+    assert MAX_CANDIDATE_PAIRS == 250_000
+    assert matching.MAX_CANDIDATE_PAIRS is MAX_CANDIDATE_PAIRS
+    assert not hasattr(matching, "MAX_TOLERATED_CANDIDATE_PAIRS")
 
 
 # --- Fix M1 (2026-11-13): `_augment` iterativo sin `RecursionError` ---

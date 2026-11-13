@@ -22,12 +22,17 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   pares). No garantizado formalmente: preferencia de exactos; a igual
   cardinalidad los exactos van primero en el orden de vecinos, lo que es
   un desempate determinista (en la practica conserva los exactos cuando
-  hay empate) pero no una prueba de maximalidad lexicografica. Los
-  sobrantes se clasifican como excepcion. Asi dos tolerados cruzados
-  (``it-a``/``op-2`` + ``it-b``/``op-1``) ganan sobre un unico par mejor
-  puntuado (``it-a``/``op-1``) que dejaria un falso positivo, y un exacto
-  que compite con tolerados no se pierde cuando existe un maximo que lo
-  incluye (casos A/B del validador).
+  hay empate) pero no una prueba de maximalidad lexicografica: en un
+  barrido exhaustivo del revisor (8192 instancias 2x2) hubo 204 casos con
+  menos ``EXACT`` que otro maximo alternativo y 120 casos con un maximo
+  alternativo 100% exacto. Los sobrantes se clasifican como excepcion.
+  Asi dos tolerados cruzados (``it-a``/``op-2`` + ``it-b``/``op-1``) ganan
+  sobre un unico par mejor puntuado (``it-a``/``op-1``) que dejaria un
+  falso positivo, y un exacto que compite con tolerados no se pierde
+  cuando existe un maximo que lo incluye (casos A/B del validador). Si el
+  corte 2 quiere consistencia total de exactos puede adoptar min-cost
+  max-flow (coste 0 exacto / 1 tolerado) manteniendo la cardinalidad
+  maxima; el corte 1 no lo implementa (Kuhn + desempate alcanza).
 - Determinismo: a igualdad de cardinalidad, el resultado es estable porque
   items y operaciones se ordenan por ID y los vecinos se exploran en orden
   fijo (exactos primero, luego ``op_id``; Kuhn en orden fijo); el resultado
@@ -38,16 +43,25 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   generar todos los pares cuando la tolerancia es 0/estrecha (``O(n log n +
   k)`` en vez de ``O(n^2)``). Con tolerancia enorme la ventana cubre todo el
   grupo y rige la cota de seguridad.
-- Cota de seguridad: ``MAX_TOLERATED_CANDIDATE_PAIRS`` (default ``250_000``
-  pares candidatos por grupo de ``external_ref``, aprox ``500x500``) evita que
-  un grupo patologico de refs repetidas agote memoria/tiempo: superarla
-  lanza ``ValueError`` claro en vez de tardar minutos, tanto en la pasada de
-  matching (ventana de tolerancia) como en la pasada de excepciones
-  (producto ``len(items_libres) * len(ops_libres)`` por grupo; mismo
-  ``max_candidate_pairs`` y mismo estilo de mensaje). Motivo: las refs
-  deben ser casi unicas (decision corte 2: referencia unica por operacion);
-  un grupo gigante con tolerancia amplia o con miles de sobrantes es un error
-  de datos, no un cruce normal. Configurable via ``max_candidate_pairs`` de :func:`match_items`.
+- Cota de seguridad: ``MAX_CANDIDATE_PAIRS`` (default ``250_000`` pares
+  candidatos evaluables por grupo de ``external_ref``, aprox ``500x500``)
+  evita que un grupo patologico de refs repetidas agote memoria/tiempo:
+  superarla lanza ``ValueError`` claro en vez de tardar minutos. La cota
+  cuenta **solo pares que podrian ser ``Match``**: en la pasada de
+  matching, pares en la ventana de monto que ademas pasan moneda/signo y
+  quedan dentro de la tolerancia de fecha (equivalente a aristas ``Match``;
+  un grupo 501x501 con todas las monedas distintas cuenta 0 y no aborta);
+  en la pasada de excepciones, pares libres con misma moneda, mismo signo
+  y fecha dentro de tolerancia (sin filtrar por distancia de monto, que es
+  lo que el ``min()`` evalua; coherente con el matching y documentado
+  aqui). El ``ValueError`` nunca incluye el valor de ``external_ref``
+  (solo conteos + hash corto SHA-256 de 8 hex para traza) y el corte 2
+  debe mapearlo a corrida ``FAILED`` (o degradacion por grupo); el default
+  debe poder configurarse por entorno (hoy es una constante del dominio).
+  Motivo: las refs deben ser casi unicas (decision corte 2: referencia
+  unica por operacion); un grupo gigante con tolerancia amplia o con miles
+  de sobrantes es un error de datos, no un cruce normal. Configurable via
+  ``max_candidate_pairs`` de :func:`match_items`.
 - Politica de signo: los montos son enteros **distintos de cero** (positivos
   para cargos/abonos, negativos para reversos/contracargos/ajustes). Un
   ``Match`` exige **mismo signo** en ambos lados; la tolerancia compara la
@@ -97,6 +111,7 @@ acotado de tolerancias desde ``config.parameters`` son decision del corte 2.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -124,15 +139,25 @@ EXCEPTION_REASONS = (
 #: Claves aceptadas al recibir tolerancias como mapping.
 TOLERANCE_KEYS = frozenset({"amount_tolerance_minor", "date_tolerance_days"})
 
-#: Cota de seguridad: maximo de pares candidatos tolerados evaluados por
-#: grupo de ``external_ref`` antes de fallar con ``ValueError``. Con
-#: ``250_000`` un cruce normal (refs casi unicas, o 300x300 = 90_000 pares
-#: en el peor caso) pasa holgado, pero un grupo patologico (p. ej.
-#: ``1000x1000`` con tolerancia enorme = 1M pares) falla rapido en vez de
-#: agotar memoria/tiempo. Las refs deben ser casi unicas (el corte 2
-#: decidir entre referencia unica por operacion o matching global); un grupo
-#: gigante con tolerancia amplia es un error de datos.
-MAX_TOLERATED_CANDIDATE_PAIRS = 250_000
+#: Cota de seguridad: maximo de pares candidatos evaluables por grupo de
+#: ``external_ref`` antes de fallar con ``ValueError``. Con ``250_000`` un
+#: cruce normal (refs casi unicas, o 300x300 = 90_000 pares en el peor caso)
+#: pasa holgado, pero un grupo patologico (p. ej. ``1000x1000`` con tolerancia
+#: enorme = 1M pares) falla rapido en vez de agotar memoria/tiempo. Las refs
+#: deben ser casi unicas (el corte 2 decidir entre referencia unica por
+#: operacion o matching global); un grupo gigante con tolerancia amplia es un
+#: error de datos.
+MAX_CANDIDATE_PAIRS = 250_000
+
+
+def _ref_hash(ref: str) -> str:
+    """Hash corto (SHA-256, 8 hex) de un ``external_ref`` para trazar sin exponerlo.
+
+    Los ``ValueError`` de la cota nunca incluyen el valor de la referencia
+    (podria ser sensible si se propaga a logs); solo conteos + este hash.
+    """
+
+    return hashlib.sha256(ref.encode("utf-8")).hexdigest()[:8]
 
 
 def _require_id(value: object, *, name: str) -> str:
@@ -399,7 +424,7 @@ def match_items(
     clearing: Sequence[ClearingEntry],
     tolerances: Tolerances | Mapping[str, object] | None = None,
     *,
-    max_candidate_pairs: int = MAX_TOLERATED_CANDIDATE_PAIRS,
+    max_candidate_pairs: int = MAX_CANDIDATE_PAIRS,
 ) -> MatchResult:
     """Cruza clearing contra operaciones internas (puro y determinista).
 
@@ -415,11 +440,15 @@ def match_items(
 
     La fase de matching usa un indice por monto (``bisect`` sobre la ventana
     de tolerancia) para no generar ``O(n^2)`` pares con tolerancia 0/estrecha;
-    si los pares candidatos de un grupo superan ``max_candidate_pairs`` se
-    lanza ``ValueError`` (cota de seguridad para refs repetidas
-    patologicas). La pasada de excepciones aplica la misma cota por grupo
-    (``len(items_libres) * len(ops_libres)``) antes de buscar el mejor
-    candidato, con el mismo estilo de ``ValueError``.
+    solo los pares que pasan moneda/signo/fecha (aristas ``Match``) cuentan
+    para ``max_candidate_pairs``; si los superan se lanza ``ValueError`` (cota
+    de seguridad para refs repetidas patologicas; el mensaje lleva conteos +
+    hash corto de la ref, nunca su valor). La pasada de excepciones aplica la
+    misma cota por grupo contando solo pares libres evaluables (misma moneda,
+    mismo signo, fecha dentro de tolerancia) antes de buscar el mejor
+    candidato, con el mismo estilo de ``ValueError`` sin la ref literal. El
+    corte 2 debe mapear ese ``ValueError`` a corrida ``FAILED`` (o
+    degradacion por grupo) y poder configurar el default por entorno.
     """
     tol = _coerce_tolerances(tolerances)
     if isinstance(max_candidate_pairs, bool) or not isinstance(max_candidate_pairs, int):
@@ -474,17 +503,34 @@ def match_items(
             max_candidate_pairs,
         )
 
-    # Cota de la pasada de excepciones: evita el producto cartesiano por grupo.
+    # Cota de la pasada de excepciones: cuenta solo pares libres evaluables
+    # (misma moneda, mismo signo, fecha dentro de tolerancia; la distancia de
+    # monto la evalua el min() sin filtrar). Evita el cartesiano por grupo
+    # pero no aborta cuando ningun par podria ser Match (p. ej. monedas
+    # distintas -> todo CURRENCY_MISMATCH). Sin la ref literal en el mensaje.
     for ref in sorted(set(ops_by_ref) | set(items_by_ref)):
-        n_free_ops = sum(1 for op in ops_by_ref.get(ref, []) if op.op_id not in used_ops)
-        n_free_items = sum(1 for e in items_by_ref.get(ref, []) if e.item_id not in matched_items)
-        if n_free_ops * n_free_items > max_candidate_pairs:
-            raise ValueError(
-                f"grupo de external_ref {ref!r} supera la cota de seguridad "
-                f"en excepciones ({n_free_ops * n_free_items} pares "
-                f"libres > {max_candidate_pairs}): refs repetidas patologicas; "
-                "reduzca la tolerancia o exija referencia unica por operacion"
-            )
+        free_ops = [op for op in ops_by_ref.get(ref, []) if op.op_id not in used_ops]
+        free_items = [e for e in items_by_ref.get(ref, []) if e.item_id not in matched_items]
+        if not free_ops or not free_items:
+            continue
+        evaluable = 0
+        for op in free_ops:
+            for e in free_items:
+                if op.currency != e.currency:
+                    continue
+                if (op.amount_minor > 0) != (e.amount_minor > 0):
+                    continue
+                if abs((e.value_date - op.value_date).days) > tol.date_tolerance_days:
+                    continue
+                evaluable += 1
+                if evaluable > max_candidate_pairs:
+                    raise ValueError(
+                        "grupo de referencia "
+                        f"{_ref_hash(ref)} supera la cota de seguridad en excepciones "
+                        f"({evaluable} pares evaluables > {max_candidate_pairs}): refs "
+                        "repetidas patologicas; reduzca la tolerancia o exija "
+                        "referencia unica por operacion"
+                    )
 
     # Pasada final (excepciones): sobrantes; el mejor candidato libre
     # clasifica la excepcion con cercania (moneda > fuera de tolerancia).
@@ -535,8 +581,12 @@ def _match_group_max_cardinality(
     como ``Match``, usando la ventana de monto (``bisect``) + filtros de
     moneda/signo/fecha; los vecinos se ordenan con exactos primero y luego
     ``op_id`` (desempate determinista, no garantia formal de maximalidad
-    lexicografica). Si los pares candidatos (tamano de ventana) superan
-    ``max_candidate_pairs`` lanza ``ValueError``. Despues corre aumentos de
+    lexicografica: ver cuantificacion 204/8192 y 120/8192 en el modulo; el
+    corte 2 puede adoptar min-cost max-flow si quiere consistencia total).
+    Solo los pares que pasan moneda/signo/fecha (aristas ``Match``) cuentan
+    para ``max_candidate_pairs``: un grupo con todas las monedas distintas
+    cuenta 0 y no aborta. Si se supera lanza ``ValueError`` sin la ref
+    literal (conteos + hash corto). Despues corre aumentos de
     camino en orden fijo (items por ``item_id``), lo que garantiza
     cardinalidad maxima sobre el grafo de aristas ``Match``. El aumento es
     Kuhn DFS iterativo con pila explicita (misma semantica que el recursivo)
@@ -565,14 +615,15 @@ def _match_group_max_cardinality(
             outcome = _classify(op, entry, tol)
             if isinstance(outcome, Match):
                 neighbours.append((0 if outcome.qualifier == EXACT else 1, op.op_id))
-        candidate_count += right - left
-        if candidate_count > max_candidate_pairs:
-            raise ValueError(
-                f"grupo de external_ref {entry.external_ref!r} supera la cota de "
-                f"seguridad ({candidate_count} pares candidatos > "
-                f"{max_candidate_pairs}): refs repetidas con tolerancia amplia; "
-                "reduzca la tolerancia o exija referencia unica por operacion"
-            )
+                candidate_count += 1
+                if candidate_count > max_candidate_pairs:
+                    raise ValueError(
+                        "grupo de referencia "
+                        f"{_ref_hash(entry.external_ref)} supera la cota de seguridad "
+                        f"({candidate_count} pares evaluables > "
+                        f"{max_candidate_pairs}): refs repetidas con tolerancia amplia; "
+                        "reduzca la tolerancia o exija referencia unica por operacion"
+                    )
         neighbours.sort()
         adjacency[entry.item_id] = [op_id for _, op_id in neighbours]
 

@@ -994,15 +994,27 @@ eventos (`outbox`/`inbox`).
 - **Motor de matching con tolerancias (E5-T18 corte 1, HU19):** dominio puro
   `reconciliation/domain/matching.py` (`match_items(internal, clearing,
   tolerances) -> MatchResult`), determinista y sin I/O: empareja por
-  `external_ref` (uno a uno, sin reutilizar) en **dos pasadas** (la pasada 1
-  solo resuelve `Match` y consume la operacion; la pasada 2 clasifica
-  excepciones), mejor candidato con prioridad `EXACT` > tolerado
-  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
-  califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o `DATE_DIFF`
-  (diferencia dentro de tolerancia) y el resto como excepcion tipada
-  (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia con el
-  detalle numerico, `MISSING_INTERNAL`, `MISSING_EXTERNAL`). Politica de signo:
-  montos enteros distintos de cero (negativos = reversos/contracargos/ajustes);
+  `external_ref` (uno a uno, sin reutilizar) en **dos pasadas**: la pasada 1
+  resuelve solo los pares que clasifican como `Match` (exacto o tolerado) y
+  consume la operacion; la pasada 2 clasifica los sobrantes como excepcion.
+  Mejor candidato con prioridad `EXACT` > tolerado (`AMOUNT_DIFF`/`DATE_DIFF`)
+  > `CURRENCY_MISMATCH` > fuera de tolerancia; califica el par conciliado
+  como `EXACT`, `AMOUNT_DIFF` o `DATE_DIFF` (diferencia dentro de tolerancia)
+  y el resto como excepcion tipada (`CURRENCY_MISMATCH`,
+  `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia con el detalle numerico,
+  `MISSING_INTERNAL`, `MISSING_EXTERNAL`).
+  **Riesgo residual (corte 2):** la pasada 1 es greedy por puntaje
+  (`matching.py:383-394`, `_pair_key` en `:426-447`) y **no maximiza** el
+  numero de emparejamientos entre pares tolerados. Con `external_ref`
+  distintas, el orden por puntaje puede consumir una operacion que otro
+  par tolerado (o exacto) necesitaba, perdiendo un match tolerado y
+  reportando una **excepcion falsa**. Decision pendiente para el corte 2:
+  asignacion por puntaje global que maximice la cardinalidad
+  (matching bipartito) o exigir **referencia unica por operacion**. Mientras
+  no se decida, el corte 2 debe cubrir este caso con pruebas y documentar
+  la excepcion como posible falso positivo (no como regla
+  definitiva).
+  Politica de signo: montos != 0 (negativos = reversos, contracargos o ajustes);
   un `Match` exige **mismo signo** y la tolerancia compara la diferencia
   absoluta (signos opuestos nunca son `Match`). Convencion de signos:
   `amount_diff_minor = clearing - internal` (ej. op `100_00` vs item `99_00`

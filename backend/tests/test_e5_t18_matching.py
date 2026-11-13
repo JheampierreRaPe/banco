@@ -6,7 +6,12 @@ Cubre (`docs/tasks/E5-T18.md#pruebas-requeridas`, parte dominio):
 - `AMOUNT_DIFF`/`DATE_DIFF` dentro de tolerancia (incluye borde `diff == tol`);
   fuera de tolerancia (incluye tolerancia 0) -> excepcion tipada con detalle.
 - Huerfanos: `MISSING_INTERNAL` / `MISSING_EXTERNAL`.
-- `CURRENCY_MISMATCH` (manda sobre monto/fecha).
+- `CURRENCY_MISMATCH` manda sobre monto/fecha fuera de tolerancia, nunca sobre un `Match`.
+- Dos pasadas: un `Match` (exacto/tolerado) gana aunque un item anterior solo diera excepcion.
+- Signo: montos distintos de cero (negativos = reversos/ajustes); `Match` exige mismo
+  signo; `amount_diff_minor = clearing - internal`, `date_diff_days = clearing - internal`.
+- Tolerancias mapping con claves estrictas (`TypeError` ante typo); moneda ISO-4217 ASCII.
+- Invariantes de `Match`/`ReconException` por motivo; guardas de IDs/refs/moneda.
 - Sin reutilizacion: un item/operacion se usa como maximo una vez.
 - Determinismo: el orden de entrada no cambia el resultado.
 - Validacion: tolerancias negativas, montos no enteros, moneda/fecha
@@ -240,8 +245,9 @@ def test_clearing_item_used_at_most_once():
     )
     assert result.matched_count == 1
     assert result.exception_count == 1
+    assert result.matches[0].clearing_id == "it-1"
     assert result.exceptions[0].reason == MISSING_INTERNAL
-    assert result.exceptions[0].clearing_id in {"it-1", "it-2"}
+    assert result.exceptions[0].clearing_id == "it-2"
 
 
 def test_internal_op_used_at_most_once():
@@ -251,8 +257,9 @@ def test_internal_op_used_at_most_once():
     )
     assert result.matched_count == 1
     assert result.exception_count == 1
+    assert result.matches[0].internal_id == "op-1"
     assert result.exceptions[0].reason == MISSING_EXTERNAL
-    assert result.exceptions[0].internal_id in {"op-1", "op-2"}
+    assert result.exceptions[0].internal_id == "op-2"
 
 
 def test_best_candidate_wins_same_ref():
@@ -270,13 +277,17 @@ def test_best_candidate_wins_same_ref():
 
 
 def test_deterministic_under_input_permutation():
-    internal = [_op(f"op-{i}", ref=f"REF-{i % 3}") for i in range(6)]
-    clearing = [_item(f"it-{i}", ref=f"REF-{i % 3}") for i in range(6)]
+    import itertools
+
+    internal = [_op(f"op-{i}", ref="REF-1", amount=100_00 + i) for i in range(3)]
+    clearing = [_item(f"it-{i}", ref="REF-1", amount=100_00 + i) for i in range(3)]
     tol = Tolerances(amount_tolerance_minor=5, date_tolerance_days=1)
-    first = match_items(internal, clearing, tol)
-    second = match_items(list(reversed(internal)), list(reversed(clearing)), tol)
-    assert first == second
-    assert match_items(internal, clearing, tol) == first
+    expected = match_items(internal, clearing, tol)
+    for perm_in, perm_out in itertools.product(
+        itertools.permutations(internal), itertools.permutations(clearing)
+    ):
+        assert match_items(list(perm_in), list(perm_out), tol) == expected
+    assert match_items(internal, clearing, tol) == expected
 
 
 def test_empty_inputs():
@@ -370,3 +381,307 @@ def test_no_transactions_import_in_domain():
     assert "float(" not in source
     assert "logging" not in source
     assert matching.__name__.endswith("matching")
+
+
+# --- Regresion PR #25: la pasada 1 (Match) gana aunque el item anterior solo de excepcion ---
+
+
+def test_greedy_exact_wins_over_out_of_tolerance_item_first():
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
+    result = match_items(
+        [_op(op_id="op-1", ref="REF-9", amount=100_00)],
+        [
+            _item(item_id="it-a", ref="REF-9", amount=200_00),
+            _item(item_id="it-b", ref="REF-9", amount=100_00),
+        ],
+        tol,
+    )
+    assert result.matched_count == 1
+    assert (result.matches[0].internal_id, result.matches[0].clearing_id) == ("op-1", "it-b")
+    assert result.matches[0].qualifier == EXACT
+    assert result.exception_count == 1
+    assert result.exceptions[0].reason == MISSING_INTERNAL
+    assert result.exceptions[0].clearing_id == "it-a"
+
+
+def test_greedy_exact_wins_over_currency_mismatch_item_first():
+    result = match_items(
+        [_op(op_id="op-1", ref="REF-9", amount=100_00, currency="PEN")],
+        [
+            _item(item_id="it-a", ref="REF-9", amount=100_00, currency="USD"),
+            _item(item_id="it-b", ref="REF-9", amount=100_00, currency="PEN"),
+        ],
+    )
+    assert result.matched_count == 1
+    assert (result.matches[0].internal_id, result.matches[0].clearing_id) == ("op-1", "it-b")
+    assert result.matches[0].qualifier == EXACT
+    assert result.exception_count == 1
+    assert result.exceptions[0].reason == MISSING_INTERNAL
+    assert result.exceptions[0].clearing_id == "it-a"
+
+
+def test_tolerated_wins_over_out_of_tolerance_item_first():
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
+    result = match_items(
+        [_op(op_id="op-1", ref="REF-9", amount=100_00)],
+        [
+            _item(item_id="it-a", ref="REF-9", amount=500_00),
+            _item(item_id="it-b", ref="REF-9", amount=100_05),
+        ],
+        tol,
+    )
+    assert result.matched_count == 1
+    assert (result.matches[0].internal_id, result.matches[0].clearing_id) == ("op-1", "it-b")
+    assert result.matches[0].qualifier == AMOUNT_DIFF
+    assert result.exceptions[0].reason == MISSING_INTERNAL
+    assert result.exceptions[0].clearing_id == "it-a"
+
+
+# --- Signo: montos negativos y politica de mismo signo ---
+
+
+def test_negative_amounts_match_exact():
+    result = match_items(
+        [_op(op_id="op-neg", amount=-100_00)],
+        [_item(item_id="it-neg", amount=-100_00)],
+    )
+    assert result.matched_count == 1
+    assert result.matches[0].qualifier == EXACT
+
+
+def test_negative_amounts_within_tolerance_match():
+    tol = Tolerances(amount_tolerance_minor=100, date_tolerance_days=0)
+    result = match_items(
+        [_op(op_id="op-neg", amount=-100_00)],
+        [_item(item_id="it-neg", amount=-99_50)],
+        tol,
+    )
+    assert result.matched_count == 1
+    assert result.matches[0].qualifier == AMOUNT_DIFF
+
+
+def test_opposite_signs_never_match_even_with_huge_tolerance():
+    tol = Tolerances(amount_tolerance_minor=10**9, date_tolerance_days=10**4)
+    result = match_items(
+        [_op(op_id="op-1", amount=100_00)],
+        [_item(item_id="it-1", amount=-100_00)],
+        tol,
+    )
+    assert result.matched_count == 0
+    assert result.exception_count == 1
+    exc = result.exceptions[0]
+    assert exc.reason == AMOUNT_DIFF
+    assert exc.amount_diff_minor == -200_00
+
+
+def test_zero_amount_rejected():
+    with pytest.raises(ValueError, match="distinto de cero"):
+        _op(amount=0)
+    with pytest.raises(ValueError, match="distinto de cero"):
+        _item(amount=0)
+
+
+# --- Prioridad moneda vs tolerancia ---
+
+
+def test_currency_mismatch_beats_out_of_tolerance_amount():
+    result = match_items(
+        [
+            _op(op_id="op-usd", ref="REF-9", amount=500_00, currency="USD"),
+            _op(op_id="op-pen", ref="REF-9", amount=100_00, currency="PEN"),
+        ],
+        [_item(item_id="it-1", ref="REF-9", amount=100_00, currency="USD")],
+        Tolerances(),
+    )
+    assert result.matched_count == 0
+    assert result.exception_count == 2
+    by_internal = {e.internal_id: e for e in result.exceptions}
+    assert by_internal["op-pen"].reason == CURRENCY_MISMATCH
+    assert by_internal["op-pen"].clearing_id == "it-1"
+    assert by_internal["op-usd"].reason == MISSING_EXTERNAL
+
+
+def test_diff_sign_convention_clearing_minus_internal():
+    result = match_items([_op(amount=100_00)], [_item(amount=99_00)], Tolerances())
+    assert result.matched_count == 0
+    (exc,) = result.exceptions
+    assert exc.reason == AMOUNT_DIFF
+    assert exc.amount_diff_minor == -100
+
+
+# --- Tolerancias mapping: typo y valores ---
+
+
+def test_mapping_with_unknown_key_rejected():
+    with pytest.raises(TypeError, match="desconocidas"):
+        match_items([_op()], [_item()], {"amount_toleranse_minor": 50})
+    with pytest.raises(TypeError, match="desconocidas"):
+        match_items(
+            [_op()],
+            [_item()],
+            {"amount_tolerance_minor": 50, "date_tolerance_days": 0, "typo": 1},
+        )
+
+
+def test_mapping_with_invalid_values_rejected():
+    with pytest.raises(ValueError):
+        match_items([_op()], [_item()], {"amount_tolerance_minor": -1})
+    with pytest.raises(TypeError):
+        match_items([_op()], [_item()], {"amount_tolerance_minor": 1.5})
+    with pytest.raises(TypeError):
+        match_items([_op()], [_item()], {"date_tolerance_days": True})
+
+
+# --- Moneda ISO-4217 ASCII ---
+
+
+@pytest.mark.parametrize("bad", ["ПЕН", "ÁBC", "peN", "PEN1", "PE", "P EN", "P-EN"])
+def test_non_ascii_or_malformed_currency_rejected(bad):
+    with pytest.raises(ValueError):
+        _op(currency=bad)
+    with pytest.raises(ValueError):
+        _item(currency=bad)
+
+
+def test_currency_non_text_rejected():
+    with pytest.raises(TypeError):
+        _op(currency=123)
+    with pytest.raises(TypeError):
+        _item(currency=None)
+
+
+# --- Guardas: _require_id / _require_ref / Match / ReconException ---
+
+
+@pytest.mark.parametrize("bad", [123, None, ["op-1"]])
+def test_require_id_non_text_rejected(bad):
+    from app.modules.reconciliation.domain.matching import _require_id
+
+    with pytest.raises(TypeError):
+        _require_id(bad, name="op_id")
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_require_id_empty_rejected(bad):
+    from app.modules.reconciliation.domain.matching import _require_id
+
+    with pytest.raises(ValueError):
+        _require_id(bad, name="op_id")
+
+
+@pytest.mark.parametrize("bad", [123, None])
+def test_require_ref_non_text_rejected(bad):
+    from app.modules.reconciliation.domain.matching import _require_ref
+
+    with pytest.raises(TypeError):
+        _require_ref(bad)
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_require_ref_empty_rejected(bad):
+    from app.modules.reconciliation.domain.matching import _require_ref
+
+    with pytest.raises(ValueError):
+        _require_ref(bad)
+
+
+def test_match_ids_validated():
+    from app.modules.reconciliation.domain.matching import Match
+
+    with pytest.raises(TypeError):
+        Match(internal_id=123, clearing_id="it-1")
+    with pytest.raises(ValueError):
+        Match(internal_id="", clearing_id="it-1")
+    with pytest.raises(ValueError):
+        Match(internal_id="op-1", clearing_id="   ")
+    with pytest.raises(ValueError, match="qualifier invalido"):
+        Match(internal_id="op-1", clearing_id="it-1", qualifier="NOPE")
+
+
+def test_recon_exception_invariants():
+    from app.modules.reconciliation.domain.matching import Match, ReconException
+
+    assert Match(internal_id="op-1", clearing_id="it-1").qualifier == EXACT
+    with pytest.raises(ValueError, match="reason invalido"):
+        ReconException(reason="NOPE", internal_id="op-1")
+    with pytest.raises(ValueError, match="al menos un lado"):
+        ReconException(reason=AMOUNT_DIFF, amount_diff_minor=1)
+    with pytest.raises(TypeError):
+        ReconException(reason=MISSING_INTERNAL, clearing_id=123)
+    with pytest.raises(ValueError):
+        ReconException(reason=MISSING_INTERNAL, clearing_id="   ")
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        {"reason": MISSING_INTERNAL, "internal_id": "op-1", "clearing_id": "it-1"},
+        {"reason": MISSING_INTERNAL, "clearing_id": None},
+        {"reason": MISSING_INTERNAL},
+        {"reason": MISSING_EXTERNAL, "internal_id": "op-1", "clearing_id": "it-1"},
+        {"reason": MISSING_EXTERNAL, "internal_id": None},
+        {"reason": MISSING_EXTERNAL},
+        {"reason": AMOUNT_DIFF, "internal_id": "op-1", "clearing_id": "it-1"},
+        {
+            "reason": AMOUNT_DIFF,
+            "internal_id": "op-1",
+            "clearing_id": "it-1",
+            "amount_diff_minor": True,
+        },
+        {
+            "reason": DATE_DIFF,
+            "internal_id": "op-1",
+            "clearing_id": "it-1",
+            "date_diff_days": None,
+        },
+        {"reason": CURRENCY_MISMATCH, "internal_id": "op-1", "clearing_id": None},
+        {"reason": CURRENCY_MISMATCH, "internal_id": None, "clearing_id": "it-1"},
+    ],
+)
+def test_recon_exception_reason_shape_rejected(exc):
+    from app.modules.reconciliation.domain.matching import ReconException
+
+    with pytest.raises(ValueError):
+        ReconException(**exc)
+
+
+def test_recon_exception_valid_shapes_accepted():
+    from app.modules.reconciliation.domain.matching import ReconException
+
+    assert ReconException(reason=MISSING_INTERNAL, clearing_id="it-1").internal_id is None
+    assert ReconException(reason=MISSING_EXTERNAL, internal_id="op-1").clearing_id is None
+    assert (
+        ReconException(
+            reason=AMOUNT_DIFF, internal_id="op-1", clearing_id="it-1", amount_diff_minor=-100
+        ).amount_diff_minor
+        == -100
+    )
+    assert (
+        ReconException(
+            reason=DATE_DIFF, internal_id="op-1", clearing_id="it-1", date_diff_days=3
+        ).date_diff_days
+        == 3
+    )
+    assert (
+        ReconException(reason=CURRENCY_MISMATCH, internal_id="op-1", clearing_id="it-1").reason
+        == CURRENCY_MISMATCH
+    )
+
+
+def test_exceptions_sorted_by_reason_then_ids():
+    result = match_items(
+        [_op(op_id="op-a", ref="REF-A"), _op(op_id="op-b", ref="REF-B", amount=100_00)],
+        [
+            _item(item_id="it-z", ref="REF-Z"),
+            _item(item_id="it-b", ref="REF-B", amount=200_00),
+        ],
+        Tolerances(),
+    )
+    assert result.matched_count == 0
+    assert result.exception_count == 3
+    keys = [(e.reason, e.clearing_id or "", e.internal_id or "") for e in result.exceptions]
+    assert keys == sorted(keys)
+    reasons = [e.reason for e in result.exceptions]
+    assert reasons.count(MISSING_EXTERNAL) == 1
+    assert reasons.count(MISSING_INTERNAL) == 1
+    assert reasons.count(AMOUNT_DIFF) == 1

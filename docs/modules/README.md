@@ -994,15 +994,27 @@ eventos (`outbox`/`inbox`).
 - **Motor de matching con tolerancias (E5-T18 corte 1, HU19):** dominio puro
   `reconciliation/domain/matching.py` (`match_items(internal, clearing,
   tolerances) -> MatchResult`), determinista y sin I/O: empareja por
-  `external_ref` (uno a uno, sin reutilizar; mejor candidato por
-  moneda -> monto -> fecha), califica el par conciliado como `EXACT`,
-  `AMOUNT_DIFF` o `DATE_DIFF` (diferencia dentro de tolerancia) y el resto
-  como excepcion tipada (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera
-  de tolerancia con el detalle numerico, `MISSING_INTERNAL`,
-  `MISSING_EXTERNAL`). Tolerancias enteras por parametro (default `0`/`0`;
-  el corte 2 las lee de `config.parameters`
-  `reconciliation.amount_tolerance_minor`/`date_tolerance_days`); montos en
-  centimos sin `float`; sin importar modelos de `transactions`.
+  `external_ref` (uno a uno, sin reutilizar) en **dos pasadas** (la pasada 1
+  solo resuelve `Match` y consume la operacion; la pasada 2 clasifica
+  excepciones), mejor candidato con prioridad `EXACT` > tolerado
+  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
+  califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o `DATE_DIFF`
+  (diferencia dentro de tolerancia) y el resto como excepcion tipada
+  (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia con el
+  detalle numerico, `MISSING_INTERNAL`, `MISSING_EXTERNAL`). Politica de signo:
+  montos enteros distintos de cero (negativos = reversos/contracargos/ajustes);
+  un `Match` exige **mismo signo** y la tolerancia compara la diferencia
+  absoluta (signos opuestos nunca son `Match`). Convencion de signos:
+  `amount_diff_minor = clearing - internal` (ej. op `100_00` vs item `99_00`
+  -> `-100`), `date_diff_days = clearing_date - internal_date`. Tolerancias
+  enteras por parametro (default `0`/`0`; mapping con claves estrictas:
+  `amount_tolerance_minor`/`date_tolerance_days`, typo -> `TypeError`); el
+  corte 2 las lee de `config.parameters`
+  (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`) y debe
+  **acotarlas** (validar tipos/rangos + techo) antes de cruzar; montos en
+  centimos sin `float`; moneda ISO-4217 ASCII (`re.fullmatch(r"[A-Z]{3}")`);
+  `external_ref` obligatorio y no vacio (el fallback para refs vacias es
+  decision del corte 2); sin importar modelos de `transactions`.
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

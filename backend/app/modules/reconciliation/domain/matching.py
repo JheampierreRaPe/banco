@@ -9,9 +9,26 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
 
 - La referencia externa manda: solo se emparejan entradas que comparten
   ``external_ref``. Cada item/operacion se usa **como maximo una vez**.
-- Moneda distinta -> ``CURRENCY_MISMATCH`` (nunca se convierte; el FX es HU25).
-- Monto distinto con ``abs(diff) <= amount_tolerance_minor`` -> ``AMOUNT_DIFF``.
-- Fecha distinta con ``abs(diff) <= date_tolerance_days`` -> ``DATE_DIFF``.
+- Prioridad de emparejo (de mejor a peor): ``EXACT`` (0) > tolerado
+  ``AMOUNT_DIFF``/``DATE_DIFF`` (1) > ``CURRENCY_MISMATCH`` (2) > fuera de
+  tolerancia (3). La moneda distinta manda sobre un monto/fecha fuera de
+  tolerancia, pero nunca sobre un ``Match`` (exacto o tolerado).
+- El cruce corre en **dos pasadas**: la pasada 1 solo resuelve los pares que
+  clasifican como ``Match`` (exacto o tolerado) y consume alli la operacion;
+  la pasada 2 empareja los sobrantes y los clasifica como excepcion. Asi un
+  ``EXACT`` gana aunque un item lexicograficamente anterior solo diera
+  excepcion con la misma operacion.
+- Politica de signo: los montos son enteros **distintos de cero** (positivos
+  para cargos/abonos, negativos para reversos/contracargos/ajustes). Un
+  ``Match`` exige **mismo signo** en ambos lados; la tolerancia compara la
+  **diferencia absoluta**; signos opuestos nunca son ``Match`` (se clasifican
+  como ``AMOUNT_DIFF``/excepcion).
+- Convencion de signos de los detalles: ``amount_diff_minor = clearing -
+  internal`` y ``date_diff_days = clearing_date - internal_date``. Ejemplo:
+  operacion ``100_00`` vs item ``99_00`` -> ``amount_diff_minor = -100``.
+- Monto distinto con ``abs(diff) <= amount_tolerance_minor`` (y mismo signo)
+  -> ``AMOUNT_DIFF``; fecha distinta con ``abs(diff) <= date_tolerance_days``
+  -> ``DATE_DIFF``.
 - Monto/fecha fuera de tolerancia -> ``EXCEPTION`` con el motivo de la
   primera dimension que falla (monto antes que fecha) y el detalle numerico.
 - Item de clearing sin operacion interna -> ``MISSING_INTERNAL``.
@@ -20,22 +37,31 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
 Tolerancias (``docs/16#2`` regla 6): se reciben como parametro
 (:class:`Tolerances`, default ``0``/``0``); nunca cableadas aqui. El corte 2
 las leera de ``config.parameters`` (``reconciliation.amount_tolerance_minor``,
-``reconciliation.date_tolerance_days``).
+``reconciliation.date_tolerance_days``). Claves aceptadas en mapping:
+``amount_tolerance_minor`` y ``date_tolerance_days``; cualquier otra clave se
+rechaza con ``TypeError`` (un typo no debe desactivar la tolerancia en
+silencio). El corte 2 debe acotar la tolerancia leida de ``config.parameters``
+(ver nota de parcialidad en ``docs/tasks/E5-T18.md``).
 
 Garantias del dominio:
 
 - **Puro y determinista**: mismos datos + mismas tolerancias -> mismo
   resultado, sin importar el orden de entrada. Sin I/O, sin reloj, sin azar.
 - **Dinero en enteros**: montos y tolerancias son ``int`` (centimos); se
-  rechaza ``float``/``bool``/``str`` con ``ValueError``.
+  rechaza ``float``/``bool``/``str`` con ``TypeError``.
 - **Sin PII**: solo viajan IDs, referencias externas y montos; este modulo
   no escribe logs.
 - **Sin imports de otros modulos**: no toca modelos de ``transactions``;
   el corte 2 adaptara los dicts de la fachada de lectura a estos tipos.
+
+Nota de alcance (corte 1): ``external_ref`` es obligatorio y no vacio en
+ambos lados; la politica de fallback para referencias vacias/ausentes y el
+acotado de tolerancias desde ``config.parameters`` son decision del corte 2.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -59,6 +85,9 @@ EXCEPTION_REASONS = (
     CURRENCY_MISMATCH,
 )
 
+#: Claves aceptadas al recibir tolerancias como mapping.
+TOLERANCE_KEYS = frozenset({"amount_tolerance_minor", "date_tolerance_days"})
+
 
 def _require_id(value: object, *, name: str) -> str:
     if not isinstance(value, str):
@@ -79,15 +108,15 @@ def _require_ref(value: object) -> str:
 def _require_amount(value: object, *, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} debe ser un entero en centimos (sin float)")
-    if value <= 0:
-        raise ValueError(f"{name} debe ser > 0")
+    if value == 0:
+        raise ValueError(f"{name} debe ser distinto de cero (positivo o negativo)")
     return value
 
 
 def _require_currency(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("currency debe ser texto ISO-4217 en mayusculas")
-    if len(value) != 3 or not value.isalpha() or not value.isupper():
+    if re.fullmatch(r"[A-Z]{3}", value) is None:
         raise ValueError("currency debe ser ISO-4217 en mayusculas (p. ej. 'PEN')")
     return value
 
@@ -108,7 +137,11 @@ def _require_tolerance(value: object, *, name: str) -> int:
 
 @dataclass(frozen=True)
 class Tolerances:
-    """Tolerancias configurables del cruce (corte 2: desde ``config.parameters``)."""
+    """Tolerancias configurables del cruce (corte 2: desde ``config.parameters``).
+
+    Claves aceptadas: ``amount_tolerance_minor`` y ``date_tolerance_days``
+    (enteros ``>= 0``). Ver :func:`_coerce_tolerances` para el mapping.
+    """
 
     amount_tolerance_minor: int = 0
     date_tolerance_days: int = 0
@@ -128,7 +161,12 @@ class Tolerances:
 
 @dataclass(frozen=True)
 class InternalOperation:
-    """Operacion interna candidata del motor (vista minima, sin ORM ajeno)."""
+    """Operacion interna candidata del motor (vista minima, sin ORM ajeno).
+
+    ``amount_minor`` es un entero distinto de cero: positivo (cargo/abono) o
+    negativo (reverso/contracargo/ajuste). Un ``Match`` exige mismo signo en
+    ambos lados (ver politica de signo en el modulo).
+    """
 
     op_id: str
     external_ref: str
@@ -148,7 +186,11 @@ class InternalOperation:
 
 @dataclass(frozen=True)
 class ClearingEntry:
-    """Item de clearing a cruzar (vista minima, sin ORM)."""
+    """Item de clearing a cruzar (vista minima, sin ORM).
+
+    ``amount_minor`` es un entero distinto de cero: positivo o negativo
+    (reversos/ajustes del clearing). Ver politica de signo en el modulo.
+    """
 
     item_id: str
     external_ref: str
@@ -175,13 +217,29 @@ class Match:
     qualifier: str = EXACT
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "internal_id", _require_id(self.internal_id, name="internal_id"))
+        object.__setattr__(self, "clearing_id", _require_id(self.clearing_id, name="clearing_id"))
         if self.qualifier not in MATCH_QUALIFIERS:
             raise ValueError(f"qualifier invalido: {self.qualifier!r}")
 
 
 @dataclass(frozen=True)
 class ReconException:
-    """Item u operacion no conciliados, con motivo tipado y detalle numerico."""
+    """Item u operacion no conciliados, con motivo tipado y detalle numerico.
+
+    Convencion de signos: ``amount_diff_minor = clearing - internal`` y
+    ``date_diff_days = clearing_date - internal_date`` (ej.: op ``100_00`` vs
+    item ``99_00`` -> ``amount_diff_minor = -100``).
+
+    Invariantes por motivo:
+
+    - IDs presentes siempre no vacios.
+    - ``MISSING_INTERNAL`` exige ``internal_id is None`` y clearing presente;
+      ``MISSING_EXTERNAL`` al reves.
+    - ``AMOUNT_DIFF`` exige ``amount_diff_minor`` no nulo; ``DATE_DIFF`` exige
+      ``date_diff_days`` no nulo.
+    - ``CURRENCY_MISMATCH`` exige ambos lados presentes.
+    """
 
     reason: str
     internal_id: str | None = None
@@ -192,6 +250,34 @@ class ReconException:
     def __post_init__(self) -> None:
         if self.reason not in EXCEPTION_REASONS:
             raise ValueError(f"reason invalido: {self.reason!r}")
+        if self.internal_id is not None:
+            object.__setattr__(
+                self, "internal_id", _require_id(self.internal_id, name="internal_id")
+            )
+        if self.clearing_id is not None:
+            object.__setattr__(
+                self, "clearing_id", _require_id(self.clearing_id, name="clearing_id")
+            )
+        if self.reason == MISSING_INTERNAL:
+            if self.internal_id is not None:
+                raise ValueError("MISSING_INTERNAL exige internal_id is None")
+            if self.clearing_id is None:
+                raise ValueError("MISSING_INTERNAL exige clearing_id presente")
+        elif self.reason == MISSING_EXTERNAL:
+            if self.clearing_id is not None:
+                raise ValueError("MISSING_EXTERNAL exige clearing_id is None")
+            if self.internal_id is None:
+                raise ValueError("MISSING_EXTERNAL exige internal_id presente")
+        elif self.reason == AMOUNT_DIFF:
+            if self.amount_diff_minor is None:
+                raise ValueError("AMOUNT_DIFF exige amount_diff_minor no nulo")
+        elif self.reason == DATE_DIFF:
+            if self.date_diff_days is None:
+                raise ValueError("DATE_DIFF exige date_diff_days no nulo")
+        elif self.reason == CURRENCY_MISMATCH and (
+            self.internal_id is None or self.clearing_id is None
+        ):
+            raise ValueError("CURRENCY_MISMATCH exige ambos lados")
         if self.internal_id is None and self.clearing_id is None:
             raise ValueError("la excepcion debe referenciar al menos un lado")
         for diff_name in ("amount_diff_minor", "date_diff_days"):
@@ -217,11 +303,23 @@ class MatchResult:
 
 
 def _coerce_tolerances(tolerances: Tolerances | Mapping[str, object] | None) -> Tolerances:
+    """Normaliza tolerancias; claves aceptadas: ``TOLERANCE_KEYS``.
+
+    Cualquier clave desconocida se rechaza con ``TypeError`` para que un typo
+    no desactive la tolerancia en silencio. Los valores se validan como
+    enteros ``>= 0`` (``TypeError``/``ValueError``).
+    """
     if tolerances is None:
         return Tolerances()
     if isinstance(tolerances, Tolerances):
         return tolerances
     if isinstance(tolerances, Mapping):
+        unknown = sorted(set(tolerances.keys()) - TOLERANCE_KEYS)
+        if unknown:
+            raise TypeError(
+                f"claves de tolerancia desconocidas: {unknown!r}; "
+                f"aceptadas: {sorted(TOLERANCE_KEYS)!r}"
+            )
         return Tolerances(
             amount_tolerance_minor=tolerances.get("amount_tolerance_minor", 0),
             date_tolerance_days=tolerances.get("date_tolerance_days", 0),
@@ -236,12 +334,15 @@ def match_items(
 ) -> MatchResult:
     """Cruza clearing contra operaciones internas (puro y determinista).
 
-    Empareja por ``external_ref`` (uno a uno, sin reutilizar): cada item de
-    clearing toma la mejor operacion interna libre con su misma referencia
-    (exacta > tolerada > moneda distinta > fuera de tolerancia) y la
-    clasifica segun :mod:`matching`. El orden de entrada no afecta el
-    resultado: todo se ordena por ``(external_ref, id)`` antes de emparejar
-    y el resultado sale ordenado por IDs.
+    Empareja por ``external_ref`` (uno a uno, sin reutilizar) en **dos
+    pasadas**: la pasada 1 resuelve todos los pares que clasifican como
+    ``Match`` (exacto o tolerado, mejor candidato primero) y consume alli la
+    operacion; la pasada 2 empareja los sobrantes y los clasifica como
+    excepcion (``CURRENCY_MISMATCH``/fuera de tolerancia/``MISSING_INTERNAL``).
+    Asi un ``EXACT`` gana aunque un item lexicograficamente anterior solo
+    diera excepcion con la misma operacion. El orden de entrada no afecta el
+    resultado: todo se ordena antes de emparejar y el resultado sale ordenado
+    por IDs.
     """
     tol = _coerce_tolerances(tolerances)
 
@@ -272,8 +373,31 @@ def match_items(
     matches: list[Match] = []
     exceptions: list[ReconException] = []
     used_ops: set[str] = set()
+    matched_items: set[str] = set()
 
-    for entry in sorted(entries, key=lambda e: (e.external_ref, e.item_id)):
+    # Pasada 1: solo pares que clasifican como Match; el mejor candidato
+    # global gana, sin importar el orden lexicografico de los items.
+    matchable: list[
+        tuple[tuple[tuple[int, int, int, str], str], InternalOperation, ClearingEntry, Match]
+    ] = []
+    for entry in entries:
+        for op in by_ref.get(entry.external_ref, []):
+            outcome = _classify(op, entry, tol)
+            if isinstance(outcome, Match):
+                matchable.append(((_pair_key(op, entry, tol), entry.item_id), op, entry, outcome))
+    matchable.sort(key=lambda scored: (scored[0][0], scored[0][1]))
+    for _, op, entry, outcome in matchable:
+        if op.op_id in used_ops or entry.item_id in matched_items:
+            continue
+        used_ops.add(op.op_id)
+        matched_items.add(entry.item_id)
+        matches.append(outcome)
+
+    # Pasada 2: sobrantes; el mejor candidato libre clasifica excepcion.
+    for entry in sorted(
+        (e for e in entries if e.item_id not in matched_items),
+        key=lambda e: (e.external_ref, e.item_id),
+    ):
         candidates = [op for op in by_ref.get(entry.external_ref, []) if op.op_id not in used_ops]
         if not candidates:
             exceptions.append(ReconException(reason=MISSING_INTERNAL, clearing_id=entry.item_id))
@@ -281,8 +405,9 @@ def match_items(
         best = min(candidates, key=lambda op: _pair_key(op, entry, tol))
         used_ops.add(best.op_id)
         outcome = _classify(best, entry, tol)
-        if isinstance(outcome, Match):
-            matches.append(outcome)
+        if isinstance(outcome, Match):  # pragma: no cover - red de seguridad
+            matches.append(outcome)  # pragma: no cover - la pasada 1 ya consumo todo Match
+            matched_items.add(entry.item_id)  # pragma: no cover
         else:
             exceptions.append(outcome)
 
@@ -300,23 +425,38 @@ def match_items(
 
 def _pair_key(
     op: InternalOperation, entry: ClearingEntry, tol: Tolerances
-) -> tuple[bool, bool, bool, int, int, str]:
-    """Prioridad de emparejo: moneda, luego monto, luego fecha (determinista)."""
+) -> tuple[int, int, int, str]:
+    """Prioridad de emparejo (determinista).
+
+    Nivel: ``EXACT`` (0) > tolerado (1) > ``CURRENCY_MISMATCH`` (2) > fuera de
+    tolerancia (3); a igual nivel, menor diferencia absoluta primero y
+    ``op_id`` como desempate. La moneda distinta manda sobre un monto/fecha
+    fuera de tolerancia, pero nunca sobre un ``Match``.
+    """
     amount_diff = entry.amount_minor - op.amount_minor
     date_diff = (entry.value_date - op.value_date).days
-    return (
-        entry.currency != op.currency,
-        abs(amount_diff) > tol.amount_tolerance_minor,
-        abs(date_diff) > tol.date_tolerance_days,
-        abs(amount_diff),
-        abs(date_diff),
-        op.op_id,
-    )
+    if entry.currency != op.currency:
+        return (2, 0, 0, op.op_id)
+    same_sign = (op.amount_minor > 0) == (entry.amount_minor > 0)
+    amount_ok = same_sign and abs(amount_diff) <= tol.amount_tolerance_minor
+    date_ok = abs(date_diff) <= tol.date_tolerance_days
+    if amount_diff == 0 and date_diff == 0:
+        return (0, 0, 0, op.op_id)
+    if amount_ok and date_ok:
+        return (1, abs(amount_diff), abs(date_diff), op.op_id)
+    return (3, abs(amount_diff), abs(date_diff), op.op_id)
 
 
 def _classify(
     op: InternalOperation, entry: ClearingEntry, tol: Tolerances
 ) -> Match | ReconException:
+    """Clasifica un par con su motivo y detalle numerico.
+
+    Politica de signo: un ``Match`` exige mismo signo; signos opuestos nunca
+    son ``Match`` (``AMOUNT_DIFF``). Convencion: ``amount_diff_minor =
+    clearing - internal`` (ej.: op ``100_00`` vs item ``99_00`` -> ``-100``)
+    y ``date_diff_days = clearing_date - internal_date``.
+    """
     if entry.currency != op.currency:
         return ReconException(
             reason=CURRENCY_MISMATCH,
@@ -325,6 +465,14 @@ def _classify(
         )
     amount_diff = entry.amount_minor - op.amount_minor
     date_diff = (entry.value_date - op.value_date).days
+    if (op.amount_minor > 0) != (entry.amount_minor > 0):
+        return ReconException(
+            reason=AMOUNT_DIFF,
+            internal_id=op.op_id,
+            clearing_id=entry.item_id,
+            amount_diff_minor=amount_diff,
+            date_diff_days=date_diff if date_diff != 0 else None,
+        )
     amount_ok = abs(amount_diff) <= tol.amount_tolerance_minor
     date_ok = abs(date_diff) <= tol.date_tolerance_days
     if amount_diff == 0 and date_diff == 0:

@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
         start_wallet_service_jobs_worker,
         subscribe_accounts_movements,
         subscribe_channel_lock,
+        subscribe_risk_antifraud,
         subscribe_risk_security,
         subscribe_security_alerts,
         subscribe_unrecognized_reports,
@@ -168,6 +169,7 @@ async def lifespan(app: FastAPI):
     )
 
     subscribe_accounts_movements()
+    subscribe_risk_antifraud()
     subscribe_risk_security()
     subscribe_security_alerts()
     subscribe_unrecognized_reports()

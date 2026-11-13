@@ -102,6 +102,14 @@ FEE_ACCOUNT_CODE = "4100"
 #: del codigo; `config.parameters`, modulo `transactions`; fallback `0`).
 THIRD_PARTY_FEE_PARAM_KEY = "transfer.third_party_fee_minor"
 THIRD_PARTY_FEE_DEFAULT_MINOR = 0
+#: Codigo de negocio cuando el pre-chequeo antifraude rechaza la operacion
+#: (E6-T02 corte 2, HU20): `REJECTED` con `failure_reason` +
+#: `meta.failure_code = RISK_BLOCKED`, sin mover saldos ni asientos. Espejo
+#: de `risk.service.RISK_BLOCKED` (import perezoso en el hook, sin ciclos).
+RISK_BLOCKED = "RISK_BLOCKED"
+#: Marca interna cuando el pre-chequeo retiene la operacion (E6-T02 corte 2):
+#: queda `PENDING_AUTHORIZATION` (reutiliza el gate biometrico existente).
+RISK_HOLD_REQUIRED = "RISK_HOLD_REQUIRED"
 
 
 class BalanceView(Protocol):
@@ -356,6 +364,146 @@ def find_transaction_by_id(
     except (ValueError, AttributeError, TypeError):
         return None
     return tx_repository.get_transaction(session, wanted)
+
+
+def count_recent_operations(
+    session: Session,
+    user_id: uuid.UUID | str,
+    *,
+    window_seconds: int = 600,
+    now: Any | None = None,
+) -> int:
+    """Conteo de operaciones del titular en la ventana (solo lectura).
+
+    Fachada para el pre-chequeo antifraude (`risk.service`, E6-T02 corte
+    2, regla `VELOCITY`; D-01: `risk` no importa modelos ajenos). Cuenta
+    todas las operaciones del titular creadas en los ultimos
+    `window_seconds` (cualquier estado: el spam tambien deja filas).
+    Solo lectura (sin `flush`/`commit`).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    try:
+        window = max(1, int(window_seconds))
+    except (TypeError, ValueError):
+        window = 600
+    moment = now if isinstance(now, datetime) else datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    since = moment - timedelta(seconds=window)
+    return int(tx_repository.count_user_transactions(session, uid, date_from=since))
+
+
+def _resolve_risk_device_id(
+    device_id: str | None, request_metadata: dict[str, Any] | None
+) -> str | None:
+    """Dispositivo para el pre-chequeo (parametro > `metadata`, sin PII)."""
+    if isinstance(device_id, str) and device_id.strip():
+        return device_id.strip()[:128]
+    if isinstance(request_metadata, dict):
+        candidate = request_metadata.get("device_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()[:128]
+    return None
+
+
+def _stamp_risk_markers(session: Session, tx: Transaction, decision: Any) -> None:
+    """Fija `risk_score`/`risk_level` de la decision (evidencia, `flush`).
+
+    Best-effort silencioso: si el nivel no resuelve, rige `HIGH` (toda
+    decision no-`ALLOW` es severa). Se llama antes de transicionar para
+    que el `flush` deje las marcas en la misma transaccion de negocio.
+    """
+    try:
+        from app.modules.risk.service import risk_level_for as _risk_level_for
+
+        level = _risk_level_for(getattr(decision, "action", "ALLOW"))
+    except ImportError:  # pragma: no cover - red de seguridad
+        level = "HIGH"
+    try:
+        tx.risk_score = max(0, min(100, int(getattr(decision, "score", 0))))
+    except (TypeError, ValueError):
+        tx.risk_score = 0
+    tx.risk_level = level
+    session.flush()
+
+
+def _audit_risk_hook_best_effort(
+    session: Session,
+    *,
+    user_id: uuid.UUID | str | None,
+    tx: Transaction,
+    decision: Any,
+    source: str = "pre_transaction",
+) -> None:
+    """Auditoria `risk.assessment` del hook (best-effort, sin PII).
+
+    Nunca revierte ni bloquea la operacion de negocio: un fallo de
+    auditoria (p. ej. tabla aun no migrada) solo se loguea. Sin montos,
+    paises ni dispositivos en `metadata` (solo `action`/`score`/
+    `matched_rules`).
+    """
+    try:
+        from app.modules.audit.service import record as audit_record
+
+        matched = list(getattr(decision, "matched_rules", None) or [])
+        audit_record(
+            session,
+            actor=user_id,
+            action="risk.assessment",
+            entity="transaction",
+            entity_id=tx.id,
+            metadata={
+                "source": source,
+                "action": str(getattr(decision, "action", "ALLOW")),
+                "score": int(getattr(decision, "score", 0)),
+                "matched_rules": [str(code) for code in matched],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - la auditoria no bloquea el pago
+        logger.warning("risk hook audit best-effort omitida err=%s", type(exc).__name__)
+
+
+def _evaluate_risk_precheck(
+    session: Session,
+    *,
+    user_id: uuid.UUID | str | None,
+    amount_minor: int,
+    currency: str,
+    device_id: str | None,
+    tx_type: str | None,
+) -> Any | None:
+    """Pre-chequeo antifraude sincrono (E6-T02 corte 2, HU20).
+
+    Invoca la fachada de solo lectura `risk.service.evaluate_pre_transaction`
+    (import perezoso, sin ciclos). **Nunca lanza**: sin titular, sin modulo
+    de riesgo o ante cualquier fallo tecnico retorna `None` y la operacion
+    continua (fail-open documentado: `risk` nunca bloquea a ciegas; el
+    bloqueo solo ocurre ante un match de regla `BLOCK`).
+    """
+    if user_id is None:
+        return None
+    try:
+        from app.modules.risk.service import evaluate_pre_transaction as _evaluate
+    except ImportError:
+        return None
+    try:
+        with session.begin_nested():
+            return _evaluate(
+                session,
+                user_id=user_id,
+                amount_minor=amount_minor,
+                currency=currency,
+                device_id=device_id,
+                tx_type=tx_type,
+            )
+    except Exception as exc:  # noqa: BLE001 - fail-open documentado arriba
+        logger.warning("risk pre-chequeo no disponible, continua: error=%s", type(exc).__name__)
+        return None
 
 
 def _resolve_beneficiary_id(
@@ -1050,6 +1198,60 @@ def execute_transfer(
             metadata=metadata,
         )
         tx_repository.transition_transaction(session, tx.id, "VALIDATED", reason="entrada valida")
+
+        # 3a. Pre-chequeo antifraude sincrono (E6-T02 corte 2, HU20): solo
+        # lectura via `risk.service.evaluate_pre_transaction` (best-effort:
+        # `None` = continua). `BLOCK` -> `REJECTED` con `RISK_BLOCKED` sin
+        # mover saldos ni asientos; `HOLD` -> `PENDING_AUTHORIZATION`
+        # (reutiliza el gate existente via `_pend_for_biometry`, que tambien
+        # cubre la ruta atomica propia sin hold); `ALERT` -> continua con
+        # evidencia (`risk_score`/`risk_level` + auditoria best-effort).
+        # Cubre transferencias y, por delegacion, QR/servicios
+        # (`pay_express` -> `transfer_third_party`); nunca creditos (esas
+        # fachadas crean su `Transaction` por otro camino).
+        risk_decision = _evaluate_risk_precheck(
+            session,
+            user_id=initiator_user_id,
+            amount_minor=amount_minor,
+            currency=currency,
+            device_id=_resolve_risk_device_id(device_id, metadata),
+            tx_type=tx_type,
+        )
+        if risk_decision is not None and str(risk_decision.action) == "BLOCK":
+            biometric_service.mark_rejected(session, tx, RISK_BLOCKED)
+            _stamp_risk_markers(session, tx, risk_decision)
+            _audit_risk_hook_best_effort(
+                session, user_id=initiator_user_id, tx=tx, decision=risk_decision
+            )
+            tx = tx_repository.transition_transaction(
+                session, tx.id, "REJECTED", reason="bloqueo antifraude (RISK_BLOCKED)"
+            )
+            return tx
+        if risk_decision is not None and str(risk_decision.action) == "HOLD":
+            _stamp_risk_markers(session, tx, risk_decision)
+            _audit_risk_hook_best_effort(
+                session, user_id=initiator_user_id, tx=tx, decision=risk_decision
+            )
+            return _pend_for_biometry(
+                session,
+                tx,
+                source=source,
+                target=target,
+                amount_minor=amount_minor,
+                currency=currency,
+                fee_minor=fee_minor,
+                total_minor=total_minor,
+                atomic=atomic,
+                settle=settle,
+                port=port,
+                device_id=device_id,
+                request_metadata=metadata,
+            )
+        if risk_decision is not None and str(risk_decision.action) == "ALERT":
+            _stamp_risk_markers(session, tx, risk_decision)
+            _audit_risk_hook_best_effort(
+                session, user_id=initiator_user_id, tx=tx, decision=risk_decision
+            )
 
         # 3b. Gate biometrico + limite diario por perfil (E2-T17, HU08).
         gate = biometric_service.evaluate_gate(

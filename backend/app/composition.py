@@ -208,6 +208,57 @@ def is_risk_security_wired(bus: Any | None = None) -> bool:
         return False
 
 
+# ------------------------------------------------- Cableado E6-T02 corte 2
+# Reevaluacion antifraude asincrona (HU20): `risk` consume
+# `transaction.initiated` y `transfer.settled` por `outbox` -> bus.
+# Cada consumidor es D-04 (sesion/`commit` propios, idempotente por
+# `processed_events`); aqui solo se suscriben al bus, sin logica.
+
+
+def subscribe_risk_antifraud(bus: Any | None = None) -> tuple[Any, Any]:
+    """Suscribe la reevaluacion antifraude al bus (E6-T02 corte 2).
+
+    Idempotente: si los handlers ya estan registrados no los duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Retorna la
+    tupla `(on_transaction_initiated, on_transfer_settled)` registrada
+    (el arranque real la usa; los tests la verifican).
+    """
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_transaction_initiated, on_transfer_settled
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    handlers_initiated = list(
+        getattr(bus, "_handlers", {}).get(domain_events.TRANSACTION_INITIATED, [])
+    )
+    if on_transaction_initiated not in handlers_initiated:
+        bus.subscribe(domain_events.TRANSACTION_INITIATED, on_transaction_initiated)
+    handlers_settled = list(getattr(bus, "_handlers", {}).get(domain_events.TRANSFER_SETTLED, []))
+    if on_transfer_settled not in handlers_settled:
+        bus.subscribe(domain_events.TRANSFER_SETTLED, on_transfer_settled)
+    return on_transaction_initiated, on_transfer_settled
+
+
+def is_risk_antifraud_wired(bus: Any | None = None) -> bool:
+    """`True` si la reevaluacion antifraude esta suscrita al bus."""
+    from app.core import events as domain_events
+    from app.modules.risk.events import on_transaction_initiated, on_transfer_settled
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        handlers = getattr(bus, "_handlers", {})
+        return on_transaction_initiated in handlers.get(
+            domain_events.TRANSACTION_INITIATED, []
+        ) and on_transfer_settled in handlers.get(domain_events.TRANSFER_SETTLED, [])
+    except AttributeError:
+        return False
+
+
 # ------------------------------------------------- Cableado E6-T14
 # Cadena "no reconozco" (HU22): `notifications` emite
 # `security.operation_reported` -> `risk` escala (severidad + auditoria
@@ -928,6 +979,7 @@ __all__ = [
     "get_default_ports",
     "is_channel_lock_wired",
     "is_movements_wired",
+    "is_risk_antifraud_wired",
     "is_risk_security_wired",
     "is_security_alerts_wired",
     "is_unrecognized_reports_wired",
@@ -948,6 +1000,7 @@ __all__ = [
     "start_wallet_service_jobs_worker",
     "subscribe_accounts_movements",
     "subscribe_channel_lock",
+    "subscribe_risk_antifraud",
     "subscribe_risk_security",
     "subscribe_security_alerts",
     "subscribe_unrecognized_reports",

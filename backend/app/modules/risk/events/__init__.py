@@ -111,4 +111,95 @@ def on_unrecognized_operation_reported(
             pass
 
 
-__all__ = ["on_auth_failed_attempt", "on_unrecognized_operation_reported"]
+__all__ = [
+    "on_auth_failed_attempt",
+    "on_transaction_initiated",
+    "on_transfer_settled",
+    "on_unrecognized_operation_reported",
+]
+
+
+def on_transaction_initiated(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `transaction.initiated` (D-04, E6-T02 corte 2).
+
+    Abre su propia sesion (`session_factory` o `SessionLocal`), deriva
+    `event_id = entry.id`, mapea `entry.payload` y delega en
+    `risk.service.handle_transaction_initiated` (idempotente por
+    `processed_events`, consumidor `"risk-tx-initiated"`). `commit`
+    propio si audita; `rollback` y re-lanza ante fallo (el worker
+    reintenta). Retorna `True` en el primer consumo, `False` ante
+    duplicado ignorado. Sin PII ni secretos en logs. No mueve dinero
+    (regla de oro 1): solo evalua y audita (`risk.assessment`).
+    """
+    from app.modules.risk.service import handle_transaction_initiated
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    payload = dict(entry.payload or {})
+    session = session_factory()
+    try:
+        outcome = handle_transaction_initiated(
+            session,
+            event_id=entry.id,
+            payload=payload,
+        )
+        session.commit()
+        return bool(outcome.get("consumed"))
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def on_transfer_settled(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `transfer.settled` (D-04, E6-T02 corte 2).
+
+    Mismo contrato que `on_transaction_initiated` (consumidor
+    `"risk-tx-settled"`): reevalua tras liquidar y audita
+    `risk.assessment` solo con hallazgo. `commit` propio; `rollback` y
+    re-lanza ante fallo. Sin PII; no mueve dinero.
+    """
+    from app.modules.risk.service import handle_transfer_settled
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    payload = dict(entry.payload or {})
+    session = session_factory()
+    try:
+        outcome = handle_transfer_settled(
+            session,
+            event_id=entry.id,
+            payload=payload,
+        )
+        session.commit()
+        return bool(outcome.get("consumed"))
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass

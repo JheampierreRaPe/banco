@@ -128,14 +128,21 @@ def get_current_user_id(authorization: str | None = Header(default=None)) -> uui
 def _rejected_failure_code(tx) -> str | None:
     """Codigo de rechazo de negocio para `TransferResponse` (E2-T17).
 
-    `DAILY_LIMIT_EXCEEDED` (CA-03) y `BIOMETRIC_PREVENTIVE_BLOCK` (CA-02)
-    viajan en `failure_reason`/`meta.failure_code`; cualquier otro
-    `REJECTED` (fondos) es `INSUFFICIENT_FUNDS`. Fuera de `REJECTED` es
-    `None`. Sin PII: solo el codigo.
+    `RISK_BLOCKED` (E6-T02: una regla antifraude `BLOCK` rechazo la
+    operacion) viajan en `failure_reason`/`meta.failure_code`;
+    `RISK_HOLD_REQUIRED` (E6-T02: retencion de riesgo sin gate disponible)
+    tambien se propaga tal cual; cualquier otro `REJECTED` (fondos) es
+    `INSUFFICIENT_FUNDS`. Fuera de `REJECTED` es `None`. Sin PII: solo el
+    codigo.
     """
     if tx.status != "REJECTED":
         return None
-    known = {"DAILY_LIMIT_EXCEEDED", "BIOMETRIC_PREVENTIVE_BLOCK"}
+    known = {
+        "DAILY_LIMIT_EXCEEDED",
+        "BIOMETRIC_PREVENTIVE_BLOCK",
+        "RISK_BLOCKED",
+        "RISK_HOLD_REQUIRED",
+    }
     reason = getattr(tx, "failure_reason", None)
     if isinstance(reason, str) and reason in known:
         return reason
@@ -201,7 +208,8 @@ def _transfer_data(tx) -> dict:
     exige `json.dumps` y `response_model` vuelve a coaccionar a UUID.
     `REJECTED` por negocio mapea `failure_code` desde `failure_reason` /
     `meta.failure_code` (`DAILY_LIMIT_EXCEEDED`,
-    `BIOMETRIC_PREVENTIVE_BLOCK`); por defecto `INSUFFICIENT_FUNDS`.
+    `BIOMETRIC_PREVENTIVE_BLOCK`, `RISK_BLOCKED`, `RISK_HOLD_REQUIRED`);
+    por defecto `INSUFFICIENT_FUNDS`.
     """
     failure_code = _rejected_failure_code(tx)
     data = {

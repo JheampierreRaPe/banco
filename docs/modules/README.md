@@ -973,6 +973,25 @@ eventos (`outbox`/`inbox`).
   (`composition.subscribe_risk_antifraud`). **No mueve dinero** ni crea
   `risk.alerts` (eso es `E6-T04`); E6-T02 queda `Hecho` (cierra G07 parcial:
   quedan `alerts`/perfil para `E6-T03`/`E6-T04` y la calibracion `E6-T06`).
+- **Perfil de comportamiento alimentado por historial (E6-T03, HU20):**
+  `risk/domain/profile.py` (`next_profile`, puro y determinista: media
+  incremental entera con `ROUND_HALF_UP` sin `float`, union acotada a los
+  ultimos 5 en `usual_hours`/`usual_countries`, ultimo `last_device_id`;
+  el `score` no se toca) + `risk.service.update_behavior(..., observation,
+  event_id?)` (idempotente por `(event_id, risk-profile)` via
+  `processed_events`; con `avg == 0` la observacion funda el promedio;
+  ventana `risk.profile_window_days`, default `90`, por `shared/config`)
+  + consumidores D-04 (`on_profile_transaction_initiated`/
+  `on_profile_transfer_settled` para monto/moneda/hora/pais/dispositivo,
+  `on_profile_login_succeeded` para hora/dispositivo/pais,
+  `on_profile_auth_failed_attempt` que solo complementa habitos —la
+  severidad la posee `E2-T20`—, sesion/`commit` propios) + `GET
+  /api/v1/risk/profiles/{user_id}` (rol fraude, solo lectura sin PII:
+  promedio, habitos, dispositivo, puntaje; `404` si inexistente o
+  `user_id` invalido) + wiring `composition.subscribe_risk_profile`
+  (tras el flag `RISK_PROFILE_ENABLED`, default `1`, para no mover el bus
+  global en pruebas). **No mueve dinero** ni crea `risk.alerts` (eso es
+  `E6-T04`); E6-T03 queda `Hecho` (sin migracion).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume
@@ -983,7 +1002,7 @@ eventos (`outbox`/`inbox`).
   (tabla reservada a HU20, D-16): la alerta queda como evento + auditoria +
   severidad. Suscrito en el arranque (`composition.subscribe_unrecognized_reports`);
   no mueve dinero.
-- **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
+- **Consume:** `transaction.initiated`, `transfer.settled`, `auth.login_succeeded`, `kyc.completed`, `auth.failed_attempt`.
 - **Puede llamar a:** adaptador `SanctionsLists`, `transactions` (bloqueo), `notifications`, `audit`.
 - **Adaptador `SanctionsLists` (E6-T07, HU21):** `backend/app/adapters/sanctions_lists.py`
   (contrato en `docs/02#9`): `screen(*, subject_type, name, document_number=None,

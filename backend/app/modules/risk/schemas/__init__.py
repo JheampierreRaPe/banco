@@ -57,7 +57,34 @@ class RuleUpdateResponse(BaseModel):
     meta: dict[str, Any]
 
 
+class ProfileResponse(BaseModel):
+    """Vista minima del perfil de comportamiento (`E6-T03`).
+
+    Solo habitos y severidad (sin PII: `user_id` es UUID, sin
+    nombre/documento/cuenta): `avg_amount_minor` (media incremental
+    entera), `usual_countries`/`usual_hours` (top 5), ultimo
+    dispositivo, `score` y `updated_at`.
+    """
+
+    user_id: str
+    avg_amount_minor: int
+    usual_countries: list[str] | None
+    usual_hours: list[int] | None
+    last_device_id: str | None
+    score: int
+    updated_at: datetime
+
+
+class ProfileDetailResponse(BaseModel):
+    """Perfil minimo + `meta` (`05#4`)."""
+
+    data: ProfileResponse
+    meta: dict[str, Any]
+
+
 __all__ = [
+    "ProfileDetailResponse",
+    "ProfileResponse",
     "RuleResponse",
     "RuleUpdateRequest",
     "RuleUpdateResponse",

@@ -1,10 +1,13 @@
-"""Endpoints de reglas antifraude (E6-T01, HU20).
+"""Endpoints de reglas antifraude (E6-T01, HU20) + perfil (E6-T03).
 
 - `GET /risk/rules` (Bearer, rol `fraud_analyst`/`admin`): lista las
   reglas ordenadas (`priority ASC, code ASC`).
 - `PUT /risk/rules/{code}` (Bearer, rol `fraud_analyst`/`admin`):
   edicion parcial auditada (`risk.rule.updated`, sin PII) que se
   refleja sin reinicio.
+- `GET /risk/profiles/{user_id}` (Bearer, rol
+  `fraud_analyst`/`admin`): perfil minimo de comportamiento sin PII
+  (E6-T03: promedio, habitos, dispositivo, puntaje).
 
 Montados bajo `/api/v1` por `app.main` via `iter_routers` (sin
 registro extra: este `router` ya lo recoge el ensamblado del
@@ -110,6 +113,18 @@ def _to_response(row: RiskRule) -> risk_schemas.RuleResponse:
     )
 
 
+def _to_profile_response(row) -> risk_schemas.ProfileResponse:
+    return risk_schemas.ProfileResponse(
+        user_id=str(row.user_id),
+        avg_amount_minor=int(row.avg_amount_minor or 0),
+        usual_countries=list(row.usual_countries) if row.usual_countries is not None else None,
+        usual_hours=list(row.usual_hours) if row.usual_hours is not None else None,
+        last_device_id=row.last_device_id,
+        score=int(row.score or 0),
+        updated_at=row.updated_at,
+    )
+
+
 def _request_id() -> str:
     return uuid.uuid4().hex
 
@@ -179,6 +194,40 @@ def update_risk_rule(
         db.rollback()
         raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
     return {"data": _to_response(row), "meta": {"request_id": _request_id()}}
+
+
+@router.get(
+    "/risk/profiles/{user_id}",
+    response_model=risk_schemas.ProfileDetailResponse,
+    summary="Lee el perfil de comportamiento del titular",
+    responses={
+        200: {"description": "Perfil minimo sin PII (habitos + severidad)"},
+        401: {"description": "`NOT_AUTHENTICATED` (sin JWT valido)"},
+        403: {"description": "`NOT_AUTHORIZED` (sin rol de fraude/admin)"},
+        404: {"description": "`NOT_FOUND` (perfil inexistente o `user_id` invalido)"},
+    },
+)
+def get_risk_profile(
+    user_id: str,
+    analyst: RiskContext = Depends(get_risk_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Perfil de comportamiento (`E6-T03`): solo lectura, sin PII.
+
+    `avg_amount_minor` (media incremental entera), `usual_countries`/
+    `usual_hours` (top 5), `last_device_id`, `score`, `updated_at`.
+    `user_id` malformado o perfil inexistente -> `404 NOT_FOUND`
+    (neutro, sin oraculo). Solo lectura: no crea el perfil.
+    """
+    _ = analyst  # El rol solo hace gate (401/403 sin analista).
+    try:
+        wanted = uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise AppError(code="NOT_FOUND", message="perfil inexistente", status_code=404) from exc
+    row = risk_service.get_profile(db, wanted)
+    if row is None:
+        raise AppError(code="NOT_FOUND", message="perfil inexistente", status_code=404)
+    return {"data": _to_profile_response(row), "meta": {"request_id": _request_id()}}
 
 
 __all__ = ["get_risk_context", "router"]

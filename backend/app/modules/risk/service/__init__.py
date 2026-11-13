@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.risk import repository as risk_repo
 from app.modules.risk.domain import engine as risk_engine
+from app.modules.risk.domain import profile as profile_domain
 from app.modules.risk.domain.engine import RiskDecision
 from app.modules.risk.models import RiskProfile, RiskRule
 
@@ -50,10 +51,13 @@ __all__ = [
     "AUDIT_ACTION_UNRECOGNIZED",
     "AUTH_FAILED_ATTEMPT_EVENT",
     "CONSUMER",
+    "CONSUMER_PROFILE",
     "CONSUMER_TRANSACTION_INITIATED",
     "CONSUMER_TRANSFER_SETTLED",
     "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
+    "PROFILE_WINDOW_DEFAULT_DAYS",
+    "PROFILE_WINDOW_KEY",
     "RISK_BLOCKED",
     "RISK_HOLD_REQUIRED",
     "RISK_LEVEL_BY_ACTION",
@@ -73,12 +77,17 @@ __all__ = [
     "evaluate_config",
     "evaluate_pre_transaction",
     "get_or_create_profile",
+    "get_profile",
     "get_rule",
     "handle_auth_failed_attempt",
+    "handle_profile_failed_attempt",
+    "handle_profile_login",
+    "handle_profile_transaction",
     "handle_transaction_initiated",
     "handle_transfer_settled",
     "handle_unrecognized_operation_report",
     "list_rules",
+    "profile_window_days",
     "risk_level_for",
     "update_behavior",
     "update_rule",
@@ -156,26 +165,127 @@ def get_or_create_profile(session: Session, user_id: uuid.UUID | str) -> RiskPro
     return risk_repo.get_or_create(session, user_id)
 
 
+def get_profile(session: Session, user_id: uuid.UUID | str) -> RiskProfile | None:
+    """Perfil del usuario (`None` si aun no existe; solo lectura)."""
+    try:
+        return risk_repo.get_by_user(session, user_id)
+    except risk_repo.RiskProfileValidationError:
+        return None
+
+
 def update_behavior(
     session: Session,
     user_id: uuid.UUID | str,
+    observation: profile_domain.BehaviorObservation | dict[str, Any] | None = None,
     *,
+    event_id: uuid.UUID | str | None = None,
     avg_amount_minor: int | None = None,
     usual_countries: list[str] | tuple[str, ...] | None = None,
     usual_hours: list[int] | tuple[int, ...] | None = None,
     last_device_id: str | None = None,
     score: int | None = None,
 ) -> RiskProfile:
-    """Actualiza habitos/puntaje del perfil (creandolo si falta)."""
-    return risk_repo.update_behavior(
-        session,
-        user_id,
-        avg_amount_minor=avg_amount_minor,
-        usual_countries=usual_countries,
-        usual_hours=usual_hours,
-        last_device_id=last_device_id,
-        score=score,
+    """Actualiza habitos/puntaje del perfil (creandolo si falta).
+
+    Dos modos (compatibles con `E2-T18`/`E2-T20`, que siguen intactos):
+
+    - Legado (`observation is None`): escribe los campos informados
+      (`None` = conservar), como antes. Sin idempotencia por evento.
+    - Historial (`observation` dada, E6-T03): calcula el delta con el
+      dominio puro `profile.next_profile` (media incremental entera con
+      `ROUND_HALF_UP`, union acotada a 5 horas/paises, ultimo
+      dispositivo; el `score` nunca se toca aqui) y lo persiste. Los
+      `operations` ya reflejados son el conteo en la ventana
+      `risk.profile_window_days` menos la operacion en curso (ya hizo
+      `commit`); con `avg == 0` (ningun monto alimentado jamas) la
+      observacion funda el promedio sin diluir con el historial previo
+      al despliegue. Exacto cuando cada operacion de la ventana se
+      alimento al menos una vez y en orden; ante rezagos converge con
+      los eventos (heuristica documentada, sin migracion). Con
+      `event_id` es idempotente por `(event_id, user_id)` via
+      `processed_events` (consumidor `CONSUMER_PROFILE`): el replay
+      retorna el perfil actual sin escribir. `flush` sin `commit` (el
+      llamante, en general el handler D-04 con sesion propia, decide
+      la transaccion).
+    """
+    if event_id is not None:
+        from app.modules.shared import repository as shared_repo
+
+        if not shared_repo.try_mark_processed(
+            session, event_id=event_id, consumer=CONSUMER_PROFILE
+        ):
+            logger.info("risk perfil duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+            return risk_repo.get_or_create(session, user_id)
+    if observation is None:
+        return risk_repo.update_behavior(
+            session,
+            user_id,
+            avg_amount_minor=avg_amount_minor,
+            usual_countries=usual_countries,
+            usual_hours=usual_hours,
+            last_device_id=last_device_id,
+            score=score,
+        )
+    if not isinstance(observation, (profile_domain.BehaviorObservation, dict)):
+        raise risk_repo.RiskProfileValidationError(
+            f"observation debe ser BehaviorObservation o dict, recibido: {type(observation).__name__}"
+        )
+    profile = risk_repo.get_or_create(session, user_id)
+    obs = (
+        observation
+        if isinstance(observation, profile_domain.BehaviorObservation)
+        else profile_domain.BehaviorObservation(
+            amount_minor=observation.get("amount_minor"),
+            currency=observation.get("currency"),
+            country=observation.get("country"),
+            hour=observation.get("hour"),
+            device_id=observation.get("device_id"),
+        )
     )
+    prior_ops = 0
+    if profile_domain._coerce_amount(obs.amount_minor) is not None:
+        stored_avg = int(profile.avg_amount_minor or 0)
+        if stored_avg > 0:
+            # El promedio ya refleja montos: las operaciones aportadas
+            # son el conteo en la ventana menos la operacion en curso
+            # (ya hizo `commit`). Exacto cuando cada operacion de la
+            # ventana se alimento al menos una vez y en orden; ante
+            # rezagos converge con los eventos (heuristica).
+            prior_ops = max(0, _window_operation_count(session, profile.user_id) - 1)
+        # Con `avg == 0` ningun monto se alimento jamas (los montos son
+        # `> 0` y el redondeo nunca devuelve a `0` desde `>= 1`): la
+        # observacion funda el promedio (`prior_ops = 0`), sin diluir
+        # con el historial previo al despliegue.
+    update = profile_domain.next_profile(
+        {
+            "avg_amount_minor": int(profile.avg_amount_minor or 0),
+            "usual_countries": list(profile.usual_countries or []),
+            "usual_hours": list(profile.usual_hours or []),
+            "last_device_id": profile.last_device_id,
+        },
+        obs,
+        operations=prior_ops,
+    )
+    explicit = {
+        "avg_amount_minor": update.avg_amount_minor,
+        "usual_countries": update.usual_countries,
+        "usual_hours": update.usual_hours,
+        "last_device_id": update.last_device_id,
+    }
+    if avg_amount_minor is not None:
+        explicit["avg_amount_minor"] = avg_amount_minor
+    if usual_countries is not None:
+        explicit["usual_countries"] = usual_countries
+    if usual_hours is not None:
+        explicit["usual_hours"] = usual_hours
+    if last_device_id is not None:
+        explicit["last_device_id"] = last_device_id
+    if score is not None:
+        explicit["score"] = score
+    row = risk_repo.update_behavior(session, user_id, **explicit)  # type: ignore[arg-type]
+    row.updated_at = datetime.now(UTC)
+    session.flush()
+    return row
 
 
 def _parse_signal(payload: Any) -> dict[str, Any]:
@@ -1031,4 +1141,229 @@ def handle_transfer_settled(
         "action": decision.action,
         "score": int(decision.score),
         "matched_rules": list(decision.matched_rules),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Perfil de comportamiento alimentado por historial (E6-T03, HU20).
+# ---------------------------------------------------------------------------
+
+#: Consumidor para `shared.processed_events` (idempotencia del perfil:
+#: un evento repetido no actualiza dos veces el perfil).
+CONSUMER_PROFILE = "risk-profile"
+
+#: Ventana del perfil en `config.parameters` (regla de oro 6): las
+#: operaciones de los ultimos N dias alimentan el promedio. Default 90.
+PROFILE_WINDOW_KEY = "risk.profile_window_days"
+PROFILE_WINDOW_DEFAULT_DAYS = 90
+
+
+def profile_window_days(session: Session) -> int:
+    """Dias de historial que alimentan el promedio (via `shared/config`).
+
+    Nunca lanza: clave ausente/ilegible/invalida -> default `90`
+    (mismo patron best-effort que `shared/config`).
+    """
+    from app.modules.shared.config import parameters as params
+
+    return params.get_int_parameter(
+        session, PROFILE_WINDOW_KEY, PROFILE_WINDOW_DEFAULT_DAYS, minimum=1
+    )
+
+
+def _window_operation_count(session: Session, user_id: uuid.UUID) -> int:
+    """Operaciones del titular en la ventana del perfil (incluye la en curso).
+
+    Solo lectura por la fachada de `transactions` (D-01: `risk` no
+    importa sus modelos). Un fallo de lectura se propaga (D-04: el
+    handler revierte y re-lanza para el backoff del worker).
+    """
+    from app.modules.transactions.service import count_recent_operations as _count_recent
+
+    window_seconds = profile_window_days(session) * 86400
+    return max(0, int(_count_recent(session, user_id, window_seconds=window_seconds)))
+
+
+def _utc_hour(moment: datetime | None) -> int | None:
+    """Hora UTC (`0..23`) de un instante o `None` (tolerante)."""
+    if not isinstance(moment, datetime):
+        return None
+    current = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return int(current.astimezone(UTC).hour)
+
+
+def _clean_country(*candidates: Any) -> str | None:
+    """Primer pais valido (`strip` + `UPPER`, `1..8` chars) o `None`."""
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip() and len(candidate.strip()) <= 8:
+            return candidate.strip().upper()
+    return None
+
+
+def _clean_device(*candidates: Any) -> str | None:
+    """Primer dispositivo valido (no vacio, `<= 128`) o `None`."""
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip() and len(candidate) <= 128:
+            return candidate.strip()
+    return None
+
+
+def _coerce_uuid(value: Any) -> uuid.UUID | None:
+    """UUID o `None` (sin lanzar; `user_id`/`transaction_id` tolerantes)."""
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _observation_from_transaction(
+    tx: Any, payload: dict[str, Any]
+) -> profile_domain.BehaviorObservation:
+    """Observacion de una operacion del motor (sin PII).
+
+    Monto/moneda/hora del registro de `transactions` (leido por
+    fachada, sin importar sus modelos); pais/dispositivo del payload
+    o de `tx.meta` (lo que traiga). La moneda se mapea pero no se
+    persiste (el promedio del MVP es agnostico a la moneda, igual que
+    la comparacion de `UNUSUAL_AMOUNT`).
+    """
+    meta = tx.meta if isinstance(getattr(tx, "meta", None), dict) else {}
+    created = getattr(tx, "created_at", None)
+    return profile_domain.BehaviorObservation(
+        amount_minor=int(tx.amount_minor),
+        currency=str(tx.currency).strip().upper() if isinstance(tx.currency, str) else None,
+        country=_clean_country(
+            payload.get("country"), payload.get("country_code"), meta.get("country")
+        ),
+        hour=_utc_hour(created),
+        device_id=_clean_device(payload.get("device_id"), meta.get("device_id")),
+    )
+
+
+def handle_profile_transaction(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+    source: str = "transaction.initiated",
+) -> dict[str, Any]:
+    """Alimenta el perfil desde `transaction.initiated`/`transfer.settled`.
+
+    Idempotente por `event_id` (consumidor `CONSUMER_PROFILE`): el
+    replay retorna `consumed=False` sin efectos. Lee la operacion por
+    la fachada de `transactions` (el `initiated` no trae `user_id`) y
+    actualiza monto promedio (media incremental entera con
+    `ROUND_HALF_UP` en la ventana `risk.profile_window_days`), horas,
+    paises y dispositivo. `flush` sin `commit`; fallo -> rollback y
+    re-lanza (D-04). Nunca mueve dinero ni toca el `score`.
+    """
+    from app.modules.shared import repository as shared_repo
+
+    if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+        return {"consumed": False, "reason": "duplicate"}
+    data = dict(payload) if isinstance(payload, dict) else {}
+    transaction_id = _coerce_uuid(data.get("transaction_id"))
+    if transaction_id is None:
+        logger.warning("risk perfil sin transaction_id: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction-id"}
+    from app.modules.transactions.service import find_transaction_by_id as _find_tx
+
+    tx = _find_tx(session, transaction_id)
+    if tx is None:
+        logger.warning("risk perfil sin operacion: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-transaction"}
+    owner = tx.initiator_user_id if tx.initiator_user_id is not None else None
+    if owner is None:
+        owner = _coerce_uuid(data.get("user_id"))
+    if owner is None:
+        logger.warning("risk perfil sin titular: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-user-id"}
+    observation = _observation_from_transaction(tx, data)
+    profile = update_behavior(session, owner, observation)
+    logger.info("risk perfil actualizado user_avg=%s", int(profile.avg_amount_minor or 0))
+    return {
+        "consumed": True,
+        "source": source,
+        "avg_amount_minor": int(profile.avg_amount_minor or 0),
+        "usual_countries": list(profile.usual_countries or []),
+        "usual_hours": list(profile.usual_hours or []),
+        "last_device_id": profile.last_device_id,
+    }
+
+
+def handle_profile_login(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    """Alimenta el perfil desde `auth.login_succeeded` (E6-T03).
+
+    Solo hora/dispositivo/pais cuando el payload los trae (sin monto:
+    el promedio se conserva; sin tocar el `score`). Idempotente por
+    `event_id` (consumidor `CONSUMER_PROFILE`). `flush` sin `commit`;
+    fallo -> rollback y re-lanza. Sin PII.
+    """
+    from app.modules.shared import repository as shared_repo
+
+    if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+        return {"consumed": False, "reason": "duplicate"}
+    data = dict(payload) if isinstance(payload, dict) else {}
+    owner = _coerce_uuid(data.get("user_id"))
+    if owner is None:
+        logger.warning("risk perfil login sin titular: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-user-id"}
+    observation = profile_domain.BehaviorObservation(
+        country=_clean_country(data.get("country"), data.get("country_code")),
+        hour=_utc_hour(at),
+        device_id=_clean_device(data.get("device_id")),
+    )
+    profile = update_behavior(session, owner, observation)
+    return {
+        "consumed": True,
+        "source": "auth.login_succeeded",
+        "usual_countries": list(profile.usual_countries or []),
+        "usual_hours": list(profile.usual_hours or []),
+        "last_device_id": profile.last_device_id,
+    }
+
+
+def handle_profile_failed_attempt(
+    session: Session,
+    *,
+    event_id: uuid.UUID | str,
+    payload: dict[str, Any],
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    """Complementa el perfil desde `auth.failed_attempt` (E6-T03).
+
+    Solo hora/dispositivo (la severidad la posee `E2-T20`: este
+    consumo NO toca `score` ni notifica, para no duplicar su efecto).
+    Idempotente por `event_id` (consumidor `CONSUMER_PROFILE`).
+    `flush` sin `commit`; fallo -> rollback y re-lanza. Sin PII.
+    """
+    from app.modules.shared import repository as shared_repo
+
+    if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+        return {"consumed": False, "reason": "duplicate"}
+    data = dict(payload) if isinstance(payload, dict) else {}
+    owner = _coerce_uuid(data.get("user_id"))
+    if owner is None:
+        logger.warning("risk perfil fallo sin titular: registrado sin efectos")
+        return {"consumed": True, "reason": "missing-user-id"}
+    observation = profile_domain.BehaviorObservation(
+        hour=_utc_hour(at),
+        device_id=_clean_device(data.get("device_id")),
+    )
+    profile = update_behavior(session, owner, observation)
+    return {
+        "consumed": True,
+        "source": "auth.failed_attempt",
+        "score": int(profile.score or 0),
+        "usual_hours": list(profile.usual_hours or []),
+        "last_device_id": profile.last_device_id,
     }

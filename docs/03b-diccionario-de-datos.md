@@ -814,6 +814,18 @@ Indices: `(account_id, created_at DESC)`.
 | score | SMALLINT | No | 0 | | Puntaje. |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
 
+> Alimentacion por historial (E6-T03, HU20; sin migracion: sin columnas
+> nuevas): `avg_amount_minor` = media incremental entera con `ROUND_HALF_UP`
+> (`(avg*ops + monto)/(ops+1)`, sin `float`; `ops` = operaciones en la
+> ventana `risk.profile_window_days` (default 90 dias, `config.parameters`)
+> menos la operacion en curso; con `avg == 0` la observacion funda el
+> promedio sin diluir con el historial previo al despliegue).
+> `usual_countries`/`usual_hours` = union por orden de aparicion acotada a
+> los ultimos 5; `last_device_id` = ultimo dispositivo observado. El
+> `score` lo poseen `E2-T20`/`E6-T14` (aqui nunca se toca). La moneda se
+> mapea pero no se persiste (promedio agnostico, igual que la comparacion
+> de `UNUSUAL_AMOUNT` en `E6-T02`).
+
 ### 11.3 `alerts`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |

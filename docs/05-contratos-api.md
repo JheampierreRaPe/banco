@@ -1329,6 +1329,34 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > - Emite `pocket.created` por `outbox` (payload sin PII: `pocket_id`, `account_id`,
 >   `user_id`, `currency`, `status`) + auditoria best-effort `fx.pocket.opened`.
 >   **No mueve dinero** (sin asientos ni saldos; el primer abono es `E7-T05`).
+>
+> Contrato E7-T09 (HU25 CA-01..CA-04, `Bearer`; el titular es el `sub` del JWT):
+> - `GET /fx/rates?base=PEN&quote=USD` -> `200 {"data": {base, quote, rate
+>   (string exacto, `Decimal`), source (`mock`/`http`/`seed`), fetched_at,
+>   ttl_seconds}, "meta": {}}` y persiste el snapshot en `fx_rates`
+>   (`source`/`ttl_seconds` del proveedor). Par no soportado / `base == quote` /
+>   moneda fuera del MVP (`PEN`/`USD`/`EUR`) -> `422 VALIDATION_ERROR`;
+>   proveedor caido -> `503 FX_RATE_UNAVAILABLE`; timeout -> `502 FX_RATE_TIMEOUT`.
+> - `POST /fx/quotes` body `{base, quote, source_amount_minor (> 0)}` ->
+>   `201 {"data": {quote_id, base, quote, rate, spread (= 0; el spread dinamico
+>   es `E7-T10`), source_amount_minor, target_amount_minor, expires_at
+>   (= ahora + `fx.quote_ttl_seconds`, default `30`), status (= ACTIVE)},
+>   "meta": {"replayed"}}`. Calculo en `Decimal` exacto: `target =
+>   source / (rate + spread)` cuantizado al centavo con `ROUND_HALF_UP`
+>   (supuesto aprobado por el orquestador; p. ej. `100 / 8.00 = 12.5 -> 13`);
+>   la tasa significa unidades de `base` por 1 unidad de `quote`
+>   (coherente con el adaptador `E7-T08`: `PEN/USD = 3.80` son `3.80 PEN`
+>   por cada `USD`). `Idempotency-Key` opcional: misma clave + mismo cuerpo ->
+>   misma cotizacion (`replayed=true`, sin duplicar; se re-lee con vigencia
+>   on-read); misma clave + distinto cuerpo -> `409 CONFLICT`.
+> - `GET /fx/quotes/{id}` -> `200` con la cotizacion; vencida
+>   (`now >= expires_at`) se reporta `EXPIRED` (expiracion on-read: el backend
+>   marca `ACTIVE -> EXPIRED` y es la autoridad de la vigencia; una `EXPIRED`
+>   no se puede ejecutar, la ejecuta `E7-T11`); ajena o inexistente -> `404
+>   NOT_FOUND` neutro.
+> - Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422 VALIDATION_ERROR`;
+>   `404 NOT_FOUND`; `409 CONFLICT`. Auditoria best-effort `fx.quote.created`
+>   (sin PII). **No mueve dinero** (sin asientos ni saldos).
 
 ### 6.7 Riesgo, cumplimiento y auditoria (panel interno)
 

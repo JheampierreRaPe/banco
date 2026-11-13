@@ -868,6 +868,24 @@ eventos (`outbox`/`inbox`).
   `pocket.created` por `outbox` (payload sin PII: `pocket_id`,
   `account_id`, `user_id`, `currency`, `status`) + auditoria best-effort
   `fx.pocket.opened`. **No mueve dinero** (sin asientos ni saldos).
+- **Tasas y cotizaciones (E7-T09, HU25 CA-01..CA-04):** `fx.service.quotes`
+  (`get_rate`, `create_quote`, `get_quote`, `create_quote_idempotent`;
+  `flush` sin `commit`) + calculo puro `fx.domain.target_for` + endpoints
+  `GET /api/v1/fx/rates`, `POST /api/v1/fx/quotes` (`201`;
+  `Idempotency-Key` opcional pero respetada, `meta.replayed`),
+  `GET /api/v1/fx/quotes/{id}` (contrato en `docs/05#6.6`). `get_rate`
+  consulta el adaptador `E7-T08` y persiste el snapshot en `fx_rates`
+  (`source`/`ttl_seconds` del proveedor); `create_quote` valida monedas
+  MVP (`PEN`/`USD`/`EUR`), monto `> 0` y `base != quote`, fija
+  `expires_at = now + fx.quote_ttl_seconds` (default `30`,
+  `config.parameters`) y persiste `fx_quotes` en `ACTIVE`; el destino se
+  calcula en `Decimal` (`source / (rate + spread)`) con `ROUND_HALF_UP`
+  al centavo (supuesto aprobado por el orquestador; `spread` default `0`,
+  el dinamico es `E7-T10`). `get_quote` expira on-read (`ACTIVE` vencida
+  -> `EXPIRED`); ajena/inexistente -> `404` neutro; misma clave +
+  distinto cuerpo -> `409`. Auditoria best-effort `fx.quote.created`
+  (sin PII, sin evento de negocio). **No mueve dinero** (la ejecucion
+  es `E7-T11`).
 
 ## `risk`
 

@@ -1,13 +1,14 @@
-"""Esquemas de bolsillos de ahorro (E7-T02, HU24).
+"""Esquemas de bolsillos de ahorro (E7-T02, HU24) y cotizaciones (E7-T09, HU25).
 
 Dinero entero en centimos (`int`, nunca `float`, regla de oro 3);
-`yield_rate` como `Decimal` en el request (se serializa a string).
-Sin PII: solo UUIDs, nombre del bolsillo, moneda y montos.
+tasas/spread/`yield_rate` como `Decimal` en el request (se
+serializan a string). Sin PII: solo UUIDs, monedas y montos.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -50,9 +51,57 @@ class PocketsListResponse(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class QuoteCreate(BaseModel):
+    """Body de `POST /fx/quotes` (validacion estructural; el servicio valida negocio)."""
+
+    base: str = Field(..., description="Moneda origen: PEN, USD o EUR")
+    quote: str = Field(..., description="Moneda destino: PEN, USD o EUR (distinta de base)")
+    source_amount_minor: int = Field(..., description="Monto origen en centimos (> 0)")
+
+
+class QuoteData(BaseModel):
+    """Vista publica de una cotizacion congelada (E7-T09, HU25)."""
+
+    quote_id: uuid.UUID
+    base: str
+    quote: str
+    rate: Decimal
+    spread: Decimal
+    source_amount_minor: int
+    target_amount_minor: int
+    expires_at: datetime
+    status: str
+
+
+class QuoteResponse(BaseModel):
+    data: QuoteData
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class RateData(BaseModel):
+    """Vista publica de la tasa vigente (E7-T09, HU25)."""
+
+    base: str
+    quote: str
+    rate: Decimal
+    source: str
+    fetched_at: datetime
+    ttl_seconds: int
+
+
+class RateResponse(BaseModel):
+    data: RateData
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
 __all__ = [
     "PocketCreate",
     "PocketData",
     "PocketResponse",
     "PocketsListResponse",
+    "QuoteCreate",
+    "QuoteData",
+    "QuoteResponse",
+    "RateData",
+    "RateResponse",
 ]

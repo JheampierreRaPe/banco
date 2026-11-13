@@ -993,40 +993,46 @@ eventos (`outbox`/`inbox`).
   eventos; sin PII/secretos en logs.
 - **Motor de matching con tolerancias (E5-T18 corte 1, HU19):** dominio puro
   `reconciliation/domain/matching.py` (`match_items(internal, clearing,
-  tolerances) -> MatchResult`), determinista y sin I/O: empareja por
-  `external_ref` (uno a uno, sin reutilizar) en **dos pasadas**: la pasada 1
-  resuelve solo los pares que clasifican como `Match` (exacto o tolerado) y
-  consume la operacion; la pasada 2 clasifica los sobrantes como excepcion.
-  Mejor candidato con prioridad `EXACT` > tolerado (`AMOUNT_DIFF`/`DATE_DIFF`)
-  > `CURRENCY_MISMATCH` > fuera de tolerancia; califica el par conciliado
-  como `EXACT`, `AMOUNT_DIFF` o `DATE_DIFF` (diferencia dentro de tolerancia)
-  y el resto como excepcion tipada (`CURRENCY_MISMATCH`,
-  `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia con el detalle numerico,
-  `MISSING_INTERNAL`, `MISSING_EXTERNAL`).
-  **Riesgo residual (corte 2):** la pasada 1 es greedy por puntaje
-  (`matching.py:383-394`, `_pair_key` en `:426-447`) y **no maximiza** el
-  numero de emparejamientos entre pares tolerados. Con `external_ref`
-  distintas, el orden por puntaje puede consumir una operacion que otro
-  par tolerado (o exacto) necesitaba, perdiendo un match tolerado y
-  reportando una **excepcion falsa**. Decision pendiente para el corte 2:
-  asignacion por puntaje global que maximice la cardinalidad
-  (matching bipartito) o exigir **referencia unica por operacion**. Mientras
-  no se decida, el corte 2 debe cubrir este caso con pruebas y documentar
-  la excepcion como posible falso positivo (no como regla
-  definitiva).
+  tolerances, *, max_candidate_pairs) -> MatchResult`), determinista y sin I/O:
+  empareja por `external_ref` (uno a uno, sin reutilizar) con **cardinalidad
+  maxima por ref** (matching bipartito): primero los `EXACT` (componentes
+  completas por `(monto, moneda, fecha)`, en orden lexicografico) y despues
+  los tolerados con aumento de caminos (Kuhn) en orden fijo (`item_id` /
+  `op_id`; estable a igualdad de cardinalidad); los sobrantes se clasifican
+  como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
+  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
+  en `CURRENCY_MISMATCH` desempata la cercania (monto/fecha) antes que el
+  `op_id`; califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o
+  `DATE_DIFF` (diferencia dentro de tolerancia) y el resto como excepcion
+  tipada (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia
+  con el detalle numerico —detalle `!= 0` por invariante—, `MISSING_INTERNAL`,
+  `MISSING_EXTERNAL`). `MatchResult` expone tuplas inmutables (acepta listas
+  y las convierte).
+  **Rendimiento/cota:** indice por monto (`bisect` sobre la ventana de
+  tolerancia + filtro de moneda/signo/fecha: `O(n log n + k)`, sin `O(n^2)`
+  con tolerancia 0/estrecha) y cota `MAX_TOLERATED_CANDIDATE_PAIRS`
+  (`250_000` pares/grupo, `~500x500`, configurable) que falla con `ValueError`
+  claro ante refs repetidas patologicas con tolerancia amplia. El caso 2x2
+  del revisor da **2 matches** (`it-a`/`op-2` + `it-b`/`op-1`) y 0
+  excepciones (el greedy anterior daba 1 + falso positivo; en el barrido 2x2
+  hubo 0 perdidas de `EXACT`).
   Politica de signo: montos != 0 (negativos = reversos, contracargos o ajustes);
   un `Match` exige **mismo signo** y la tolerancia compara la diferencia
   absoluta (signos opuestos nunca son `Match`). Convencion de signos:
   `amount_diff_minor = clearing - internal` (ej. op `100_00` vs item `99_00`
   -> `-100`), `date_diff_days = clearing_date - internal_date`. Tolerancias
-  enteras por parametro (default `0`/`0`; mapping con claves estrictas:
-  `amount_tolerance_minor`/`date_tolerance_days`, typo -> `TypeError`); el
-  corte 2 las lee de `config.parameters`
+  enteras por parametro (default `0`/`0`; mapping con claves aceptadas
+  `amount_tolerance_minor`/`date_tolerance_days`, **ausentes -> `0`**, solo
+  desconocidas lanzan `TypeError`); el corte 2 las lee de `config.parameters`
   (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`) y debe
   **acotarlas** (validar tipos/rangos + techo) antes de cruzar; montos en
   centimos sin `float`; moneda ISO-4217 ASCII (`re.fullmatch(r"[A-Z]{3}")`);
   `external_ref` obligatorio y no vacio (el fallback para refs vacias es
   decision del corte 2); sin importar modelos de `transactions`.
+  **Reversos/fachada (verificar en el corte 2):** el corte 2 debe verificar
+  como `transactions.service.list_reconciliation_candidates` representa los
+  reversos (monto negativo vs monto positivo + `type='REVERSAL'`) antes de
+  adaptar los dicts al dominio.
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

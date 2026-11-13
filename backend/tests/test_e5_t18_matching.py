@@ -685,3 +685,163 @@ def test_exceptions_sorted_by_reason_then_ids():
     assert reasons.count(MISSING_EXTERNAL) == 1
     assert reasons.count(MISSING_INTERNAL) == 1
     assert reasons.count(AMOUNT_DIFF) == 1
+
+
+# --- Fix PR #25 (2026-11-13): cardinalidad maxima entre tolerados ---
+
+
+def test_max_cardinality_cross_tolerated_beats_greedy():
+    """El greedy por puntaje elegia it-a/op-1 y dejaba un falso positivo.
+
+    matching bipartito maximo cruza it-a/op-2 + it-b/op-1 = 2 matches.
+    Falla sin el fix (1 match + 1 excepcion) y pasa con el.
+    """
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
+    result = match_items(
+        [
+            _op(op_id="op-1", ref="REF-X", amount=100_00),
+            _op(op_id="op-2", ref="REF-X", amount=100_12),
+        ],
+        [
+            _item(item_id="it-a", ref="REF-X", amount=100_02),
+            _item(item_id="it-b", ref="REF-X", amount=99_90),
+        ],
+        tol,
+    )
+    assert result.matched_count == 2
+    assert result.exception_count == 0
+    assert {(m.clearing_id, m.internal_id) for m in result.matches} == {
+        ("it-a", "op-2"),
+        ("it-b", "op-1"),
+    }
+    assert {m.qualifier for m in result.matches} == {AMOUNT_DIFF}
+
+
+def test_max_cardinality_stable_under_permutation():
+    import itertools
+
+    internal = [
+        _op(op_id="op-1", ref="REF-X", amount=100_00),
+        _op(op_id="op-2", ref="REF-X", amount=100_12),
+    ]
+    clearing = [
+        _item(item_id="it-a", ref="REF-X", amount=100_02),
+        _item(item_id="it-b", ref="REF-X", amount=99_90),
+    ]
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
+    expected = match_items(internal, clearing, tol)
+    for perm_in, perm_out in itertools.product(
+        itertools.permutations(internal), itertools.permutations(clearing)
+    ):
+        assert match_items(list(perm_in), list(perm_out), tol) == expected
+
+
+def test_exact_buckets_pair_lexicographically():
+    result = match_items(
+        [_op(op_id="op-2"), _op(op_id="op-1")],
+        [_item(item_id="it-b"), _item(item_id="it-a")],
+    )
+    assert result.matched_count == 2
+    assert result.exception_count == 0
+    assert {(m.clearing_id, m.internal_id) for m in result.matches} == {
+        ("it-a", "op-1"),
+        ("it-b", "op-2"),
+    }
+
+
+def test_recon_exception_zero_diffs_rejected():
+    from app.modules.reconciliation.domain.matching import ReconException
+
+    with pytest.raises(ValueError, match="distinto de cero"):
+        ReconException(
+            reason=AMOUNT_DIFF,
+            internal_id="op-1",
+            clearing_id="it-1",
+            amount_diff_minor=0,
+        )
+    with pytest.raises(ValueError, match="distinto de cero"):
+        ReconException(reason=DATE_DIFF, internal_id="op-1", clearing_id="it-1", date_diff_days=0)
+
+
+def test_mapping_missing_keys_default_to_zero():
+    from app.modules.reconciliation.domain.matching import _coerce_tolerances
+
+    assert _coerce_tolerances({}) == Tolerances()
+    assert _coerce_tolerances({"amount_tolerance_minor": 50}) == Tolerances(
+        amount_tolerance_minor=50, date_tolerance_days=0
+    )
+    result = match_items([_op()], [_item(amount=100_50)], {"amount_tolerance_minor": 50})
+    assert result.matched_count == 1
+    assert result.matches[0].qualifier == AMOUNT_DIFF
+
+
+def test_currency_mismatch_closest_operation_wins():
+    result = match_items(
+        [
+            _op(op_id="op-z", ref="REF-C", amount=100_00, currency="USD"),
+            _op(op_id="op-a", ref="REF-C", amount=999_00, currency="EUR"),
+        ],
+        [_item(item_id="it-1", ref="REF-C", amount=100_00, currency="PEN")],
+    )
+    assert result.matched_count == 0
+    assert result.exception_count == 2
+    by_internal = {e.internal_id: e for e in result.exceptions}
+    assert by_internal["op-z"].reason == CURRENCY_MISMATCH
+    assert by_internal["op-z"].clearing_id == "it-1"
+    assert by_internal["op-a"].reason == MISSING_EXTERNAL
+
+
+def test_candidate_safety_bound_raises_value_error():
+    tol = Tolerances(amount_tolerance_minor=10**9, date_tolerance_days=10**4)
+    internal = [_op(op_id=f"op-{i}", ref="REF-G", amount=100_00 + i) for i in range(5)]
+    clearing = [_item(item_id=f"it-{i}", ref="REF-G", amount=200_00 + i) for i in range(5)]
+    with pytest.raises(ValueError, match="cota de seguridad"):
+        match_items(internal, clearing, tol, max_candidate_pairs=10)
+    with pytest.raises(ValueError, match="max_candidate_pairs"):
+        match_items(internal, clearing, tol, max_candidate_pairs=-1)
+    with pytest.raises(TypeError, match="max_candidate_pairs"):
+        match_items(internal, clearing, tol, max_candidate_pairs=True)
+
+
+def test_narrow_tolerance_does_not_build_quadratic_pairs():
+    import time
+    from unittest.mock import patch
+
+    import app.modules.reconciliation.domain.matching as matching_mod
+
+    internal = [_op(op_id=f"op-{i:03d}", ref="REF-P", amount=100_00 + i * 100) for i in range(300)]
+    clearing = [
+        _item(item_id=f"it-{i:03d}", ref="REF-P", amount=100_00 + i * 100) for i in range(300)
+    ]
+    tol = Tolerances(amount_tolerance_minor=10, date_tolerance_days=0)
+    calls = 0
+    real_classify = matching_mod._classify
+
+    def counting_classify(op, entry, t):
+        nonlocal calls
+        calls += 1
+        return real_classify(op, entry, t)
+
+    start = time.perf_counter()
+    with patch.object(matching_mod, "_classify", side_effect=counting_classify):
+        result = match_items(internal, clearing, tol)
+    elapsed = time.perf_counter() - start
+    assert result.matched_count == 300
+    assert result.exception_count == 0
+    # Camino indexado: ~O(n) clasificaciones, no O(n^2) = 90_000 pares.
+    assert calls < 5000
+    assert elapsed < 5.0
+
+
+def test_match_result_coerces_lists_to_tuples():
+    from app.modules.reconciliation.domain.matching import Match, MatchResult, ReconException
+
+    result = MatchResult(
+        matches=[Match(internal_id="op-1", clearing_id="it-1")],
+        exceptions=[ReconException(reason=MISSING_EXTERNAL, internal_id="op-2")],
+    )
+    assert isinstance(result.matches, tuple)
+    assert isinstance(result.exceptions, tuple)
+    assert result.matched_count == 1
+    assert result.exception_count == 1
+    assert result == MatchResult(matches=result.matches, exceptions=result.exceptions)

@@ -991,6 +991,18 @@ eventos (`outbox`/`inbox`).
   `RECONCILIATION_INGEST_ENABLED=0` (apagado por defecto) y
   `RECONCILIATION_JOBS_INTERVAL_SECONDS=300`. No mueve dinero ni emite
   eventos; sin PII/secretos en logs.
+- **Motor de matching con tolerancias (E5-T18 corte 1, HU19):** dominio puro
+  `reconciliation/domain/matching.py` (`match_items(internal, clearing,
+  tolerances) -> MatchResult`), determinista y sin I/O: empareja por
+  `external_ref` (uno a uno, sin reutilizar; mejor candidato por
+  moneda -> monto -> fecha), califica el par conciliado como `EXACT`,
+  `AMOUNT_DIFF` o `DATE_DIFF` (diferencia dentro de tolerancia) y el resto
+  como excepcion tipada (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera
+  de tolerancia con el detalle numerico, `MISSING_INTERNAL`,
+  `MISSING_EXTERNAL`). Tolerancias enteras por parametro (default `0`/`0`;
+  el corte 2 las lee de `config.parameters`
+  `reconciliation.amount_tolerance_minor`/`date_tolerance_days`); montos en
+  centimos sin `float`; sin importar modelos de `transactions`.
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

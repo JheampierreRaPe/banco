@@ -151,6 +151,7 @@ async def lifespan(app: FastAPI):
         credit_loan_jobs_interval_seconds,
         reconciliation_ingest_enabled,
         reconciliation_jobs_interval_seconds,
+        risk_profile_enabled,
         start_credit_loan_jobs_worker,
         start_outbox_worker,
         start_reconciliation_ingest_worker,
@@ -159,6 +160,7 @@ async def lifespan(app: FastAPI):
         subscribe_accounts_movements,
         subscribe_channel_lock,
         subscribe_risk_antifraud,
+        subscribe_risk_profile,
         subscribe_risk_security,
         subscribe_security_alerts,
         subscribe_unrecognized_reports,
@@ -174,6 +176,10 @@ async def lifespan(app: FastAPI):
     subscribe_security_alerts()
     subscribe_unrecognized_reports()
     subscribe_channel_lock()
+    if risk_profile_enabled():
+        subscribe_risk_profile()
+    else:
+        logger.info("risk_profile disabled")
     stop_event = None
     if _outbox_worker_enabled():
         _thread, stop_event = start_outbox_worker(interval_seconds=_outbox_poll_interval_seconds())

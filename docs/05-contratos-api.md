@@ -1382,11 +1382,34 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol);
 >   `404 NOT_FOUND` (codigo inexistente); `422 VALIDATION_ERROR`.
 >   No mueve dinero ni emite evento de negocio.
+>
+> Contrato E6-T03 `GET /api/v1/risk/profiles/{user_id}` (Bearer, rol
+> `fraud_analyst`/`admin`; HU20, fixes PR #26, `docs/03b#11.2`):
+> - `GET /risk/profiles/{user_id}` -> `200 {"data": {"user_id",
+>   "avg_amount_minor", "avg_amount_by_currency", "usual_countries",
+>   "usual_hours", "last_device_id", "score", "updated_at"}, "meta":
+>   {"request_id"}}` (perfil minimo sin PII; `user_id` es UUID;
+>   `avg_amount_minor` = promedio AGREGADO de la ventana (compatibilidad,
+>   documentado como agregado multi-moneda); `avg_amount_by_currency` =
+>   mapa `{moneda: promedio}` de la ventana real (`{}` sin historial);
+>   ambos derivan de la MISMA lectura en vivo (R6: coherentes aun con
+>   outbox retrasado; sin historial el escalar degrada al almacenado); `usual_*` como listas (`[]`, nunca `null`);
+>   `last_device_id` = identificador pseudonimo del dispositivo;
+>   `score` lo poseen `E2-T20`/`E6-T14`; `usual_countries` congelado en el
+>   MVP —`ATYPICAL_GEO` inactivo sin fuente server-side—; ventana de 90
+>   dias como constante de codigo).
+> - La lectura se audita (`risk.profile.viewed`, best-effort, sin PII)
+>   y no hace escrituras de negocio: no crea ni actualiza el perfil (la
+>   unica escritura posible es la auditoria best-effort).
+> - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol);
+>   `404 NOT_FOUND` (perfil inexistente o `user_id` invalido, neutro).
+>   Solo lectura (no crea el perfil), no mueve dinero ni emite eventos.
 
 | Metodo | Ruta | Rol |
 |---|---|---|
 | GET | `/risk/rules` | Analista de fraude. |
 | PUT | `/risk/rules/{code}` | Analista de fraude. |
+| GET | `/risk/profiles/{user_id}` | Analista de fraude. |
 | GET | `/risk/alerts` | Analista de fraude. |
 | POST | `/risk/alerts/{id}/resolve` | Analista de fraude. |
 | GET | `/compliance/screenings` | Oficial de cumplimiento. |

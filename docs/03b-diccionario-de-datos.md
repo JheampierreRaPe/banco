@@ -814,6 +814,36 @@ Indices: `(account_id, created_at DESC)`.
 | score | SMALLINT | No | 0 | | Puntaje. |
 | updated_at | TIMESTAMPTZ | No | now() | | - |
 
+> Alimentacion por historial (E6-T03, HU20, fixes PR #26; sin
+> migracion: sin columnas nuevas): `avg_amount_minor` = promedio
+> agregado RECALCULADO desde la ventana real (ultimos 90 dias, constante
+> de codigo en el MVP —la configurabilidad por admin via
+> `risk.profile_window_days` queda diferida a una migracion posterior—)
+> con la fachada `transactions.get_window_amount_stats` (solo estados
+> exitosos `SETTLED`/`POSTED`/`COMPLETED`/`CONCILIATED`; excluye
+> `REJECTED`, `PENDING_*`, `FAILED`, `CANCELLED`; dentro de la ventana;
+> redondeo entero `ROUND_HALF_UP`, sin `float`; el `0` no aporta). El
+> arranque en frio usa el historial real (sin EWMA); re-alimentar la
+> misma operacion converge al mismo valor (no duplica). El monto se
+> alimenta SOLO con `transfer.settled` en estado final
+> (`transaction.initiated` NO alimenta: sin doble conteo ni dependencia
+> de orden motor->perfil); los canales que no emiten `transfer.settled`
+> no alimentan el perfil (pero SI son evaluados por el motor).
+> `usual_hours` = union por orden de aparicion acotada a los ultimos 5;
+> `usual_countries` CONGELADO (no se puebla desde el cliente: el pais
+> nunca viaja en `metadata` y `ATYPICAL_GEO` queda inactivo hasta tener
+> fuente server-side IP/geo); `last_device_id` = ultimo dispositivo
+> CONFIABLE (login u operacion exitosa; un `auth.failed_attempt` es
+> "visto" pero no confiable y no lo toca —identificador pseudonimo—).
+> El `score` lo poseen `E2-T20`/`E6-T14` (aqui nunca se toca). La moneda
+> no se persiste por columna (el almacenado es agregado de compatibilidad;
+> la comparacion por moneda la resuelve el motor con el mapa por moneda
+> y el GET expone `avg_amount_by_currency`). La lectura del perfil se
+> audita (`risk.profile.viewed`, best-effort, sin PII).
+> Idempotencia real: `(event_id, consumer)` via `processed_events`
+> (consumidor `"risk-profile"`; un evento repetido no re-escribe; sin la
+> operacion encontrada NO se reclama y se reintenta).
+
 ### 11.3 `alerts`
 
 | Columna | Tipo | Nulo | Default | Clave | Descripcion |

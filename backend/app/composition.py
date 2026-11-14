@@ -259,6 +259,112 @@ def is_risk_antifraud_wired(bus: Any | None = None) -> bool:
         return False
 
 
+# ------------------------------------------------- Cableado E6-T03
+# Perfil de comportamiento (HU20, fixes PR #26 + R7): `risk` consume SOLO
+# `transfer.settled` (monto de estados finales exitosos + habitos),
+# `auth.login_succeeded` (`identity`, literal local en `risk.events`:
+# no existe en `app.core.events`), `auth.failed_attempt` (solo hora;
+# la severidad la sigue poseyendo `E2-T20`; aqui solo habitos) y
+# `transfer.reversed` (recalcula el promedio sin habitos, R7; literal
+# local en `risk.events`: canonico de
+# `transactions.service.reversal.TRANSFER_REVERSED_EVENT`).
+# `transaction.initiated` NO alimenta el perfil (A1: el monto se
+# alimenta SOLO con `transfer.settled`, sin doble conteo
+# iniciada+liquidada; sin dependencia de orden motor->perfil, M5; por
+# evento queda UN solo handler de perfil, M5). Los canales que no
+# emiten `transfer.settled` no alimentan el perfil, pero SI son
+# evaluados por el motor.
+# Cada consumidor es D-04 (sesion/`commit` propios, idempotente por
+# `processed_events` con el consumidor unico `"risk-profile"`); aqui
+# solo se suscriben al bus, sin logica. La suscripcion en el arranque
+# va detras del flag `RISK_PROFILE_ENABLED` (default `1`): los tests
+# que arrancan la app la apagan para no mover el bus global.
+
+
+def risk_profile_enabled() -> bool:
+    """Interruptor del perfil de comportamiento (`1` por defecto)."""
+    import os as _os
+
+    return (_os.getenv("RISK_PROFILE_ENABLED", "1").strip().lower() or "1") not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
+    """Suscribe la alimentacion del perfil al bus (E6-T03, HU20, A1/M5 + R7).
+
+    Idempotente: si los handlers ya estan registrados no los duplica.
+    `bus` por defecto es el bus global (`app.core.bus`). Suscribe UN
+    solo handler de perfil por evento: `transfer.settled`,
+    `auth.login_succeeded`, `auth.failed_attempt` (NO
+    `transaction.initiated`: el monto se alimenta SOLO del estado
+    final) y `transfer.reversed` (recalcula el promedio sin habitos,
+    R7). Retorna la tupla registrada (el arranque real la usa; los
+    tests la verifican).
+    """
+    from app.core import events as domain_events
+    from app.modules.risk.events import (
+        LOGIN_SUCCEEDED_EVENT,
+        TRANSFER_REVERSED_EVENT,
+        on_profile_auth_failed_attempt,
+        on_profile_login_succeeded,
+        on_profile_transfer_reversed,
+        on_profile_transfer_settled,
+    )
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    wanted: tuple[tuple[str, Any], ...] = (
+        (domain_events.TRANSFER_SETTLED, on_profile_transfer_settled),
+        (LOGIN_SUCCEEDED_EVENT, on_profile_login_succeeded),
+        (domain_events.AUTH_FAILED_ATTEMPT, on_profile_auth_failed_attempt),
+        (TRANSFER_REVERSED_EVENT, on_profile_transfer_reversed),
+    )
+    for event_type, handler in wanted:
+        handlers = list(getattr(bus, "_handlers", {}).get(event_type, []))
+        if handler not in handlers:
+            bus.subscribe(event_type, handler)
+    return (
+        on_profile_transfer_settled,
+        on_profile_login_succeeded,
+        on_profile_auth_failed_attempt,
+        on_profile_transfer_reversed,
+    )
+
+
+def is_risk_profile_wired(bus: Any | None = None) -> bool:
+    """`True` si la alimentacion del perfil esta suscrita al bus."""
+    from app.core import events as domain_events
+    from app.modules.risk.events import (
+        LOGIN_SUCCEEDED_EVENT,
+        TRANSFER_REVERSED_EVENT,
+        on_profile_auth_failed_attempt,
+        on_profile_login_succeeded,
+        on_profile_transfer_reversed,
+        on_profile_transfer_settled,
+    )
+
+    if bus is None:
+        from app.core.bus import get_default_bus as _default_bus
+
+        bus = _default_bus()
+    try:
+        handlers = getattr(bus, "_handlers", {})
+        return (
+            on_profile_transfer_settled in handlers.get(domain_events.TRANSFER_SETTLED, [])
+            and on_profile_login_succeeded in handlers.get(LOGIN_SUCCEEDED_EVENT, [])
+            and on_profile_auth_failed_attempt
+            in handlers.get(domain_events.AUTH_FAILED_ATTEMPT, [])
+            and on_profile_transfer_reversed in handlers.get(TRANSFER_REVERSED_EVENT, [])
+        )
+    except AttributeError:
+        return False
+
+
 # ------------------------------------------------- Cableado E6-T14
 # Cadena "no reconozco" (HU22): `notifications` emite
 # `security.operation_reported` -> `risk` escala (severidad + auditoria
@@ -980,6 +1086,7 @@ __all__ = [
     "is_channel_lock_wired",
     "is_movements_wired",
     "is_risk_antifraud_wired",
+    "is_risk_profile_wired",
     "is_risk_security_wired",
     "is_security_alerts_wired",
     "is_unrecognized_reports_wired",
@@ -988,6 +1095,7 @@ __all__ = [
     "reconciliation_jobs_interval_seconds",
     "resolve_account_projection",
     "resolve_balance_port",
+    "risk_profile_enabled",
     "run_credit_loan_jobs_once",
     "run_outbox_once",
     "run_reconciliation_ingest_once",
@@ -1001,6 +1109,7 @@ __all__ = [
     "subscribe_accounts_movements",
     "subscribe_channel_lock",
     "subscribe_risk_antifraud",
+    "subscribe_risk_profile",
     "subscribe_risk_security",
     "subscribe_security_alerts",
     "subscribe_unrecognized_reports",

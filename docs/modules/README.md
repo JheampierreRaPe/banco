@@ -404,8 +404,14 @@ eventos (`outbox`/`inbox`).
   `risk.assessment` best-effort sin PII). Cubre transferencias propias/de
   terceros y, por delegacion (`pay_express -> transfer_third_party`), QR y
   servicios; nunca creditos (esas fachadas crean su `Transaction` por otro
-  camino). Expone la fachada de lectura `count_recent_operations` (ventana de
-  `VELOCITY` para `risk`, D-01).
+  camino). Expone las fachadas de lectura `count_recent_operations` (ventana
+  de `VELOCITY` para `risk`, D-01), `find_transaction_by_id` (lectura puntual
+  para `risk`/jobs) y `get_window_amount_stats(session, user_id, *,
+  window_days, currency=None, exclude_transaction_id=None,
+  exclude_types=("LOAN_DISBURSEMENT",))` (E6-T03 fixes PR
+  #26 + residuales: suma/conteo por moneda de estados exitosos en ventana, sin
+  desembolsos (capital, no gasto); para el perfil
+  y el motor; D-01, solo lectura).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -951,14 +957,20 @@ eventos (`outbox`/`inbox`).
   (`BLOCK > HOLD > ALERT > ALLOW`; sin matches -> `ALLOW` con `reason` sin PII).
   Sin E/S, BD, red ni reloj: la fachada con BD, el hook en `transactions` y los
   consumidores son el corte 2. **No mueve dinero**.
-- **Fachada sincrona + hook + consumidores (E6-T02 corte 2, HU20):**
+- **Fachada sincrona + hook + consumidores (E6-T02 corte 2, HU20, fixes PR
+  #26):**
   `risk.service.evaluate_pre_transaction(session, *, user_id, amount_minor,
-  currency, device_id=None, country=None, hour=None, tx_type=None) ->
-  RiskDecision` (solo lectura: relee `risk_rules`/`risk_profiles` en cada
-  pasada, sin crear perfil; `operations_in_window` de `VELOCITY` cuenta la
-  ventana **incluyendo la operacion en curso** via la fachada de solo lectura
-  `transactions.count_recent_operations`; `< 1 s`; fail-open documentado ante
-  fallo tecnico —`risk` nunca bloquea a ciegas—). `transactions` la invoca en
+  currency, device_id=None, country=None, hour=None, tx_type=None,
+  exclude_transaction_id=None) -> RiskDecision` (solo lectura: relee
+  `risk_rules`/`risk_profiles` en cada pasada, sin crear perfil;
+  `operations_in_window` de `VELOCITY` cuenta la ventana **incluyendo la
+  operacion en curso** via la fachada de solo lectura
+  `transactions.count_recent_operations`; `UNUSUAL_AMOUNT` compara contra el
+  promedio **de la misma moneda** (M6: ventana real por moneda excluyendo la
+  operacion evaluada, degrada al perfil almacenado); el motor NO recibe
+  `metadata.country` del cliente (A4: `ATYPICAL_GEO` inactivo en el MVP);
+  `< 1 s`; fail-open documentado ante fallo tecnico —`risk` nunca bloquea a
+  ciegas—). `transactions` la invoca en
   `execute_transfer` (cubre transferencias y, por delegacion, QR/servicios via
   `pay_express`; nunca creditos): `BLOCK` -> `REJECTED` con
   `failure_code=RISK_BLOCKED` (sin saldos ni asientos), `HOLD` ->
@@ -973,6 +985,39 @@ eventos (`outbox`/`inbox`).
   (`composition.subscribe_risk_antifraud`). **No mueve dinero** ni crea
   `risk.alerts` (eso es `E6-T04`); E6-T02 queda `Hecho` (cierra G07 parcial:
   quedan `alerts`/perfil para `E6-T03`/`E6-T04` y la calibracion `E6-T06`).
+- **Perfil de comportamiento alimentado por historial (E6-T03, HU20, fixes
+  PR #26):** `risk/domain/profile.py` (`next_profile`, puro y determinista:
+  union acotada a los ultimos 5 en `usual_hours`, ultimo `last_device_id`
+  confiable; el `score` no se toca; el `0` no aporta) +
+  `risk.service.update_behavior(..., observation, event_id?)` (idempotente
+  por `(event_id, risk-profile)` via `processed_events`; validacion ANTES
+  de reclamar; promedio AGREGADO recalculado desde la ventana real de 90
+  dias —constante de codigo MVP— con la fachada de solo lectura
+  `transactions.get_window_amount_stats`: solo estados exitosos
+  `SETTLED`/`POSTED`/`COMPLETED`/`CONCILIATED`, redondeo entero
+  `ROUND_HALF_UP`; arranque en frio con historial real, sin EWMA; mapa por
+  moneda para el motor y el GET) + consumidores D-04
+  (`on_profile_transfer_settled` —UNICO alimentador monetario, solo estado
+  final; `transaction.initiated` NO alimenta: sin doble conteo ni orden
+  motor->perfil, un solo handler de perfil por evento—,
+  `on_profile_login_succeeded` hora/dispositivo confiable sin pais,
+  `on_profile_auth_failed_attempt` solo hora —el fallo no fija dispositivo—;
+  `on_profile_transfer_reversed` (R7: recalcula el promedio sin habitos,
+  la operacion revertida deja la ventana);
+  la severidad la posee `E2-T20`; sin operacion NO se reclama: se lanza
+  `ProfileRetryableError` y el publisher reintenta con backoff
+  (`FAILED` tras 5 intentos))
+  + `GET /api/v1/risk/profiles/{user_id}` (rol fraude, solo lectura sin
+  PII: promedio agregado + `avg_amount_by_currency` del mismo origen en
+  vivo (R6), listas `[]` nunca `null`, `user_id` UUID; `404` si inexistente
+  o `user_id` invalido; auditado `risk.profile.viewed` best-effort, sin
+  escrituras de negocio) + wiring
+  `composition.subscribe_risk_profile` (4 handlers tras el flag
+  `RISK_PROFILE_ENABLED`, default `1`, para no mover el bus global en
+  pruebas). `usual_countries` congelado y `ATYPICAL_GEO` inactivo en el MVP
+  (decision de alcance aceptada R5: sin fuente server-side IP/geo; el cliente
+  no elige su pais). **No mueve dinero** ni crea `risk.alerts` (eso es `E6-T04`); E6-T03 queda `Hecho`
+  (sin migracion; la ventana configurable por admin queda diferida).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume
@@ -983,7 +1028,7 @@ eventos (`outbox`/`inbox`).
   (tabla reservada a HU20, D-16): la alerta queda como evento + auditoria +
   severidad. Suscrito en el arranque (`composition.subscribe_unrecognized_reports`);
   no mueve dinero.
-- **Consume:** `transaction.initiated`, `transfer.settled`, `kyc.completed`, `auth.failed_attempt`.
+- **Consume:** `transaction.initiated`, `transfer.settled`, `auth.login_succeeded`, `kyc.completed`, `auth.failed_attempt`.
 - **Puede llamar a:** adaptador `SanctionsLists`, `transactions` (bloqueo), `notifications`, `audit`.
 - **Adaptador `SanctionsLists` (E6-T07, HU21):** `backend/app/adapters/sanctions_lists.py`
   (contrato en `docs/02#9`): `screen(*, subject_type, name, document_number=None,

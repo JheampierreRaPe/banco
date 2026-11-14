@@ -101,6 +101,9 @@ services:
       # migracion `0046_services_settlement` (PEN, ACTIVE); sin ella el pago/
       # recarga se rechaza fail-closed. Rotable por `.env` sin tocar codigo.
       WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID: ${WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID:-d0000000-0000-4000-8000-000000000001}
+      # Perfil de comportamiento HU20 (E6-T03, `risk`): con `0` el `lifespan`
+      # no suscribe `subscribe_risk_profile`. Flag de pruebas/operacion.
+      RISK_PROFILE_ENABLED: ${RISK_PROFILE_ENABLED:-1}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -147,6 +150,9 @@ services:
       # Misma cuenta de liquidacion que el backend (HU16): el worker la
       # necesita si alguna pasada de jobs dispara cobros de servicios.
       WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID: ${WALLET_SERVICES_SETTLEMENT_ACCOUNT_ID:-d0000000-0000-4000-8000-000000000001}
+      # Perfil de comportamiento HU20 (E6-T03, `risk`): con `0` el `lifespan`
+      # no suscribe `subscribe_risk_profile`. Flag de pruebas/operacion.
+      RISK_PROFILE_ENABLED: ${RISK_PROFILE_ENABLED:-1}
     depends_on:
       postgres:
         condition: service_healthy

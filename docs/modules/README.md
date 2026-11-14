@@ -406,6 +406,19 @@ eventos (`outbox`/`inbox`).
   servicios; nunca creditos (esas fachadas crean su `Transaction` por otro
   camino). Expone la fachada de lectura `count_recent_operations` (ventana de
   `VELOCITY` para `risk`, D-01).
+- **Fachada de candidatos para conciliacion (E5-T18 corte 2, HU19):**
+  `transactions.service.list_reconciliation_candidates(session, value_date,
+  currency) -> list[{transaction_id, external_ref, amount_minor, currency,
+  value_date, type, status}]` (solo lectura, sin `flush`/`commit`; orden
+  estable por `external_ref`/`transaction_id`). Alcance: moneda indicada,
+  estados conciliables (`POSTED`/`SETTLED`/`CONCILIATED`) y fecha valor del
+  dia (`settled_at` o, si aun no liquida, `created_at`); `value_date` exige
+  `date` y `currency` ISO-4217 (`TypeError`/`ValueError` mapeables a
+  `VALIDATION_ERROR`). Reversos verificados (nota (d) de `E5-T18`):
+  `amount_minor` siempre `> 0` y el reverso es `type='REVERSAL'` con monto
+  positivo (sin adaptacion de signo); filas sin `external_ref` usan
+  `metadata.reference` y, sin ambas, se omiten. La consume `reconciliation`
+  (`run_reconciliation`) sin importar modelos ajenos (regla de oro 4).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -1096,10 +1109,35 @@ eventos (`outbox`/`inbox`).
   centimos sin `float`; moneda ISO-4217 ASCII (`re.fullmatch(r"[A-Z]{3}")`);
   `external_ref` obligatorio y no vacio (el fallback para refs vacias es
   decision del corte 2); sin importar modelos de `transactions`.
-  **Reversos/fachada (verificar en el corte 2):** el corte 2 debe verificar
-  como `transactions.service.list_reconciliation_candidates` representa los
-  reversos (monto negativo vs monto positivo + `type='REVERSAL'`) antes de
-  adaptar los dicts al dominio.
+  **Reversos/fachada (verificado en el corte 2):**
+  `transactions.service.list_reconciliation_candidates` devuelve
+  `amount_minor` siempre `> 0` y el reverso es `type='REVERSAL'` con monto
+  positivo (nunca negativo): ambos lados del cruce son positivos y el
+  dominio (mismo signo para `Match`) no necesita adaptacion.
+- **Corrida persistida (E5-T18 corte 2, HU19):** servicio
+  `run_reconciliation(session, *, run_date, currency, executed_by=None)
+  -> ReconciliationRun` (misma sesion: `flush` sin `commit`): lee los
+  candidatos por la fachada, los `PENDING` de alcance exacto
+  (`value_date == run_date`, moneda), tolerancias y cotas desde
+  `config.parameters` (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`,
+  default `0`/`0` con techos `1_000_000`/`31 dias`;
+  `reconciliation.max_candidate_pairs` por grupo, default `250_000`, y
+  `reconciliation.max_candidate_pairs_per_run` por corrida, default
+  `1_000_000`, techo defensivo `5_000_000`), ejecuta el dominio min-cost
+  max-flow (cardinalidad maxima + maximo de `EXACT`; el ejemplo del
+  revisor da 2 `EXACT` + `AMOUNT_DIFF`), actualiza los items
+  (`MATCHED`/`EXCEPTION`) y cierra `reconciliation_runs` con contadores
+  (`matched_count`, `unmatched_count` = items no conciliados,
+  `total_minor` = suma de conciliados). Idempotencia por UQ
+  `(run_date, currency)`: `COMPLETED` se reutiliza, `RUNNING` concurrente
+  es `CONFLICT`, `FAILED` se reintenta en la misma fila; cota superada
+  (`CandidateBudgetExceeded`) deja la corrida `FAILED` sin parciales
+  (motivo `CANDIDATE_BUDGET_EXCEEDED`, sin `external_ref` en logs) porque
+  el cruce es puro y ocurre antes de mutar. Auditoria best-effort sin
+  PII. No mueve dinero ni crea asientos. Repositorio con
+  `create_run`/`get_run_by_date_currency`/`complete_run`/`fail_run`/
+  `mark_run_running`/`list_pending_items_for_run`/`mark_item_status`;
+  modelo `ReconciliationRun` (`0051_reconciliation_runs`).
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

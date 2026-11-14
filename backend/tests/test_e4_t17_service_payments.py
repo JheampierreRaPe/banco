@@ -1264,8 +1264,11 @@ def test_migration_chain_has_single_head_0042():
     # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
     # (esquema `reconciliation`, tras 0049).
     assert revisions.get("0050_reconciliation") == "0049_fx"
+    # E5-T18 corte 2 (2026-11-14): la cabeza avanza a 0051_reconciliation_runs
+    # (corridas de conciliacion + semillas de tolerancias/cotas, tras 0050).
+    assert revisions.get("0051_reconciliation_runs") == "0050_reconciliation"
     heads = [rev for rev in script.get_heads() if rev not in ()]
-    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
+    assert heads == ["0051_reconciliation_runs"], f"heads inesperados: {heads}"
 
 
 def test_migration_0046_seeds_demo_settlement_account():

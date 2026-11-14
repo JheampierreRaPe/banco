@@ -34,6 +34,9 @@ CLEARING_FILE_STATUSES = ("RECEIVED", "PROCESSED", "FAILED")
 #: Estados de `clearing_items.status` (`03b#12.1`, E5-T17).
 CLEARING_ITEM_STATUSES = ("PENDING", "MATCHED", "EXCEPTION")
 
+#: Estados de `reconciliation_runs.status` (`03b#12.2`, E5-T18 corte 2).
+RUN_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
+
 #: Direcciones de `clearing_items.direction` (`03b#12.1`, E5-T17).
 CLEARING_DIRECTIONS = ("INBOUND", "OUTBOUND")
 
@@ -152,11 +155,80 @@ class ClearingItem(Base):
     file: Mapped[ClearingFile] = relationship(back_populates="items")
 
 
+class ReconciliationRun(Base):
+    """Corrida de conciliacion (`03b#12.2`, E5-T18 corte 2).
+
+    Una fila por (``run_date``, ``currency``) (UQ natural): reejecutar la
+    misma fecha/moneda es idempotente (``COMPLETED`` se reutiliza,
+    ``RUNNING`` concurrente es ``CONFLICT``, ``FAILED`` se reintenta en la
+    misma fila). ``matched_count`` = pares conciliados; ``unmatched_count``
+    = items de clearing no conciliados (lado clearing de las excepciones);
+    ``total_minor`` = suma en centimos de los items conciliados (nunca
+    ``float``). Sin PII: solo fecha, moneda y conteos. Los items los mueve
+    solo el servicio ``run_reconciliation`` (``PENDING`` -> ``MATCHED`` /
+    ``EXCEPTION``); este modelo no toca dinero ni asientos.
+    """
+
+    __tablename__ = "reconciliation_runs"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "run_date",
+            "currency",
+            name="uq_reconciliation_runs_date_currency",
+        ),
+        sa.CheckConstraint(
+            "status IN ('RUNNING','COMPLETED','FAILED')",
+            name="ck_reconciliation_runs_status",
+        ),
+        sa.CheckConstraint(
+            "matched_count >= 0",
+            name="ck_reconciliation_runs_matched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_count >= 0",
+            name="ck_reconciliation_runs_unmatched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "total_minor >= 0",
+            name="ck_reconciliation_runs_total_nonneg",
+        ),
+        sa.Index("ix_reconciliation_runs_status", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    run_date: Mapped[date] = mapped_column(sa.Date(), nullable=False)
+    currency: Mapped[str] = mapped_column(sa.CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(
+        sa.String(15), nullable=False, default="RUNNING", server_default="RUNNING"
+    )
+    matched_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    unmatched_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    # Suma en centimos de los items conciliados; nunca `float` (regla 3).
+    total_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    executed_by: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
     "CLEARING_DIRECTIONS",
     "CLEARING_FILE_STATUSES",
     "CLEARING_ITEM_STATUSES",
+    "RUN_STATUSES",
     "SCHEMA",
     "ClearingFile",
     "ClearingItem",
+    "ReconciliationRun",
 ]

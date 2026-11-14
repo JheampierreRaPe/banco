@@ -58,6 +58,7 @@ Frontera (reglas de oro 1/3/4/8):
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -1577,6 +1578,92 @@ def validate_holder(
     return result
 
 
+#: Estados del motor conciliables por `reconciliation` (E5-T18 corte 2):
+#: operaciones liquidadas o en firme. `REJECTED`/`FAILED` (negocio fallido)
+#: y `REVERSED` (fondos devueltos) nunca concilian; los intermedios
+#: (`INITIATED`/`VALIDATED`/`PENDING_AUTHORIZATION`/`AUTHORIZED`/
+#: `FUNDS_HELD`) aun no son firmes.
+RECONCILIATION_CONCILIABLE_STATUSES = ("POSTED", "SETTLED", "CONCILIATED")
+
+
+def list_reconciliation_candidates(
+    session: Session,
+    value_date: Any,
+    currency: str,
+) -> list[dict[str, Any]]:
+    """Candidatos internos para la conciliacion (E5-T18 corte 2, HU19).
+
+    Fachada de **solo lectura** para `reconciliation` (regla de oro 4: el
+    cruce se hace por IDs/dicts, nunca importando modelos ajenos): retorna
+    dicts minimos (`transaction_id`, `external_ref`, `amount_minor`,
+    `currency`, `value_date`, `type`, `status`), ordenados por
+    (`external_ref`, `transaction_id`). Sin `flush`/`commit`.
+
+    Alcance: operaciones con `currency`, estado conciliable
+    (`POSTED`/`SETTLED`/`CONCILIATED`) y fecha valor del dia
+    (`settled_at` o, si aun no liquida, `created_at`). `value_date` exige
+    `datetime.date` (sin hora) y `currency` ISO-4217 (se normaliza a
+    mayusculas); otro valor -> `ValueError` (`VALIDATION_ERROR`).
+
+    Representacion de reversos (verificado corte 2, nota (d) de `E5-T18`):
+    `transactions.amount_minor` es siempre `> 0` (CHECK) y el reverso es
+    una fila `type='REVERSAL'` con monto positivo (nunca negativo), asi que
+    ambos lados del cruce son positivos y el dominio (mismo signo para
+    `Match`) no necesita adaptacion. Filas sin `external_ref` ni
+    `metadata.reference` se omiten (no se inventa referencia).
+    """
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    if isinstance(value_date, _datetime) or not isinstance(value_date, _date):
+        raise TypeError(f"value_date debe ser datetime.date, recibido: {value_date!r}")
+    if not isinstance(currency, str):
+        raise TypeError(f"currency debe ser texto ISO-4217, recibido: {currency!r}")
+    code = currency.strip().upper()
+    if not code.isascii() or re.fullmatch(r"[A-Z]{3}", code) is None:
+        raise ValueError(f"currency debe ser ISO-4217 en mayusculas, recibido: {currency!r}")
+    effective = sa.func.coalesce(Transaction.settled_at, Transaction.created_at)
+    # Sin filtro de `external_ref` en SQL: una fila con `external_ref`
+    # NULL/vacio pero `metadata.reference` tambien es candidata (el
+    # descarte de vacias ocurre en Python, sin eco de valores).
+    stmt = (
+        sa.select(Transaction)
+        .where(
+            Transaction.currency == code,
+            Transaction.status.in_(RECONCILIATION_CONCILIABLE_STATUSES),
+            sa.func.date(effective) == value_date,
+        )
+        .order_by(Transaction.external_ref, Transaction.id)
+    )
+    rows = session.scalars(stmt).all()
+    candidates: list[dict[str, Any]] = []
+    for tx in rows:
+        ref = (tx.external_ref or "").strip()
+        if not ref and isinstance(tx.meta, dict):
+            fallback = tx.meta.get("reference")
+            ref = fallback.strip() if isinstance(fallback, str) else ""
+        if not ref:
+            continue
+        moment = tx.settled_at if tx.settled_at is not None else tx.created_at
+        if moment is None:
+            continue
+        day = moment.date() if isinstance(moment, _datetime) else moment
+        if not isinstance(day, _date):
+            continue
+        candidates.append(
+            {
+                "transaction_id": str(tx.id),
+                "external_ref": ref,
+                "amount_minor": int(tx.amount_minor),
+                "currency": tx.currency,
+                "value_date": day,
+                "type": tx.type,
+                "status": tx.status,
+            }
+        )
+    return candidates
+
+
 __all__ = [
     "DEFAULT_BALANCE_PORT",
     "FEE_ACCOUNT_CODE",
@@ -1590,6 +1677,7 @@ __all__ = [
     "LOAN_INSTALLMENT_TX_TYPE",
     "OWN_SETTLE_ENTRY_TYPE",
     "PORTFOLIO_ACCOUNT_CODE",
+    "RECONCILIATION_CONCILIABLE_STATUSES",
     "SETTLE_ENTRY_TYPE",
     "THIRD_PARTY_FEE_DEFAULT_MINOR",
     "THIRD_PARTY_FEE_PARAM_KEY",
@@ -1622,6 +1710,7 @@ __all__ = [
     "find_disbursement_tx",
     "find_transaction_by_id",
     "hold_src_hold_id",
+    "list_reconciliation_candidates",
     "mask_account_number",
     "pay_loan_installment",
     "resolve_third_party_fee",

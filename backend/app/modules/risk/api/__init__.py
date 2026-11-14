@@ -113,16 +113,45 @@ def _to_response(row: RiskRule) -> risk_schemas.RuleResponse:
     )
 
 
-def _to_profile_response(row) -> risk_schemas.ProfileResponse:
+def _to_profile_response(
+    row, *, by_currency: dict[str, int] | None = None
+) -> risk_schemas.ProfileResponse:
     return risk_schemas.ProfileResponse(
-        user_id=str(row.user_id),
+        user_id=row.user_id,
         avg_amount_minor=int(row.avg_amount_minor or 0),
-        usual_countries=list(row.usual_countries) if row.usual_countries is not None else None,
-        usual_hours=list(row.usual_hours) if row.usual_hours is not None else None,
+        avg_amount_by_currency=dict(by_currency or {}),
+        usual_countries=list(row.usual_countries or []),
+        usual_hours=list(row.usual_hours or []),
         last_device_id=row.last_device_id,
         score=int(row.score or 0),
         updated_at=row.updated_at,
     )
+
+
+def _audit_profile_viewed_best_effort(db: Session, *, analyst_id, profile_user_id) -> None:
+    """Audita `risk.profile.viewed` (B7, fixes PR #26; best-effort).
+
+    Sin PII en `metadata` (solo el hecho de la lectura; el `user_id`
+    del perfil va en `entity_id`, no en datos libres). Un fallo (p. ej.
+    tabla ausente en el harness de pruebas) revierte el savepoint y se
+    loguea sin romper la lectura.
+    """
+    try:
+        from app.modules.audit.service import record as audit_record
+    except ImportError:
+        logger.warning("risk audit no disponible: lectura sin auditoria")
+        return
+    try:
+        with db.begin_nested():
+            audit_record(
+                db,
+                actor=analyst_id,
+                action=risk_service.AUDIT_ACTION_PROFILE_VIEWED,
+                entity="risk_profile",
+                entity_id=profile_user_id,
+            )
+    except Exception as exc:  # noqa: BLE001 - best-effort documentado
+        logger.warning("risk auditoria de lectura no registrada error=%s", type(exc).__name__)
 
 
 def _request_id() -> str:
@@ -212,12 +241,17 @@ def get_risk_profile(
     analyst: RiskContext = Depends(get_risk_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Perfil de comportamiento (`E6-T03`): solo lectura, sin PII.
+    """Perfil de comportamiento (`E6-T03`, fixes PR #26): solo lectura, sin PII.
 
-    `avg_amount_minor` (media incremental entera), `usual_countries`/
-    `usual_hours` (top 5), `last_device_id`, `score`, `updated_at`.
+    `avg_amount_minor` (promedio agregado de la ventana —compatibilidad,
+    documentado como agregado multi-moneda), `avg_amount_by_currency`
+    (mapa `{moneda: promedio}` recalculado best-effort desde la ventana
+    real; `{}` si no hay historial o no se puede leer), `usual_countries`/
+    `usual_hours` (habitos conocidos; `[]` si no hay), `last_device_id`
+    (identificador pseudonimo del dispositivo, B7), `score`, `updated_at`.
     `user_id` malformado o perfil inexistente -> `404 NOT_FOUND`
-    (neutro, sin oraculo). Solo lectura: no crea el perfil.
+    (neutro, sin oraculo). Solo lectura: no crea el perfil. La lectura
+    se audita (`risk.profile.viewed`, best-effort, sin PII).
     """
     _ = analyst  # El rol solo hace gate (401/403 sin analista).
     try:
@@ -227,7 +261,19 @@ def get_risk_profile(
     row = risk_service.get_profile(db, wanted)
     if row is None:
         raise AppError(code="NOT_FOUND", message="perfil inexistente", status_code=404)
-    return {"data": _to_profile_response(row), "meta": {"request_id": _request_id()}}
+    by_currency = risk_service.profile_average_by_currency(db, wanted)
+    _audit_profile_viewed_best_effort(db, analyst_id=analyst.user_id, profile_user_id=wanted)
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001 - la lectura no depende del commit de auditoria
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+    return {
+        "data": _to_profile_response(row, by_currency=by_currency),
+        "meta": {"request_id": _request_id()},
+    }
 
 
 __all__ = ["get_risk_context", "router"]

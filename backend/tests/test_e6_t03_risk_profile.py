@@ -1,17 +1,19 @@
-"""Perfil de comportamiento alimentado por historial (E6-T03, HU20).
+"""Perfil de comportamiento alimentado por historial (E6-T03, HU20, fixes PR #26).
 
 Sobre SQLite en memoria + schemas ATTACH, sin red, sin `float`, sin PII:
 dinero de juguete (UUIDs sinteticos).
 
 Mapeo brief -> test:
-- dominio (media incremental, redondeo, horas/paises, topes) `test_domain_*`
-- consumidores (cada evento, replay, rollback) .............. `test_feed_*`
-- ventana configurable `risk.profile_window_days` .......... `test_window_*`
-- endpoint (existente/inexistente/RBAC) ..................... `test_endpoint_*`
-- integracion con el motor E6-T02 .......................... `test_engine_*`
-- cableado del bus + flags ................................. `test_wiring_*`
-- handlers D-04 (sesion/commit propios, rollback) ........... `test_handler_*`
-- sin PII / sin movimiento de dinero ........................ `test_no_*`
+- dominio (media incremental, redondeo, horas, topes, `0` no diluye) `test_domain_*`
+- consumidores (solo `settled` exitoso, replay, reintento, rollback) .. `test_feed_*`
+- ventana real por fachada (fria, N=3, expiracion, excluidos) ......... `test_window_*`
+- multi-moneda (mapa + motor por moneda) .............................. `test_currency_*`
+- endpoint (forma, listas `[]`, auditoria, RBAC) ...................... `test_endpoint_*`
+- integracion con el motor E6-T02 .................................... `test_engine_*`
+- cableado del bus + orden motor->perfil + flags ..................... `test_wiring_*`
+- handlers D-04 (sesion/commit propios, rollback) .................... `test_handler_*`
+- end-to-end outbox/bus -> perfil -> GET ............................. `test_e2e_*`
+- sin PII / sin movimiento de dinero ................................. `test_no_*`
 """
 
 from __future__ import annotations
@@ -129,17 +131,6 @@ def session(engine):
         yield s
     finally:
         s.close()
-
-
-def _set_param(session: Session, key: str, value: str) -> None:
-    session.execute(
-        sa.text(
-            "INSERT INTO config.parameters (id, key, value_json, module) "
-            "VALUES (:id, :key, :value, :module)"
-        ),
-        {"id": uuid.uuid4().hex, "key": key, "value": value, "module": "risk"},
-    )
-    session.flush()
 
 
 def _seed_conservative_rules(session: Session) -> None:
@@ -260,6 +251,15 @@ def test_domain_habits_merge_and_top5_recency():
     assert refresh.usual_hours == [20, 8]
 
 
+def test_domain_zero_amount_does_not_dilute():
+    """B3: `amount_minor=0` no aporta (conserva el promedio)."""
+    from app.modules.risk.domain.profile import next_profile
+
+    update = next_profile({"avg_amount_minor": 10_000}, {"amount_minor": 0}, operations=1)
+    assert update.avg_amount_minor is None, "el 0 no refunde el promedio"
+    assert update.operations is None
+
+
 def test_domain_malformed_observation_is_ignored():
     from app.modules.risk.domain.profile import next_profile
 
@@ -307,7 +307,7 @@ def test_domain_device_last_wins_and_score_untouched():
 # --------------------------------------------------------------- consumidores
 
 
-def test_feed_initiated_updates_profile_without_moving_money(session: Session):
+def test_feed_settled_feeds_profile_without_moving_money(session: Session):
     from app.modules.risk import service as risk_service
 
     tx = _transfer(session, 12_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
@@ -322,7 +322,7 @@ def test_feed_initiated_updates_profile_without_moving_money(session: Session):
     )
     session.commit()
 
-    assert outcome["consumed"] is True and outcome["source"] == "transaction.initiated"
+    assert outcome["consumed"] is True and outcome["source"] == "transfer.settled"
     assert outcome["avg_amount_minor"] == 12_000
     assert set(outcome) == {
         "consumed",
@@ -341,7 +341,8 @@ def test_feed_initiated_updates_profile_without_moving_money(session: Session):
     assert _journal_count(session) == before_entries, "alimentar no crea asientos"
 
 
-def test_feed_settled_reads_payload_user_and_country(session: Session):
+def test_feed_ignores_client_country(session: Session):
+    """A4: el `country` del payload no se persiste (el cliente no elige su pais)."""
     from app.modules.risk import service as risk_service
 
     tx = _transfer(session, 20_000)
@@ -355,16 +356,45 @@ def test_feed_settled_reads_payload_user_and_country(session: Session):
             "user_id": str(USER_A),
             "device_id": DEVICE_B,
             "country": "cl",
+            "country_code": "CL",
         },
         source="transfer.settled",
     )
     session.commit()
 
-    assert outcome["consumed"] is True and outcome["source"] == "transfer.settled"
+    assert outcome["consumed"] is True
     row = _profile(session)
     assert row.avg_amount_minor == 20_000
-    assert row.usual_countries == ["CL"]
+    assert list(row.usual_countries or []) == [], "pais del cliente: no alimenta"
     assert row.last_device_id == DEVICE_B
+
+
+def test_feed_double_event_same_operation_does_not_duplicate(session: Session):
+    """A1: `initiated` + `settled` de la misma operacion alimentan una sola vez."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+
+    first = risk_service.handle_profile_transaction(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"transaction_id": str(tx.id)},
+        source="transfer.settled",
+    )
+    session.commit()
+    # Re-alimentar la MISMA operacion con otro evento converge al mismo valor.
+    second = risk_service.handle_profile_transaction(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"transaction_id": str(tx.id)},
+        source="transfer.settled",
+    )
+    session.commit()
+
+    assert first["consumed"] is True and second["consumed"] is True
+    assert first["avg_amount_minor"] == second["avg_amount_minor"] == 10_000
+    assert _profile(session).avg_amount_minor == 10_000, "re-alimentar no duplica"
 
 
 def test_feed_replay_does_not_duplicate(session: Session):
@@ -395,21 +425,91 @@ def test_feed_replay_does_not_duplicate(session: Session):
     assert row.usual_hours == [hour] and row.last_device_id == DEVICE_A
 
 
-def test_feed_missing_transaction_marks_processed(session: Session):
+def test_feed_rejected_is_excluded(session: Session):
+    """A2: una transferencia REJECTED (fondos insuficientes) no alimenta."""
+    from app.modules.risk import service as risk_service
+    from app.modules.transactions import service as tx_service
+
+    rejected = tx_service.transfer_third_party(
+        session,
+        initiator_user_id=USER_B,
+        source_account_id=session.info["b1"],
+        target_account_id=session.info["a1"],
+        amount_minor=90_000,  # B solo tiene 5_000
+        currency="PEN",
+        idempotency_key=f"e6t03-{uuid.uuid4()}",
+    )
+    session.commit()
+    assert rejected.status == "REJECTED"
+
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(rejected.id)}
+    )
+    session.commit()
+
+    assert outcome == {
+        "consumed": True,
+        "reason": "non-successful-state",
+        "status": "REJECTED",
+    }
+    row = _profile(session, USER_B)
+    assert row is None or int(row.avg_amount_minor or 0) == 0, "REJECTED no crea promedio"
+
+
+def test_feed_pending_and_failed_are_excluded(session: Session):
+    """A2/M1: `PENDING_*` y `FAILED` tampoco aportan monto/conteo."""
     from app.modules.risk import service as risk_service
 
+    ok = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(ok.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    for status in ("PENDING_AUTHORIZATION", "FAILED"):
+        pending = _transfer(session, 90_000)
+        session.commit()
+        pending.status = status
+        session.commit()
+        outcome = risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(pending.id)}
+        )
+        session.commit()
+        assert outcome["consumed"] is True
+        assert outcome["reason"] == "non-successful-state", status
+    assert _profile(session).avg_amount_minor == 10_000, "pendientes/fallidas no cuentan"
+
+
+def test_feed_missing_transaction_retries_without_claim(session: Session):
+    """M4: sin operacion NO se reclama; el reintento sigue pendiente."""
+    from app.modules.risk import service as risk_service
+    from app.modules.shared import repository as shared_repo
+
     event_id = uuid.uuid4()
+    missing = str(uuid.uuid4())
     outcome = risk_service.handle_profile_transaction(
-        session, event_id=event_id, payload={"transaction_id": str(uuid.uuid4())}
+        session, event_id=event_id, payload={"transaction_id": missing}
     )
     session.commit()
-    assert outcome == {"consumed": True, "reason": "missing-transaction"}
+    assert outcome == {"consumed": False, "reason": "missing-transaction", "retry": True}
+    assert shared_repo.is_processed(session, event_id=event_id, consumer="risk-profile") is False
     again = risk_service.handle_profile_transaction(
-        session, event_id=event_id, payload={"transaction_id": str(uuid.uuid4())}
+        session, event_id=event_id, payload={"transaction_id": missing}
     )
     session.commit()
-    assert again == {"consumed": False, "reason": "duplicate"}
+    assert again["consumed"] is False, "el reintento no esta marcado como duplicado"
     assert _profile(session) is None, "sin operacion no se crea perfil"
+
+    # Cuando la operacion aparece, el mismo evento alimenta con exito.
+    tx = _transfer(session, 10_000)
+    session.commit()
+    late = risk_service.handle_profile_transaction(
+        session, event_id=event_id, payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert late["consumed"] is True and late["avg_amount_minor"] == 10_000
 
 
 def test_feed_failure_rolls_back_and_reraises(session: Session, monkeypatch):
@@ -465,7 +565,7 @@ def test_feed_login_updates_habits_not_average(session: Session):
     assert outcome["consumed"] is True and outcome["source"] == "auth.login_succeeded"
     row = _profile(session)
     assert row.avg_amount_minor == 10_000, "el login no mueve el promedio"
-    assert row.usual_hours == [15] and row.usual_countries == ["PE"]
+    assert row.usual_hours == [15] and list(row.usual_countries or []) == []
     assert row.last_device_id == DEVICE_B and row.score == 0
 
 
@@ -479,7 +579,8 @@ def test_feed_login_without_identifiers_marks_processed(session: Session):
     assert outcome == {"consumed": True, "reason": "missing-user-id"}
 
 
-def test_feed_failed_attempt_complements_without_severity(session: Session):
+def test_feed_failed_attempt_updates_hour_only(session: Session):
+    """M3: el fallo complementa la hora pero NO el dispositivo ni el score."""
     from app.modules.risk import service as risk_service
 
     risk_service.update_behavior(
@@ -501,7 +602,8 @@ def test_feed_failed_attempt_complements_without_severity(session: Session):
     row = _profile(session)
     assert row.score == 7, "la severidad la posee E2-T20: aqui no se duplica"
     assert row.avg_amount_minor == 10_000
-    assert row.usual_hours == [3] and row.last_device_id == DEVICE_B
+    assert row.usual_hours == [3]
+    assert row.last_device_id == DEVICE_A, "el fallo no es confiable: no fija dispositivo"
 
 
 def test_update_behavior_with_event_id_is_idempotent(session: Session):
@@ -525,70 +627,238 @@ def test_update_behavior_with_event_id_is_idempotent(session: Session):
     assert replayed.avg_amount_minor == row_before.avg_amount_minor == 10_000
 
 
+def test_update_behavior_validates_before_claiming(session: Session):
+    """B2: la observacion se valida ANTES de reclamar el evento."""
+    from app.modules.risk import repository as risk_repo
+    from app.modules.risk import service as risk_service
+    from app.modules.shared import repository as shared_repo
+
+    event_id = uuid.uuid4()
+    with pytest.raises(risk_repo.RiskProfileValidationError):
+        risk_service.update_behavior(session, USER_A, "no-es-observacion", event_id=event_id)
+    session.rollback()
+    assert shared_repo.is_processed(session, event_id=event_id, consumer="risk-profile") is False
+
+
+def test_zero_amount_observation_preserves_average(session: Session):
+    """B3: una observacion con `amount_minor=0` conserva el promedio."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    row = risk_service.update_behavior(session, USER_A, {"amount_minor": 0, "hour": 9})
+    session.commit()
+    assert row.avg_amount_minor == 10_000, "el 0 no refunde el promedio"
+    assert row.usual_hours == [tx.created_at.hour, 9][-5:]
+
+
+def test_legacy_update_refreshes_updated_at(session: Session):
+    """B11: el modo legado tambien refresca `updated_at`."""
+    from app.modules.risk import service as risk_service
+
+    row = risk_service.update_behavior(session, USER_A, avg_amount_minor=5_000)
+    session.commit()
+    row.updated_at = datetime(2020, 1, 1, tzinfo=UTC)
+    session.commit()
+
+    updated = risk_service.update_behavior(session, USER_A, score=4)
+    session.commit()
+    seen = updated.updated_at
+    if seen is not None and seen.tzinfo is not None:
+        seen = seen.replace(tzinfo=None)
+    assert seen is not None and seen > datetime(2020, 1, 1)
+    assert updated.score == 4 and updated.avg_amount_minor == 5_000
+
+
 # -------------------------------------------------------------------- ventana
 
 
-def test_profile_window_days_defaults_and_reads_config(session: Session):
+def test_profile_window_is_code_constant():
+    """B5: la ventana es constante de codigo (90); sin claves huesped."""
     from app.modules.risk import service as risk_service
 
-    assert risk_service.profile_window_days(session) == 90, "default del brief"
-    _set_param(session, risk_service.PROFILE_WINDOW_KEY, "1")
+    assert risk_service.PROFILE_WINDOW_DEFAULT_DAYS == 90
+    assert risk_service.profile_window_days() == 90
+    assert risk_service.profile_window_days(None) == 90
+
+
+def test_window_recomputes_real_average(session: Session):
+    """A3: 5x10k + 100k -> 25.000 (media real de la ventana, sin EWMA)."""
+    from app.modules.risk import service as risk_service
+
+    for _ in range(5):
+        tx = _transfer(session, 10_000)
+        session.commit()
+        risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+        )
+        session.commit()
+    big = _transfer(session, 100_000)
     session.commit()
-    assert risk_service.profile_window_days(session) == 1, "configurable sin codigo"
-    _set_param(session, "other.key", "x")
-    session.execute(
-        sa.text("UPDATE config.parameters SET value_json = :v WHERE key = :k"),
-        {"v": "no-entero", "k": risk_service.PROFILE_WINDOW_KEY},
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(big.id)}
     )
     session.commit()
-    assert risk_service.profile_window_days(session) == 90, "invalido -> fallback"
+
+    assert outcome["avg_amount_minor"] == 25_000, "(5*10000+100000)/6 con ventana real"
+    assert _profile(session).avg_amount_minor == 25_000
 
 
-def test_window_bounds_the_average(session: Session):
+def test_cold_start_uses_real_history(session: Session):
+    """A3: sin alimentacion previa, el primer evento usa el historial real."""
+    from app.modules.risk import service as risk_service
+
+    txs = [_transfer(session, amount) for amount in (10_000, 20_000, 30_000)]
+    session.commit()
+    assert _profile(session) is None, "arranque en frio: sin perfil"
+
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(txs[-1].id)}
+    )
+    session.commit()
+
+    assert outcome["avg_amount_minor"] == 20_000, "media real (10+20+30)/3, no 30k fundador"
+    assert _profile(session).avg_amount_minor == 20_000
+
+
+def test_window_expiry_excludes_old_operations(session: Session):
+    """M1/M2: fuera de la ventana de 90 dias no cuenta."""
     from app.modules.risk import service as risk_service
 
     old = _transfer(session, 10_000)
     session.commit()
-    old.created_at = datetime.now(UTC) - timedelta(days=5)
+    old.created_at = datetime.now(UTC) - timedelta(days=100)
     session.commit()
     new = _transfer(session, 20_000)
     session.commit()
 
-    # La vieja funda el promedio (10_000); la ventana de 1 dia la
-    # excluye del conteo, asi que la nueva lo reemplaza (ops = 0).
-    risk_service.handle_profile_transaction(
-        session, event_id=uuid.uuid4(), payload={"transaction_id": str(old.id)}
-    )
-    session.commit()
-    assert _profile(session).avg_amount_minor == 10_000
-    _set_param(session, risk_service.PROFILE_WINDOW_KEY, "1")
-    session.commit()
     outcome = risk_service.handle_profile_transaction(
         session, event_id=uuid.uuid4(), payload={"transaction_id": str(new.id)}
     )
     session.commit()
-    assert outcome["avg_amount_minor"] == 20_000, "ventana de 1 dia excluye la vieja"
+    assert outcome["avg_amount_minor"] == 20_000, "la vieja expiro de la ventana"
 
 
-def test_default_window_covers_both_operations(session: Session):
+def test_window_stats_only_counts_successful(session: Session):
+    """M1/M2: la fachada solo agrega estados exitosos dentro de la ventana."""
+    from app.modules.risk import service as risk_service
+    from app.modules.transactions.service import get_window_amount_stats
+
+    ok = _transfer(session, 10_000)
+    session.commit()
+    bad = _transfer(session, 90_000)
+    session.commit()
+    bad.status = "REJECTED"
+    session.commit()
+    pending = _transfer(session, 40_000)
+    session.commit()
+    pending.status = "PENDING_AUTHORIZATION"
+    session.commit()
+
+    stats = get_window_amount_stats(
+        session, USER_A, window_days=risk_service.PROFILE_WINDOW_DEFAULT_DAYS
+    )
+    assert stats == {"PEN": {"sum_minor": 10_000, "count": 1}}, f"real: {stats}"
+    assert ok.status == "SETTLED"
+
+
+# ------------------------------------------------------------- multi-moneda
+
+
+def _usd_pair(session: Session):
+    from app.modules.accounts import repository as accounts_repo
+
+    c = accounts_repo.create_account(
+        session, user_id=USER_A, account_number="00990001111", type="AHORRO", currency="USD"
+    )
+    d = accounts_repo.create_account(
+        session, user_id=USER_B, account_number="00880003333", type="AHORRO", currency="USD"
+    )
+    accounts_repo.apply_delta(session, c.id, available_delta=500_000, held_delta=0, currency="USD")
+    accounts_repo.apply_delta(session, d.id, available_delta=5_000, held_delta=0, currency="USD")
+    session.commit()
+    return c.id, d.id
+
+
+def _transfer_usd(session: Session, amount_minor: int, source_id, target_id):
+    from app.modules.transactions import service as tx_service
+
+    return tx_service.transfer_third_party(
+        session,
+        initiator_user_id=USER_A,
+        source_account_id=source_id,
+        target_account_id=target_id,
+        amount_minor=amount_minor,
+        currency="USD",
+        idempotency_key=f"e6t03-{uuid.uuid4()}",
+    )
+
+
+def test_currency_average_map_by_currency(session: Session):
+    """M6: el servicio expone el promedio por moneda de la ventana."""
     from app.modules.risk import service as risk_service
 
-    first = _transfer(session, 10_000)
-    session.commit()
-    new = _transfer(session, 20_000)
-    session.commit()
+    c, d = _usd_pair(session)
+    for amount in (10_000, 10_000):
+        tx = _transfer(session, amount)
+        session.commit()
+        risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+        )
+        session.commit()
+    for amount in (100_000, 100_000):
+        tx = _transfer_usd(session, amount, c, d)
+        session.commit()
+        risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+        )
+        session.commit()
 
-    # Cada operacion alimenta una vez y en orden: la primera funda el
-    # promedio (10_000) y la segunda lo promedia ((10000+20000)/2).
-    risk_service.handle_profile_transaction(
-        session, event_id=uuid.uuid4(), payload={"transaction_id": str(first.id)}
+    by_currency = risk_service.profile_average_by_currency(session, USER_A)
+    assert by_currency == {"PEN": 10_000, "USD": 100_000}
+    row = _profile(session)
+    assert row.avg_amount_minor == 55_000, "agregado de compatibilidad (20+200)/4"
+
+
+def test_engine_compares_same_currency(session: Session):
+    """M6: `UNUSUAL_AMOUNT` compara contra el promedio de la misma moneda."""
+    from app.modules.risk import service as risk_service
+
+    _seed_conservative_rules(session)
+    c, d = _usd_pair(session)
+    for amount in (10_000, 10_000):
+        tx = _transfer(session, amount)
+        session.commit()
+        risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+        )
+        session.commit()
+    for amount in (100_000, 100_000):
+        tx = _transfer_usd(session, amount, c, d)
+        session.commit()
+        risk_service.handle_profile_transaction(
+            session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+        )
+        session.commit()
+
+    calm_usd = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=200_000, currency="USD"
     )
-    session.commit()
-    outcome = risk_service.handle_profile_transaction(
-        session, event_id=uuid.uuid4(), payload={"transaction_id": str(new.id)}
+    assert calm_usd.action == "ALLOW", "200k vs promedio USD 100k (factor 3) no dispara"
+    alert_pen = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=200_000, currency="PEN"
     )
-    session.commit()
-    assert outcome["avg_amount_minor"] == 15_000, "(10000+20000)/2 con ventana de 90 dias"
+    assert alert_pen.action == "ALERT" and alert_pen.matched_rules == ("UNUSUAL_AMOUNT",)
+    spike_usd = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=400_000, currency="USD"
+    )
+    assert spike_usd.matched_rules == ("UNUSUAL_AMOUNT",), "400k > 3x100k USD si dispara"
 
 
 # ------------------------------------------------------------- endpoint RBAC
@@ -657,6 +927,35 @@ def profile_client(profile_db, monkeypatch):
         app.dependency_overrides.pop(get_db, None)
 
 
+@pytest.fixture()
+def full_client(session, engine, monkeypatch):
+    """TestClient contra la BD completa (perfil + transacciones + auditoria)."""
+    monkeypatch.setenv("OUTBOX_WORKER_ENABLED", "0")
+    monkeypatch.setenv("CREDIT_LOAN_JOBS_ENABLED", "0")
+    monkeypatch.setenv("WALLET_QR_JOBS_ENABLED", "0")
+    monkeypatch.setenv("WALLET_SERVICE_JOBS_ENABLED", "0")
+    monkeypatch.setenv("RISK_PROFILE_ENABLED", "0")
+
+    from app.core.db import get_db
+    from app.main import app
+
+    def _override():
+        s = Session(engine)
+        try:
+            yield s
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def _bearer(user_id: uuid.UUID, roles: list[str] | None = None) -> dict:
     from app.core.security import create_access_token
 
@@ -694,6 +993,7 @@ def test_endpoint_returns_minimum_profile_without_pii(profile_client, profile_db
     assert set(data) == {
         "user_id",
         "avg_amount_minor",
+        "avg_amount_by_currency",
         "usual_countries",
         "usual_hours",
         "last_device_id",
@@ -702,6 +1002,7 @@ def test_endpoint_returns_minimum_profile_without_pii(profile_client, profile_db
     }
     assert data["user_id"] == str(holder)
     assert data["avg_amount_minor"] == 25_000
+    assert data["avg_amount_by_currency"] == {}, "sin tabla de tx: degrada a {}"
     assert data["usual_countries"] == ["PE", "CL"]
     assert data["usual_hours"] == [8, 20]
     assert data["last_device_id"] == DEVICE_A
@@ -709,6 +1010,74 @@ def test_endpoint_returns_minimum_profile_without_pii(profile_client, profile_db
     blob = resp.text
     for secret in ("Jheampierre", "0011", "RENEC"):
         assert secret not in blob
+
+
+def test_endpoint_empty_lists_not_null(profile_client, profile_db):
+    """B8: `[]` (nunca `null`) para listas vacias."""
+    from app.modules.risk import service as risk_service
+
+    _, s = profile_db
+    holder = uuid.uuid4()
+    risk_service.update_behavior(s, holder, avg_amount_minor=1_000)
+    s.commit()
+
+    resp = profile_client.get(
+        f"/api/v1/risk/profiles/{holder}", headers=_bearer(uuid.uuid4(), ["admin"])
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["usual_countries"] == [] and data["usual_hours"] == []
+    assert data["avg_amount_by_currency"] == {}
+
+
+def test_endpoint_with_history_returns_by_currency(full_client, session):
+    """M6: el GET expone `avg_amount_by_currency` desde la ventana real."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 30_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+
+    resp = full_client.get(
+        f"/api/v1/risk/profiles/{USER_A}", headers=_bearer(uuid.uuid4(), ["fraud_analyst"])
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["avg_amount_minor"] == 30_000
+    assert data["avg_amount_by_currency"] == {"PEN": 30_000}
+
+
+def test_endpoint_audits_view_best_effort(full_client, session, engine):
+    """B7: el GET audita `risk.profile.viewed` (sin PII)."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+
+    resp = full_client.get(
+        f"/api/v1/risk/profiles/{USER_A}", headers=_bearer(uuid.uuid4(), ["fraud_analyst"])
+    )
+    assert resp.status_code == 200, resp.text
+
+    check = Session(engine)
+    try:
+        from app.modules.audit.models import AuditLog
+
+        rows = list(
+            check.scalars(sa.select(AuditLog).where(AuditLog.action == "risk.profile.viewed")).all()
+        )
+    finally:
+        check.close()
+    assert len(rows) >= 1, "la lectura queda auditada"
+    assert rows[-1].entity_id == USER_A
+    assert DEVICE_A not in str(rows[-1].after_json or {}), "sin PII en la auditoria"
 
 
 def test_endpoint_missing_or_malformed_is_not_found(profile_client):
@@ -769,7 +1138,8 @@ def test_engine_sees_updated_profile(session: Session):
 # ------------------------------------------------------------------- cableado
 
 
-def test_wiring_subscribes_all_profile_consumers():
+def test_wiring_subscribes_profile_consumers_without_initiated():
+    """A1/M5: el perfil NO se suscribe a `transaction.initiated` (3 handlers)."""
     from app.composition import is_risk_profile_wired, subscribe_risk_profile
     from app.core.bus import EventBus
     from app.modules.risk.events import LOGIN_SUCCEEDED_EVENT
@@ -777,15 +1147,38 @@ def test_wiring_subscribes_all_profile_consumers():
     bus = EventBus()
     assert is_risk_profile_wired(bus) is False
     handlers = subscribe_risk_profile(bus)
-    assert len(handlers) == 4
+    assert len(handlers) == 3
     assert is_risk_profile_wired(bus) is True
-    assert bus.handler_count("transaction.initiated") == 1
+    assert bus.handler_count("transaction.initiated") == 0, "A1: sin doble conteo"
     assert bus.handler_count("transfer.settled") == 1
     assert bus.handler_count(LOGIN_SUCCEEDED_EVENT) == 1
     assert bus.handler_count("auth.failed_attempt") == 1
     subscribe_risk_profile(bus)  # idempotente
-    assert bus.handler_count("transaction.initiated") == 1
+    assert bus.handler_count("transfer.settled") == 1
     assert bus.handler_count("auth.failed_attempt") == 1
+
+
+def test_wiring_single_profile_handler_per_event_and_motor_first():
+    """M5: un solo handler de perfil por evento; el motor va primero donde aplica."""
+    from app.composition import subscribe_risk_antifraud, subscribe_risk_profile
+    from app.core import events as domain_events
+    from app.core.bus import EventBus
+    from app.modules.risk.events import (
+        on_profile_transfer_settled,
+        on_transaction_initiated,
+        on_transfer_settled,
+    )
+
+    bus = EventBus()
+    subscribe_risk_antifraud(bus)  # el motor primero
+    subscribe_risk_profile(bus)  # el perfil despues
+
+    initiated = list(bus._handlers.get(domain_events.TRANSACTION_INITIATED, []))
+    assert initiated == [on_transaction_initiated], "el perfil no escucha initiated"
+    settled = list(bus._handlers.get(domain_events.TRANSFER_SETTLED, []))
+    assert settled == [on_transfer_settled, on_profile_transfer_settled]
+    profile_handlers = [h for h in settled if "profile" in getattr(h, "__name__", "")]
+    assert profile_handlers == [on_profile_transfer_settled], "un solo handler de perfil"
 
 
 def test_wiring_flag_gates_subscription(monkeypatch):
@@ -880,3 +1273,88 @@ def test_handler_revierte_y_relanza_ante_fallo():
     with pytest.raises(RuntimeError):
         on_profile_login_succeeded(entry, session_factory=_Failing)
     assert states.get("rollback") is True and states.get("close") is True
+
+
+# ------------------------------------------------------------- end-to-end
+
+
+def test_e2e_outbox_bus_profile_get(session, engine, monkeypatch, full_client):
+    """Bus/outbox -> perfil -> GET: `settled` alimenta, el GET lo expone y audita."""
+    from functools import partial
+
+    from app.composition import run_outbox_once
+    from app.core.bus import EventBus
+    from app.modules.risk import events as risk_events
+    from app.modules.shared import repository as shared_repo
+
+    tx = _transfer(session, 30_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+    shared_repo.insert_event(
+        session,
+        aggregate_type="transactions",
+        aggregate_id=tx.id,
+        event_type="transfer.settled",
+        payload={"transaction_id": str(tx.id)},
+    )
+    session.commit()
+
+    bus = EventBus()
+
+    def _factory():
+        return Session(engine)
+
+    bus.subscribe(
+        "transfer.settled",
+        partial(risk_events.on_profile_transfer_settled, session_factory=_factory),
+    )
+    result = run_outbox_once(session_factory=_factory, bus=bus)
+    assert result["published"] >= 1 and result["failed"] == 0
+
+    check = Session(engine)
+    try:
+        assert _profile(check).avg_amount_minor == 30_000
+    finally:
+        check.close()
+
+    resp = full_client.get(
+        f"/api/v1/risk/profiles/{USER_A}", headers=_bearer(uuid.uuid4(), ["fraud_analyst"])
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["avg_amount_minor"] == 30_000
+    assert data["avg_amount_by_currency"] == {"PEN": 30_000}
+    assert data["usual_hours"] == [tx.created_at.hour]
+    assert data["last_device_id"] == DEVICE_A
+
+
+# ------------------------------------------------------------- sin PII/dinero
+
+
+def test_no_pii_in_outcomes(session: Session):
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    blob = str(outcome)
+    for secret in ("Jheampierre", "0011", "RENEC"):
+        assert secret not in blob
+
+
+def test_no_money_movement_on_rejected_feed(session: Session):
+    from app.modules.risk import service as risk_service
+
+    before_balances = _balances(session)
+    tx = _transfer(session, 10_000)
+    session.commit()
+    after_transfer = _balances(session)
+    assert after_transfer != before_balances, "el motor si movio dinero"
+
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _balances(session) == after_transfer, "el perfil no mueve dinero"

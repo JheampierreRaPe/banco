@@ -260,15 +260,22 @@ def is_risk_antifraud_wired(bus: Any | None = None) -> bool:
 
 
 # ------------------------------------------------- Cableado E6-T03
-# Perfil de comportamiento (HU20): `risk` consume `transaction.initiated`,
-# `transfer.settled`, `auth.login_succeeded` (`identity`, literal local en
-# `risk.events`: no existe en `app.core.events`) y `auth.failed_attempt`
-# (la severidad la sigue poseyendo `E2-T20`; aqui solo habitos).
+# Perfil de comportamiento (HU20, fixes PR #26): `risk` consume SOLO
+# `transfer.settled` (monto de estados finales exitosos + habitos),
+# `auth.login_succeeded` (`identity`, literal local en `risk.events`:
+# no existe en `app.core.events`) y `auth.failed_attempt` (solo hora;
+# la severidad la sigue poseyendo `E2-T20`; aqui solo habitos).
+# `transaction.initiated` NO alimenta el perfil (A1: el monto se
+# alimenta SOLO con `transfer.settled`, sin doble conteo
+# iniciada+liquidada; sin dependencia de orden motor->perfil, M5; por
+# evento queda UN solo handler de perfil, M5). Los canales que no
+# emiten `transfer.settled` no alimentan el perfil, pero SI son
+# evaluados por el motor.
 # Cada consumidor es D-04 (sesion/`commit` propios, idempotente por
-# `processed_events` con el consumidor unico `"risk-profile"`); aqui solo
-# se suscriben al bus, sin logica. La suscripcion en el arranque va
-# detras del flag `RISK_PROFILE_ENABLED` (default `1`): los tests que
-# arrancan la app la apagan para no mover el bus global.
+# `processed_events` con el consumidor unico `"risk-profile"`); aqui
+# solo se suscriben al bus, sin logica. La suscripcion en el arranque
+# va detras del flag `RISK_PROFILE_ENABLED` (default `1`): los tests
+# que arrancan la app la apagan para no mover el bus global.
 
 
 def risk_profile_enabled() -> bool:
@@ -283,18 +290,21 @@ def risk_profile_enabled() -> bool:
 
 
 def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
-    """Suscribe la alimentacion del perfil al bus (E6-T03, HU20).
+    """Suscribe la alimentacion del perfil al bus (E6-T03, HU20, A1/M5).
 
     Idempotente: si los handlers ya estan registrados no los duplica.
-    `bus` por defecto es el bus global (`app.core.bus`). Retorna la
-    tupla registrada (el arranque real la usa; los tests la verifican).
+    `bus` por defecto es el bus global (`app.core.bus`). Suscribe UN
+    solo handler de perfil por evento: `transfer.settled`,
+    `auth.login_succeeded` y `auth.failed_attempt` (NO
+    `transaction.initiated`: el monto se alimenta SOLO del estado
+    final). Retorna la tupla registrada (el arranque real la usa; los
+    tests la verifican).
     """
     from app.core import events as domain_events
     from app.modules.risk.events import (
         LOGIN_SUCCEEDED_EVENT,
         on_profile_auth_failed_attempt,
         on_profile_login_succeeded,
-        on_profile_transaction_initiated,
         on_profile_transfer_settled,
     )
 
@@ -303,7 +313,6 @@ def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
 
         bus = _default_bus()
     wanted: tuple[tuple[str, Any], ...] = (
-        (domain_events.TRANSACTION_INITIATED, on_profile_transaction_initiated),
         (domain_events.TRANSFER_SETTLED, on_profile_transfer_settled),
         (LOGIN_SUCCEEDED_EVENT, on_profile_login_succeeded),
         (domain_events.AUTH_FAILED_ATTEMPT, on_profile_auth_failed_attempt),
@@ -313,7 +322,6 @@ def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
         if handler not in handlers:
             bus.subscribe(event_type, handler)
     return (
-        on_profile_transaction_initiated,
         on_profile_transfer_settled,
         on_profile_login_succeeded,
         on_profile_auth_failed_attempt,
@@ -327,7 +335,6 @@ def is_risk_profile_wired(bus: Any | None = None) -> bool:
         LOGIN_SUCCEEDED_EVENT,
         on_profile_auth_failed_attempt,
         on_profile_login_succeeded,
-        on_profile_transaction_initiated,
         on_profile_transfer_settled,
     )
 
@@ -338,9 +345,7 @@ def is_risk_profile_wired(bus: Any | None = None) -> bool:
     try:
         handlers = getattr(bus, "_handlers", {})
         return (
-            on_profile_transaction_initiated
-            in handlers.get(domain_events.TRANSACTION_INITIATED, [])
-            and on_profile_transfer_settled in handlers.get(domain_events.TRANSFER_SETTLED, [])
+            on_profile_transfer_settled in handlers.get(domain_events.TRANSFER_SETTLED, [])
             and on_profile_login_succeeded in handlers.get(LOGIN_SUCCEEDED_EVENT, [])
             and on_profile_auth_failed_attempt
             in handlers.get(domain_events.AUTH_FAILED_ATTEMPT, [])

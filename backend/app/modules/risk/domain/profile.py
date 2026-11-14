@@ -30,6 +30,13 @@ Reglas de actualizacion:
   `nuevo = (avg * operations + amount) / n`.
   Ejemplo: `avg=2` (1 op) + `amount=3` -> `5/2 = 2.5` -> `3`
   (con `ROUND_HALF_EVEN` daria `2`). Sin monto observado se conserva.
+  Nota E6-T03 (fixes PR #26, A3): el servicio ya NO usa esta media
+  incremental para persistir (recalcula el promedio real de la ventana
+  con la fachada `transactions.get_window_amount_stats`, de modo que
+  el arranque en frio usa el historial real); la formula queda como
+  ayuda pura y documentada.
+- El monto `0` NO aporta (B3, fixes PR #26): una observacion con
+  `amount_minor=0` conserva el promedio (no lo diluye).
 - `usual_hours` / `usual_countries`: union que preserva el orden de
   aparicion (lo existente primero, lo nuevo al final), acotada a los
   ultimos 5 valores (`MAX_USUAL_HOURS` / `MAX_USUAL_COUNTRIES`,
@@ -115,10 +122,13 @@ def _coerce_operations(value: Any) -> int:
 
 
 def _coerce_amount(value: Any) -> int | None:
-    """Monto valido (`int >= 0`) o `None` (sin lanzar)."""
+    """Monto valido (`int > 0`) o `None` (sin lanzar).
+
+    El `0` no aporta (B3): conservar el promedio en vez de diluirlo.
+    """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
-    return value if value >= 0 else None
+    return value if value > 0 else None
 
 
 def _coerce_hour(value: Any) -> int | None:

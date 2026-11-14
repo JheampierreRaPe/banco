@@ -486,7 +486,9 @@ def test_no_money_movement():
 
     Excepcion E6-T02 (corte 2, HU20): la fachada de solo lectura de
     `risk.service` puede llamar a las fachadas de lectura de
-    `transactions` (`count_recent_operations`, `find_transaction_by_id`;
+    `transactions` (`count_recent_operations`, `find_transaction_by_id`,
+    `get_window_amount_stats` —esta ultima, aditiva de E6-T03 fixes PR
+    #26 A3/M6: suma/conteo por moneda de estados exitosos en ventana—;
     `docs/modules/README.md#risk`: "Puede llamar a ... `transactions`").
     Siguen prohibidos `ledger`/`accounts`/`identity`, `post_entry` y
     cualquier otro acceso a `transactions` (modelos, repositorios,
@@ -495,6 +497,7 @@ def test_no_money_movement():
     allowed_readers = (
         "count_recent_operations",
         "find_transaction_by_id",
+        "get_window_amount_stats",
     )
     for rel in (
         "app/modules/risk/service/__init__.py",

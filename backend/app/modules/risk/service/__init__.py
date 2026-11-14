@@ -47,6 +47,7 @@ __all__ = [
     "AUDIT_ACTION_ASSESSMENT",
     "AUDIT_ACTION_BLOCKED",
     "AUDIT_ACTION_FAILED",
+    "AUDIT_ACTION_PROFILE_VIEWED",
     "AUDIT_ACTION_RULE_UPDATED",
     "AUDIT_ACTION_UNRECOGNIZED",
     "AUTH_FAILED_ATTEMPT_EVENT",
@@ -56,6 +57,7 @@ __all__ = [
     "CONSUMER_TRANSFER_SETTLED",
     "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
+    "PROFILE_SUCCESS_STATES",
     "PROFILE_WINDOW_DEFAULT_DAYS",
     "PROFILE_WINDOW_KEY",
     "RISK_BLOCKED",
@@ -87,6 +89,7 @@ __all__ = [
     "handle_transfer_settled",
     "handle_unrecognized_operation_report",
     "list_rules",
+    "profile_average_by_currency",
     "profile_window_days",
     "risk_level_for",
     "update_behavior",
@@ -173,6 +176,21 @@ def get_profile(session: Session, user_id: uuid.UUID | str) -> RiskProfile | Non
         return None
 
 
+def profile_average_by_currency(session: Session, user_id: uuid.UUID | str) -> dict[str, int]:
+    """Promedio por moneda del perfil para lectura (M6, solo lectura).
+
+    Recalcula best-effort desde la ventana real con redondeo entero
+    `ROUND_HALF_UP`; `{}` sin historial o ante fallo tecnico (el
+    endpoint degrada al agregado almacenado). Nunca lanza por forma
+    del `user_id` (`{}` ante UUID invalido); `flush` sin `commit`.
+    """
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError):
+        return {}
+    return _window_average_by_currency(session, uid)
+
+
 def update_behavior(
     session: Session,
     user_id: uuid.UUID | str,
@@ -191,23 +209,31 @@ def update_behavior(
 
     - Legado (`observation is None`): escribe los campos informados
       (`None` = conservar), como antes. Sin idempotencia por evento.
-    - Historial (`observation` dada, E6-T03): calcula el delta con el
-      dominio puro `profile.next_profile` (media incremental entera con
-      `ROUND_HALF_UP`, union acotada a 5 horas/paises, ultimo
-      dispositivo; el `score` nunca se toca aqui) y lo persiste. Los
-      `operations` ya reflejados son el conteo en la ventana
-      `risk.profile_window_days` menos la operacion en curso (ya hizo
-      `commit`); con `avg == 0` (ningun monto alimentado jamas) la
-      observacion funda el promedio sin diluir con el historial previo
-      al despliegue. Exacto cuando cada operacion de la ventana se
-      alimento al menos una vez y en orden; ante rezagos converge con
-      los eventos (heuristica documentada, sin migracion). Con
-      `event_id` es idempotente por `(event_id, user_id)` via
-      `processed_events` (consumidor `CONSUMER_PROFILE`): el replay
-      retorna el perfil actual sin escribir. `flush` sin `commit` (el
-      llamante, en general el handler D-04 con sesion propia, decide
-      la transaccion).
+      Refresca `updated_at` en el repositorio (B11).
+    - Historial (E6-T03, fixes PR #26): calcula habitos con el dominio
+      puro `profile.next_profile` (union acotada a 5 horas, ultimo
+      dispositivo confiable; el `score` nunca se toca aqui) y
+      **recalcula `avg_amount_minor` desde la ventana real** con la
+      fachada de solo lectura
+      `transactions.get_window_amount_stats` (solo estados exitosos en
+      los ultimos `PROFILE_WINDOW_DEFAULT_DAYS` dias; redondeo entero
+      `ROUND_HALF_UP`): el arranque en frio usa el historial real, sin
+      EWMA. Sin historial exitoso en la ventana se conserva el promedio
+      almacenado. Con `event_id` es idempotente por
+      `(event_id, user_id)` via `processed_events` (consumidor
+      `CONSUMER_PROFILE`): el replay retorna el perfil actual sin
+      escribir. La validacion de la observacion ocurre ANTES de
+      reclamar el evento (B2): una observacion malformada lanza
+      `RiskProfileValidationError` sin dejar el claim. `flush` sin
+      `commit` (el llamante, en general el handler D-04 con sesion
+      propia, decide la transaccion).
     """
+    if observation is not None and not isinstance(
+        observation, (profile_domain.BehaviorObservation, dict)
+    ):
+        raise risk_repo.RiskProfileValidationError(
+            f"observation debe ser BehaviorObservation o dict, recibido: {type(observation).__name__}"
+        )
     if event_id is not None:
         from app.modules.shared import repository as shared_repo
 
@@ -226,10 +252,6 @@ def update_behavior(
             last_device_id=last_device_id,
             score=score,
         )
-    if not isinstance(observation, (profile_domain.BehaviorObservation, dict)):
-        raise risk_repo.RiskProfileValidationError(
-            f"observation debe ser BehaviorObservation o dict, recibido: {type(observation).__name__}"
-        )
     profile = risk_repo.get_or_create(session, user_id)
     obs = (
         observation
@@ -242,20 +264,6 @@ def update_behavior(
             device_id=observation.get("device_id"),
         )
     )
-    prior_ops = 0
-    if profile_domain._coerce_amount(obs.amount_minor) is not None:
-        stored_avg = int(profile.avg_amount_minor or 0)
-        if stored_avg > 0:
-            # El promedio ya refleja montos: las operaciones aportadas
-            # son el conteo en la ventana menos la operacion en curso
-            # (ya hizo `commit`). Exacto cuando cada operacion de la
-            # ventana se alimento al menos una vez y en orden; ante
-            # rezagos converge con los eventos (heuristica).
-            prior_ops = max(0, _window_operation_count(session, profile.user_id) - 1)
-        # Con `avg == 0` ningun monto se alimento jamas (los montos son
-        # `> 0` y el redondeo nunca devuelve a `0` desde `>= 1`): la
-        # observacion funda el promedio (`prior_ops = 0`), sin diluir
-        # con el historial previo al despliegue.
     update = profile_domain.next_profile(
         {
             "avg_amount_minor": int(profile.avg_amount_minor or 0),
@@ -264,10 +272,20 @@ def update_behavior(
             "last_device_id": profile.last_device_id,
         },
         obs,
-        operations=prior_ops,
+        operations=0,
     )
+    recomputed_avg = _window_average(session, profile.user_id)
+    if profile_domain._coerce_amount(obs.amount_minor) is None and avg_amount_minor is None:
+        # Sin monto observado (login/fallo): el promedio se conserva.
+        wanted_avg: int | None = None
+    elif recomputed_avg is not None:
+        wanted_avg = recomputed_avg
+    elif avg_amount_minor is not None:
+        wanted_avg = avg_amount_minor
+    else:
+        wanted_avg = int(profile.avg_amount_minor or 0)
     explicit = {
-        "avg_amount_minor": update.avg_amount_minor,
+        "avg_amount_minor": wanted_avg,
         "usual_countries": update.usual_countries,
         "usual_hours": update.usual_hours,
         "last_device_id": update.last_device_id,
@@ -888,6 +906,7 @@ def evaluate_pre_transaction(
     country: str | None = None,
     hour: int | None = None,
     tx_type: str | None = None,
+    exclude_transaction_id: uuid.UUID | str | None = None,
 ) -> RiskDecision:
     """Evalua las reglas antes de iniciar la operacion (solo lectura).
 
@@ -905,6 +924,17 @@ def evaluate_pre_transaction(
     Determinista ante `autoflush` (la fila en curso siempre esta
     flusheada al evaluar).
 
+    `UNUSUAL_AMOUNT` compara contra el promedio **de la misma moneda**
+    (M6, fixes PR #26): se recalcula best-effort desde la ventana real
+    (`transactions.get_window_amount_stats`, excluyendo la operacion
+    evaluada via `exclude_transaction_id`); sin historial en esa
+    moneda degrada al promedio almacenado del perfil; sin base de
+    comparacion la regla no hace match. El `country` del contexto solo
+    se informa si el llamante lo aporta desde una fuente server-side:
+    los consumidores del motor NO reenvian `metadata.country` del
+    cliente (A4) y `ATYPICAL_GEO` queda inactivo en el MVP hasta tener
+    IP/geo server-side.
+
     Fail-open documentado: ante un fallo tecnico de lectura (p. ej.
     tablas aun no migradas) se loguea y retorna `ALLOW` —`risk` nunca
     bloquea a ciegas; el bloqueo solo ocurre ante un match de regla.
@@ -915,6 +945,7 @@ def evaluate_pre_transaction(
         raise TypeError(f"amount_minor debe ser entero, recibido: {amount_minor!r}")
     if not isinstance(currency, str) or not currency.strip():
         raise ValueError(f"currency invalida: {currency!r}")
+    currency_code = currency.strip().upper()
     clean_device = device_id.strip() if isinstance(device_id, str) and device_id.strip() else None
     clean_country = country.strip() if isinstance(country, str) and country.strip() else None
     try:
@@ -924,12 +955,16 @@ def evaluate_pre_transaction(
             config = evaluate_config(session)
             window = _velocity_window_seconds(rules, config)
         operations = _recent_operations(session, uid, window)
+        currency_avg = _currency_average_best_effort(
+            session, uid, currency_code, exclude_transaction_id=exclude_transaction_id
+        )
     except Exception as exc:  # noqa: BLE001 - fail-open documentado arriba
         logger.warning("risk evaluacion no disponible, permite: error=%s", type(exc).__name__)
         return RiskDecision()
+    engine_profile = _engine_profile_for_currency(profile, currency_avg)
     context: dict[str, Any] = {
         "amount_minor": int(amount_minor),
-        "currency": currency.strip().upper(),
+        "currency": currency_code,
         "device_id": clean_device,
         "country": clean_country,
         "hour": hour,
@@ -943,7 +978,63 @@ def evaluate_pre_transaction(
         factor = UNUSUAL_AMOUNT_FACTOR_DEFAULT
     if factor > 0:
         context["unusual_amount_factor"] = factor
-    return risk_engine.evaluate(rules, profile, context)
+    return risk_engine.evaluate(rules, engine_profile, context)
+
+
+def _currency_average_best_effort(
+    session: Session,
+    user_id: uuid.UUID,
+    currency: str,
+    *,
+    exclude_transaction_id: uuid.UUID | str | None = None,
+) -> int | None:
+    """Promedio de la moneda en la ventana o `None` (M6, best-effort).
+
+    Lee `transactions.get_window_amount_stats` acotado a `currency`
+    con redondeo entero `ROUND_HALF_UP`, excluyendo la operacion
+    evaluada (`exclude_transaction_id`: el motor compara contra el
+    historial SIN la operacion en curso). Un fallo tecnico retorna
+    `None` (el motor degrada al promedio almacenado del perfil).
+    """
+    try:
+        from app.modules.transactions.service import (
+            get_window_amount_stats as _window_stats,
+        )
+
+        with session.begin_nested():
+            stats = _window_stats(
+                session,
+                user_id,
+                window_days=PROFILE_WINDOW_DEFAULT_DAYS,
+                currency=currency,
+                exclude_transaction_id=exclude_transaction_id,
+            )
+    except Exception as exc:  # noqa: BLE001 - lectura best-effort, rige degradado
+        logger.debug("risk promedio por moneda no disponible: error=%s", type(exc).__name__)
+        return None
+    entry = stats.get(str(currency).strip().upper())
+    if not entry or int(entry.get("count", 0) or 0) <= 0:
+        return None
+    return _round_half_up(int(entry.get("sum_minor", 0) or 0), int(entry.get("count") or 1))
+
+
+def _engine_profile_for_currency(profile: Any | None, currency_avg: int | None) -> Any:
+    """Vista del perfil para el motor con base por moneda (M6).
+
+    Con promedio recalculado para la moneda se usa como base de
+    comparacion de `UNUSUAL_AMOUNT` (conservando habitos/dispositivo
+    del perfil almacenado); sin el, rige el perfil tal cual (el motor
+    ya degrada sin base: `avg <= 0`/ausente -> no match).
+    """
+    if currency_avg is None or profile is None:
+        return profile
+    countries = getattr(profile, "usual_countries", None)
+    return {
+        "avg_amount_minor": int(currency_avg),
+        "usual_countries": list(countries) if isinstance(countries, (list, tuple)) else [],
+        "usual_hours": list(getattr(profile, "usual_hours", None) or []),
+        "last_device_id": getattr(profile, "last_device_id", None),
+    }
 
 
 def _assessment_metadata(
@@ -1060,6 +1151,7 @@ def handle_transaction_initiated(
         currency=str(tx.currency),
         device_id=device,
         tx_type=str(tx.type),
+        exclude_transaction_id=tx.id,
     )
     if decision.action == risk_engine.ALLOW:
         return {"consumed": True, "action": decision.action, "reason": "allow"}
@@ -1125,6 +1217,7 @@ def handle_transfer_settled(
         currency=str(tx.currency),
         device_id=device,
         tx_type=str(tx.type),
+        exclude_transaction_id=tx.id,
     )
     if decision.action == risk_engine.ALLOW:
         return {"consumed": True, "action": decision.action, "reason": "allow"}
@@ -1152,36 +1245,101 @@ def handle_transfer_settled(
 #: un evento repetido no actualiza dos veces el perfil).
 CONSUMER_PROFILE = "risk-profile"
 
-#: Ventana del perfil en `config.parameters` (regla de oro 6): las
-#: operaciones de los ultimos N dias alimentan el promedio. Default 90.
+#: Ventana del perfil en dias (E6-T03, fixes PR #26 B5): las operaciones
+#: exitosas de los ultimos N dias alimentan el promedio. En el MVP es
+#: una **constante de codigo** (`90`): la configuracion por admin via
+#: `config.parameters` (`risk.profile_window_days`) queda diferida a
+#: una migracion posterior (sin sembrar claves huesped sin dueno). El
+#: redondeo del promedio recalculado es entero `ROUND_HALF_UP`.
 PROFILE_WINDOW_KEY = "risk.profile_window_days"
 PROFILE_WINDOW_DEFAULT_DAYS = 90
 
+#: Auditoria best-effort de la lectura del perfil (B7, fixes PR #26):
+#: `GET /risk/profiles/{user_id}` deja `risk.profile.viewed` sin PII.
+AUDIT_ACTION_PROFILE_VIEWED = "risk.profile.viewed"
 
-def profile_window_days(session: Session) -> int:
-    """Dias de historial que alimentan el promedio (via `shared/config`).
+#: Estados finales que aportan monto/conteo al perfil (A2, fixes PR #26):
+#: espejo de `transactions.service.WINDOW_SUCCESS_STATES` (import
+#: perezoso en cada uso para no acoplar la importacion).
+PROFILE_SUCCESS_STATES = frozenset({"SETTLED", "POSTED", "COMPLETED", "CONCILIATED"})
 
-    Nunca lanza: clave ausente/ilegible/invalida -> default `90`
-    (mismo patron best-effort que `shared/config`).
+
+def profile_window_days(session: Session | None = None) -> int:
+    """Dias de historial que alimentan el promedio (constante MVP, B5).
+
+    Retorna siempre `PROFILE_WINDOW_DEFAULT_DAYS` (`90`): en el MVP la
+    ventana es constante de codigo y NO se lee `config.parameters` (la
+    configurabilidad por admin queda para una migracion posterior, sin
+    sembrar claves huesped). Nunca lanza; `session` se acepta por
+    compatibilidad con llamadas previas.
     """
-    from app.modules.shared.config import parameters as params
+    _ = session
+    return PROFILE_WINDOW_DEFAULT_DAYS
 
-    return params.get_int_parameter(
-        session, PROFILE_WINDOW_KEY, PROFILE_WINDOW_DEFAULT_DAYS, minimum=1
+
+def _round_half_up(numerator: int, denominator: int) -> int:
+    """Cociente entero con `ROUND_HALF_UP` (mitades hacia arriba).
+
+    Solo aritmetica entera, sin `float` (regla de oro 3): para
+    `numerator, denominator > 0`,
+    `floor((2 * numerator + denominator) / (2 * denominator))`.
+    """
+    return (2 * int(numerator) + int(denominator)) // (2 * int(denominator))
+
+
+def _window_amount_stats(session: Session, user_id: uuid.UUID) -> dict[str, dict[str, int]]:
+    """Suma/conteo por moneda en la ventana (solo lectura, A3/M1/M2).
+
+    Delega en la fachada `transactions.get_window_amount_stats`
+    (D-01: `risk` no importa sus modelos): solo estados exitosos
+    dentro de los ultimos `PROFILE_WINDOW_DEFAULT_DAYS` dias. Un fallo
+    de lectura se propaga (D-04: el handler revierte y re-lanza para el
+    backoff del worker).
+    """
+    from app.modules.transactions.service import (
+        get_window_amount_stats as _window_stats,
     )
 
+    return dict(_window_stats(session, user_id, window_days=PROFILE_WINDOW_DEFAULT_DAYS))
 
-def _window_operation_count(session: Session, user_id: uuid.UUID) -> int:
-    """Operaciones del titular en la ventana del perfil (incluye la en curso).
 
-    Solo lectura por la fachada de `transactions` (D-01: `risk` no
-    importa sus modelos). Un fallo de lectura se propaga (D-04: el
-    handler revierte y re-lanza para el backoff del worker).
+def _window_average(session: Session, user_id: uuid.UUID) -> int | None:
+    """Promedio agregado de la ventana o `None` sin historial (A3).
+
+    Agrega todas las monedas (`sum_total/count_total`, documentado como
+    agregado de compatibilidad: la comparacion por moneda la resuelve
+    `evaluate_pre_transaction` con el mapa por moneda). Redondeo
+    entero `ROUND_HALF_UP`; `None` si no hay operaciones exitosas.
     """
-    from app.modules.transactions.service import count_recent_operations as _count_recent
+    stats = _window_amount_stats(session, user_id)
+    total = sum(entry.get("count", 0) for entry in stats.values())
+    if total <= 0:
+        return None
+    amount = sum(entry.get("sum_minor", 0) for entry in stats.values())
+    return _round_half_up(amount, total)
 
-    window_seconds = profile_window_days(session) * 86400
-    return max(0, int(_count_recent(session, user_id, window_seconds=window_seconds)))
+
+def _window_average_by_currency(session: Session, user_id: uuid.UUID) -> dict[str, int]:
+    """Promedio por moneda de la ventana (`{moneda: avg}`, M6).
+
+    Redondeo entero `ROUND_HALF_UP` por moneda; monedas sin conteo no
+    aparecen. Nunca lanza ante fallo tecnico: retorna `{}` (el
+    llamante degrada al promedio almacenado).
+    """
+    try:
+        stats = _window_amount_stats(session, user_id)
+    except Exception as exc:  # noqa: BLE001 - lectura best-effort, rige `{}`
+        logger.debug("risk ventana por moneda no disponible: error=%s", type(exc).__name__)
+        return {}
+    averages: dict[str, int] = {}
+    for code, entry in stats.items():
+        count = int(entry.get("count", 0) or 0)
+        if count <= 0:
+            continue
+        averages[str(code).strip().upper()] = _round_half_up(
+            int(entry.get("sum_minor", 0) or 0), count
+        )
+    return averages
 
 
 def _utc_hour(moment: datetime | None) -> int | None:
@@ -1190,14 +1348,6 @@ def _utc_hour(moment: datetime | None) -> int | None:
         return None
     current = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
     return int(current.astimezone(UTC).hour)
-
-
-def _clean_country(*candidates: Any) -> str | None:
-    """Primer pais valido (`strip` + `UPPER`, `1..8` chars) o `None`."""
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip() and len(candidate.strip()) <= 8:
-            return candidate.strip().upper()
-    return None
 
 
 def _clean_device(*candidates: Any) -> str | None:
@@ -1219,22 +1369,23 @@ def _coerce_uuid(value: Any) -> uuid.UUID | None:
 def _observation_from_transaction(
     tx: Any, payload: dict[str, Any]
 ) -> profile_domain.BehaviorObservation:
-    """Observacion de una operacion del motor (sin PII).
+    """Observacion de una operacion del motor (sin PII, A4).
 
     Monto/moneda/hora del registro de `transactions` (leido por
-    fachada, sin importar sus modelos); pais/dispositivo del payload
-    o de `tx.meta` (lo que traiga). La moneda se mapea pero no se
-    persiste (el promedio del MVP es agnostico a la moneda, igual que
-    la comparacion de `UNUSUAL_AMOUNT`).
+    fachada, sin importar sus modelos); dispositivo del payload o de
+    `tx.meta` (lo que traiga). El pais NO se toma del cliente (A4,
+    fixes PR #26): `country=None` siempre —el cliente no puede elegir
+    su pais y `ATYPICAL_GEO` queda inactivo hasta tener una fuente
+    server-side (IP/geo). La moneda se mapea pero el promedio
+    almacenado es el agregado de la ventana (la comparacion por moneda
+    la resuelve `evaluate_pre_transaction` con el mapa por moneda).
     """
     meta = tx.meta if isinstance(getattr(tx, "meta", None), dict) else {}
     created = getattr(tx, "created_at", None)
     return profile_domain.BehaviorObservation(
         amount_minor=int(tx.amount_minor),
         currency=str(tx.currency).strip().upper() if isinstance(tx.currency, str) else None,
-        country=_clean_country(
-            payload.get("country"), payload.get("country_code"), meta.get("country")
-        ),
+        country=None,
         hour=_utc_hour(created),
         device_id=_clean_device(payload.get("device_id"), meta.get("device_id")),
     )
@@ -1245,40 +1396,75 @@ def handle_profile_transaction(
     *,
     event_id: uuid.UUID | str,
     payload: dict[str, Any],
-    source: str = "transaction.initiated",
+    source: str = "transfer.settled",
 ) -> dict[str, Any]:
-    """Alimenta el perfil desde `transaction.initiated`/`transfer.settled`.
+    """Alimenta el perfil desde `transfer.settled` (estado final, A1/A2).
 
-    Idempotente por `event_id` (consumidor `CONSUMER_PROFILE`): el
-    replay retorna `consumed=False` sin efectos. Lee la operacion por
-    la fachada de `transactions` (el `initiated` no trae `user_id`) y
-    actualiza monto promedio (media incremental entera con
-    `ROUND_HALF_UP` en la ventana `risk.profile_window_days`), horas,
-    paises y dispositivo. `flush` sin `commit`; fallo -> rollback y
-    re-lanza (D-04). Nunca mueve dinero ni toca el `score`.
+    Solo las operaciones con estado final exitoso
+    (`PROFILE_SUCCESS_STATES`: `SETTLED`/`POSTED`/`COMPLETED`/
+    `CONCILIATED`) aportan monto/conteo (A2: `REJECTED`, `PENDING_*`,
+    `FAILED` y `CANCELLED` quedan excluidos); la hora y el dispositivo
+    confiable tambien se alimentan de aqui (A1: `transaction.initiated`
+    ya NO alimenta el perfil para fines monetarios —eliminar esa
+    suscripcion quita ademas la dependencia de orden motor->perfil,
+    M5—). Idempotente por `event_id` (consumidor `CONSUMER_PROFILE`):
+    el replay retorna `consumed=False` sin efectos; como el promedio
+    se recalcula desde la ventana real, re-alimentar la misma operacion
+    con otro `event_id` converge al mismo valor (no duplica).
+
+    Orden de validacion (B2/M4): la referencia y el estado se validan
+    ANTES de reclamar el evento. Sin `transaction_id` o sin titular
+    (permanentes) se reclama y se retorna `consumed=True` con el motivo
+    (no reintento). Sin operacion encontrada (transitoria: el evento
+    puede llegar antes que el `commit` visible) NO se reclama y se
+    retorna `consumed=False` para reintento (M4). Un estado final no
+    exitoso se reclama como procesado sin efectos (`consumed=True`,
+    `reason="non-successful-state"`: reintentarlo jamas aportaria).
+
+    `flush` sin `commit`; fallo -> rollback y re-lanza (D-04). Nunca
+    mueve dinero ni toca el `score`. Sin PII en logs.
     """
     from app.modules.shared import repository as shared_repo
 
-    if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
-        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
-        return {"consumed": False, "reason": "duplicate"}
     data = dict(payload) if isinstance(payload, dict) else {}
     transaction_id = _coerce_uuid(data.get("transaction_id"))
     if transaction_id is None:
+        if not shared_repo.try_mark_processed(
+            session, event_id=event_id, consumer=CONSUMER_PROFILE
+        ):
+            logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+            return {"consumed": False, "reason": "duplicate"}
         logger.warning("risk perfil sin transaction_id: registrado sin efectos")
         return {"consumed": True, "reason": "missing-transaction-id"}
     from app.modules.transactions.service import find_transaction_by_id as _find_tx
 
     tx = _find_tx(session, transaction_id)
     if tx is None:
-        logger.warning("risk perfil sin operacion: registrado sin efectos")
-        return {"consumed": True, "reason": "missing-transaction"}
+        logger.warning("risk perfil sin operacion: reintento sin reclamar")
+        return {"consumed": False, "reason": "missing-transaction", "retry": True}
+    status = str(getattr(tx, "status", "") or "").strip().upper()
+    if status not in PROFILE_SUCCESS_STATES:
+        if not shared_repo.try_mark_processed(
+            session, event_id=event_id, consumer=CONSUMER_PROFILE
+        ):
+            logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+            return {"consumed": False, "reason": "duplicate"}
+        logger.info("risk perfil estado no exitoso: sin efectos status=%s", status)
+        return {"consumed": True, "reason": "non-successful-state", "status": status}
     owner = tx.initiator_user_id if tx.initiator_user_id is not None else None
     if owner is None:
         owner = _coerce_uuid(data.get("user_id"))
     if owner is None:
+        if not shared_repo.try_mark_processed(
+            session, event_id=event_id, consumer=CONSUMER_PROFILE
+        ):
+            logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+            return {"consumed": False, "reason": "duplicate"}
         logger.warning("risk perfil sin titular: registrado sin efectos")
         return {"consumed": True, "reason": "missing-user-id"}
+    if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
+        logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
+        return {"consumed": False, "reason": "duplicate"}
     observation = _observation_from_transaction(tx, data)
     profile = update_behavior(session, owner, observation)
     logger.info("risk perfil actualizado user_avg=%s", int(profile.avg_amount_minor or 0))
@@ -1299,10 +1485,12 @@ def handle_profile_login(
     payload: dict[str, Any],
     at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Alimenta el perfil desde `auth.login_succeeded` (E6-T03).
+    """Alimenta el perfil desde `auth.login_succeeded` (E6-T03, A1/A4).
 
-    Solo hora/dispositivo/pais cuando el payload los trae (sin monto:
-    el promedio se conserva; sin tocar el `score`). Idempotente por
+    Solo hora/dispositivo confiable cuando el payload los trae (sin
+    monto: el promedio lo recalcula la ventana real solo con estados
+    exitosos; sin tocar el `score`). El pais NO se toma del payload
+    (A4): el cliente no puede elegir su pais. Idempotente por
     `event_id` (consumidor `CONSUMER_PROFILE`). `flush` sin `commit`;
     fallo -> rollback y re-lanza. Sin PII.
     """
@@ -1317,7 +1505,7 @@ def handle_profile_login(
         logger.warning("risk perfil login sin titular: registrado sin efectos")
         return {"consumed": True, "reason": "missing-user-id"}
     observation = profile_domain.BehaviorObservation(
-        country=_clean_country(data.get("country"), data.get("country_code")),
+        country=None,
         hour=_utc_hour(at),
         device_id=_clean_device(data.get("device_id")),
     )
@@ -1338,9 +1526,11 @@ def handle_profile_failed_attempt(
     payload: dict[str, Any],
     at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Complementa el perfil desde `auth.failed_attempt` (E6-T03).
+    """Complementa el perfil desde `auth.failed_attempt` (E6-T03, M3).
 
-    Solo hora/dispositivo (la severidad la posee `E2-T20`: este
+    Solo la hora (un intento fallido es "visto" pero NO "confiable": NO
+    actualiza `last_device_id` —el dispositivo solo lo fijan un login
+    o una operacion exitosa—; la severidad la posee `E2-T20`: este
     consumo NO toca `score` ni notifica, para no duplicar su efecto).
     Idempotente por `event_id` (consumidor `CONSUMER_PROFILE`).
     `flush` sin `commit`; fallo -> rollback y re-lanza. Sin PII.
@@ -1357,7 +1547,7 @@ def handle_profile_failed_attempt(
         return {"consumed": True, "reason": "missing-user-id"}
     observation = profile_domain.BehaviorObservation(
         hour=_utc_hour(at),
-        device_id=_clean_device(data.get("device_id")),
+        device_id=None,
     )
     profile = update_behavior(session, owner, observation)
     return {

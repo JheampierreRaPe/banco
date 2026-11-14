@@ -14,9 +14,20 @@ dinero (regla de oro 1): solo registra severidad, audita y notifica.
 Ante fallo se revierte y se re-lanza para que el worker aplique
 reintento con backoff (diseno E5-T05).
 
-Extension E6-T03 (HU20): el perfil de comportamiento se alimenta con
-`on_profile_transaction_initiated` / `on_profile_transfer_settled` /
-`on_profile_login_succeeded` / `on_profile_auth_failed_attempt`
+Extension E6-T03 (HU20, fixes PR #26): el perfil de comportamiento se
+alimenta con `on_profile_transfer_settled` (monto SOLO de estados
+finales exitosos + hora/dispositivo confiable) /
+`on_profile_login_succeeded` (hora/dispositivo confiable) /
+`on_profile_auth_failed_attempt` (solo hora: un fallo es "visto" pero
+NO "confiable", no toca `last_device_id`; la severidad la sigue
+poseyendo `E2-T20`/`E6-T14`), consumidor `"risk-profile"`,
+idempotente por `processed_events`. `transaction.initiated` NO
+alimenta el perfil (A1: el monto/promedio se alimenta SOLO con
+`transfer.settled` en estado final; asi no hay doble conteo
+iniciada+liquidada ni dependencia de orden motor->perfil, M5). Los
+canales que no emiten `transfer.settled` no alimentan el perfil, pero
+SI son evaluados por el motor (`evaluate_pre_transaction` en el hook).
+El `score` lo sigue poseyendo `E2-T20`/`E6-T14`.
 (consumidor `"risk-profile"`, idempotente por `processed_events`):
 monto promedio (media incremental entera), horas/paises habituales y
 ultimo dispositivo. El `score` lo sigue poseyendo `E2-T20`/`E6-T14`.
@@ -129,7 +140,6 @@ __all__ = [
     "on_auth_failed_attempt",
     "on_profile_auth_failed_attempt",
     "on_profile_login_succeeded",
-    "on_profile_transaction_initiated",
     "on_profile_transfer_settled",
     "on_transaction_initiated",
     "on_transfer_settled",
@@ -269,58 +279,18 @@ def _run_profile_handler(
             pass
 
 
-def on_profile_transaction_initiated(
-    entry: Any,
-    *,
-    session_factory: Callable[[], Any] | None = None,
-) -> bool:
-    """Handler del bus para `transaction.initiated` (D-04, E6-T03).
-
-    Alimenta el perfil (monto/moneda/hora/pais/dispositivo) via
-    `risk.service.handle_profile_transaction` (consumidor
-    `"risk-profile"`). Delega el `at` (hora UTC) en el instante del
-    `entry`; la hora fina la aporta la operacion leida por fachada.
-    """
-    from app.modules.risk import service as risk_service
-
-    if session_factory is None:
-        from app.core.db import SessionLocal as _SessionLocal
-
-        session_factory = _SessionLocal
-    payload = dict(entry.payload or {})
-    session = session_factory()
-    try:
-        outcome = risk_service.handle_profile_transaction(
-            session,
-            event_id=entry.id,
-            payload=payload,
-            source="transaction.initiated",
-        )
-        session.commit()
-        return bool(outcome.get("consumed"))
-    except Exception:
-        try:
-            session.rollback()
-        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
-            pass
-        raise
-    finally:
-        try:
-            session.close()
-        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
-            pass
-
-
 def on_profile_transfer_settled(
     entry: Any,
     *,
     session_factory: Callable[[], Any] | None = None,
 ) -> bool:
-    """Handler del bus para `transfer.settled` (D-04, E6-T03).
+    """Handler del bus para `transfer.settled` (D-04, E6-T03, A1).
 
-    Mismo contrato que `on_profile_transaction_initiated`
-    (consumidor `"risk-profile"`): re-alimenta tras liquidar (la
-    ventana del perfil ya incluye la operacion).
+    UNICO alimentador monetario del perfil (consumidor
+    `"risk-profile"`): solo estados finales exitosos aportan
+    monto/conteo (la ventana del perfil ya incluye la operacion, ya
+    hizo `commit`). Sin `transaction.initiated` no hay doble conteo
+    ni orden motor->perfil (M5).
     """
     from app.modules.risk import service as risk_service
 
@@ -359,8 +329,9 @@ def on_profile_login_succeeded(
 ) -> bool:
     """Handler del bus para `auth.login_succeeded` (D-04, E6-T03).
 
-    Alimenta hora/dispositivo/pais (si el payload los trae) via
-    `risk.service.handle_profile_login` (consumidor `"risk-profile"`).
+    Alimenta hora/dispositivo confiable (sin pais: el cliente no puede
+    elegir su pais, A4) via `risk.service.handle_profile_login`
+    (consumidor `"risk-profile"`).
     """
     return _run_profile_handler(entry, "handle_profile_login", session_factory=session_factory)
 
@@ -370,12 +341,13 @@ def on_profile_auth_failed_attempt(
     *,
     session_factory: Callable[[], Any] | None = None,
 ) -> bool:
-    """Handler del bus para `auth.failed_attempt` (D-04, E6-T03).
+    """Handler del bus para `auth.failed_attempt` (D-04, E6-T03, M3).
 
-    Complementa hora/dispositivo via
+    Complementa SOLO la hora via
     `risk.service.handle_profile_failed_attempt` (consumidor
-    `"risk-profile"`): NO toca `score` ni notifica (eso lo posee
-    `E2-T20`; aqui solo habitos).
+    `"risk-profile"`): NO toca `last_device_id` (un fallo es "visto",
+    no "confiable"), `score` ni notifica (eso lo posee `E2-T20`; aqui
+    solo habitos).
     """
     return _run_profile_handler(
         entry, "handle_profile_failed_attempt", session_factory=session_factory

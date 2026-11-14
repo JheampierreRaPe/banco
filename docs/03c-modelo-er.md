@@ -158,6 +158,19 @@ transactions (REF) <── reconciliation_exceptions
 > checksum distinto = `FAILED`); los items nacen `PENDING` y solo el
 > matching (`E5-T18`) los mueve a `MATCHED`/`EXCEPTION`. Sin FK entre
 > modulos: el cruce con `transactions` se hace por IDs en `E5-T18`.
+>
+> Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19):
+> `reconciliation_runs` queda implementada (`0051_reconciliation_runs`,
+> UQ por fecha/moneda, `CHECK`s e indice; semillas idempotentes de
+> tolerancias y cotas); el servicio `run_reconciliation` cruza los
+> `PENDING` del alcance exacto `(run_date, currency)` contra los
+> candidatos de la fachada de solo lectura
+> `transactions.service.list_reconciliation_candidates` con min-cost
+> max-flow (cardinalidad maxima + maximo de `EXACT`), actualiza los items
+> y cierra la corrida (`COMPLETED` idempotente, `RUNNING` concurrente =
+> `CONFLICT`, cota superada = `FAILED` con motivo
+> `CANDIDATE_BUDGET_EXCEEDED` y sin parciales).
+> `reconciliation_exceptions`/`claims` siguen pendientes (`E5-T19`/`E5-T20`).
 
 ## 11. Modulo `notifications`
 

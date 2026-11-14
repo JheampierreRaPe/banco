@@ -245,7 +245,10 @@ def test_single_alembic_head_ending_at_0035():
     # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
     # (esquema `reconciliation`, tras 0049).
     assert revisions.get("0050_reconciliation") == "0049_fx"
+    # E5-T18 corte 2 (2026-11-14): la cabeza avanza a 0051_reconciliation_runs
+    # (corridas de conciliacion + semillas de tolerancias/cotas, tras 0050).
+    assert revisions.get("0051_reconciliation_runs") == "0050_reconciliation"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
+    assert heads == ["0051_reconciliation_runs"], f"heads inesperados: {heads}"
     assert "0034_credits_loans" in revisions

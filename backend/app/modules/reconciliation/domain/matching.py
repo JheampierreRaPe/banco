@@ -13,30 +13,30 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   ``AMOUNT_DIFF``/``DATE_DIFF`` (1) > ``CURRENCY_MISMATCH`` (2) > fuera de
   tolerancia (3). La moneda distinta manda sobre un monto/fecha fuera de
   tolerancia, pero nunca sobre un ``Match`` (exacto o tolerado).
-- El cruce maximiza la **cardinalidad por ``external_ref``** (matching
-  bipartito maximo) sobre **todas** las aristas que clasifican como
-  ``Match`` (exactas + toleradas) en una unica pasada, con Kuhn
-  determinista (items por ``item_id`` y vecinos en orden fijo: exactos
-  primero como desempate, luego ``op_id``). Garantizado: cardinalidad
-  maxima (ningun otro emparejamiento con aristas ``Match`` tiene mas
-  pares). No garantizado formalmente: preferencia de exactos; a igual
-  cardinalidad los exactos van primero en el orden de vecinos, lo que es
-  un desempate determinista (en la practica conserva los exactos cuando
-  hay empate) pero no una prueba de maximalidad lexicografica: en un
-  barrido exhaustivo del revisor (8192 instancias 2x2) hubo 204 casos con
-  menos ``EXACT`` que otro maximo alternativo y 120 casos con un maximo
-  alternativo 100% exacto. Los sobrantes se clasifican como excepcion.
-  Asi dos tolerados cruzados (``it-a``/``op-2`` + ``it-b``/``op-1``) ganan
-  sobre un unico par mejor puntuado (``it-a``/``op-1``) que dejaria un
-  falso positivo, y un exacto que compite con tolerados no se pierde
-  cuando existe un maximo que lo incluye (casos A/B del validador). Si el
-  corte 2 quiere consistencia total de exactos puede adoptar min-cost
-  max-flow (coste 0 exacto / 1 tolerado) manteniendo la cardinalidad
-  maxima; el corte 1 no lo implementa (Kuhn + desempate alcanza).
-- Determinismo: a igualdad de cardinalidad, el resultado es estable porque
-  items y operaciones se ordenan por ID y los vecinos se exploran en orden
-  fijo (exactos primero, luego ``op_id``; Kuhn en orden fijo); el resultado
-  sale ordenado por IDs.
+- El cruce maximiza la **cardinalidad por ``external_ref``** en un unico
+  flujo de costo minimo por grupo: entre todos los emparejamientos de
+  cardinalidad maxima sobre **todas** las aristas que clasifican como
+  ``Match`` (exactas + toleradas) se elige el que **maximiza el numero de
+  pares ``EXACT``** (coste 0 exacto / 1 tolerado). El motor es un
+  min-cost max-flow determinista (SSAP por conjuntos de caminos minimos:
+  Dijkstra con potenciales + flujo bloqueante sobre aristas de coste
+  reducido 0; nodos en orden fijo por ID y desempates por ID): a igualdad
+  de entrada siempre produce el mismo resultado. Garantizado: cardinalidad
+  maxima Y maximo de ``EXACT`` entre los maximos (verificado contra fuerza
+  bruta en ``backend/tests/test_e5_t18b_reconciliation_run.py``). Los
+  sobrantes se clasifican como excepcion. Asi dos tolerados cruzados
+  (``it-a``/``op-2`` + ``it-b``/``op-1``) ganan sobre un unico par mejor
+  puntuado (``it-a``/``op-1``) que dejaria un falso positivo, y un exacto
+  que compite con tolerados no se pierde cuando existe un maximo que lo
+  incluye (casos A/B del validador); ademas, a igual cardinalidad, el
+  emparejamiento con mas exactos gana siempre (p. ej. el caso del revisor:
+  ops ``[100,100,300]`` vs items ``[100,400,300]`` con ``tol=100`` da
+  **2 ``EXACT``** + ``AMOUNT_DIFF`` del item huerfano, no 1 exacto +
+  1 tolerado).
+- Determinismo: el resultado es estable porque items y operaciones se
+  ordenan por ID, los nodos del flujo van en orden fijo (items por
+  ``item_id``, ops por ``op_id``) y los desempates son por ID; el
+  resultado sale ordenado por IDs.
 - Indice de candidatos: por cada ``external_ref`` las operaciones se ordenan
   por monto y cada item usa ``bisect`` sobre la ventana
   ``[monto - tol, monto + tol]`` (mas filtro de moneda/signo/fecha) para no
@@ -46,22 +46,29 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
 - Cota de seguridad: ``MAX_CANDIDATE_PAIRS`` (default ``250_000`` pares
   candidatos evaluables por grupo de ``external_ref``, aprox ``500x500``)
   evita que un grupo patologico de refs repetidas agote memoria/tiempo:
-  superarla lanza ``ValueError`` claro en vez de tardar minutos. La cota
-  cuenta **solo pares que podrian ser ``Match``**: en la pasada de
-  matching, pares en la ventana de monto que ademas pasan moneda/signo y
-  quedan dentro de la tolerancia de fecha (equivalente a aristas ``Match``;
-  un grupo 501x501 con todas las monedas distintas cuenta 0 y no aborta);
-  en la pasada de excepciones, pares libres con misma moneda, mismo signo
-  y fecha dentro de tolerancia (sin filtrar por distancia de monto, que es
-  lo que el ``min()`` evalua; coherente con el matching y documentado
-  aqui). El ``ValueError`` nunca incluye el valor de ``external_ref``
-  (solo conteos + hash corto SHA-256 de 8 hex para traza) y el corte 2
-  debe mapearlo a corrida ``FAILED`` (o degradacion por grupo); el default
-  debe poder configurarse por entorno (hoy es una constante del dominio).
+  superarla lanza ``CandidateBudgetExceeded`` (subclase de ``ValueError``)
+  claro en vez de tardar minutos. La cota cuenta **solo pares que podrian
+  ser ``Match``**: en la pasada de matching, pares en la ventana de monto
+  que ademas pasan moneda/signo y quedan dentro de la tolerancia de fecha
+  (equivalente a aristas ``Match``; un grupo 501x501 con todas las monedas
+  distintas cuenta 0 y no aborta); en la pasada de excepciones, pares
+  libres con misma moneda, mismo signo y fecha dentro de tolerancia (sin
+  filtrar por distancia de monto, que es lo que el ``min()`` evalua;
+  coherente con el matching y documentado aqui). El error nunca incluye el
+  valor de ``external_ref`` (solo conteos + hash corto SHA-256 de 8 hex) y
+  el servicio lo mapea a corrida ``FAILED`` (motivo
+  ``CANDIDATE_BUDGET_EXCEEDED``); el default se configura por entorno via
+  ``reconciliation.max_candidate_pairs`` (hoy es la constante del dominio).
   Motivo: las refs deben ser casi unicas (decision corte 2: referencia
   unica por operacion); un grupo gigante con tolerancia amplia o con miles
   de sobrantes es un error de datos, no un cruce normal. Configurable via
   ``max_candidate_pairs`` de :func:`match_items`.
+- Presupuesto total de corrida: ``max_total_pairs`` de :func:`match_items`
+  (``None`` = sin limite) acota la suma de pares evaluables de
+  **todos** los grupos (pasada de matching + pasada de excepciones); al
+  superarlo lanza ``CandidateBudgetExceeded`` sin ninguna ref (mensaje de
+  corrida, solo conteos). El servicio lo configura por entorno via
+  ``reconciliation.max_candidate_pairs_per_run``.
 - Politica de signo: los montos son enteros **distintos de cero** (positivos
   para cargos/abonos, negativos para reversos/contracargos/ajustes). Un
   ``Match`` exige **mismo signo** en ambos lados; la tolerancia compara la
@@ -112,6 +119,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import heapq
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -140,14 +148,25 @@ EXCEPTION_REASONS = (
 TOLERANCE_KEYS = frozenset({"amount_tolerance_minor", "date_tolerance_days"})
 
 #: Cota de seguridad: maximo de pares candidatos evaluables por grupo de
-#: ``external_ref`` antes de fallar con ``ValueError``. Con ``250_000`` un
-#: cruce normal (refs casi unicas, o 300x300 = 90_000 pares en el peor caso)
-#: pasa holgado, pero un grupo patologico (p. ej. ``1000x1000`` con tolerancia
-#: enorme = 1M pares) falla rapido en vez de agotar memoria/tiempo. Las refs
-#: deben ser casi unicas (el corte 2 decidir entre referencia unica por
-#: operacion o matching global); un grupo gigante con tolerancia amplia es un
-#: error de datos.
+#: ``external_ref`` antes de fallar con ``CandidateBudgetExceeded``. Con
+#: ``250_000`` un cruce normal (refs casi unicas, o 300x300 = 90_000 pares
+#: en el peor caso) pasa holgado, pero un grupo patologico (p. ej.
+#: ``1000x1000`` con tolerancia enorme = 1M pares) falla rapido en vez de
+#: agotar memoria/tiempo. Las refs deben ser casi unicas (el corte 2
+#: decidir entre referencia unica por operacion o matching global); un
+#: grupo gigante con tolerancia amplia es un error de datos.
 MAX_CANDIDATE_PAIRS = 250_000
+
+
+class CandidateBudgetExceeded(ValueError):
+    """Cota de pares evaluables superada (grupo o corrida).
+
+    Subclase de ``ValueError`` (quien esperaba ``ValueError`` sigue
+    capturandolo). El mensaje nunca incluye el valor de ``external_ref``
+    (solo conteos + hash corto en la cota por grupo; solo conteos en la
+    cota por corrida): el servicio la mapea a corrida ``FAILED`` con
+    motivo ``CANDIDATE_BUDGET_EXCEEDED``, sin parciales.
+    """
 
 
 def _ref_hash(ref: str) -> str:
@@ -425,36 +444,42 @@ def match_items(
     tolerances: Tolerances | Mapping[str, object] | None = None,
     *,
     max_candidate_pairs: int = MAX_CANDIDATE_PAIRS,
+    max_total_pairs: int | None = None,
 ) -> MatchResult:
     """Cruza clearing contra operaciones internas (puro y determinista).
 
-    Maximiza la cardinalidad del emparejamiento por ``external_ref`` en una
-    unica pasada bipartita sobre **todas** las aristas ``Match`` (exactas +
-    toleradas) con Kuhn determinista (items por ``item_id``, vecinos con
-    exactos primero y luego ``op_id``). Garantiza cardinalidad maxima; la
-    preferencia de exactos es solo desempate determinista, no garantia
-    formal. Los sobrantes se clasifican como excepcion con el mejor
-    candidato libre (``CURRENCY_MISMATCH``/fuera de tolerancia/
-    ``MISSING_INTERNAL``). El orden de entrada no afecta el resultado: todo
-    se ordena antes de emparejar y el resultado sale ordenado por IDs.
+    Maximiza la cardinalidad del emparejamiento por ``external_ref`` con un
+    flujo de costo minimo (coste 0 exacto / 1 tolerado): a igual
+    cardinalidad gana el emparejamiento con mas pares ``EXACT``. Los
+    sobrantes se clasifican como excepcion con el mejor candidato libre
+    (``CURRENCY_MISMATCH``/fuera de tolerancia/``MISSING_INTERNAL``). El
+    orden de entrada no afecta el resultado: todo se ordena antes de
+    emparejar y el resultado sale ordenado por IDs.
 
     La fase de matching usa un indice por monto (``bisect`` sobre la ventana
     de tolerancia) para no generar ``O(n^2)`` pares con tolerancia 0/estrecha;
     solo los pares que pasan moneda/signo/fecha (aristas ``Match``) cuentan
-    para ``max_candidate_pairs``; si los superan se lanza ``ValueError`` (cota
-    de seguridad para refs repetidas patologicas; el mensaje lleva conteos +
-    hash corto de la ref, nunca su valor). La pasada de excepciones aplica la
-    misma cota por grupo contando solo pares libres evaluables (misma moneda,
-    mismo signo, fecha dentro de tolerancia) antes de buscar el mejor
-    candidato, con el mismo estilo de ``ValueError`` sin la ref literal. El
-    corte 2 debe mapear ese ``ValueError`` a corrida ``FAILED`` (o
-    degradacion por grupo) y poder configurar el default por entorno.
+    para ``max_candidate_pairs``; si los superan se lanza
+    ``CandidateBudgetExceeded`` (cota de seguridad para refs repetidas
+    patologicas; el mensaje lleva conteos + hash corto de la ref, nunca su
+    valor). ``max_total_pairs`` (``None`` = sin limite) acota ademas la suma
+    de pares evaluables de todos los grupos (matching + excepciones); al
+    superarlo se lanza ``CandidateBudgetExceeded`` sin ninguna ref. El
+    servicio mapea ese error a corrida ``FAILED`` (motivo
+    ``CANDIDATE_BUDGET_EXCEEDED``) y configura ambos defaults por entorno
+    (``reconciliation.max_candidate_pairs`` /
+    ``reconciliation.max_candidate_pairs_per_run``).
     """
     tol = _coerce_tolerances(tolerances)
     if isinstance(max_candidate_pairs, bool) or not isinstance(max_candidate_pairs, int):
         raise TypeError("max_candidate_pairs debe ser un entero >= 0")
     if max_candidate_pairs < 0:
         raise ValueError("max_candidate_pairs debe ser >= 0")
+    if max_total_pairs is not None:
+        if isinstance(max_total_pairs, bool) or not isinstance(max_total_pairs, int):
+            raise TypeError("max_total_pairs debe ser un entero >= 0 o None")
+        if max_total_pairs < 0:
+            raise ValueError("max_total_pairs debe ser >= 0 o None")
 
     internals = list(internal)
     entries = list(clearing)
@@ -486,14 +511,17 @@ def match_items(
     matches: list[Match] = []
     used_ops: set[str] = set()
     matched_items: set[str] = set()
+    # Presupuesto total de la corrida: pares evaluables acumulados de todos
+    # los grupos (matching + excepciones). ``None`` = sin limite.
+    total_state: list[int] | None = [0, max_total_pairs] if max_total_pairs is not None else None
 
     for ref in sorted(set(ops_by_ref) | set(items_by_ref)):
         group_ops = ops_by_ref.get(ref, [])
         group_items = items_by_ref.get(ref, [])
         if not group_ops or not group_items:
             continue
-        # Pasada unica: cardinalidad maxima sobre todas las aristas Match.
-        _match_group_max_cardinality(
+        # Flujo de costo minimo: cardinalidad maxima + maximo de EXACT.
+        _match_group_min_cost_flow(
             group_ops,
             group_items,
             tol,
@@ -501,6 +529,7 @@ def match_items(
             used_ops,
             matched_items,
             max_candidate_pairs,
+            total_state,
         )
 
     # Cota de la pasada de excepciones: cuenta solo pares libres evaluables
@@ -508,6 +537,7 @@ def match_items(
     # monto la evalua el min() sin filtrar). Evita el cartesiano por grupo
     # pero no aborta cuando ningun par podria ser Match (p. ej. monedas
     # distintas -> todo CURRENCY_MISMATCH). Sin la ref literal en el mensaje.
+    # Ademas carga el presupuesto total de la corrida.
     for ref in sorted(set(ops_by_ref) | set(items_by_ref)):
         free_ops = [op for op in ops_by_ref.get(ref, []) if op.op_id not in used_ops]
         free_items = [e for e in items_by_ref.get(ref, []) if e.item_id not in matched_items]
@@ -524,13 +554,23 @@ def match_items(
                     continue
                 evaluable += 1
                 if evaluable > max_candidate_pairs:
-                    raise ValueError(
+                    raise CandidateBudgetExceeded(
                         "grupo de referencia "
                         f"{_ref_hash(ref)} supera la cota de seguridad en excepciones "
                         f"({evaluable} pares evaluables > {max_candidate_pairs}): refs "
                         "repetidas patologicas; reduzca la tolerancia o exija "
                         "referencia unica por operacion"
                     )
+                if total_state is not None:
+                    total_state[0] += 1
+                    if total_state[0] > total_state[1]:
+                        raise CandidateBudgetExceeded(
+                            "corrida supera la cota de seguridad total "
+                            f"(presupuesto total {total_state[0]} pares evaluables > "
+                            f"{total_state[1]}): tolerancias amplias o referencias "
+                            "repetidas; reduzca la tolerancia o exija referencia "
+                            "unica por operacion"
+                        )
 
     # Pasada final (excepciones): sobrantes; el mejor candidato libre
     # clasifica la excepcion con cercania (moneda > fuera de tolerancia).
@@ -566,7 +606,7 @@ def match_items(
     return MatchResult(matches=tuple(matches), exceptions=tuple(exceptions))
 
 
-def _match_group_max_cardinality(
+def _match_group_min_cost_flow(
     group_ops: list[InternalOperation],
     group_items: list[ClearingEntry],
     tol: Tolerances,
@@ -574,37 +614,40 @@ def _match_group_max_cardinality(
     used_ops: set[str],
     matched_items: set[str],
     max_candidate_pairs: int,
+    total_state: list[int] | None,
 ) -> None:
-    """Maximiza pares ``Match`` (exactos + tolerados) con Kuhn determinista.
+    """Empareja un grupo con flujo de costo minimo (exacto 0 / tolerado 1).
 
     Construye la adyacencia solo con pares que :func:`_classify` califica
     como ``Match``, usando la ventana de monto (``bisect``) + filtros de
     moneda/signo/fecha; los vecinos se ordenan con exactos primero y luego
-    ``op_id`` (desempate determinista, no garantia formal de maximalidad
-    lexicografica: ver cuantificacion 204/8192 y 120/8192 en el modulo; el
-    corte 2 puede adoptar min-cost max-flow si quiere consistencia total).
-    Solo los pares que pasan moneda/signo/fecha (aristas ``Match``) cuentan
-    para ``max_candidate_pairs``: un grupo con todas las monedas distintas
-    cuenta 0 y no aborta. Si se supera lanza ``ValueError`` sin la ref
-    literal (conteos + hash corto). Despues corre aumentos de
-    camino en orden fijo (items por ``item_id``), lo que garantiza
-    cardinalidad maxima sobre el grafo de aristas ``Match``. El aumento es
-    Kuhn DFS iterativo con pila explicita (misma semantica que el recursivo)
-    para no agotar la pila de Python en cadenas largas de aumento.
+    ``op_id`` (orden de insercion determinista). Solo los pares que pasan
+    moneda/signo/fecha (aristas ``Match``) cuentan para
+    ``max_candidate_pairs``: un grupo con todas las monedas distintas
+    cuenta 0 y no aborta. Si se supera lanza ``CandidateBudgetExceeded``
+    sin la ref literal (conteos + hash corto). ``total_state`` (``[usados,
+    limite]`` o ``None``) acumula el presupuesto total de la corrida y
+    tambien lanza ``CandidateBudgetExceeded`` (sin ninguna ref) al
+    superarlo.
+
+    El cruce es un min-cost max-flow (:func:`_min_cost_flow_matches`):
+    garantiza cardinalidad maxima sobre el grafo de aristas ``Match`` y,
+    entre los maximos, el maximo numero de pares ``EXACT``. Determinista:
+    nodos en orden fijo por ID y desempates por ID.
     """
     ops_sorted = sorted(group_ops, key=lambda o: o.amount_minor)
     op_amounts = [op.amount_minor for op in ops_sorted]
     op_by_id = {op.op_id: op for op in ops_sorted}
     items_sorted = sorted(group_items, key=lambda e: e.item_id)
 
-    adjacency: dict[str, list[str]] = {}
+    neighbours: dict[str, list[tuple[int, str]]] = {}
     candidate_count = 0
     for entry in items_sorted:
         low = entry.amount_minor - tol.amount_tolerance_minor
         high = entry.amount_minor + tol.amount_tolerance_minor
         left = bisect.bisect_left(op_amounts, low)
         right = bisect.bisect_right(op_amounts, high)
-        neighbours: list[tuple[int, str]] = []
+        item_neighbours: list[tuple[int, str]] = []
         for op in ops_sorted[left:right]:
             if op.op_id in used_ops:  # pragma: no cover - grupos frescos
                 continue
@@ -614,63 +657,36 @@ def _match_group_max_cardinality(
                 continue
             outcome = _classify(op, entry, tol)
             if isinstance(outcome, Match):
-                neighbours.append((0 if outcome.qualifier == EXACT else 1, op.op_id))
+                item_neighbours.append((0 if outcome.qualifier == EXACT else 1, op.op_id))
                 candidate_count += 1
                 if candidate_count > max_candidate_pairs:
-                    raise ValueError(
+                    raise CandidateBudgetExceeded(
                         "grupo de referencia "
                         f"{_ref_hash(entry.external_ref)} supera la cota de seguridad "
                         f"({candidate_count} pares evaluables > "
                         f"{max_candidate_pairs}): refs repetidas con tolerancia amplia; "
                         "reduzca la tolerancia o exija referencia unica por operacion"
                     )
-        neighbours.sort()
-        adjacency[entry.item_id] = [op_id for _, op_id in neighbours]
+                if total_state is not None:
+                    total_state[0] += 1
+                    if total_state[0] > total_state[1]:
+                        raise CandidateBudgetExceeded(
+                            "corrida supera la cota de seguridad total "
+                            f"(presupuesto total {total_state[0]} pares evaluables > "
+                            f"{total_state[1]}): tolerancias amplias o referencias "
+                            "repetidas; reduzca la tolerancia o exija referencia "
+                            "unica por operacion"
+                        )
+        item_neighbours.sort()
+        neighbours[entry.item_id] = item_neighbours
+
+    match_for_op = _min_cost_flow_matches(
+        [e.item_id for e in items_sorted],
+        sorted(op_by_id),
+        neighbours,
+    )
 
     entry_by_id = {e.item_id: e for e in items_sorted}
-    match_for_op: dict[str, str] = {}
-
-    def _augment(start_item_id: str, visited: set[str]) -> bool:
-        # Kuhn DFS iterativo con pila explicita: misma semantica que el
-        # recursivo (mismo orden de vecinos, mismo `visited` por raiz y
-        # misma reasignacion al desenrollar), sin limite de recursion.
-        # Cada marco guarda el item y el indice del proximo vecino;
-        # `incoming_op[depth]` es la arista por la que se llego a ese item
-        # (None en la raiz). Al hallar una op libre se reasigna toda la
-        # cadena: la op libre al item actual y cada op padre a su item.
-        stack_items: list[str] = [start_item_id]
-        stack_next: list[int] = [0]
-        stack_incoming: list[str | None] = [None]
-        while stack_items:
-            item_id = stack_items[-1]
-            idx = stack_next[-1]
-            neighbours = adjacency[item_id]
-            if idx >= len(neighbours):
-                stack_items.pop()
-                stack_next.pop()
-                stack_incoming.pop()
-                continue
-            stack_next[-1] = idx + 1
-            op_id = neighbours[idx]
-            if op_id in visited:
-                continue
-            visited.add(op_id)
-            current = match_for_op.get(op_id)
-            if current is None:
-                match_for_op[op_id] = item_id
-                for depth in range(len(stack_items) - 1, 0, -1):
-                    parent_op = stack_incoming[depth]
-                    assert parent_op is not None
-                    match_for_op[parent_op] = stack_items[depth - 1]
-                return True
-            stack_items.append(current)
-            stack_next.append(0)
-            stack_incoming.append(op_id)
-        return False
-
-    for entry in items_sorted:
-        _augment(entry.item_id, set())
-
     for op_id, item_id in sorted(match_for_op.items(), key=lambda kv: (kv[1], kv[0])):
         used_ops.add(op_id)
         matched_items.add(item_id)
@@ -680,7 +696,138 @@ def _match_group_max_cardinality(
         if isinstance(outcome, Match):
             matches.append(outcome)
         # pragma: no cover - la adyacencia solo contiene Match;
-        # si _classify discrepara seria un bug de construccion.
+        # si _classify discrepa seria un bug de construccion.
+
+
+def _min_cost_flow_matches(
+    item_ids: list[str],
+    op_ids: list[str],
+    neighbours: dict[str, list[tuple[int, str]]],
+) -> dict[str, str]:
+    """Flujo de costo minimo item -> op (cardinalidad maxima + max EXACT).
+
+    Red: fuente -> items (cap 1, coste 0), item -> op (cap 1, coste 0
+    exacto / 1 tolerado), op -> sumidero (cap 1, coste 0). Cada fase
+    calcula el camino minimo vigente (Dijkstra con potenciales), actualiza
+    potenciales y empuja un flujo bloqueante por aristas de coste reducido
+    0 (cada camino empujado es minimo vigente: solo se saturan aristas de
+    coste 0 y sus inversas tambien cuestan 0, asi que los potenciales
+    siguen validos). Al no quedar camino s-t el flujo es maximo y, por
+    aumentar siempre por caminos minimos, de coste minimo: cardinalidad
+    maxima con maximo numero de ``EXACT``. Nodos en orden fijo por ID y
+    desempates por ID: determinista (misma entrada -> mismo resultado sin
+    importar el orden de entrada).
+    """
+    item_pos = {iid: 1 + k for k, iid in enumerate(item_ids)}
+    op_pos = {oid: 1 + len(item_ids) + k for k, oid in enumerate(op_ids)}
+    op_id_by_pos = {pos: oid for oid, pos in op_pos.items()}
+    node_count = 1 + len(item_ids) + len(op_ids) + 1
+    src = 0
+    dst = node_count - 1
+    # Arista mutable [destino, indice_inversa, capacidad, coste].
+    graph: list[list[list]] = [[] for _ in range(node_count)]
+
+    def _add_edge(fr: int, to: int, cap: int, cost: int) -> None:
+        graph[fr].append([to, len(graph[to]), cap, cost])
+        graph[to].append([fr, len(graph[fr]) - 1, 0, -cost])
+
+    for iid in item_ids:
+        _add_edge(src, item_pos[iid], 1, 0)
+    for oid in op_ids:
+        _add_edge(op_pos[oid], dst, 1, 0)
+    for iid in item_ids:
+        u = item_pos[iid]
+        for cost, oid in neighbours.get(iid, ()):
+            _add_edge(u, op_pos[oid], 1, cost)
+
+    INF = 10**18
+    potential = [0] * node_count
+    while True:
+        dist = [INF] * node_count
+        dist[src] = 0
+        heap = [(0, src)]
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d != dist[u]:
+                continue
+            if u == dst:
+                break
+            for e in graph[u]:
+                if e[2] <= 0:
+                    continue
+                nd = d + e[3] + potential[u] - potential[e[0]]
+                if nd < dist[e[0]]:
+                    dist[e[0]] = nd
+                    heapq.heappush(heap, (nd, e[0]))
+        if dist[dst] == INF:
+            break
+        for v in range(node_count):
+            if dist[v] < INF:
+                potential[v] += dist[v]
+        # Flujo bloqueante sobre aristas de coste reducido 0.
+        edge_ptr = [0] * node_count
+        seen = [0] * node_count
+        stamp = 0
+        while _push_blocking_unit(graph, edge_ptr, seen, src, dst, potential, stamp + 1):
+            stamp += 1
+
+    matched: dict[str, str] = {}
+    for iid in item_ids:
+        u = item_pos[iid]
+        for e in graph[u]:
+            # En la adyacencia de un item, las aristas hacia nodos-op son
+            # exactamente las directas item -> op (cap inicial 1): cap 0 =
+            # flujo 1 (emparejado). Las inversas item -> fuente no apuntan
+            # a nodos-op.
+            if e[0] in op_id_by_pos and e[2] == 0:
+                matched[op_id_by_pos[e[0]]] = iid
+    return matched
+
+
+def _push_blocking_unit(
+    graph: list[list[list]],
+    edge_ptr: list[int],
+    seen: list[int],
+    src: int,
+    dst: int,
+    potential: list[int],
+    stamp: int,
+) -> bool:
+    """Empuja 1 unidad s-t por aristas de coste reducido 0 (DFS iterativo).
+
+    ``edge_ptr`` (arco actual por nodo) persiste entre llamadas de la misma
+    fase: cada arista se recorre una vez en amortizado. ``seen`` con ``stamp``
+    evita ciclos sin realocar por busqueda. Retorna ``True`` si empujo.
+    """
+    path_nodes = [src]
+    path_edges: list[tuple[int, int]] = []  # (nodo_origen, indice_arista)
+    seen[src] = stamp
+    while path_nodes:
+        u = path_nodes[-1]
+        if u == dst:
+            for fr, ei in path_edges:
+                e = graph[fr][ei]
+                e[2] -= 1
+                graph[e[0]][e[1]][2] += 1
+            return True
+        advanced = False
+        while edge_ptr[u] < len(graph[u]):
+            ei = edge_ptr[u]
+            e = graph[u][ei]
+            v = e[0]
+            if e[2] > 0 and seen[v] != stamp and e[3] + potential[u] - potential[v] == 0:
+                edge_ptr[u] = ei + 1
+                path_nodes.append(v)
+                path_edges.append((u, ei))
+                seen[v] = stamp
+                advanced = True
+                break
+            edge_ptr[u] = ei + 1
+        if not advanced:
+            path_nodes.pop()
+            if path_edges:
+                path_edges.pop()
+    return False
 
 
 def _pair_key(

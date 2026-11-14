@@ -895,12 +895,29 @@ eventos (`outbox`/`inbox`).
   `expires_at = now + fx.quote_ttl_seconds` (default `30`,
   `config.parameters`) y persiste `fx_quotes` en `ACTIVE`; el destino se
   calcula en `Decimal` (`source / (rate + spread)`) con `ROUND_HALF_UP`
-  al centavo (supuesto aprobado por el orquestador; `spread` default `0`,
-  el dinamico es `E7-T10`). `get_quote` expira on-read (`ACTIVE` vencida
+  al centavo (supuesto aprobado por el orquestador; con `spread=None`
+  el dinamico de `E7-T10` rige; `spread` explicito = incremento
+  absoluto legado). `get_quote` expira on-read (`ACTIVE` vencida
   -> `EXPIRED`); ajena/inexistente -> `404` neutro; misma clave +
   distinto cuerpo -> `409`. Auditoria best-effort `fx.quote.created`
   (sin PII, sin evento de negocio). **No mueve dinero** (la ejecucion
   es `E7-T11`).
+- **Spread dinamico por volumen (E7-T10, HU25 CA-01/CA-02/CA-05):**
+  `fx.domain.spread` puro (`spread_bps_for`, `apply_spread`,
+  `normalize_tiers`, sin `float`: tramos ordenados por
+  `min_amount_minor`, borde inferior inclusive, ultimo sin maximo;
+  efectiva `rate * (1 + bps/10000)` a 8 decimales `ROUND_HALF_UP`) +
+  claves `fx.spread_bps_default` (`100`) y `fx.spread_tiers_json`
+  (semilla en codigo: `< 1,000 PEN` 150 bps, `>= 1,000` 100 bps,
+  `>= 10,000` 50 bps) leidas por `shared/config`
+  (`get_fx_spread_bps_default` / `get_fx_spread_tiers`, best-effort:
+  JSON invalido/desordenado/solapado -> semilla; nunca lanzan; sin
+  migracion nueva). `create_quote` (camino `POST /fx/quotes`) congela
+  la efectiva en `rate` y el porcentaje en `spread`; un cambio de
+  tramos solo afecta cotizaciones nuevas (contrato en `docs/05#6.6`).
+  Endpoint aditivo `GET /api/v1/fx/spread` (solo lectura, sin
+  persistir; coincide con la cotizacion del mismo monto). **No mueve
+  dinero**.
 
 ## `risk`
 
@@ -1218,6 +1235,7 @@ eventos (`outbox`/`inbox`).
    `get_wallet_qr_ttl_seconds` (best-effort con fallback, nunca
    lanza)—.
 - **Recordatorio de servicios (E4-T18, HU16 CA-03):** `wallet.service_reminder_days_before` (`3` dias; semilla `0043`, idempotente) —lectura con `get_wallet_service_reminder_days_before` (best-effort con fallback, nunca lanza)—.
+- **Spread por volumen de `fx` (E7-T10, HU25):** `fx.spread_bps_default` (`100` bps = 1 %; `set_parameter` lo acepta como entero `>= 0` una vez sembrada la fila) y `fx.spread_tiers_json` (lista de `{min_amount_minor, bps}`; semilla conservadora en codigo: `< 1,000 PEN` 150 bps, `>= 1,000` 100 bps, `>= 10,000` 50 bps) —lectura con `get_fx_spread_bps_default` / `get_fx_spread_tiers` (best-effort con fallback a la semilla ante JSON invalido, desordenado o solapado; nunca lanzan; sin migracion nueva)—. Sin emision de `parameter.updated` (como el resto de claves).
   Lectura con `get_loan_*` / `get_loan_params` (ratios `Decimal`, nunca
   `float`) y escritura con `set_parameter` (acepta `Decimal`/`int`/`str`
   numerico en claves decimales; `float` se rechaza); opcional

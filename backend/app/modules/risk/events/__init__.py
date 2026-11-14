@@ -21,19 +21,18 @@ finales exitosos + hora/dispositivo confiable) /
 `on_profile_auth_failed_attempt` (solo hora: un fallo es "visto" pero
 NO "confiable", no toca `last_device_id`; la severidad la sigue
 poseyendo `E2-T20`/`E6-T14`), consumidor `"risk-profile"`,
-idempotente por `processed_events`. `transaction.initiated` NO
-alimenta el perfil (A1: el monto/promedio se alimenta SOLO con
-`transfer.settled` en estado final; asi no hay doble conteo
-iniciada+liquidada ni dependencia de orden motor->perfil, M5). Los
-canales que no emiten `transfer.settled` no alimentan el perfil, pero
-SI son evaluados por el motor (`evaluate_pre_transaction` en el hook).
-El `score` lo sigue poseyendo `E2-T20`/`E6-T14`.
-(consumidor `"risk-profile"`, idempotente por `processed_events`):
-monto promedio (media incremental entera), horas/paises habituales y
-ultimo dispositivo. El `score` lo sigue poseyendo `E2-T20`/`E6-T14`.
-`auth.login_succeeded` no existe en `app.core.events` (lo emite
-`identity`); aqui se referencia por su literal (identico al canonico
-de `identity.service.device_login.LOGIN_SUCCEEDED_EVENT`).
+idempotente por `processed_events`. El monto se recalcula desde la
+ventana real (promedio entero `ROUND_HALF_UP`, sin EWMA).
+`transaction.initiated` NO alimenta el perfil (A1: el monto/promedio
+se alimenta SOLO con `transfer.settled` en estado final; asi no hay
+doble conteo iniciada+liquidada ni dependencia de orden
+motor->perfil, M5). Los canales que no emiten `transfer.settled` no
+alimentan el perfil, pero SI son evaluados por el motor via
+`evaluate_pre_transaction` en el hook. El `score` lo sigue poseyendo
+`E2-T20`/`E6-T14`. `auth.login_succeeded` no existe en
+`app.core.events` (lo emite `identity`); aqui se referencia por su
+literal (identico al canonico de
+`identity.service.device_login.LOGIN_SUCCEEDED_EVENT`).
 """
 
 from __future__ import annotations
@@ -290,7 +289,10 @@ def on_profile_transfer_settled(
     `"risk-profile"`): solo estados finales exitosos aportan
     monto/conteo (la ventana del perfil ya incluye la operacion, ya
     hizo `commit`). Sin `transaction.initiated` no hay doble conteo
-    ni orden motor->perfil (M5).
+    ni orden motor->perfil (M5). Sin operacion encontrada se lanza
+    `ProfileRetryableError` (M4 real): el `rollback` + relanzado de
+    D-04 deja que el publisher aplique `mark_failed` con backoff
+    (limite `PROFILE_MISSING_TX_MAX_ATTEMPTS`, luego `FAILED`).
     """
     from app.modules.risk import service as risk_service
 

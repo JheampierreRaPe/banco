@@ -414,6 +414,7 @@ def get_window_amount_stats(
     window_days: int,
     currency: str | None = None,
     exclude_transaction_id: uuid.UUID | str | None = None,
+    exclude_types: tuple[str, ...] | list[str] | None = ("LOAN_DISBURSEMENT",),
     now: Any | None = None,
 ) -> dict[str, dict[str, int]]:
     """Suma/conteo por moneda en la ventana (solo lectura, E6-T03 A3).
@@ -427,8 +428,13 @@ def get_window_amount_stats(
     `window_days` dias. `currency` acota a una moneda (`None` = todas);
     `exclude_transaction_id` excluye la operacion evaluada (el motor
     compara contra el historial SIN la operacion en curso).
-    Retorna `{moneda: {"sum_minor": int, "count": int}}` (vacio si no
-    hay historial). Solo lectura (sin `flush`/`commit`); `user_id` o
+    `exclude_types` excluye tipos que no son gasto del titular
+    (default `("LOAN_DISBURSEMENT",)`: el desembolso acredita capital y
+    fijaria el promedio suprimiendo `UNUSUAL_AMOUNT`; la cuota
+    `LOAN_INSTALLMENT` y `INTERBANK_TRANSFER` SI cuentan como gasto).
+    `exclude_types=()` desactiva el filtro. Retorna
+    `{moneda: {"sum_minor": int, "count": int}}` (vacio si no hay
+    historial). Solo lectura (sin `flush`/`commit`); `user_id` o
     `window_days` invalidos lanzan `ValueError`.
     """
 
@@ -465,6 +471,10 @@ def get_window_amount_stats(
         if not isinstance(currency, str) or not currency.strip():
             raise ValueError(f"currency invalida: {currency!r}")
         stmt = stmt.where(Transaction.currency == currency.strip().upper())
+    excluded_types = ("LOAN_DISBURSEMENT",) if exclude_types is None else tuple(exclude_types)
+    cleaned_types = [t.strip().upper() for t in excluded_types if isinstance(t, str) and t.strip()]
+    if cleaned_types:
+        stmt = stmt.where(Transaction.type.notin_(cleaned_types))
     if exclude_transaction_id is not None:
         try:
             excluded = (

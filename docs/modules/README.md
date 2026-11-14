@@ -407,8 +407,10 @@ eventos (`outbox`/`inbox`).
   camino). Expone las fachadas de lectura `count_recent_operations` (ventana
   de `VELOCITY` para `risk`, D-01), `find_transaction_by_id` (lectura puntual
   para `risk`/jobs) y `get_window_amount_stats(session, user_id, *,
-  window_days, currency=None, exclude_transaction_id=None)` (E6-T03 fixes PR
-  #26: suma/conteo por moneda de estados exitosos en ventana, para el perfil
+  window_days, currency=None, exclude_transaction_id=None,
+  exclude_types=("LOAN_DISBURSEMENT",))` (E6-T03 fixes PR
+  #26 + residuales: suma/conteo por moneda de estados exitosos en ventana, sin
+  desembolsos (capital, no gasto); para el perfil
   y el motor; D-01, solo lectura).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
@@ -1000,7 +1002,9 @@ eventos (`outbox`/`inbox`).
   motor->perfil, un solo handler de perfil por evento—,
   `on_profile_login_succeeded` hora/dispositivo confiable sin pais,
   `on_profile_auth_failed_attempt` solo hora —el fallo no fija dispositivo—;
-  la severidad la posee `E2-T20`; sin operacion NO se reclama, se reintenta)
+  la severidad la posee `E2-T20`; sin operacion NO se reclama: se lanza
+  `ProfileRetryableError` y el publisher reintenta con backoff
+  (`FAILED` tras 5 intentos))
   + `GET /api/v1/risk/profiles/{user_id}` (rol fraude, solo lectura sin
   PII: promedio agregado + `avg_amount_by_currency`, listas `[]` nunca
   `null`, `user_id` UUID; `404` si inexistente o `user_id` invalido;

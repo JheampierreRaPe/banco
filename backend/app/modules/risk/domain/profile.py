@@ -13,9 +13,10 @@ Firma:
   `usual_hours`, `last_device_id` (objeto o dict; `None` = sin
   historial conocido). Solo se lee, nunca se muta.
 - `observation`: `BehaviorObservation` (o dict con las mismas claves):
-  `amount_minor` (entero `>= 0`), `currency` (informativa, no se
-  persiste: el promedio del MVP es agnostico a la moneda, igual que la
-  comparacion de `UNUSUAL_AMOUNT` en `engine.py`), `country`
+  `amount_minor` (entero `>= 0`), `currency` (informativa: se mapea
+  pero NO se persiste; el promedio almacenado es el agregado de la
+  ventana y la comparacion de `UNUSUAL_AMOUNT` resuelve por moneda en
+  `risk.service` con el mapa por moneda), `country`
   (normalizado a mayusculas), `hour` (`0..23`, UTC), `device_id`.
 - `operations`: operaciones ya reflejadas en el promedio actual
   (`>= 0`). El servicio lo deriva del conteo en la ventana

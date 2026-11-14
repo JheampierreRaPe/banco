@@ -482,34 +482,90 @@ def test_feed_pending_and_failed_are_excluded(session: Session):
     assert _profile(session).avg_amount_minor == 10_000, "pendientes/fallidas no cuentan"
 
 
-def test_feed_missing_transaction_retries_without_claim(session: Session):
-    """M4: sin operacion NO se reclama; el reintento sigue pendiente."""
+def test_feed_missing_transaction_retries_without_claim(session: Session, engine):
+    """M4 real: sin operacion se lanza reintentable y el outbox reintenta.
+
+    Nivel servicio: `handle_profile_transaction` NO reclama y lanza
+    `ProfileRetryableError` (el mismo evento puede reintentarse: no
+    queda marcado como duplicado). Nivel outbox real: un evento
+    `transfer.settled` con `transaction_id` inexistente pasa por
+    `publish_pending` -> `published=0`, `failed=1`, el evento sigue
+    `PENDING` (no `PUBLISHED`, con `attempts=1` y backoff) y sin claim;
+    cuando la operacion existe, el reintento alimenta el perfil.
+    """
+    from functools import partial
+
+    from app.core.bus import EventBus
+    from app.modules.risk import events as risk_events
     from app.modules.risk import service as risk_service
     from app.modules.shared import repository as shared_repo
+    from app.modules.shared.jobs.publisher import publish_pending
+    from app.modules.shared.models import OutboxEntry
 
     event_id = uuid.uuid4()
     missing = str(uuid.uuid4())
-    outcome = risk_service.handle_profile_transaction(
-        session, event_id=event_id, payload={"transaction_id": missing}
-    )
-    session.commit()
-    assert outcome == {"consumed": False, "reason": "missing-transaction", "retry": True}
+    with pytest.raises(risk_service.ProfileRetryableError):
+        risk_service.handle_profile_transaction(
+            session, event_id=event_id, payload={"transaction_id": missing}
+        )
+    session.rollback()
     assert shared_repo.is_processed(session, event_id=event_id, consumer="risk-profile") is False
-    again = risk_service.handle_profile_transaction(
-        session, event_id=event_id, payload={"transaction_id": missing}
-    )
-    session.commit()
-    assert again["consumed"] is False, "el reintento no esta marcado como duplicado"
+    with pytest.raises(risk_service.ProfileRetryableError):
+        risk_service.handle_profile_transaction(
+            session, event_id=event_id, payload={"transaction_id": missing}
+        )
+    session.rollback()
     assert _profile(session) is None, "sin operacion no se crea perfil"
 
-    # Cuando la operacion aparece, el mismo evento alimenta con exito.
-    tx = _transfer(session, 10_000)
-    session.commit()
-    late = risk_service.handle_profile_transaction(
-        session, event_id=event_id, payload={"transaction_id": str(tx.id)}
+    entry = shared_repo.insert_event(
+        session,
+        aggregate_type="transaction",
+        aggregate_id=uuid.uuid4(),
+        event_type="transfer.settled",
+        payload={"transaction_id": missing},
     )
     session.commit()
-    assert late["consumed"] is True and late["avg_amount_minor"] == 10_000
+
+    bus = EventBus()
+    bus.subscribe(
+        "transfer.settled",
+        partial(
+            risk_events.on_profile_transfer_settled,
+            session_factory=lambda: Session(engine),
+        ),
+    )
+    result = publish_pending(session, bus=bus, backoff_base_seconds=0)
+    assert result == {"published": 0, "failed": 1, "skipped": 0}
+    session.commit()
+
+    check = Session(engine)
+    try:
+        fresh = check.get(OutboxEntry, entry.id)
+        assert fresh is not None and fresh.status == "PENDING", "sigue pendiente, no PUBLISHED"
+        assert fresh.published_at is None and int(fresh.attempts) == 1, "backoff real aplicado"
+    finally:
+        check.close()
+    assert (
+        shared_repo.is_processed(session, event_id=entry.id, consumer="risk-profile") is False
+    ), "sin operacion no hay claim"
+
+    # Cuando la operacion existe, el reintento (mismo flujo outbox->bus)
+    # alimenta el perfil.
+    tx = _transfer(session, 10_000)
+    session.commit()
+    late = shared_repo.insert_event(
+        session,
+        aggregate_type="transaction",
+        aggregate_id=tx.id,
+        event_type="transfer.settled",
+        payload={"transaction_id": str(tx.id)},
+    )
+    session.commit()
+    retry = publish_pending(session, bus=bus, backoff_base_seconds=0)
+    assert retry["published"] >= 1, f"el reintento publica: {retry}"
+    session.commit()
+    assert shared_repo.is_processed(session, event_id=late.id, consumer="risk-profile") is True
+    assert _profile(session) is not None and _profile(session).avg_amount_minor == 10_000
 
 
 def test_feed_failure_rolls_back_and_reraises(session: Session, monkeypatch):
@@ -766,6 +822,46 @@ def test_window_stats_only_counts_successful(session: Session):
     )
     assert stats == {"PEN": {"sum_minor": 10_000, "count": 1}}, f"real: {stats}"
     assert ok.status == "SETTLED"
+
+
+def test_window_excludes_loan_disbursement(session: Session):
+    """Un desembolso `SETTLED` no contamina el promedio (solo el gasto cuenta).
+
+    `LOAN_DISBURSEMENT` acredita capital (fijaria el promedio y
+    suprimiria `UNUSUAL_AMOUNT`); la cuota `LOAN_INSTALLMENT` y la
+    `INTERBANK_TRANSFER` SI son gasto y se incluyen. El filtro es
+    opt-out (`exclude_types=()` lo desactiva).
+    """
+    from app.modules.risk import service as risk_service
+    from app.modules.transactions.service import get_window_amount_stats
+
+    normal = _transfer(session, 10_000)
+    session.commit()
+    big = _transfer(session, 90_000)
+    big.type = "LOAN_DISBURSEMENT"
+    session.commit()
+    quota = _transfer(session, 20_000)
+    quota.type = "LOAN_INSTALLMENT"
+    session.commit()
+    inter = _transfer(session, 30_000)
+    inter.type = "INTERBANK_TRANSFER"
+    session.commit()
+    assert all(tx.status == "SETTLED" for tx in (normal, big, quota, inter))
+
+    stats = get_window_amount_stats(
+        session, USER_A, window_days=risk_service.PROFILE_WINDOW_DEFAULT_DAYS
+    )
+    assert stats == {"PEN": {"sum_minor": 60_000, "count": 3}}, f"real: {stats}"
+    assert risk_service.profile_average_by_currency(session, USER_A) == {"PEN": 20_000}
+    assert risk_service.profile_window_days() == 90
+
+    stats_all = get_window_amount_stats(
+        session,
+        USER_A,
+        window_days=risk_service.PROFILE_WINDOW_DEFAULT_DAYS,
+        exclude_types=(),
+    )
+    assert stats_all == {"PEN": {"sum_minor": 150_000, "count": 4}}, f"real: {stats_all}"
 
 
 # ------------------------------------------------------------- multi-moneda

@@ -57,6 +57,7 @@ __all__ = [
     "CONSUMER_TRANSFER_SETTLED",
     "CONSUMER_UNRECOGNIZED",
     "NOTIFY_CHANNEL",
+    "PROFILE_MISSING_TX_MAX_ATTEMPTS",
     "PROFILE_SUCCESS_STATES",
     "PROFILE_WINDOW_DEFAULT_DAYS",
     "PROFILE_WINDOW_KEY",
@@ -76,6 +77,7 @@ __all__ = [
     "UNUSUAL_AMOUNT_FACTOR_KEY",
     "VELOCITY_WINDOW_DEFAULT_SECONDS",
     "VELOCITY_WINDOW_KEY",
+    "ProfileRetryableError",
     "evaluate_config",
     "evaluate_pre_transaction",
     "get_or_create_profile",
@@ -220,9 +222,9 @@ def update_behavior(
       `ROUND_HALF_UP`): el arranque en frio usa el historial real, sin
       EWMA. Sin historial exitoso en la ventana se conserva el promedio
       almacenado. Con `event_id` es idempotente por
-      `(event_id, user_id)` via `processed_events` (consumidor
-      `CONSUMER_PROFILE`): el replay retorna el perfil actual sin
-      escribir. La validacion de la observacion ocurre ANTES de
+      `(event_id, consumer="risk-profile")` via `processed_events`
+      (consumidor `CONSUMER_PROFILE`): el replay retorna el perfil
+      actual sin escribir. La validacion de la observacion ocurre ANTES de
       reclamar el evento (B2): una observacion malformada lanza
       `RiskProfileValidationError` sin dejar el claim. `flush` sin
       `commit` (el llamante, en general el handler D-04 con sesion
@@ -1263,6 +1265,26 @@ AUDIT_ACTION_PROFILE_VIEWED = "risk.profile.viewed"
 #: perezoso en cada uso para no acoplar la importacion).
 PROFILE_SUCCESS_STATES = frozenset({"SETTLED", "POSTED", "COMPLETED", "CONCILIATED"})
 
+#: Reintentos de `handle_profile_transaction` ante operacion ausente
+#: (M4 real): el evento NO se reclama y se lanza
+#: `ProfileRetryableError` para que el publisher (`shared/jobs/
+#: publisher.py` via `EventBus.dispatch`, que propaga la excepcion)
+#: aplique `mark_failed` con backoff y reintente. Tras N intentos el
+#: evento pasa a `FAILED` (terminal): espejo de
+#: `shared.repository.outbox.DEFAULT_MAX_ATTEMPTS` (sin migracion ni
+#: columna nueva: el limite vive en el publisher, aqui solo se
+#: documenta para no prometer reintento infinito).
+PROFILE_MISSING_TX_MAX_ATTEMPTS = 5
+
+
+class ProfileRetryableError(RuntimeError):
+    """Operacion aun no visible: el evento debe reintentarse (M4).
+
+    Se lanza SIN reclamar `processed_events` (el `commit` del handler
+    revierte el claim inexistente y el publisher deja el evento
+    `PENDING` con backoff). No lleva PII: solo el motivo.
+    """
+
 
 def profile_window_days(session: Session | None = None) -> int:
     """Dias de historial que alimentan el promedio (constante MVP, B5).
@@ -1292,7 +1314,10 @@ def _window_amount_stats(session: Session, user_id: uuid.UUID) -> dict[str, dict
 
     Delega en la fachada `transactions.get_window_amount_stats`
     (D-01: `risk` no importa sus modelos): solo estados exitosos
-    dentro de los ultimos `PROFILE_WINDOW_DEFAULT_DAYS` dias. Un fallo
+    dentro de los ultimos `PROFILE_WINDOW_DEFAULT_DAYS` dias y sin
+    desembolsos de credito (`LOAN_DISBURSEMENT`: acredita capital y
+    fijaria el promedio; la cuota `LOAN_INSTALLMENT` y las
+    transferencias interbancarias SI cuentan como gasto). Un fallo
     de lectura se propaga (D-04: el handler revierte y re-lanza para el
     backoff del worker).
     """
@@ -1417,9 +1442,13 @@ def handle_profile_transaction(
     (permanentes) se reclama y se retorna `consumed=True` con el motivo
     (no reintento). Sin operacion encontrada (transitoria: el evento
     puede llegar antes que el `commit` visible) NO se reclama y se
-    retorna `consumed=False` para reintento (M4). Un estado final no
-    exitoso se reclama como procesado sin efectos (`consumed=True`,
-    `reason="non-successful-state"`: reintentarlo jamas aportaria).
+    lanza `ProfileRetryableError`: el handler D-04 revierte y relanza,
+    `EventBus.dispatch` propaga y el publisher aplica `mark_failed`
+    con backoff (el evento sigue `PENDING` y se reintenta; tras
+    `PROFILE_MISSING_TX_MAX_ATTEMPTS` intentos pasa a `FAILED`,
+    terminal). Un estado final no exitoso se reclama como procesado
+    sin efectos (`consumed=True`, `reason="non-successful-state"`:
+    reintentarlo jamas aportaria).
 
     `flush` sin `commit`; fallo -> rollback y re-lanza (D-04). Nunca
     mueve dinero ni toca el `score`. Sin PII en logs.
@@ -1440,8 +1469,8 @@ def handle_profile_transaction(
 
     tx = _find_tx(session, transaction_id)
     if tx is None:
-        logger.warning("risk perfil sin operacion: reintento sin reclamar")
-        return {"consumed": False, "reason": "missing-transaction", "retry": True}
+        logger.warning("risk perfil sin operacion: reintento con backoff")
+        raise ProfileRetryableError("operacion aun no visible: el evento se reintenta con backoff")
     status = str(getattr(tx, "status", "") or "").strip().upper()
     if status not in PROFILE_SUCCESS_STATES:
         if not shared_repo.try_mark_processed(

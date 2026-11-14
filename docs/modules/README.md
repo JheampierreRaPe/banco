@@ -1002,18 +1002,21 @@ eventos (`outbox`/`inbox`).
   motor->perfil, un solo handler de perfil por evento—,
   `on_profile_login_succeeded` hora/dispositivo confiable sin pais,
   `on_profile_auth_failed_attempt` solo hora —el fallo no fija dispositivo—;
+  `on_profile_transfer_reversed` (R7: recalcula el promedio sin habitos,
+  la operacion revertida deja la ventana);
   la severidad la posee `E2-T20`; sin operacion NO se reclama: se lanza
   `ProfileRetryableError` y el publisher reintenta con backoff
   (`FAILED` tras 5 intentos))
   + `GET /api/v1/risk/profiles/{user_id}` (rol fraude, solo lectura sin
-  PII: promedio agregado + `avg_amount_by_currency`, listas `[]` nunca
-  `null`, `user_id` UUID; `404` si inexistente o `user_id` invalido;
-  auditado `risk.profile.viewed` best-effort) + wiring
-  `composition.subscribe_risk_profile` (3 handlers tras el flag
+  PII: promedio agregado + `avg_amount_by_currency` del mismo origen en
+  vivo (R6), listas `[]` nunca `null`, `user_id` UUID; `404` si inexistente
+  o `user_id` invalido; auditado `risk.profile.viewed` best-effort, sin
+  escrituras de negocio) + wiring
+  `composition.subscribe_risk_profile` (4 handlers tras el flag
   `RISK_PROFILE_ENABLED`, default `1`, para no mover el bus global en
   pruebas). `usual_countries` congelado y `ATYPICAL_GEO` inactivo en el MVP
-  (sin fuente server-side IP/geo; el cliente no elige su pais). **No mueve
-  dinero** ni crea `risk.alerts` (eso es `E6-T04`); E6-T03 queda `Hecho`
+  (decision de alcance aceptada R5: sin fuente server-side IP/geo; el cliente
+  no elige su pais). **No mueve dinero** ni crea `risk.alerts` (eso es `E6-T04`); E6-T03 queda `Hecho`
   (sin migracion; la ventana configurable por admin queda diferida).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor

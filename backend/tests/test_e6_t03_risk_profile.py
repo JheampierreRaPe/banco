@@ -710,6 +710,96 @@ def test_feed_failed_attempt_updates_hour_only(session: Session):
     assert row.last_device_id == DEVICE_A, "el fallo no es confiable: no fija dispositivo"
 
 
+def test_login_and_failed_attempt_skip_window_query(session: Session, monkeypatch):
+    """R4: login/fallo completan sin consultar `transactions` (no calculan la ventana)."""
+    from app.modules.risk import service as risk_service
+
+    def _boom(sess, uid):
+        raise AssertionError("login/fallo no deben calcular la ventana (R4)")
+
+    monkeypatch.setattr(risk_service, "_window_average", _boom)
+    risk_service.update_behavior(session, USER_A, avg_amount_minor=10_000, last_device_id=DEVICE_A)
+    session.commit()
+
+    login = risk_service.handle_profile_login(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"user_id": str(USER_A), "device_id": DEVICE_B},
+        at=datetime(2026, 11, 12, 15, 30, tzinfo=UTC),
+    )
+    session.commit()
+    failed = risk_service.handle_profile_failed_attempt(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"user_id": str(USER_A), "device_id": "attacker-device", "blocked": True},
+        at=datetime(2026, 11, 12, 3, 5, tzinfo=UTC),
+    )
+    session.commit()
+
+    assert login["consumed"] is True and failed["consumed"] is True
+    row = _profile(session)
+    assert row.avg_amount_minor == 10_000, "sin monto no se recalcula"
+    assert row.last_device_id == DEVICE_B, "el login si fija dispositivo; el fallo no lo pisa"
+
+
+def test_reversal_recalculates_average_without_habits(session: Session):
+    """R7: `transfer.reversed` recalcula el promedio sin tocar habitos ni score."""
+    from app.modules.risk import service as risk_service
+
+    first = _transfer(session, 10_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(first.id)}
+    )
+    session.commit()
+    second = _transfer(session, 30_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(second.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 20_000
+    hours_before = list(_profile(session).usual_hours or [])
+
+    second.status = "REVERSED"
+    session.commit()
+    outcome = risk_service.handle_profile_reversal(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(second.id)}
+    )
+    session.commit()
+
+    assert outcome["consumed"] is True and outcome["source"] == "transfer.reversed"
+    assert outcome["avg_amount_minor"] == 10_000, "el reverso sale de la ventana"
+    row = _profile(session)
+    assert row.avg_amount_minor == 10_000
+    assert row.last_device_id == DEVICE_A, "sin habitos: el dispositivo se conserva"
+    assert list(row.usual_hours or []) == hours_before, "sin habitos: las horas se conservan"
+    assert row.score == 0, "el reverso no toca severidad"
+
+    replayed = risk_service.handle_profile_reversal(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"transaction_id": str(second.id)},
+    )
+    session.commit()
+    assert replayed["consumed"] is True
+    assert _profile(session).avg_amount_minor == 10_000, "re-alimentar converge al mismo valor"
+
+
+def test_reversal_missing_transaction_retries_without_claim(session: Session):
+    """R7: sin operacion, el reverso no se reclama y se reintenta (M4 real)."""
+    from app.modules.risk import service as risk_service
+    from app.modules.shared import repository as shared_repo
+
+    event_id = uuid.uuid4()
+    with pytest.raises(risk_service.ProfileRetryableError):
+        risk_service.handle_profile_reversal(
+            session, event_id=event_id, payload={"transaction_id": str(uuid.uuid4())}
+        )
+    session.rollback()
+    assert shared_repo.is_processed(session, event_id=event_id, consumer="risk-profile") is False
+
+
 def test_update_behavior_with_event_id_is_idempotent(session: Session):
     from app.modules.risk import service as risk_service
 
@@ -870,6 +960,38 @@ def test_window_stats_only_counts_successful(session: Session):
     )
     assert stats == {"PEN": {"sum_minor": 10_000, "count": 1}}, f"real: {stats}"
     assert ok.status == "SETTLED"
+
+
+def test_window_excludes_own_transfer(session: Session):
+    """R3: `OWN_TRANSFER` no es gasto: mover fondos entre cuentas propias no altera el promedio.
+
+    Una transferencia de 100k entre cuentas propias (`OWN_TRANSFER`
+    `SETTLED`) se excluye de la ventana por defecto; una transferencia
+    a tercero SI cuenta como gasto.
+    """
+    from app.modules.risk import service as risk_service
+    from app.modules.transactions.service import get_window_amount_stats
+
+    normal = _transfer(session, 10_000)
+    session.commit()
+    own = _transfer(session, 100_000)
+    own.type = "OWN_TRANSFER"
+    session.commit()
+    third = _transfer(session, 30_000)
+    session.commit()
+    assert all(tx.status == "SETTLED" for tx in (normal, own, third))
+
+    stats = get_window_amount_stats(
+        session, USER_A, window_days=risk_service.PROFILE_WINDOW_DEFAULT_DAYS
+    )
+    assert stats == {"PEN": {"sum_minor": 40_000, "count": 2}}, f"real: {stats}"
+    assert risk_service.profile_average_by_currency(session, USER_A) == {"PEN": 20_000}
+
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(third.id)}
+    )
+    session.commit()
+    assert outcome["avg_amount_minor"] == 20_000, "la propia no distorsiona el promedio"
 
 
 def test_window_excludes_loan_disbursement(session: Session):
@@ -1194,6 +1316,37 @@ def test_endpoint_with_history_returns_by_currency(full_client, session):
     assert data["avg_amount_by_currency"] == {"PEN": 30_000}
 
 
+def test_endpoint_averages_share_live_origin_with_delayed_outbox(full_client, session):
+    """R6: con outbox retrasado, escalar y mapa derivan del mismo origen en vivo.
+
+    La segunda operacion esta liquidada pero el perfil aun no la
+    alimento (el evento `transfer.settled` sigue en el outbox): el
+    escalar almacenado esta obsoleto y el GET debe exponer el agregado
+    recalculado, coherente con el mapa.
+    """
+    from app.modules.risk import service as risk_service
+
+    first = _transfer(session, 10_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(first.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    _transfer(session, 30_000)
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000, "outbox retrasado: escalar obsoleto"
+
+    resp = full_client.get(
+        f"/api/v1/risk/profiles/{USER_A}", headers=_bearer(uuid.uuid4(), ["fraud_analyst"])
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["avg_amount_by_currency"] == {"PEN": 20_000}
+    assert data["avg_amount_minor"] == 20_000, "R6: ambos del mismo origen en vivo"
+
+
 def test_endpoint_audits_view_best_effort(full_client, session, engine):
     """B7: el GET audita `risk.profile.viewed` (sin PII)."""
     from app.modules.risk import service as risk_service
@@ -1283,23 +1436,25 @@ def test_engine_sees_updated_profile(session: Session):
 
 
 def test_wiring_subscribes_profile_consumers_without_initiated():
-    """A1/M5: el perfil NO se suscribe a `transaction.initiated` (3 handlers)."""
+    """A1/M5 + R7: el perfil NO se suscribe a `transaction.initiated` (4 handlers)."""
     from app.composition import is_risk_profile_wired, subscribe_risk_profile
     from app.core.bus import EventBus
-    from app.modules.risk.events import LOGIN_SUCCEEDED_EVENT
+    from app.modules.risk.events import LOGIN_SUCCEEDED_EVENT, TRANSFER_REVERSED_EVENT
 
     bus = EventBus()
     assert is_risk_profile_wired(bus) is False
     handlers = subscribe_risk_profile(bus)
-    assert len(handlers) == 3
+    assert len(handlers) == 4
     assert is_risk_profile_wired(bus) is True
     assert bus.handler_count("transaction.initiated") == 0, "A1: sin doble conteo"
     assert bus.handler_count("transfer.settled") == 1
     assert bus.handler_count(LOGIN_SUCCEEDED_EVENT) == 1
     assert bus.handler_count("auth.failed_attempt") == 1
+    assert bus.handler_count(TRANSFER_REVERSED_EVENT) == 1, "R7: el reverso recalcula"
     subscribe_risk_profile(bus)  # idempotente
     assert bus.handler_count("transfer.settled") == 1
     assert bus.handler_count("auth.failed_attempt") == 1
+    assert bus.handler_count(TRANSFER_REVERSED_EVENT) == 1
 
 
 def test_wiring_single_profile_handler_per_event_and_motor_first():
@@ -1385,6 +1540,44 @@ def test_handler_uses_own_session_with_commit(session, engine):
     check = Session(engine)
     try:
         assert _profile(check).avg_amount_minor == 10_000
+    finally:
+        check.close()
+
+
+def test_handler_reversed_uses_own_session_with_commit(session, engine):
+    """R7: `on_profile_transfer_reversed` abre sesion propia con `commit` (D-04)."""
+    from types import SimpleNamespace
+
+    from app.modules.risk import service as risk_service
+    from app.modules.risk.events import on_profile_transfer_reversed
+
+    first = _transfer(session, 10_000, device_id=DEVICE_A, metadata={"device_id": DEVICE_A})
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(first.id)}
+    )
+    session.commit()
+    second = _transfer(session, 30_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(second.id)}
+    )
+    session.commit()
+    second.status = "REVERSED"
+    session.commit()
+    session.expire_all()
+
+    entry = SimpleNamespace(
+        id=uuid.uuid4(),
+        payload={"transaction_id": str(second.id), "user_id": str(USER_A)},
+        created_at=datetime.now(UTC),
+    )
+    assert on_profile_transfer_reversed(entry, session_factory=lambda: Session(engine)) is True
+
+    check = Session(engine)
+    try:
+        assert _profile(check).avg_amount_minor == 10_000, "el reverso sale de la ventana"
+        assert _profile(check).last_device_id == DEVICE_A, "sin habitos"
     finally:
         check.close()
 

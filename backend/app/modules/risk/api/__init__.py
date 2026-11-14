@@ -114,11 +114,15 @@ def _to_response(row: RiskRule) -> risk_schemas.RuleResponse:
 
 
 def _to_profile_response(
-    row, *, by_currency: dict[str, int] | None = None
+    row, *, by_currency: dict[str, int] | None = None, avg_amount_minor: int | None = None
 ) -> risk_schemas.ProfileResponse:
     return risk_schemas.ProfileResponse(
         user_id=row.user_id,
-        avg_amount_minor=int(row.avg_amount_minor or 0),
+        avg_amount_minor=(
+            int(avg_amount_minor)
+            if avg_amount_minor is not None
+            else int(row.avg_amount_minor or 0)
+        ),
         avg_amount_by_currency=dict(by_currency or {}),
         usual_countries=list(row.usual_countries or []),
         usual_hours=list(row.usual_hours or []),
@@ -241,17 +245,22 @@ def get_risk_profile(
     analyst: RiskContext = Depends(get_risk_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Perfil de comportamiento (`E6-T03`, fixes PR #26): solo lectura, sin PII.
+    """Perfil de comportamiento (`E6-T03`, fixes PR #26 + R6): solo lectura, sin PII.
 
     `avg_amount_minor` (promedio agregado de la ventana —compatibilidad,
-    documentado como agregado multi-moneda), `avg_amount_by_currency`
-    (mapa `{moneda: promedio}` recalculado best-effort desde la ventana
-    real; `{}` si no hay historial o no se puede leer), `usual_countries`/
-    `usual_hours` (habitos conocidos; `[]` si no hay), `last_device_id`
-    (identificador pseudonimo del dispositivo, B7), `score`, `updated_at`.
-    `user_id` malformado o perfil inexistente -> `404 NOT_FOUND`
-    (neutro, sin oraculo). Solo lectura: no crea el perfil. La lectura
-    se audita (`risk.profile.viewed`, best-effort, sin PII).
+    documentado como agregado multi-moneda) y `avg_amount_by_currency`
+    (mapa `{moneda: promedio}`) derivan AMBOS del mismo origen en vivo
+    (R6): una sola lectura a la ventana real via
+    `risk.service.profile_averages` (sin historial o ante fallo de
+    lectura, el escalar degrada al promedio almacenado y el mapa a
+    `{}`); `usual_countries`/`usual_hours` (habitos conocidos; `[]` si
+    no hay), `last_device_id` (identificador pseudonimo del dispositivo,
+    B7), `score`, `updated_at`. `user_id` malformado o perfil
+    inexistente -> `404 NOT_FOUND` (neutro, sin oraculo). Solo lectura:
+    no crea el perfil. La lectura se audita (`risk.profile.viewed`,
+    best-effort, sin PII) y no hace escrituras de negocio (no crea ni
+    actualiza el perfil: la unica escritura es la auditoria
+    best-effort).
     """
     _ = analyst  # El rol solo hace gate (401/403 sin analista).
     try:
@@ -261,7 +270,7 @@ def get_risk_profile(
     row = risk_service.get_profile(db, wanted)
     if row is None:
         raise AppError(code="NOT_FOUND", message="perfil inexistente", status_code=404)
-    by_currency = risk_service.profile_average_by_currency(db, wanted)
+    live_avg, by_currency = risk_service.profile_averages(db, wanted)
     _audit_profile_viewed_best_effort(db, analyst_id=analyst.user_id, profile_user_id=wanted)
     try:
         db.commit()
@@ -271,7 +280,7 @@ def get_risk_profile(
         except Exception:  # noqa: BLE001, S110 - limpieza best-effort
             pass
     return {
-        "data": _to_profile_response(row, by_currency=by_currency),
+        "data": _to_profile_response(row, by_currency=by_currency, avg_amount_minor=live_avg),
         "meta": {"request_id": _request_id()},
     }
 

@@ -14,13 +14,15 @@ dinero (regla de oro 1): solo registra severidad, audita y notifica.
 Ante fallo se revierte y se re-lanza para que el worker aplique
 reintento con backoff (diseno E5-T05).
 
-Extension E6-T03 (HU20, fixes PR #26): el perfil de comportamiento se
+Extension E6-T03 (HU20, fixes PR #26 + R7): el perfil de comportamiento se
 alimenta con `on_profile_transfer_settled` (monto SOLO de estados
 finales exitosos + hora/dispositivo confiable) /
 `on_profile_login_succeeded` (hora/dispositivo confiable) /
 `on_profile_auth_failed_attempt` (solo hora: un fallo es "visto" pero
 NO "confiable", no toca `last_device_id`; la severidad la sigue
-poseyendo `E2-T20`/`E6-T14`), consumidor `"risk-profile"`,
+poseyendo `E2-T20`/`E6-T14`) /
+`on_profile_transfer_reversed` (recalcula el promedio sin habitos: la
+operacion revertida deja la ventana), consumidor `"risk-profile"`,
 idempotente por `processed_events`. El monto se recalcula desde la
 ventana real (promedio entero `ROUND_HALF_UP`, sin EWMA).
 `transaction.initiated` NO alimenta el perfil (A1: el monto/promedio
@@ -42,6 +44,15 @@ from typing import Any
 
 #: `auth.login_succeeded` (literal canonico de `identity`; sin PII).
 LOGIN_SUCCEEDED_EVENT = "auth.login_succeeded"
+
+#: `transfer.reversed` (literal canonico de
+#: `transactions.service.reversal.TRANSFER_REVERSED_EVENT`; sin PII):
+#: lo emite `transactions` por `outbox` al compensar con asiento inverso
+#: (payload sin PII: `transaction_id`, `status`, `reversal_entry_ids`,
+#: `reverses_entry_ids`). El perfil lo consume para recalcular el
+#: promedio (R7): la operacion revertida deja la ventana y el escalar
+#: almacenado quedaria obsoleto.
+TRANSFER_REVERSED_EVENT = "transfer.reversed"
 
 
 def on_auth_failed_attempt(
@@ -136,9 +147,11 @@ def on_unrecognized_operation_reported(
 
 __all__ = [
     "LOGIN_SUCCEEDED_EVENT",
+    "TRANSFER_REVERSED_EVENT",
     "on_auth_failed_attempt",
     "on_profile_auth_failed_attempt",
     "on_profile_login_succeeded",
+    "on_profile_transfer_reversed",
     "on_profile_transfer_settled",
     "on_transaction_initiated",
     "on_transfer_settled",
@@ -354,3 +367,20 @@ def on_profile_auth_failed_attempt(
     return _run_profile_handler(
         entry, "handle_profile_failed_attempt", session_factory=session_factory
     )
+
+
+def on_profile_transfer_reversed(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `transfer.reversed` (D-04, E6-T03, R7).
+
+    Recalcula el promedio via `risk.service.handle_profile_reversal`
+    (consumidor `"risk-profile"`): la operacion revertida deja la
+    ventana y el escalar se corrige de inmediato, sin tocar habitos
+    (`usual_hours`/`usual_countries`/`last_device_id`), `score` ni
+    notificar. `commit` propio; `rollback` y re-lanza ante fallo. Sin
+    PII; no mueve dinero.
+    """
+    return _run_profile_handler(entry, "handle_profile_reversal", session_factory=session_factory)

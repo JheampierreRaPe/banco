@@ -280,13 +280,42 @@ def test_consumer_registers_and_notifies_customer(session: Session):
     assert outcome["consumed"] is True and outcome["blocked"] is False
     profile = risk_repo.get_by_user(session, USER_A)
     assert profile is not None and profile.score == 1  # severidad minima
-    assert profile.last_device_id == DEVICE_A
+    assert profile.last_device_id is None, "R1: el fallo no fija dispositivo (visto, no confiable)"
     rows = _notifications(session)
     assert len(rows) == 1  # una notificacion al cliente (CA-04)
     assert rows[0].template_code == "auth_failed_attempt" and rows[0].channel == "push"
     assert rows[0].user_id == USER_A and rows[0].status == "SENT"
     audits = _audits(session)
     assert len(audits) == 1 and audits[0].action == "risk.auth_failed_attempt"
+
+
+def test_consumer_failed_attempt_does_not_fix_device(session: Session):
+    """R1: un fallo con `attacker-device` no altera el dispositivo; el login exitoso si.
+
+    E2-T20 (severidad) y E6-T03 (habitos) coinciden end-to-end: el fallo
+    sube el `score` pero jamas escribe `last_device_id`; solo un login
+    exitoso (u operacion exitosa) fija el dispositivo confiable.
+    """
+    from app.modules.risk import repository as risk_repo
+    from app.modules.risk import service as risk_service
+
+    legit = risk_service.handle_profile_login(
+        session,
+        event_id=uuid.uuid4(),
+        payload={"user_id": str(USER_A), "device_id": DEVICE_A},
+        at=datetime(2026, 9, 27, 11, 0, tzinfo=UTC),
+    )
+    session.commit()
+    assert legit["consumed"] is True
+    assert risk_repo.get_by_user(session, USER_A).last_device_id == DEVICE_A
+
+    outcome = _consume(session, _payload(device_id="attacker-device"))
+    session.commit()
+
+    assert outcome["consumed"] is True and outcome["blocked"] is False
+    profile = risk_repo.get_by_user(session, USER_A)
+    assert profile is not None and profile.score == 1, "la severidad si se registra"
+    assert profile.last_device_id == DEVICE_A, "el fallo no pisa el dispositivo confiable"
 
 
 def test_consumer_block_notifies_blocked_template(session: Session):

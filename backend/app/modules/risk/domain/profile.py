@@ -31,7 +31,13 @@ Reglas de actualizacion:
   `n = operations + 1`,
   `nuevo = (avg * operations + amount) / n`.
   Ejemplo: `avg=2` (1 op) + `amount=3` -> `5/2 = 2.5` -> `3`
-  (con `ROUND_HALF_EVEN` daria `2`). Sin monto observado se conserva.
+  (con `ROUND_HALF_EVEN` daria `2`). Sin monto observado se conserva. **Nota R9
+  (legado, solo-test)**: el servicio E6-T03 ya NO persiste esta media
+  incremental (recalcula el promedio real de la ventana con la fachada
+  `transactions.get_window_amount_stats`, de modo que el arranque en
+  frio usa el historial real); de este delta el servicio solo usa los
+  habitos (`usual_hours`/`usual_countries`/`last_device_id`). La formula
+  queda como ayuda pura y documentada, cubierta por pruebas de dominio.
   Nota E6-T03 (fixes PR #26, A3): el servicio ya NO usa esta media
   incremental para persistir (recalcula el promedio real de la ventana
   con la fachada `transactions.get_window_amount_stats`, de modo que

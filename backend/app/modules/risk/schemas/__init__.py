@@ -63,8 +63,9 @@ class ProfileResponse(BaseModel):
 
     Solo habitos y severidad (sin PII: `user_id` es UUID, sin
     nombre/documento/cuenta): `avg_amount_minor` (promedio agregado de
-    la ventana, compatibilidad: agregado multi-moneda documentado),
-    `avg_amount_by_currency` (mapa `{moneda: promedio}` de la ventana,
+    la ventana, compatibilidad: agregado multi-moneda documentado;
+    R6: el GET lo recalcula en vivo desde el mismo origen que el mapa
+    y degrada al almacenado solo sin historial), `avg_amount_by_currency` (mapa `{moneda: promedio}` de la ventana,
     redondeo entero; `{}` sin historial), `usual_countries`/`usual_hours`
     (habitos conocidos; `usual_countries` congelado en el MVP —`ATYPICAL_GEO`
     inactivo sin fuente server-side—, `[]` si no hay), ultimo

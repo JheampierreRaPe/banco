@@ -260,11 +260,14 @@ def is_risk_antifraud_wired(bus: Any | None = None) -> bool:
 
 
 # ------------------------------------------------- Cableado E6-T03
-# Perfil de comportamiento (HU20, fixes PR #26): `risk` consume SOLO
+# Perfil de comportamiento (HU20, fixes PR #26 + R7): `risk` consume SOLO
 # `transfer.settled` (monto de estados finales exitosos + habitos),
 # `auth.login_succeeded` (`identity`, literal local en `risk.events`:
-# no existe en `app.core.events`) y `auth.failed_attempt` (solo hora;
-# la severidad la sigue poseyendo `E2-T20`; aqui solo habitos).
+# no existe en `app.core.events`), `auth.failed_attempt` (solo hora;
+# la severidad la sigue poseyendo `E2-T20`; aqui solo habitos) y
+# `transfer.reversed` (recalcula el promedio sin habitos, R7; literal
+# local en `risk.events`: canonico de
+# `transactions.service.reversal.TRANSFER_REVERSED_EVENT`).
 # `transaction.initiated` NO alimenta el perfil (A1: el monto se
 # alimenta SOLO con `transfer.settled`, sin doble conteo
 # iniciada+liquidada; sin dependencia de orden motor->perfil, M5; por
@@ -290,21 +293,24 @@ def risk_profile_enabled() -> bool:
 
 
 def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
-    """Suscribe la alimentacion del perfil al bus (E6-T03, HU20, A1/M5).
+    """Suscribe la alimentacion del perfil al bus (E6-T03, HU20, A1/M5 + R7).
 
     Idempotente: si los handlers ya estan registrados no los duplica.
     `bus` por defecto es el bus global (`app.core.bus`). Suscribe UN
     solo handler de perfil por evento: `transfer.settled`,
-    `auth.login_succeeded` y `auth.failed_attempt` (NO
+    `auth.login_succeeded`, `auth.failed_attempt` (NO
     `transaction.initiated`: el monto se alimenta SOLO del estado
-    final). Retorna la tupla registrada (el arranque real la usa; los
+    final) y `transfer.reversed` (recalcula el promedio sin habitos,
+    R7). Retorna la tupla registrada (el arranque real la usa; los
     tests la verifican).
     """
     from app.core import events as domain_events
     from app.modules.risk.events import (
         LOGIN_SUCCEEDED_EVENT,
+        TRANSFER_REVERSED_EVENT,
         on_profile_auth_failed_attempt,
         on_profile_login_succeeded,
+        on_profile_transfer_reversed,
         on_profile_transfer_settled,
     )
 
@@ -316,6 +322,7 @@ def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
         (domain_events.TRANSFER_SETTLED, on_profile_transfer_settled),
         (LOGIN_SUCCEEDED_EVENT, on_profile_login_succeeded),
         (domain_events.AUTH_FAILED_ATTEMPT, on_profile_auth_failed_attempt),
+        (TRANSFER_REVERSED_EVENT, on_profile_transfer_reversed),
     )
     for event_type, handler in wanted:
         handlers = list(getattr(bus, "_handlers", {}).get(event_type, []))
@@ -325,6 +332,7 @@ def subscribe_risk_profile(bus: Any | None = None) -> tuple[Any, ...]:
         on_profile_transfer_settled,
         on_profile_login_succeeded,
         on_profile_auth_failed_attempt,
+        on_profile_transfer_reversed,
     )
 
 
@@ -333,8 +341,10 @@ def is_risk_profile_wired(bus: Any | None = None) -> bool:
     from app.core import events as domain_events
     from app.modules.risk.events import (
         LOGIN_SUCCEEDED_EVENT,
+        TRANSFER_REVERSED_EVENT,
         on_profile_auth_failed_attempt,
         on_profile_login_succeeded,
+        on_profile_transfer_reversed,
         on_profile_transfer_settled,
     )
 
@@ -349,6 +359,7 @@ def is_risk_profile_wired(bus: Any | None = None) -> bool:
             and on_profile_login_succeeded in handlers.get(LOGIN_SUCCEEDED_EVENT, [])
             and on_profile_auth_failed_attempt
             in handlers.get(domain_events.AUTH_FAILED_ATTEMPT, [])
+            and on_profile_transfer_reversed in handlers.get(TRANSFER_REVERSED_EVENT, [])
         )
     except AttributeError:
         return False

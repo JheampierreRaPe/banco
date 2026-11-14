@@ -131,7 +131,7 @@
 `kyc.match_threshold`, `kyc.max_attempts`, `loan.max_dti_ratio`,
 `loan.max_amount_minor`, `loan.min_score`, `loan.review_margin`,
 `loan.max_debt_minor`,
-`fx.quote_ttl_seconds`, `fx.spread_base`, `fx.spread_volume_step`, `pocket.yield_rate`.
+`fx.quote_ttl_seconds`, `fx.spread_bps_default`, `fx.spread_tiers_json`, `pocket.yield_rate`.
 
 > Motor de credito (E3-T07, HU10): `loan.max_dti_ratio` (`0.4`, semilla
 > `0001` como texto `"0.4"`, normalizado a numero por `0030`),
@@ -734,10 +734,26 @@ Indices: `(account_id, created_at DESC)`.
 > por 1 unidad de `quote` (coherente con el adaptador `E7-T08`); el destino
 > se calcula en `Decimal` como `source / (rate + spread)` cuantizado al
 > centavo con `ROUND_HALF_UP` (p. ej. `100 / 8.00 = 12.5 -> 13`) y nunca se
-> recalcula al leer; `spread` default `0` (el dinamico es `E7-T10`);
-> `expires_at = creacion + fx.quote_ttl_seconds` (default `30`,
-> `config.parameters`); el estado efectivo se calcula on-read (`ACTIVE`
-> vencida -> `EXPIRED`); una cotizacion se ejecuta una sola vez (`E7-T11`).
+> recalcula al leer; `expires_at = creacion + fx.quote_ttl_seconds`
+> (default `30`, `config.parameters`); el estado efectivo se calcula
+> on-read (`ACTIVE` vencida -> `EXPIRED`); una cotizacion se ejecuta una
+> sola vez (`E7-T11`).
+>
+> Nota E7-T10 (spread dinamico por volumen, HU25): con `spread=None`
+> (camino de `POST /fx/quotes`) el servicio resuelve los puntos basicos
+> por volumen (`fx.spread_tiers_json` de `config.parameters`: lista de
+> `{min_amount_minor, bps}` ordenada, borde inferior inclusive, ultimo
+> tramo sin maximo; semilla `< 1,000 PEN` 150 bps, `>= 1,000` 100 bps,
+> `>= 10,000` 50 bps; JSON invalido/desordenado/solapado -> semilla) y
+> congela la tasa efectiva `rate * (1 + bps/10000)` (8 decimales,
+> `ROUND_HALF_UP`) en `rate` con el porcentaje (`bps/100`, p. ej.
+> `150 bps -> 1.5`) en `spread`; el destino usa la tasa con spread
+> (`target = source / efectiva`, `ROUND_HALF_UP`). Con `spread`
+> explicito (legado E7-T09) la tasa se congela tal cual y el `spread`
+> es el incremento absoluto dado. Si ningun tramo aplica rige
+> `fx.spread_bps_default` (default `100`); cambiar los tramos solo
+> afecta cotizaciones nuevas (las existentes quedan congeladas).
+> `GET /fx/spread` anticipa el `bps` sin persistir nada.
 
 ### 10.3 `fx_operations`, `savings_pockets`, `pocket_movements`
 

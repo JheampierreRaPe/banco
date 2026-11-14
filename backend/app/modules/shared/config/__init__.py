@@ -50,6 +50,14 @@ Claves de esta tarea (regla de oro 6: regla variable = parametro):
   idempotente). Lectura con `get_wallet_service_reminder_days_before`
   (best-effort con fallback, nunca lanza); escritura con
   `set_parameter` (entero `>= 1`, exige fila sembrada).
+- Spread por volumen (E7-T10, HU25, modulo `fx`):
+  `fx.spread_bps_default` (`100` bps = 1 %; `bps` enteros `>= 0`) y
+  `fx.spread_tiers_json` (lista de `{min_amount_minor, bps}` ordenada
+  por `min_amount_minor`; semilla conservadora en codigo: `< 1,000
+  PEN` 150 bps, `>= 1,000 PEN` 100 bps, `>= 10,000 PEN` 50 bps).
+  Lectura con `get_fx_spread_bps_default` / `get_fx_spread_tiers`
+  (best-effort con fallback a la semilla ante JSON invalido,
+  desordenado o solapado; nunca lanzan; sin migracion nueva).
 
 Semantica:
 
@@ -83,6 +91,8 @@ from app.modules.shared.config.parameters import (
     DAILY_LIMIT_PROFILE_TEMPLATE,
     DEFAULT_BIOMETRIC_THRESHOLD_MINOR,
     DEFAULT_DAILY_LIMIT_MINOR,
+    DEFAULT_FX_SPREAD_BPS,
+    DEFAULT_FX_SPREAD_TIERS_JSON,
     DEFAULT_LOAN_MAX_AMOUNT_MINOR,
     DEFAULT_LOAN_MAX_DEBT_MINOR,
     DEFAULT_LOAN_MAX_DTI_RATIO,
@@ -94,6 +104,8 @@ from app.modules.shared.config.parameters import (
     DEFAULT_WALLET_EXPRESS_LIMIT_MINOR,
     DEFAULT_WALLET_QR_TTL_SECONDS,
     DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE,
+    FX_SPREAD_BPS_DEFAULT_KEY,
+    FX_SPREAD_TIERS_JSON_KEY,
     LOAN_MAX_AMOUNT_MINOR_KEY,
     LOAN_MAX_AMOUNT_PROFILE_TEMPLATE,
     LOAN_MAX_DEBT_MINOR_KEY,
@@ -113,6 +125,8 @@ from app.modules.shared.config.parameters import (
     get_biometric_threshold_minor,
     get_daily_limit_minor,
     get_decimal_parameter,
+    get_fx_spread_bps_default,
+    get_fx_spread_tiers,
     get_int_parameter,
     get_loan_max_amount_minor,
     get_loan_max_debt_minor,
@@ -138,6 +152,8 @@ __all__ = [
     "DAILY_LIMIT_PROFILE_TEMPLATE",
     "DEFAULT_BIOMETRIC_THRESHOLD_MINOR",
     "DEFAULT_DAILY_LIMIT_MINOR",
+    "DEFAULT_FX_SPREAD_BPS",
+    "DEFAULT_FX_SPREAD_TIERS_JSON",
     "DEFAULT_LOAN_MAX_AMOUNT_MINOR",
     "DEFAULT_LOAN_MAX_DEBT_MINOR",
     "DEFAULT_LOAN_MAX_DTI_RATIO",
@@ -149,6 +165,8 @@ __all__ = [
     "DEFAULT_WALLET_EXPRESS_LIMIT_MINOR",
     "DEFAULT_WALLET_QR_TTL_SECONDS",
     "DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE",
+    "FX_SPREAD_BPS_DEFAULT_KEY",
+    "FX_SPREAD_TIERS_JSON_KEY",
     "LOAN_MAX_AMOUNT_MINOR_KEY",
     "LOAN_MAX_AMOUNT_PROFILE_TEMPLATE",
     "LOAN_MAX_DEBT_MINOR_KEY",
@@ -168,6 +186,8 @@ __all__ = [
     "get_biometric_threshold_minor",
     "get_daily_limit_minor",
     "get_decimal_parameter",
+    "get_fx_spread_bps_default",
+    "get_fx_spread_tiers",
     "get_int_parameter",
     "get_loan_max_amount_minor",
     "get_loan_max_debt_minor",

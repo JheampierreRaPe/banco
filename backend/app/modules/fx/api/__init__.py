@@ -1,5 +1,5 @@
 """Endpoints de bolsillos de ahorro (E7-T02, HU24 CA-01..CA-04) y de
-tasas/cotizaciones (E7-T09, HU25).
+tasas/cotizaciones/spread (E7-T09/E7-T10, HU25).
 
 - `GET /pockets` (lista del titular), `POST /pockets` (apertura,
   `Idempotency-Key` opcional pero respetada), `GET /pockets/{id}`
@@ -8,7 +8,8 @@ tasas/cotizaciones (E7-T09, HU25).
 - `GET /fx/rates?base=&quote=` (tasa vigente + snapshot persistido),
   `POST /fx/quotes` (congela 30 s, `Idempotency-Key` opcional pero
   respetada), `GET /fx/quotes/{id}` (vigencia on-read: vencida ->
-  `EXPIRED`, ajena -> `404` neutro).
+  `EXPIRED`, ajena -> `404` neutro), `GET /fx/spread` (vista previa
+  del spread por volumen, solo lectura, sin persistir nada).
 - Sin logica en el router (05#1): valida, traduce y delega al `service/`;
   el servicio hace `flush`, el endpoint confirma (`commit`) o revierte.
 - Auth/RBAC: JWT `Bearer` (`sub` = titular, 05#2); sin token valido ->
@@ -47,6 +48,7 @@ from app.modules.fx.schemas import (
     QuoteCreate,
     QuoteResponse,
     RateResponse,
+    SpreadPreviewResponse,
 )
 
 router = APIRouter(tags=["fx"])
@@ -265,6 +267,42 @@ def get_fx_quote(
     except ValueError as exc:
         raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
     db.commit()
+    return {"data": view, "meta": {}}
+
+
+@router.get(
+    "/fx/spread",
+    response_model=SpreadPreviewResponse,
+    summary="Spread por volumen antes de cotizar",
+)
+def get_fx_spread(
+    base: str,
+    quote: str,
+    amount_minor: int,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Vista previa del spread por volumen (E7-T10, HU25 CA-05).
+
+    Solo lectura: no persiste tasa ni cotizacion (la UI lo usa para
+    mostrar el spread antes de `POST /fx/quotes`; el spread queda
+    congelado recien al cotizar). `amount_minor > 0`, par MVP
+    (`PEN`/`USD`/`EUR`, `base != quote`) -> `422 VALIDATION_ERROR`;
+    proveedor caido/timeout -> `503`/`502`; sin JWT valido -> `401`.
+    """
+    _ = user_id  # la previa es publica para cualquier titular autenticado
+    try:
+        view = pockets_service.preview_spread(db, base=base, quote=quote, amount_minor=amount_minor)
+    except FxRateError as exc:
+        if exc.code == FX_RATE_VALIDATION_ERROR:
+            raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
+        if exc.code == FX_RATE_TIMEOUT:
+            raise AppError(code=FX_RATE_TIMEOUT, message=str(exc), status_code=502) from exc
+        raise AppError(
+            code=FX_RATE_UNAVAILABLE, message=str(exc), status_code=_fx_error_status(exc)
+        ) from exc
+    except ValueError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
     return {"data": view, "meta": {}}
 
 

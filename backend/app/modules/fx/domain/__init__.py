@@ -20,13 +20,36 @@ son unidades de `base` por 1 unidad de `quote` (p. ej. el par
 monto origen (en `base`) se DIVIDE por la tasa efectiva para
 obtener el destino (en `quote`): `S/ 380.00` (`38000` minor) a
 `3.80` -> `$ 100.00` (`10000` minor).
+
+Spread dinamico (E7-T10, HU25): `fx.domain.spread` (`spread_bps_for`
++ `apply_spread`, sin `float`) resuelve los puntos basicos por
+volumen y la tasa efectiva `rate * (1 + bps/10000)` (8 decimales,
+`ROUND_HALF_UP`); el servicio congela la efectiva en
+`fx_quotes.rate` y el porcentaje (`bps/100`) en `fx_quotes.spread`.
 """
 
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
-__all__ = ["target_for"]
+from app.modules.fx.domain.spread import (
+    SEED_TIERS,
+    SpreadTierError,
+    apply_spread,
+    normalize_tiers,
+    spread_bps_for,
+    spread_percent_for,
+)
+
+__all__ = [
+    "SEED_TIERS",
+    "SpreadTierError",
+    "apply_spread",
+    "normalize_tiers",
+    "spread_bps_for",
+    "spread_percent_for",
+    "target_for",
+]
 
 
 def target_for(

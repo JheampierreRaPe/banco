@@ -38,6 +38,7 @@ from app.modules.fx.service.quotes import (
     create_quote_idempotent,
     get_quote,
     get_rate,
+    preview_spread,
     to_quote_view,
     to_rate_view,
 )
@@ -395,6 +396,7 @@ __all__ = [
     "list_pockets",
     "open_pocket",
     "open_pocket_idempotent",
+    "preview_spread",
     "to_pocket_view",
     "to_quote_view",
     "to_rate_view",

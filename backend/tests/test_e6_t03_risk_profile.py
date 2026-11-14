@@ -12,6 +12,7 @@ Mapeo brief -> test:
 - integracion con el motor E6-T02 .................................... `test_engine_*`
 - cableado del bus + orden motor->perfil + flags ..................... `test_wiring_*`
 - handlers D-04 (sesion/commit propios, rollback) .................... `test_handler_*`
+- contratos de frontera (espejos verificados N2/N3) ................. `test_profile_*`
 - end-to-end outbox/bus -> perfil -> GET ............................. `test_e2e_*`
 - sin PII / sin movimiento de dinero ................................. `test_no_*`
 """
@@ -549,23 +550,70 @@ def test_feed_missing_transaction_retries_without_claim(session: Session, engine
         shared_repo.is_processed(session, event_id=entry.id, consumer="risk-profile") is False
     ), "sin operacion no hay claim"
 
-    # Cuando la operacion existe, el reintento (mismo flujo outbox->bus)
-    # alimenta el perfil.
-    tx = _transfer(session, 10_000)
-    session.commit()
-    late = shared_repo.insert_event(
-        session,
-        aggregate_type="transaction",
-        aggregate_id=tx.id,
-        event_type="transfer.settled",
-        payload={"transaction_id": str(tx.id)},
+    # Cuando la operacion aparece (el evento suele llegar antes que el
+    # `commit` visible), el MISMO entry fallido (mismo `event_id`) se
+    # re-dispara y alimenta el perfil: la fila tardia se siembra con el
+    # `transaction_id` que el entry ya referencia (sin eventos nuevos).
+    from app.modules.transactions.models import Transaction
+
+    late_tx = Transaction(
+        id=uuid.UUID(missing),
+        type="THIRD_PARTY_TRANSFER",
+        status="SETTLED",
+        initiator_user_id=USER_A,
+        source_account_id=session.info["a1"],
+        target_account_id=session.info["b1"],
+        amount_minor=10_000,
+        currency="PEN",
     )
+    session.add(late_tx)
     session.commit()
     retry = publish_pending(session, bus=bus, backoff_base_seconds=0)
-    assert retry["published"] >= 1, f"el reintento publica: {retry}"
+    assert retry == {
+        "published": 1,
+        "failed": 0,
+        "skipped": 0,
+    }, f"el mismo entry se publica: {retry}"
     session.commit()
-    assert shared_repo.is_processed(session, event_id=late.id, consumer="risk-profile") is True
+    assert shared_repo.is_processed(session, event_id=entry.id, consumer="risk-profile") is True
     assert _profile(session) is not None and _profile(session).avg_amount_minor == 10_000
+    check_retry = Session(engine)
+    try:
+        again = check_retry.get(OutboxEntry, entry.id)
+        assert again is not None and again.status == "PUBLISHED"
+        assert int(again.attempts) == 1, "un solo intento fallido antes del exito"
+        assert (
+            int(again.attempts) < risk_service.PROFILE_MISSING_TX_MAX_ATTEMPTS
+        ), "el limite de reintentos no se alcanza"
+    finally:
+        check_retry.close()
+
+
+def test_profile_success_states_mirror_window_states():
+    """N2 (fixes PR #26): `PROFILE_SUCCESS_STATES` espeja `WINDOW_SUCCESS_STATES`.
+
+    Frontera D-01: `risk` no importa `transactions.service` a nivel de
+    modulo (evita el ciclo de imports), asi que la paridad se verifica
+    aqui: falla si ambos conjuntos divergen.
+    """
+    from app.modules.risk import service as risk_service
+    from app.modules.transactions import service as tx_service
+
+    assert risk_service.PROFILE_SUCCESS_STATES == tx_service.WINDOW_SUCCESS_STATES
+
+
+def test_profile_missing_tx_limit_tracks_outbox_default():
+    """N3 (fixes PR #26): el limite de reintentos es el default del publisher.
+
+    Falla sin el cableado (`PROFILE_MISSING_TX_MAX_ATTEMPTS` literal y
+    sin `DEFAULT_MAX_ATTEMPTS` en el namespace del servicio) y si ambos
+    valores divergen en el futuro.
+    """
+    from app.modules.risk import service as risk_service
+    from app.modules.shared.repository import outbox as outbox_repo
+
+    assert risk_service.DEFAULT_MAX_ATTEMPTS is outbox_repo.DEFAULT_MAX_ATTEMPTS
+    assert risk_service.PROFILE_MISSING_TX_MAX_ATTEMPTS == outbox_repo.DEFAULT_MAX_ATTEMPTS
 
 
 def test_feed_failure_rolls_back_and_reraises(session: Session, monkeypatch):

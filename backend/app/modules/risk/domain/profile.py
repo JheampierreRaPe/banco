@@ -19,9 +19,10 @@ Firma:
   `risk.service` con el mapa por moneda), `country`
   (normalizado a mayusculas), `hour` (`0..23`, UTC), `device_id`.
 - `operations`: operaciones ya reflejadas en el promedio actual
-  (`>= 0`). El servicio lo deriva del conteo en la ventana
-  `risk.profile_window_days` (menos la operacion en curso); aqui solo
-  es aritmetica.
+  (`>= 0`; compatibilidad/legado). El servicio E6-T03 pasa siempre
+  `operations=0` y persiste el promedio recalculado desde la ventana
+  real (`transactions.get_window_amount_stats`); aqui solo es
+  aritmetica pura y documentada.
 
 Reglas de actualizacion:
 
@@ -200,8 +201,9 @@ def next_profile(
 
     Nunca lanza por forma de los datos: lo malformado no aporta (ese
     campo se conserva). `operations` = operaciones ya reflejadas en
-    `current.avg_amount_minor` (el servicio lo deriva de la ventana
-    `risk.profile_window_days`); el promedio resultante es la media
+    `current.avg_amount_minor` (legado/compatibilidad: el servicio
+    E6-T03 pasa siempre `0` y persiste el promedio recalculado desde
+    la ventana real); el promedio resultante es la media
     incremental entera con `ROUND_HALF_UP`.
     """
     obs = observation if isinstance(observation, BehaviorObservation) else None

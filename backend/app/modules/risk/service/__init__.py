@@ -40,6 +40,7 @@ from app.modules.risk.domain import engine as risk_engine
 from app.modules.risk.domain import profile as profile_domain
 from app.modules.risk.domain.engine import RiskDecision
 from app.modules.risk.models import RiskProfile, RiskRule
+from app.modules.shared.repository.outbox import DEFAULT_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
@@ -1261,8 +1262,12 @@ PROFILE_WINDOW_DEFAULT_DAYS = 90
 AUDIT_ACTION_PROFILE_VIEWED = "risk.profile.viewed"
 
 #: Estados finales que aportan monto/conteo al perfil (A2, fixes PR #26):
-#: espejo de `transactions.service.WINDOW_SUCCESS_STATES` (import
-#: perezoso en cada uso para no acoplar la importacion).
+#: espejo verificado de `transactions.service.WINDOW_SUCCESS_STATES`
+#: (misma frontera D-01 que las fachadas: `risk` no importa
+#: `transactions.service` a nivel de modulo para evitar el ciclo de
+#: imports, asi que la paridad la garantiza
+#: `test_profile_success_states_mirror_window_states`, que falla si
+#: ambos conjuntos divergen).
 PROFILE_SUCCESS_STATES = frozenset({"SETTLED", "POSTED", "COMPLETED", "CONCILIATED"})
 
 #: Reintentos de `handle_profile_transaction` ante operacion ausente
@@ -1270,11 +1275,11 @@ PROFILE_SUCCESS_STATES = frozenset({"SETTLED", "POSTED", "COMPLETED", "CONCILIAT
 #: `ProfileRetryableError` para que el publisher (`shared/jobs/
 #: publisher.py` via `EventBus.dispatch`, que propaga la excepcion)
 #: aplique `mark_failed` con backoff y reintente. Tras N intentos el
-#: evento pasa a `FAILED` (terminal): espejo de
-#: `shared.repository.outbox.DEFAULT_MAX_ATTEMPTS` (sin migracion ni
-#: columna nueva: el limite vive en el publisher, aqui solo se
-#: documenta para no prometer reintento infinito).
-PROFILE_MISSING_TX_MAX_ATTEMPTS = 5
+#: evento pasa a `FAILED` (terminal): alias de
+#: `shared.repository.outbox.DEFAULT_MAX_ATTEMPTS` (unica fuente de
+#: verdad del limite del publisher; sin migracion ni columna nueva:
+#: aqui solo se documenta para no prometer reintento infinito).
+PROFILE_MISSING_TX_MAX_ATTEMPTS = DEFAULT_MAX_ATTEMPTS
 
 
 class ProfileRetryableError(RuntimeError):

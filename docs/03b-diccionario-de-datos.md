@@ -887,28 +887,45 @@ Indices: `(account_id, created_at DESC)`.
 > ambas tablas con la migracion `0050_reconciliation`
 > (`down_revision="0049_fx"`). `clearing_files.checksum` se persiste
 > `NOT NULL` (el `Si` de la tabla es tentativo: un lote sin checksum no
-> se puede validar ni re-identificar) y el `status` efectivo es
+> se puede ni validar ni re-identificar) y el `status` efectivo es
 > `RECEIVED`/`PROCESSED`/`FAILED` (la ingesta solo escribe esos tres;
 > `PROCESSING` queda reservado al enum `clearing_status`). Los items
 > nacen `PENDING` (`INBOUND`/`OUTBOUND`) y solo el matching (`E5-T18`)
 > los mueve a `MATCHED`/`EXCEPTION`. Indices: `(source)` y `(status)`
 > en archivos; `(file_id)`, `(external_ref)` y `(status)` en items
 > (ademas de la UQ `file_ref`).
+>
+> Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19): la corrida
+> persiste `reconciliation_runs` con la migracion `0051_reconciliation_runs`
+> (`down_revision="0050_reconciliation"`; UQ natural
+> `uq_reconciliation_runs_date_currency` por `(run_date, currency)` para la
+> idempotencia, `CHECK` de `status` y de no negatividad, indice
+> `ix_reconciliation_runs_status`). `matched_count` = pares conciliados;
+> `unmatched_count` = items de clearing no conciliados;
+> `total_minor` = suma en centimos de los items conciliados. La misma
+> migracion siembra (idempotente, `ON CONFLICT DO NOTHING`) las claves
+> `reconciliation.amount_tolerance_minor` (`0`),
+> `reconciliation.date_tolerance_days` (`0`),
+> `reconciliation.max_candidate_pairs` (`250000`, cota por grupo) y
+> `reconciliation.max_candidate_pairs_per_run` (`1000000`, presupuesto por
+> corrida). `reconciliation_exceptions`/`claims` siguen pendientes
+> (`E5-T19`/`E5-T20`); el alcance de la corrida es exacto por
+> `(run_date, currency)` y la tolerancia de fecha solo califica pares.
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
 | Tabla | Columna | Tipo | Nulo | Default | Clave |
 |---|---|---|---|---|---|
 | reconciliation_runs | id | UUID | No | gen_random_uuid() | PK |
-| reconciliation_runs | run_date | DATE | No | - | IDX |
-| reconciliation_runs | currency | CHAR(3) | No | - | |
-| reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | |
-| reconciliation_runs | matched_count | INTEGER | No | 0 | |
-| reconciliation_runs | unmatched_count | INTEGER | No | 0 | |
-| reconciliation_runs | total_minor | BIGINT | No | 0 | |
-| reconciliation_runs | executed_by | UUID | Si | - | REF users |
-| reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | |
-| reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | |
+| reconciliation_runs | run_date | DATE | No | - | UQ(con currency) |
+| reconciliation_runs | currency | CHAR(3) | No | - | UQ(con run_date) |
+| reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
+| reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
+| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` |
+| reconciliation_runs | total_minor | BIGINT | No | 0 | CK `>= 0` (centimos, nunca `float`) |
+| reconciliation_runs | executed_by | UUID | Si | - | REF users (sin FK fisica) |
+| reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | - |
+| reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | - |
 | reconciliation_exceptions | id | UUID | No | gen_random_uuid() | PK |
 | reconciliation_exceptions | run_id | UUID | No | - | FK runs |
 | reconciliation_exceptions | transaction_id | UUID | Si | - | REF transactions |

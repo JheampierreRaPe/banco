@@ -156,11 +156,15 @@ def test_migration_has_no_cross_schema_fk():
     assert '["reconciliation.clearing_files.id"]' in text
 
 
-def test_single_head_is_0050():
-    """Un solo head tras el brief (`alembic check` limpio lo exige)."""
+def test_single_head_is_0051():
+    """Un solo head tras el brief (`alembic check` limpio lo exige).
+
+    E5-T18 corte 2 encadena `0051_reconciliation_runs` sobre `0050` (el
+    head se mueve; el invariante es que haya uno solo).
+    """
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0050_reconciliation",)
+    assert get_head_revisions() == ("0051_reconciliation_runs",)
 
 
 # ------------------------------------------------- camino feliz e idempotencia
@@ -650,7 +654,13 @@ def test_entrypoint_starts_when_enabled(monkeypatch):
 
 # ------------------------------------------------- fronteras (reglas de oro)
 def test_no_money_movement():
-    """`reconciliation` no importa el motor ni el ledger (regla 1/4)."""
+    """`reconciliation` no importa el motor ni el ledger (regla 1/4).
+
+    E5-T18 corte 2 usa la fachada de solo lectura
+    `transactions.service.list_reconciliation_candidates` (unico uso
+    permitido de `app.modules.transactions.service`); siguen prohibidos
+    los modelos/repositorios ajenos, el ledger y las cuentas.
+    """
     for rel in (
         "app/modules/reconciliation/models/__init__.py",
         "app/modules/reconciliation/repository/__init__.py",
@@ -659,13 +669,21 @@ def test_no_money_movement():
     ):
         text = (BACKEND_DIR / rel).read_text(encoding="utf-8")
         for forbidden in (
-            "app.modules.transactions",
+            "app.modules.transactions.models",
+            "app.modules.transactions.repository",
             "app.modules.ledger",
             "app.modules.accounts",
             "post_entry",
             "journal_entry",
         ):
             assert forbidden not in text, f"frontera rota en {rel}: {forbidden}"
+    service_text = (BACKEND_DIR / "app/modules/reconciliation/service/__init__.py").read_text(
+        encoding="utf-8"
+    )
+    tx_refs = [line for line in service_text.splitlines() if "app.modules.transactions" in line]
+    assert tx_refs, "la corrida debe cruzar por la fachada de transactions"
+    assert all("app.modules.transactions.service" in line for line in tx_refs)
+    assert "list_reconciliation_candidates" in service_text
 
 
 def test_models_registered_without_pii_columns():

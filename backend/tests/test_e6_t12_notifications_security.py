@@ -663,7 +663,10 @@ def test_migration_chain_has_single_head_0044():
     # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
     # (esquema `reconciliation`, tras 0049).
     assert revisions.get("0050_reconciliation") == "0049_fx"
-    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
+    # E5-T18 corte 2 (2026-11-14): la cabeza avanza a 0051_reconciliation_runs
+    # (corridas de conciliacion + semillas de tolerancias/cotas, tras 0050).
+    assert revisions.get("0051_reconciliation_runs") == "0050_reconciliation"
+    assert heads == ["0051_reconciliation_runs"], f"heads inesperados: {heads}"
     content = (
         backend_dir / "migrations" / "versions" / "0045_notification_email_content.py"
     ).read_text(encoding="utf-8")

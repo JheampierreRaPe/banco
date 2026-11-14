@@ -389,9 +389,13 @@ def test_single_head_is_0030():
     # 0047_wallet_personal_qr (QR personal estatico, tras 0046): un solo
     # head. E6-T01 (2026-11-10): 0048_risk_rules. E7-T01 (2026-11-11):
     # la cabeza avanza a 0049_fx (esquema `fx`, tras 0048).
+    # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
+    # (clearing_files/clearing_items, tras 0049). E5-T18 corte 2
+    # (2026-11-14): la cabeza avanza a 0051_reconciliation_runs
+    # (`reconciliation_runs` + semillas de tolerancias/cotas, tras 0050).
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0050_reconciliation",)
+    assert get_head_revisions() == ("0051_reconciliation_runs",)
 
 
 def test_plan_backfill_deterministic_unique_and_idempotent():

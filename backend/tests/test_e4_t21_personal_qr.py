@@ -588,10 +588,13 @@ def test_migration_0047_chained_after_0046_with_single_head():
     # E5-T17 (2026-11-12): la cabeza avanza a 0050_reconciliation
     # (esquema `reconciliation`, tras 0049).
     assert revisions.get("0050_reconciliation") == "0049_fx"
+    # E5-T18 corte 2 (2026-11-14): la cabeza avanza a 0051_reconciliation_runs
+    # (corridas de conciliacion + semillas de tolerancias/cotas, tras 0050).
+    assert revisions.get("0051_reconciliation_runs") == "0050_reconciliation"
     assert revisions.get("0046_services_settlement") == "0045_notification_email_content"
     referenced = {down for down in revisions.values() if down is not None}
     heads = [rev for rev in revisions if rev not in referenced]
-    assert heads == ["0050_reconciliation"], f"heads inesperados: {heads}"
+    assert heads == ["0051_reconciliation_runs"], f"heads inesperados: {heads}"
     content = (versions_dir / "0047_wallet_personal_qr.py").read_text(encoding="utf-8")
     assert "payee_type" in content and "owner_user_id" in content
     assert "payee_account_id" in content and "reusable" in content

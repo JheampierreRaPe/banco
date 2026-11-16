@@ -331,7 +331,14 @@ def update_behavior(
         # consultar `transactions` (R4: login/fallo no calculan la ventana).
         wanted_avg: int | None = None
     else:
-        recomputed_avg = _window_average(session, profile.user_id)
+        try:
+            recomputed_avg = _window_average(session, profile.user_id)
+        except Exception:
+            # Fallo tecnico de lectura != ventana vacia: NO se limpia el
+            # baseline (se conserva el valor previo); se revierte y se
+            # relanza para el backoff del worker (D-04).
+            logger.warning("risk ventana no disponible: se conserva el baseline")
+            raise
         if recomputed_avg is not None:
             wanted_avg = recomputed_avg
         elif avg_amount_minor is not None:
@@ -1709,7 +1716,14 @@ def handle_profile_reversal(
     if not shared_repo.try_mark_processed(session, event_id=event_id, consumer=CONSUMER_PROFILE):
         logger.info("risk consumo duplicado ignorado consumer=%s", CONSUMER_PROFILE)
         return {"consumed": False, "reason": "duplicate"}
-    recomputed = _window_average(session, owner)
+    try:
+        recomputed = _window_average(session, owner)
+    except Exception:
+        # Fallo tecnico de lectura != ventana vacia: NO se limpia el
+        # baseline (se conserva el valor previo); se revierte y se
+        # relanza para el backoff del worker (D-04).
+        logger.warning("risk ventana no disponible tras reverso: se conserva el baseline")
+        raise
     if recomputed is None:
         # Ventana viva vacia (la unica operacion se reverso o todo expiro):
         # se LIMPIA el baseline (0), sin falsos positivos de `UNUSUAL_AMOUNT`.

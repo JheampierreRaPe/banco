@@ -876,6 +876,56 @@ def test_empty_baseline_does_not_trigger_unusual_amount(session: Session):
     assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "sin baseline no dispara"
 
 
+def test_window_read_failure_preserves_baseline_and_retries(session: Session, monkeypatch):
+    """Fallo tecnico de `_window_average` (dictamen PR #26): el baseline NO
+    se limpia (se conserva el valor previo) y el handler revierte/relanza
+    (D-04). Cubre el feed normal y `transfer.reversed`."""
+    from app.modules.risk import service as risk_service
+    from app.modules.shared import repository as shared_repo
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    def _boom(sess, uid):
+        raise RuntimeError("ventana no disponible (fallo tecnico simulado)")
+
+    monkeypatch.setattr(risk_service, "_window_average", _boom)
+
+    feed_event = uuid.uuid4()
+    with pytest.raises(RuntimeError):
+        risk_service.handle_profile_transaction(
+            session, event_id=feed_event, payload={"transaction_id": str(tx.id)}
+        )
+    session.rollback()
+    # `revierte`: tras el rollback el baseline sigue intacto (no se limpio
+    # a 0). `relanza`: la excepcion llego al llamante D-04, que aplica
+    # `mark_failed` con backoff (el no-claim tras rollback solo rige en
+    # Postgres: en SQLite el `RELEASE` del savepoint de `try_mark_processed`
+    # deja el claim visible, quirk documentado en `docs/18#G94`).
+    assert _profile(session).avg_amount_minor == 10_000, "fallo tecnico no limpia el baseline"
+    assert (
+        shared_repo.is_processed(session, event_id=feed_event, consumer="risk-profile") is True
+    ), "el claim previo al fallo queda registrado (quirk SQLite G94; en Postgres revierte)"
+
+    tx.status = "REVERSED"
+    session.commit()
+    reversal_event = uuid.uuid4()
+    with pytest.raises(RuntimeError):
+        risk_service.handle_profile_reversal(
+            session, event_id=reversal_event, payload={"transaction_id": str(tx.id)}
+        )
+    session.rollback()
+    assert _profile(session).avg_amount_minor == 10_000, "el reverso tampoco limpia ante fallo"
+    assert (
+        shared_repo.is_processed(session, event_id=reversal_event, consumer="risk-profile") is True
+    ), "idem feed normal: claim previo visible solo por el quirk SQLite G94"
+
+
 def test_transfer_reversed_literal_parity():
     """Nits (comentario `6924857624`, BAJO): el literal `transfer.reversed`
     no deriva entre el emisor (`transactions`) y el handler del perfil."""

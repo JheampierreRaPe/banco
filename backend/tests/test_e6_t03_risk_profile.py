@@ -800,6 +800,93 @@ def test_reversal_missing_transaction_retries_without_claim(session: Session):
     assert shared_repo.is_processed(session, event_id=event_id, consumer="risk-profile") is False
 
 
+def test_empty_window_clears_baseline_on_reversal(session: Session):
+    """Baseline fantasma (comentario `6924857624`, MEDIO): unica operacion
+    revertida -> baseline limpio (sin conservar el promedio viejo)."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    tx.status = "REVERSED"
+    session.commit()
+    outcome = risk_service.handle_profile_reversal(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+
+    assert outcome["avg_amount_minor"] == 0, "ventana viva vacia: baseline limpio, no fantasma"
+    assert _profile(session).avg_amount_minor == 0
+    assert risk_service.profile_average_by_currency(session, USER_A) == {}
+
+
+def test_empty_window_clears_baseline_on_expiry(session: Session):
+    """Baseline fantasma (comentario `6924857624`, MEDIO): todo fuera de la
+    ventana de 90 dias -> baseline limpio en el feed normal."""
+    from app.modules.risk import service as risk_service
+
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+
+    tx.created_at = datetime.now(UTC) - timedelta(days=100)
+    session.commit()
+    outcome = risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+
+    assert outcome["avg_amount_minor"] == 0, "todo expiro: baseline limpio, no fantasma"
+    assert _profile(session).avg_amount_minor == 0
+    assert risk_service.profile_average_by_currency(session, USER_A) == {}
+
+
+def test_empty_baseline_does_not_trigger_unusual_amount(session: Session):
+    """Baseline fantasma (comentario `6924857624`, MEDIO): sin baseline no hay
+    falso positivo de `UNUSUAL_AMOUNT` (el motor exige `avg > 0`)."""
+    from app.modules.risk import service as risk_service
+
+    _seed_conservative_rules(session)
+    tx = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    tx.status = "REVERSED"
+    session.commit()
+    risk_service.handle_profile_reversal(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(tx.id)}
+    )
+    session.commit()
+    assert _profile(session).avg_amount_minor == 0
+
+    decision = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=500_000, currency="PEN"
+    )
+    assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "sin baseline no dispara"
+
+
+def test_transfer_reversed_literal_parity():
+    """Nits (comentario `6924857624`, BAJO): el literal `transfer.reversed`
+    no deriva entre el emisor (`transactions`) y el handler del perfil."""
+    from app.modules.risk import events as risk_events
+    from app.modules.transactions.service import reversal as reversal_service
+
+    assert risk_events.TRANSFER_REVERSED_EVENT == "transfer.reversed"
+    assert reversal_service.TRANSFER_REVERSED_EVENT == "transfer.reversed"
+    assert risk_events.TRANSFER_REVERSED_EVENT == reversal_service.TRANSFER_REVERSED_EVENT
+
+
 def test_update_behavior_with_event_id_is_idempotent(session: Session):
     from app.modules.risk import service as risk_service
 

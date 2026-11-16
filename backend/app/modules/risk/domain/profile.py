@@ -38,11 +38,6 @@ Reglas de actualizacion:
   frio usa el historial real); de este delta el servicio solo usa los
   habitos (`usual_hours`/`usual_countries`/`last_device_id`). La formula
   queda como ayuda pura y documentada, cubierta por pruebas de dominio.
-  Nota E6-T03 (fixes PR #26, A3): el servicio ya NO usa esta media
-  incremental para persistir (recalcula el promedio real de la ventana
-  con la fachada `transactions.get_window_amount_stats`, de modo que
-  el arranque en frio usa el historial real); la formula queda como
-  ayuda pura y documentada.
 - El monto `0` NO aporta (B3, fixes PR #26): una observacion con
   `amount_minor=0` conserva el promedio (no lo diluye).
 - `usual_hours` / `usual_countries`: union que preserva el orden de

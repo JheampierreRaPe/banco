@@ -264,8 +264,9 @@ def update_behavior(
       `transactions.get_window_amount_stats` (solo estados exitosos en
       los ultimos `PROFILE_WINDOW_DEFAULT_DAYS` dias; redondeo entero
       `ROUND_HALF_UP`): el arranque en frio usa el historial real, sin
-      EWMA. Sin historial exitoso en la ventana se conserva el promedio
-      almacenado. Sin monto observado (login/fallo) el promedio se
+      EWMA. Sin historial exitoso en la ventana se LIMPIA el baseline
+      (`avg_amount_minor=0`, sin falsos positivos: el motor no dispara
+      `UNUSUAL_AMOUNT` con `avg <= 0`). Sin monto observado (login/fallo) el promedio se
       conserva SIN consultar `transactions` (R4: login/fallo no calculan
       la ventana). Con `event_id` es idempotente por
       `(event_id, consumer="risk-profile")` via `processed_events`
@@ -336,7 +337,10 @@ def update_behavior(
         elif avg_amount_minor is not None:
             wanted_avg = avg_amount_minor
         else:
-            wanted_avg = int(profile.avg_amount_minor or 0)
+            # Ventana viva vacia: se LIMPIA el baseline (0) en lugar de
+            # conservar el promedio viejo (baseline fantasma): sin base
+            # el motor no dispara `UNUSUAL_AMOUNT` (`avg <= 0` = no match).
+            wanted_avg = 0
     explicit = {
         "avg_amount_minor": wanted_avg,
         "usual_countries": update.usual_countries,
@@ -1661,8 +1665,10 @@ def handle_profile_reversal(
     el GET. Este consumo lo corrige de inmediato recalculando el
     promedio desde la ventana real, SIN tocar habitos (`usual_hours`,
     `usual_countries`, `last_device_id`), `score` ni notificar. Sin
-    historial exitoso restante se conserva el promedio almacenado
-    (misma regla que `update_behavior`). Idempotente por `event_id`
+    historial exitoso restante se LIMPIA el baseline
+    (`avg_amount_minor=0`, sin falsos positivos: el motor no dispara
+    `UNUSUAL_AMOUNT` con `avg <= 0`, misma regla que `update_behavior`).
+    Idempotente por `event_id`
     (consumidor `CONSUMER_PROFILE`): el replay retorna `consumed=False`
     sin efectos. Sin `transaction_id`/titular u operacion ausente, el
     mismo contrato que `handle_profile_transaction` (reclamo permanente
@@ -1705,7 +1711,9 @@ def handle_profile_reversal(
         return {"consumed": False, "reason": "duplicate"}
     recomputed = _window_average(session, owner)
     if recomputed is None:
-        profile = risk_repo.get_or_create(session, owner)
+        # Ventana viva vacia (la unica operacion se reverso o todo expiro):
+        # se LIMPIA el baseline (0), sin falsos positivos de `UNUSUAL_AMOUNT`.
+        profile = risk_repo.update_behavior(session, owner, avg_amount_minor=0)
     else:
         profile = risk_repo.update_behavior(session, owner, avg_amount_minor=recomputed)
     logger.info("risk perfil tras reverso user_avg=%s", int(profile.avg_amount_minor or 0))

@@ -1014,10 +1014,17 @@ eventos (`outbox`/`inbox`).
   escrituras de negocio) + wiring
   `composition.subscribe_risk_profile` (4 handlers tras el flag
   `RISK_PROFILE_ENABLED`, default `1`, para no mover el bus global en
-  pruebas). `usual_countries` congelado y `ATYPICAL_GEO` inactivo en el MVP
+  pruebas). Si la ventana viva queda vacia (unica operacion revertida o
+  todo expirado a 90 dias) se LIMPIA el baseline (`avg_amount_minor=0`,
+  mapa `{}` en vivo, feed normal y `transfer.reversed`; G96): sin baseline
+  `UNUSUAL_AMOUNT` no dispara (`avg <= 0`, sin falso positivo); ante fallo
+  tecnico de lectura NO se limpia (revierte y reintenta, D-04).
+  `usual_countries` congelado y `ATYPICAL_GEO` inactivo en el MVP
   (decision de alcance aceptada R5: sin fuente server-side IP/geo; el cliente
   no elige su pais). **No mueve dinero** ni crea `risk.alerts` (eso es `E6-T04`); E6-T03 queda `Hecho`
-  (sin migracion; la ventana configurable por admin queda diferida).
+  (sin migracion; la ventana configurable por admin queda diferida; el indice
+  `(initiator_user_id, status, created_at)` de `transactions` sigue pendiente
+  tras #27 como bloqueante para produccion, R2).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume

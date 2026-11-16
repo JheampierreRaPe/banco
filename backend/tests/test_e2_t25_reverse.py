@@ -439,7 +439,13 @@ def test_reverse_idempotent_service_replay(svc_session):
 
 
 def test_reverse_concurrent_different_keys_single_compensation():
-    """Dos reversos concurrentes (claves distintas) -> una sola compensacion."""
+    """Dos reversos concurrentes (claves distintas) -> una sola compensacion.
+
+    Determinista: la contienda ocurre dentro de `reverse_transaction`
+    (`RLock` + CAS); la segunda barrera + `commit` serializado solo ordenan
+    el `commit` sobre la conexion compartida (`StaticPool`), sin debilitar
+    la garantia (ambos `REVERSED`, un solo asiento inverso).
+    """
     from app.modules.accounts import repository as accounts_repo
     from app.modules.transactions.service import reversal as rev
 
@@ -476,6 +482,8 @@ def test_reverse_concurrent_different_keys_single_compensation():
         setup.close()
 
     gate = threading.Barrier(2, timeout=10)
+    settled = threading.Barrier(2, timeout=10)
+    commit_lock = threading.Lock()
     outcomes: dict[str, str] = {}
 
     def _worker(name: str):
@@ -483,7 +491,18 @@ def test_reverse_concurrent_different_keys_single_compensation():
         try:
             gate.wait(timeout=10)
             result = rev.reverse_transaction(session, tx_id, balance_port=_real_port())
-            session.commit()
+            # Las dos llamadas al servicio terminan (sin `SAVEPOINT` abierto)
+            # antes de cualquier `commit`: con `StaticPool` ambas sesiones
+            # comparten UNA conexion y el commit de una invalida el
+            # `SAVEPOINT` (`begin_nested`) que la otra aun tenga abierto
+            # (`no such savepoint`, flaky de suite). La contienda real sigue
+            # ocurriendo dentro de `reverse_transaction` (`RLock` + CAS por
+            # version); aqui solo se ordena el `commit` sobre la conexion
+            # compartida. La garantia no se debilita: ambos `REVERSED` y un
+            # solo asiento inverso.
+            settled.wait(timeout=10)
+            with commit_lock:
+                session.commit()
             outcomes[name] = result["transaction"].status
         except Exception as exc:  # noqa: BLE001 - se reporta como fallo del hilo
             session.rollback()

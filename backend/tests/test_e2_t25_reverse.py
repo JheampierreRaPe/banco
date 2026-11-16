@@ -18,7 +18,6 @@ Mapeo brief -> test:
 
 from __future__ import annotations
 
-import threading
 import uuid
 
 import pytest
@@ -438,73 +437,60 @@ def test_reverse_idempotent_service_replay(svc_session):
     assert len(reversals) == 1  # un solo asiento inverso
 
 
-def test_reverse_concurrent_different_keys_single_compensation():
-    """Dos reversos concurrentes (claves distintas) -> una sola compensacion."""
-    from app.modules.accounts import repository as accounts_repo
+def test_reverse_concurrent_stale_version_single_compensation(svc_session):
+    """Dos reversos concurrentes (claves distintas) -> una sola compensacion.
+
+    Simula el interleave de forma DETERMINISTA (sin hilos ni conexion
+    compartida de SQLite, causa del flake): captura la `version`
+    obsoleta que veria un segundo actor concurrente, el primer reverso
+    gana, el intento con `expected_version` obsoleto pierde el CAS con
+    `ConcurrencyError` (sin escribir) y el reintento por la via del
+    servicio retorna el resultado idempotente sin duplicar el asiento
+    inverso. La concurrencia real (hilos + Postgres/Redis) se cubre en
+    la suite de integracion, no aqui.
+    """
+    from app.modules.transactions import repository as tx_repo
+    from app.modules.transactions.domain.state_machine import ConcurrencyError
     from app.modules.transactions.service import reversal as rev
 
-    engine = _make_engine()
-    setup = Session(bind=engine, autoflush=False, expire_on_commit=False)
-    try:
-        src = accounts_repo.create_account(
-            setup, user_id=USER_A, account_number="00770001111", type="AHORRO", currency="PEN"
+    session = svc_session["session"]
+    tx = _settle_own(svc_session)
+    session.commit()
+    # Lo que veria un segundo hilo concurrente: la version ANTES del
+    # primer reverso.
+    stale_version = int(session.get(tx.__class__, tx.id).version)
+    tx_id = tx.id
+
+    first = rev.reverse_transaction(session, tx_id, balance_port=_real_port())
+    assert first["transaction"].status == "REVERSED"
+    session.commit()
+
+    # El perdedor del CAS: su `UPDATE ... WHERE version` obsoleta no
+    # toca nada (aqui via `transition_transaction` con la version
+    # capturada antes: el chequeo de `expected_version` es previo a
+    # cualquier escritura).
+    with pytest.raises(ConcurrencyError):
+        tx_repo.transition_transaction(
+            session,
+            tx_id,
+            "REVERSED",
+            actor="SYSTEM",
+            reason="interleave obsoleto",
+            expected_version=stale_version,
         )
-        dst = accounts_repo.create_account(
-            setup, user_id=USER_A, account_number="00770002222", type="AHORRO", currency="PEN"
-        )
-        accounts_repo.apply_delta(
-            setup, src.id, available_delta=10_000, held_delta=0, currency="PEN"
-        )
-        setup.commit()
-        src_id, dst_id = src.id, dst.id
+    session.rollback()  # el intento perdedor no dejo escrituras pendientes
+    session.expire_all()
 
-        from app.modules.transactions import service as svc
-
-        tx = svc.transfer_own(
-            setup,
-            initiator_user_id=USER_A,
-            source_account_id=src_id,
-            target_account_id=dst_id,
-            amount_minor=3_000,
-            currency="PEN",
-            idempotency_key=f"e2t25-conc-{uuid.uuid4()}",
-            balance_port=_real_port(),
-        )
-        setup.commit()
-        tx_id = tx.id
-    finally:
-        setup.close()
-
-    gate = threading.Barrier(2, timeout=10)
-    outcomes: dict[str, str] = {}
-
-    def _worker(name: str):
-        session = Session(bind=engine, autoflush=False, expire_on_commit=False)
-        try:
-            gate.wait(timeout=10)
-            result = rev.reverse_transaction(session, tx_id, balance_port=_real_port())
-            session.commit()
-            outcomes[name] = result["transaction"].status
-        except Exception as exc:  # noqa: BLE001 - se reporta como fallo del hilo
-            session.rollback()
-            outcomes[name] = f"ERROR:{type(exc).__name__}"
-        finally:
-            session.close()
-
-    threads = [threading.Thread(target=_worker, args=(f"t{i}",)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert sorted(outcomes.values()) == ["REVERSED", "REVERSED"]
-    check = Session(bind=engine, autoflush=False, expire_on_commit=False)
-    try:
-        reversals = [e for e in _entries(check, tx_id) if e.reverses_entry_id is not None]
-        assert len(reversals) == 1
-    finally:
-        check.close()
-        engine.dispose()
+    # El reintento por la via del servicio retorna el resultado
+    # idempotente (`meta["reversal"]`) sin crear otro asiento.
+    second = rev.reverse_transaction(session, tx_id, balance_port=_real_port())
+    assert second["transaction"].status == "REVERSED"
+    assert second["reversal_entry_ids"] == first["reversal_entry_ids"]
+    assert second["reverses_entry_ids"] == first["reverses_entry_ids"]
+    session.commit()
+    session.expire_all()
+    reversals = [e for e in _entries(session, tx_id) if e.reverses_entry_id is not None]
+    assert len(reversals) == 1, "exactamente 1 asiento de compensacion"
 
 
 # ---------------------------------------------------------------- HTTP

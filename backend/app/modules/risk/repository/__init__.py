@@ -129,19 +129,30 @@ def update_behavior(
 
     Solo toca los campos informados (`None` = conservar). Valida antes
     de escribir: un dato invalido lanza `RiskProfileValidationError` sin
-    dejar cambios. Hace `flush`, no `commit`.
+    dejar cambios. Refresca `updated_at` en cada escritura (B11, fixes
+    PR #26: tambien en el modo legado). Hace `flush`, no `commit`.
     """
+    from datetime import UTC, datetime
+
     row = get_or_create(session, user_id)
+    touched = False
     if avg_amount_minor is not None:
         row.avg_amount_minor = _coerce_nonneg_int("avg_amount_minor", avg_amount_minor)
+        touched = True
     if usual_countries is not None:
         row.usual_countries = _coerce_countries(usual_countries)
+        touched = True
     if usual_hours is not None:
         row.usual_hours = _coerce_hours(usual_hours)
+        touched = True
     if last_device_id is not None:
         row.last_device_id = _coerce_device_id(last_device_id)
+        touched = True
     if score is not None:
         row.score = _coerce_nonneg_int("score", score)
+        touched = True
+    if touched:
+        row.updated_at = datetime.now(UTC)
     session.flush()
     return row
 

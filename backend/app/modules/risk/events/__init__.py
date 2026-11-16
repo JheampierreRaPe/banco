@@ -13,12 +13,46 @@ evento/fachada (regla de oro 4). Sin PII ni secretos en logs. No mueve
 dinero (regla de oro 1): solo registra severidad, audita y notifica.
 Ante fallo se revierte y se re-lanza para que el worker aplique
 reintento con backoff (diseno E5-T05).
+
+Extension E6-T03 (HU20, fixes PR #26 + R7): el perfil de comportamiento se
+alimenta con `on_profile_transfer_settled` (monto SOLO de estados
+finales exitosos + hora/dispositivo confiable) /
+`on_profile_login_succeeded` (hora/dispositivo confiable) /
+`on_profile_auth_failed_attempt` (solo hora: un fallo es "visto" pero
+NO "confiable", no toca `last_device_id`; la severidad la sigue
+poseyendo `E2-T20`/`E6-T14`) /
+`on_profile_transfer_reversed` (recalcula el promedio sin habitos: la
+operacion revertida deja la ventana), consumidor `"risk-profile"`,
+idempotente por `processed_events`. El monto se recalcula desde la
+ventana real (promedio entero `ROUND_HALF_UP`, sin EWMA).
+`transaction.initiated` NO alimenta el perfil (A1: el monto/promedio
+se alimenta SOLO con `transfer.settled` en estado final; asi no hay
+doble conteo iniciada+liquidada ni dependencia de orden
+motor->perfil, M5). Los canales que no emiten `transfer.settled` no
+alimentan el perfil, pero SI son evaluados por el motor via
+`evaluate_pre_transaction` en el hook. El `score` lo sigue poseyendo
+`E2-T20`/`E6-T14`. `auth.login_succeeded` no existe en
+`app.core.events` (lo emite `identity`); aqui se referencia por su
+literal (identico al canonico de
+`identity.service.device_login.LOGIN_SUCCEEDED_EVENT`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+
+#: `auth.login_succeeded` (literal canonico de `identity`; sin PII).
+LOGIN_SUCCEEDED_EVENT = "auth.login_succeeded"
+
+#: `transfer.reversed` (literal canonico de
+#: `transactions.service.reversal.TRANSFER_REVERSED_EVENT`; sin PII):
+#: lo emite `transactions` por `outbox` al compensar con asiento inverso
+#: (payload sin PII: `transaction_id`, `status`, `reversal_entry_ids`,
+#: `reverses_entry_ids`). El perfil lo consume para recalcular el
+#: promedio (R7): la operacion revertida deja la ventana y el escalar
+#: almacenado quedaria obsoleto.
+TRANSFER_REVERSED_EVENT = "transfer.reversed"
 
 
 def on_auth_failed_attempt(
@@ -112,7 +146,13 @@ def on_unrecognized_operation_reported(
 
 
 __all__ = [
+    "LOGIN_SUCCEEDED_EVENT",
+    "TRANSFER_REVERSED_EVENT",
     "on_auth_failed_attempt",
+    "on_profile_auth_failed_attempt",
+    "on_profile_login_succeeded",
+    "on_profile_transfer_reversed",
+    "on_profile_transfer_settled",
     "on_transaction_initiated",
     "on_transfer_settled",
     "on_unrecognized_operation_reported",
@@ -203,3 +243,144 @@ def on_transfer_settled(
             session.close()
         except Exception:  # noqa: BLE001, S110 - limpieza best-effort
             pass
+
+
+def _run_profile_handler(
+    entry: Any,
+    handler_name: str,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Ejecuta un handler del perfil con sesion/`commit` propios (D-04).
+
+    Delega en `risk.service.handle_profile_*` (idempotentes por
+    `processed_events`, consumidor `"risk-profile"`). `commit` propio
+    si alimenta; `rollback` y re-lanza ante fallo (el worker
+    reintenta). Retorna `True` en el primer consumo, `False` ante
+    duplicado ignorado. Sin PII ni secretos en logs. No mueve dinero
+    (regla de oro 1): solo alimenta habitos del perfil.
+    """
+    from app.modules.risk import service as risk_service
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    handle = getattr(risk_service, handler_name)
+    payload = dict(entry.payload or {})
+    session = session_factory()
+    try:
+        outcome = handle(
+            session,
+            event_id=entry.id,
+            payload=payload,
+            at=getattr(entry, "created_at", None),
+        )
+        session.commit()
+        return bool(outcome.get("consumed"))
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def on_profile_transfer_settled(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `transfer.settled` (D-04, E6-T03, A1).
+
+    UNICO alimentador monetario del perfil (consumidor
+    `"risk-profile"`): solo estados finales exitosos aportan
+    monto/conteo (la ventana del perfil ya incluye la operacion, ya
+    hizo `commit`). Sin `transaction.initiated` no hay doble conteo
+    ni orden motor->perfil (M5). Sin operacion encontrada se lanza
+    `ProfileRetryableError` (M4 real): el `rollback` + relanzado de
+    D-04 deja que el publisher aplique `mark_failed` con backoff
+    (limite `PROFILE_MISSING_TX_MAX_ATTEMPTS`, luego `FAILED`).
+    """
+    from app.modules.risk import service as risk_service
+
+    if session_factory is None:
+        from app.core.db import SessionLocal as _SessionLocal
+
+        session_factory = _SessionLocal
+    payload = dict(entry.payload or {})
+    session = session_factory()
+    try:
+        outcome = risk_service.handle_profile_transaction(
+            session,
+            event_id=entry.id,
+            payload=payload,
+            source="transfer.settled",
+        )
+        session.commit()
+        return bool(outcome.get("consumed"))
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+        raise
+    finally:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001, S110 - limpieza best-effort
+            pass
+
+
+def on_profile_login_succeeded(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `auth.login_succeeded` (D-04, E6-T03).
+
+    Alimenta hora/dispositivo confiable (sin pais: el cliente no puede
+    elegir su pais, A4) via `risk.service.handle_profile_login`
+    (consumidor `"risk-profile"`).
+    """
+    return _run_profile_handler(entry, "handle_profile_login", session_factory=session_factory)
+
+
+def on_profile_auth_failed_attempt(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `auth.failed_attempt` (D-04, E6-T03, M3).
+
+    Complementa SOLO la hora via
+    `risk.service.handle_profile_failed_attempt` (consumidor
+    `"risk-profile"`): NO toca `last_device_id` (un fallo es "visto",
+    no "confiable"), `score` ni notifica (eso lo posee `E2-T20`; aqui
+    solo habitos).
+    """
+    return _run_profile_handler(
+        entry, "handle_profile_failed_attempt", session_factory=session_factory
+    )
+
+
+def on_profile_transfer_reversed(
+    entry: Any,
+    *,
+    session_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Handler del bus para `transfer.reversed` (D-04, E6-T03, R7).
+
+    Recalcula el promedio via `risk.service.handle_profile_reversal`
+    (consumidor `"risk-profile"`): la operacion revertida deja la
+    ventana y el escalar se corrige de inmediato, sin tocar habitos
+    (`usual_hours`/`usual_countries`/`last_device_id`), `score` ni
+    notificar. `commit` propio; `rollback` y re-lanza ante fallo. Sin
+    PII; no mueve dinero.
+    """
+    return _run_profile_handler(entry, "handle_profile_reversal", session_factory=session_factory)

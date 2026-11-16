@@ -398,6 +398,114 @@ def count_recent_operations(
     return int(tx_repository.count_user_transactions(session, uid, date_from=since))
 
 
+#: Estados finales que alimentan el perfil de comportamiento (E6-T03,
+#: fixes PR #26 A2): solo operaciones liquidadas aportan monto/conteo.
+#: `COMPLETED` no existe en la maquina de este repo (el equivalente es
+#: `CONCILIATED`); se lista por compatibilidad con el review. Todo lo
+#: demas (`REJECTED`, `PENDING_*`, `FAILED`, `CANCELLED`, `REVERSED`,
+#: intermedios) queda excluido.
+WINDOW_SUCCESS_STATES = frozenset({"SETTLED", "POSTED", "COMPLETED", "CONCILIATED"})
+
+
+def get_window_amount_stats(
+    session: Session,
+    user_id: uuid.UUID | str,
+    *,
+    window_days: int,
+    currency: str | None = None,
+    exclude_transaction_id: uuid.UUID | str | None = None,
+    exclude_types: tuple[str, ...] | list[str] | None = (
+        "LOAN_DISBURSEMENT",
+        "OWN_TRANSFER",
+    ),
+    now: Any | None = None,
+) -> dict[str, dict[str, int]]:
+    """Suma/conteo por moneda en la ventana (solo lectura, E6-T03 A3).
+
+    Fachada para el perfil de comportamiento (`risk.service`; D-01:
+    `risk` no importa modelos ajenos): agrega `amount_minor` y conteo
+    de las operaciones del titular con `status` exitoso (solo
+    `WINDOW_SUCCESS_STATES`: `SETTLED`/`POSTED`/`COMPLETED`/
+    `CONCILIATED`; excluye `REJECTED`, `PENDING_*`, `FAILED`,
+    `CANCELLED` y cualquier otro) y `created_at` dentro de los ultimos
+    `window_days` dias. `currency` acota a una moneda (`None` = todas);
+    `exclude_transaction_id` excluye la operacion evaluada (el motor
+    compara contra el historial SIN la operacion en curso).
+    `exclude_types` excluye tipos que no son gasto del titular
+    (default `("LOAN_DISBURSEMENT", "OWN_TRANSFER")`: el desembolso
+    acredita capital y fijaria el promedio suprimiendo
+    `UNUSUAL_AMOUNT`; una transferencia entre cuentas propias tampoco
+    es gasto —mueve fondos del titular sin egreso— y distorsionaria el
+    promedio; la cuota `LOAN_INSTALLMENT` e `INTERBANK_TRANSFER` SI
+    cuentan como gasto).
+    `exclude_types=()` desactiva el filtro. Retorna
+    `{moneda: {"sum_minor": int, "count": int}}` (vacio si no hay
+    historial). Solo lectura (sin `flush`/`commit`); `user_id` o
+    `window_days` invalidos lanzan `ValueError`.
+    """
+
+    from datetime import UTC, datetime, timedelta
+
+    try:
+        uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"user_id debe ser UUID, recibido: {user_id!r}") from exc
+    try:
+        days = int(window_days)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"window_days debe ser entero, recibido: {window_days!r}") from exc
+    if days < 1:
+        raise ValueError(f"window_days debe ser >= 1, recibido: {window_days!r}")
+    moment = now if isinstance(now, datetime) else datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    since = moment - timedelta(days=days)
+    stmt = (
+        sa.select(
+            Transaction.currency,
+            sa.func.sum(Transaction.amount_minor),
+            sa.func.count(),
+        )
+        .where(
+            Transaction.initiator_user_id == uid,
+            Transaction.status.in_(sorted(WINDOW_SUCCESS_STATES)),
+            Transaction.created_at >= since,
+        )
+        .group_by(Transaction.currency)
+    )
+    if currency is not None:
+        if not isinstance(currency, str) or not currency.strip():
+            raise ValueError(f"currency invalida: {currency!r}")
+        stmt = stmt.where(Transaction.currency == currency.strip().upper())
+    excluded_types = (
+        ("LOAN_DISBURSEMENT", "OWN_TRANSFER") if exclude_types is None else tuple(exclude_types)
+    )
+    cleaned_types = [t.strip().upper() for t in excluded_types if isinstance(t, str) and t.strip()]
+    if cleaned_types:
+        stmt = stmt.where(Transaction.type.notin_(cleaned_types))
+    if exclude_transaction_id is not None:
+        try:
+            excluded = (
+                exclude_transaction_id
+                if isinstance(exclude_transaction_id, uuid.UUID)
+                else uuid.UUID(str(exclude_transaction_id))
+            )
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"exclude_transaction_id debe ser UUID, recibido: {exclude_transaction_id!r}"
+            ) from exc
+        stmt = stmt.where(Transaction.id != excluded)
+    stats: dict[str, dict[str, int]] = {}
+    for code, total, count in session.execute(stmt).all():
+        if not isinstance(code, str) or not code.strip():
+            continue
+        stats[code.strip().upper()] = {
+            "sum_minor": int(total or 0),
+            "count": int(count or 0),
+        }
+    return stats
+
+
 def _resolve_risk_device_id(
     device_id: str | None, request_metadata: dict[str, Any] | None
 ) -> str | None:

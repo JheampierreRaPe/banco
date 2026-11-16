@@ -408,10 +408,11 @@ eventos (`outbox`/`inbox`).
   de `VELOCITY` para `risk`, D-01), `find_transaction_by_id` (lectura puntual
   para `risk`/jobs) y `get_window_amount_stats(session, user_id, *,
   window_days, currency=None, exclude_transaction_id=None,
-  exclude_types=("LOAN_DISBURSEMENT",))` (E6-T03 fixes PR
+  exclude_types=("LOAN_DISBURSEMENT", "OWN_TRANSFER"))` (E6-T03 fixes PR
   #26 + residuales: suma/conteo por moneda de estados exitosos en ventana, sin
-  desembolsos (capital, no gasto); para el perfil
-  y el motor; D-01, solo lectura).
+  desembolsos (capital, no gasto) ni transferencias entre cuentas propias
+  (`OWN_TRANSFER` mueve fondos entre cuentas del mismo titular: no es gasto);
+  para el perfil y el motor; D-01, solo lectura).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.

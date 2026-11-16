@@ -116,13 +116,17 @@ def _to_response(row: RiskRule) -> risk_schemas.RuleResponse:
 def _to_profile_response(
     row, *, by_currency: dict[str, int] | None = None, avg_amount_minor: int | None = None
 ) -> risk_schemas.ProfileResponse:
+    """Arma la vista del perfil solo con calculo vivo (fixes PR #26).
+
+    `avg_amount_minor=None` (ventana viva vacia o lectura no
+    disponible) se responde `0` —nunca el escalar almacenado, que pudo
+    quedar obsoleto si la ventana expiro sin evento nuevo (baseline
+    fantasma); el motor tampoco dispara `UNUSUAL_AMOUNT` con `avg <=
+    0` (se prefiere falso negativo a falso positivo).
+    """
     return risk_schemas.ProfileResponse(
         user_id=row.user_id,
-        avg_amount_minor=(
-            int(avg_amount_minor)
-            if avg_amount_minor is not None
-            else int(row.avg_amount_minor or 0)
-        ),
+        avg_amount_minor=int(avg_amount_minor) if avg_amount_minor is not None else 0,
         avg_amount_by_currency=dict(by_currency or {}),
         usual_countries=list(row.usual_countries or []),
         usual_hours=list(row.usual_hours or []),
@@ -251,9 +255,10 @@ def get_risk_profile(
     documentado como agregado multi-moneda) y `avg_amount_by_currency`
     (mapa `{moneda: promedio}`) derivan AMBOS del mismo origen en vivo
     (R6): una sola lectura a la ventana real via
-    `risk.service.profile_averages` (sin historial o ante fallo de
-    lectura, el escalar degrada al promedio almacenado y el mapa a
-    `{}`); `usual_countries`/`usual_hours` (habitos conocidos; `[]` si
+    `risk.service.profile_averages` (sin historial vivo o ante fallo de
+    lectura, el escalar se responde `0` y el mapa `{}` —nunca el
+    escalar almacenado, que pudo quedar obsoleto si la ventana expiro
+    sin evento nuevo (baseline fantasma; se prefiere falso negativo); `usual_countries`/`usual_hours` (habitos conocidos; `[]` si
     no hay), `last_device_id` (identificador pseudonimo del dispositivo,
     B7), `score`, `updated_at`. `user_id` malformado o perfil
     inexistente -> `404 NOT_FOUND` (neutro, sin oraculo). Solo lectura:

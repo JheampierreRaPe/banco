@@ -1393,7 +1393,10 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   documentado como agregado multi-moneda); `avg_amount_by_currency` =
 >   mapa `{moneda: promedio}` de la ventana real (`{}` sin historial);
 >   ambos derivan de la MISMA lectura en vivo (R6: coherentes aun con
->   outbox retrasado; sin historial el escalar degrada al almacenado); `usual_*` como listas (`[]`, nunca `null`);
+>   outbox retrasado). Sin historial vivo `avg_amount_minor=0` y
+>   `avg_amount_by_currency={}`: NO se degrada al escalar almacenado
+>   (baseline fantasma si la ventana expiro sin evento nuevo; fixes PR
+>   #26: se prefiere falso negativo a falso positivo). `usual_*` como listas (`[]`, nunca `null`);
 >   `last_device_id` = identificador pseudonimo del dispositivo;
 >   `score` lo poseen `E2-T20`/`E6-T14`; `usual_countries` congelado en el
 >   MVP —`ATYPICAL_GEO` inactivo sin fuente server-side—; ventana de 90
@@ -1401,6 +1404,11 @@ Detalle del flujo KYC (`identity`, E1-T29):
 > - La lectura se audita (`risk.profile.viewed`, best-effort, sin PII)
 >   y no hace escrituras de negocio: no crea ni actualiza el perfil (la
 >   unica escritura posible es la auditoria best-effort).
+> - El motor (`UNUSUAL_AMOUNT`) usa `avg=0` (sin baseline) cuando no hay
+>   historial vivo para la moneda: nunca compara contra el escalar
+>   almacenado y `avg <= 0` no hace match (se prefiere falso negativo a
+>   falso positivo). La expiracion de la ventana sin evento nuevo tampoco
+>   conserva el baseline viejo en lectura.
 > - Errores: `401 NOT_AUTHENTICATED`; `403 NOT_AUTHORIZED` (sin rol);
 >   `404 NOT_FOUND` (perfil inexistente o `user_id` invalido, neutro).
 >   Solo lectura (no crea el perfil), no mueve dinero ni emite eventos.

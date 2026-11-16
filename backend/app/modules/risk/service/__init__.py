@@ -192,8 +192,12 @@ def profile_averages(
     `ROUND_HALF_UP`) derivan de los mismos `stats`, asi el GET nunca
     muestra un escalar incoherente con el mapa (outbox retrasado
     incluido: ambos reflejan la ventana real, no el escalar
-    almacenado). `(None, {})` sin historial o ante fallo
-    tecnico/UUID invalido (el llamante degrada al agregado almacenado).
+    almacenado). `(None, {})` sin historial vivo o ante fallo
+    tecnico/UUID invalido: el llamante NO degrada al agregado
+    almacenado (baseline fantasma: la ventana pudo expirar sin evento
+    nuevo que limpie el escalar; se prefiere falso negativo a falso
+    positivo: el GET responde `0`/`{}` y el motor no dispara
+    `UNUSUAL_AMOUNT` con `avg <= 0`).
     `flush` sin `commit`.
     """
     try:
@@ -226,8 +230,9 @@ def profile_average_by_currency(session: Session, user_id: uuid.UUID | str) -> d
     """Promedio por moneda del perfil para lectura (M6, solo lectura).
 
     Recalcula best-effort desde la ventana real con redondeo entero
-    `ROUND_HALF_UP`; `{}` sin historial o ante fallo tecnico (el
-    endpoint degrada al agregado almacenado). Nunca lanza por forma
+    `ROUND_HALF_UP`; `{}` sin historial vivo o ante fallo tecnico (el
+    endpoint responde `0`/`{}`, sin degradar al almacenado: baseline
+    fantasma). Nunca lanza por forma
     del `user_id` (`{}` ante UUID invalido); `flush` sin `commit`.
     """
     try:
@@ -990,9 +995,11 @@ def evaluate_pre_transaction(
     `UNUSUAL_AMOUNT` compara contra el promedio **de la misma moneda**
     (M6, fixes PR #26): se recalcula best-effort desde la ventana real
     (`transactions.get_window_amount_stats`, excluyendo la operacion
-    evaluada via `exclude_transaction_id`); sin historial en esa
-    moneda degrada al promedio almacenado del perfil; sin base de
-    comparacion la regla no hace match. El `country` del contexto solo
+    evaluada via `exclude_transaction_id`); sin historial vivo en esa
+    moneda se usa `avg=0` (sin baseline, nunca el escalar almacenado:
+    pudo quedar obsoleto si la ventana expiro sin evento nuevo; se
+    prefiere falso negativo a falso positivo) y la regla no hace match
+    (`avg <= 0` = sin base de comparacion). El `country` del contexto solo
     se informa si el llamante lo aporta desde una fuente server-side:
     los consumidores del motor NO reenvian `metadata.country` del
     cliente (A4) y `ATYPICAL_GEO` queda inactivo en el MVP hasta tener
@@ -1056,8 +1063,10 @@ def _currency_average_best_effort(
     Lee `transactions.get_window_amount_stats` acotado a `currency`
     con redondeo entero `ROUND_HALF_UP`, excluyendo la operacion
     evaluada (`exclude_transaction_id`: el motor compara contra el
-    historial SIN la operacion en curso). Un fallo tecnico retorna
-    `None` (el motor degrada al promedio almacenado del perfil).
+    historial SIN la operacion en curso). `None` sin historial vivo
+    en esa moneda o ante fallo tecnico: el motor usa `avg=0` (sin
+    baseline, nunca el escalar almacenado), asi `UNUSUAL_AMOUNT` no
+    dispara (`avg <= 0` = no match).
     """
     try:
         from app.modules.transactions.service import (
@@ -1082,15 +1091,29 @@ def _currency_average_best_effort(
 
 
 def _engine_profile_for_currency(profile: Any | None, currency_avg: int | None) -> Any:
-    """Vista del perfil para el motor con base por moneda (M6).
+    """Vista del perfil para el motor con base por moneda (M6, fixes PR #26).
 
     Con promedio recalculado para la moneda se usa como base de
     comparacion de `UNUSUAL_AMOUNT` (conservando habitos/dispositivo
-    del perfil almacenado); sin el, rige el perfil tal cual (el motor
-    ya degrada sin base: `avg <= 0`/ausente -> no match).
+    del perfil almacenado); sin el (`None`: ventana viva vacia para
+    esa moneda o fallo tecnico de lectura) se usa `avg=0` (sin
+    baseline) en vez del escalar almacenado —este pudo quedar obsoleto
+    si toda la ventana expiro sin evento nuevo que lo limpie (baseline
+    fantasma) y dispararia un falso positivo; se prefiere falso
+    negativo (el motor ya degrada sin base: `avg <= 0` -> no match).
+    Sin perfil (`None`) rige el perfil tal cual (`None`: sin habito
+    conocido ninguna regla con base compara).
     """
-    if currency_avg is None or profile is None:
+    if profile is None:
         return profile
+    if currency_avg is None:
+        countries = getattr(profile, "usual_countries", None)
+        return {
+            "avg_amount_minor": 0,
+            "usual_countries": list(countries) if isinstance(countries, (list, tuple)) else [],
+            "usual_hours": list(getattr(profile, "usual_hours", None) or []),
+            "last_device_id": getattr(profile, "last_device_id", None),
+        }
     countries = getattr(profile, "usual_countries", None)
     return {
         "avg_amount_minor": int(currency_avg),
@@ -1417,7 +1440,7 @@ def _window_average_by_currency(session: Session, user_id: uuid.UUID) -> dict[st
 
     Redondeo entero `ROUND_HALF_UP` por moneda; monedas sin conteo no
     aparecen. Nunca lanza ante fallo tecnico: retorna `{}` (el
-    llamante degrada al promedio almacenado).
+    llamante responde `0`/`{}`, sin degradar al almacenado).
     """
     try:
         stats = _window_amount_stats(session, user_id)

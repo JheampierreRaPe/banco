@@ -876,6 +876,75 @@ def test_empty_baseline_does_not_trigger_unusual_amount(session: Session):
     assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "sin baseline no dispara"
 
 
+def test_stale_stored_baseline_ignored_without_live_window(full_client, session: Session):
+    """Baseline fantasma en LECTURA (fixes PR #26, MEDIO): el escalar
+    almacenado NO es fallback cuando la ventana viva esta vacia.
+
+    `avg=10000` almacenado con (a) ninguna operacion y (b) la unica
+    operacion fuera de la ventana de 90 dias, sin evento nuevo que
+    limpie el escalar: el GET responde `0`/`{}` y
+    `evaluate_pre_transaction` con `500_000` NO dispara
+    `UNUSUAL_AMOUNT` (se prefiere falso negativo a falso positivo).
+    Sin el fix, ambas lecturas caian al almacenado (`10000` en el GET
+    y match en el motor). El bloque (c) es el control positivo: con
+    historial vivo el GET y el motor usan el calculo vivo.
+    """
+    from app.modules.risk import service as risk_service
+
+    _seed_conservative_rules(session)
+    risk_service.update_behavior(session, USER_A, avg_amount_minor=10_000)
+    session.commit()
+    assert _profile(session).avg_amount_minor == 10_000
+    headers = _bearer(uuid.uuid4(), ["fraud_analyst"])
+
+    # (a) Sin operaciones: ventana viva vacia, sin evento nuevo.
+    assert risk_service.profile_averages(session, USER_A) == (None, {})
+    resp = full_client.get(f"/api/v1/risk/profiles/{USER_A}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["avg_amount_minor"] == 0
+    assert resp.json()["data"]["avg_amount_by_currency"] == {}
+    decision = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=500_000, currency="PEN"
+    )
+    assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "(a) sin ventana viva no dispara"
+
+    # (b) La unica operacion expiro (fuera de la ventana de 90 dias).
+    tx = _transfer(session, 10_000)
+    session.commit()
+    tx.created_at = datetime.now(UTC) - timedelta(days=100)
+    session.commit()
+    assert risk_service.profile_averages(session, USER_A) == (None, {}), "todo expiro"
+    resp = full_client.get(f"/api/v1/risk/profiles/{USER_A}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["avg_amount_minor"] == 0, "(b) el GET no expone el fantasma"
+    assert resp.json()["data"]["avg_amount_by_currency"] == {}
+    decision = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=500_000, currency="PEN"
+    )
+    assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "(b) ventana expirada no dispara"
+
+    # (c) Control positivo: con historial vivo el calculo vivo rige
+    # (la operacion expirada de (b) sigue fuera de la ventana: no cuenta).
+    live = _transfer(session, 10_000)
+    session.commit()
+    risk_service.handle_profile_transaction(
+        session, event_id=uuid.uuid4(), payload={"transaction_id": str(live.id)}
+    )
+    session.commit()
+    resp = full_client.get(f"/api/v1/risk/profiles/{USER_A}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["avg_amount_minor"] == 10_000
+    assert resp.json()["data"]["avg_amount_by_currency"] == {"PEN": 10_000}
+    spike = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=500_000, currency="PEN"
+    )
+    assert "UNUSUAL_AMOUNT" in spike.matched_rules, "(c) 500k > 3x10k vivo si dispara"
+    calm = risk_service.evaluate_pre_transaction(
+        session, user_id=USER_A, amount_minor=15_000, currency="PEN"
+    )
+    assert "UNUSUAL_AMOUNT" not in calm.matched_rules, "(c) 15k < 3x10k no dispara"
+
+
 def test_window_read_failure_preserves_baseline_and_reraises(session: Session, monkeypatch, caplog):
     """Fallo tecnico de `_window_average` (dictamen PR #26): el baseline NO
     se limpia (se conserva el valor previo), se registra el aviso y el
@@ -1420,8 +1489,12 @@ def test_endpoint_returns_minimum_profile_without_pii(profile_client, profile_db
         "updated_at",
     }
     assert data["user_id"] == str(holder)
-    assert data["avg_amount_minor"] == 25_000
-    assert data["avg_amount_by_currency"] == {}, "sin tabla de tx: degrada a {}"
+    # Fixes PR #26 (baseline fantasma): sin ventana viva (aqui ni hay
+    # tabla de tx) el GET responde `0`, nunca el escalar almacenado
+    # (`25_000`), que pudo quedar obsoleto si la ventana expiro sin
+    # evento nuevo. Se prefiere falso negativo a falso positivo.
+    assert data["avg_amount_minor"] == 0
+    assert data["avg_amount_by_currency"] == {}, "sin ventana viva: mapa vacio"
     assert data["usual_countries"] == ["PE", "CL"]
     assert data["usual_hours"] == [8, 20]
     assert data["last_device_id"] == DEVICE_A

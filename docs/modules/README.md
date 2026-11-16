@@ -968,7 +968,9 @@ eventos (`outbox`/`inbox`).
   operacion en curso** via la fachada de solo lectura
   `transactions.count_recent_operations`; `UNUSUAL_AMOUNT` compara contra el
   promedio **de la misma moneda** (M6: ventana real por moneda excluyendo la
-  operacion evaluada, degrada al perfil almacenado); el motor NO recibe
+  operacion evaluada; sin historial vivo para la moneda usa `avg=0` —sin
+  baseline, nunca el escalar almacenado, fixes PR #26— y `avg <= 0` no hace
+  match); el motor NO recibe
   `metadata.country` del cliente (A4: `ATYPICAL_GEO` inactivo en el MVP);
   `< 1 s`; fail-open documentado ante fallo tecnico —`risk` nunca bloquea a
   ciegas—). `transactions` la invoca en
@@ -1010,15 +1012,19 @@ eventos (`outbox`/`inbox`).
   (`FAILED` tras 5 intentos))
   + `GET /api/v1/risk/profiles/{user_id}` (rol fraude, solo lectura sin
   PII: promedio agregado + `avg_amount_by_currency` del mismo origen en
-  vivo (R6), listas `[]` nunca `null`, `user_id` UUID; `404` si inexistente
+  vivo (R6); sin historial vivo responde `0`/`{}`, nunca el escalar
+  almacenado —baseline fantasma, fixes PR #26—; listas `[]` nunca `null`,
+  `user_id` UUID; `404` si inexistente
   o `user_id` invalido; auditado `risk.profile.viewed` best-effort, sin
   escrituras de negocio) + wiring
   `composition.subscribe_risk_profile` (4 handlers tras el flag
   `RISK_PROFILE_ENABLED`, default `1`, para no mover el bus global en
   pruebas). Si la ventana viva queda vacia (unica operacion revertida o
   todo expirado a 90 dias) se LIMPIA el baseline (`avg_amount_minor=0`,
-  mapa `{}` en vivo, feed normal y `transfer.reversed`; G96): sin baseline
-  `UNUSUAL_AMOUNT` no dispara (`avg <= 0`, sin falso positivo); ante fallo
+  mapa `{}` en vivo, feed normal y `transfer.reversed`; G96) y la
+  LECTURA tampoco degrada al escalar: el GET responde `0`/`{}` y el motor
+  usa `avg=0` (sin baseline), de modo que `UNUSUAL_AMOUNT` no dispara
+  (`avg <= 0`, sin falso positivo); ante fallo
   tecnico de lectura NO se limpia (revierte y reintenta, D-04).
   `usual_countries` congelado y `ATYPICAL_GEO` inactivo en el MVP
   (decision de alcance aceptada R5: sin fuente server-side IP/geo; el cliente

@@ -65,13 +65,15 @@ class ProfileResponse(BaseModel):
     nombre/documento/cuenta): `avg_amount_minor` (promedio agregado de
     la ventana, compatibilidad: agregado multi-moneda documentado;
     R6: el GET lo recalcula en vivo desde el mismo origen que el mapa
-    y degrada al almacenado solo sin historial), `avg_amount_by_currency` (mapa `{moneda: promedio}` de la ventana,
+    y responde `0` sin historial vivo, nunca el almacenado), `avg_amount_by_currency` (mapa `{moneda: promedio}` de la ventana,
     redondeo entero; `{}` sin historial), `usual_countries`/`usual_hours`
     (habitos conocidos; `usual_countries` congelado en el MVP —`ATYPICAL_GEO`
     inactivo sin fuente server-side—, `[]` si no hay), ultimo
     dispositivo confiable (`last_device_id`: identificador pseudonimo
     del dispositivo, sin titular asociado), `score` y `updated_at`.
-    Listas vacias como `[]`, nunca `null` (B8).
+    Listas vacias como `[]`, nunca `null` (B8). Sin historial vivo en
+    la ventana el promedio se responde `0` (nunca el almacenado:
+    baseline fantasma, fixes PR #26).
     """
 
     user_id: UUID

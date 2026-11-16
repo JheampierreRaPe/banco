@@ -180,6 +180,20 @@ def _transfer(session: Session, amount_minor: int, **kwargs):
     return tx_service.transfer_third_party(session, **params)
 
 
+def _seed_live_baseline(session: Session, amount_minor: int = 10_000):
+    """Baseline VIVO para `UNUSUAL_AMOUNT` (fixes PR #26).
+
+    El motor solo compara contra la ventana real (nunca contra el
+    escalar almacenado): una transferencia liquidada que alimenta la
+    ventana. Se liquida limpia (ventana vacia al crearla -> ALLOW sin
+    auditoria).
+    """
+    tx = _transfer(session, amount_minor)
+    session.commit()
+    assert tx.status == "SETTLED"
+    return tx
+
+
 def _balances(session: Session):
     from app.modules.accounts.models import AccountBalance
 
@@ -231,6 +245,7 @@ def test_facade_block_unusual_amount(session: Session):
     _seed_conservative_rules(session)
     _set_profile(session, avg_amount_minor=10_000)
     _set_rule_action(session, "UNUSUAL_AMOUNT", "BLOCK")
+    _seed_live_baseline(session, amount_minor=10_000)  # el motor compara contra la ventana viva
     decision = risk_service.evaluate_pre_transaction(
         session, user_id=USER_A, amount_minor=50_000, currency="PEN"
     )
@@ -244,6 +259,7 @@ def test_facade_rereads_rules_without_restart(session: Session):
 
     _seed_conservative_rules(session)
     _set_profile(session, avg_amount_minor=10_000)
+    _seed_live_baseline(session, amount_minor=10_000)  # el motor compara contra la ventana viva
     first = risk_service.evaluate_pre_transaction(
         session, user_id=USER_A, amount_minor=50_000, currency="PEN"
     )
@@ -283,7 +299,9 @@ def test_hook_block_rejects_without_moving_money(session: Session):
     _seed_conservative_rules(session)
     _set_profile(session, avg_amount_minor=10_000)
     _set_rule_action(session, "UNUSUAL_AMOUNT", "BLOCK")
+    _seed_live_baseline(session, amount_minor=10_000)  # ventana viva (liquida limpia)
     before_balances = _balances(session)
+    before_entries = _journal_count(session)
 
     tx = _transfer(session, 50_000)
     session.commit()
@@ -293,7 +311,7 @@ def test_hook_block_rejects_without_moving_money(session: Session):
     assert isinstance(tx.meta, dict) and tx.meta.get("failure_code") == "RISK_BLOCKED"
     assert tx.risk_level == "HIGH" and int(tx.risk_score or 0) == 15
     assert _balances(session) == before_balances  # saldos intactos
-    assert _journal_count(session) == 0  # sin asientos
+    assert _journal_count(session) == before_entries  # el rechazo no crea asientos
     audits = _assessments(session)
     assert len(audits) == 1 and (audits[0].after_json or {}).get("action") == "BLOCK"
 
@@ -445,9 +463,13 @@ def _consume_settled(session: Session, tx_id, *, event_id=None):
 
 def test_consumer_initiated_replay_does_not_duplicate(session: Session):
     _seed_conservative_rules(session)
-    tx = _transfer(session, 50_000)  # sin perfil: ALLOW limpio, sin auditoria
+    tx = _transfer(session, 50_000)  # sin baseline vivo: ALLOW limpio, sin auditoria
     session.commit()
     assert tx.status == "SETTLED"
+    # Ventana viva para `UNUSUAL_AMOUNT` (fixes PR #26: el motor ya no
+    # usa el escalar almacenado). Se siembra DESPUES: su propio hook
+    # ve ventana `{50_000}` (avg 50k) y liquida limpia (ALLOW).
+    _seed_live_baseline(session, amount_minor=1_000)
     _set_profile(session, avg_amount_minor=1_000)
     _set_rule_action(session, "UNUSUAL_AMOUNT", "BLOCK")
 
@@ -464,9 +486,12 @@ def test_consumer_initiated_replay_does_not_duplicate(session: Session):
 
 def test_consumer_settled_replay_does_not_duplicate(session: Session):
     _seed_conservative_rules(session)
-    tx = _transfer(session, 50_000)  # sin perfil: ALLOW limpio, sin auditoria
+    tx = _transfer(session, 50_000)  # sin baseline vivo: ALLOW limpio, sin auditoria
     session.commit()
     assert tx.status == "SETTLED"
+    # Ventana viva para `UNUSUAL_AMOUNT` (fixes PR #26): se siembra
+    # DESPUES para que liquide limpia contra la ventana `{50_000}`.
+    _seed_live_baseline(session, amount_minor=1_000)
     _set_profile(session, avg_amount_minor=1_000)
     _set_rule_action(session, "UNUSUAL_AMOUNT", "BLOCK")
 
@@ -519,9 +544,12 @@ def test_consumer_failure_rolls_back_and_reraises(session: Session, monkeypatch)
     import app.modules.audit.service as audit_service
 
     _seed_conservative_rules(session)
-    tx = _transfer(session, 50_000)  # sin perfil: ALLOW limpio, sin auditoria
+    tx = _transfer(session, 50_000)  # sin baseline vivo: ALLOW limpio, sin auditoria
     session.commit()
     assert tx.status == "SETTLED"
+    # Ventana viva para `UNUSUAL_AMOUNT` (fixes PR #26): se siembra
+    # DESPUES para que liquide limpia contra la ventana `{50_000}`.
+    _seed_live_baseline(session, amount_minor=1_000)
     _set_profile(session, avg_amount_minor=1_000)
     _set_rule_action(session, "UNUSUAL_AMOUNT", "BLOCK")
 

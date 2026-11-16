@@ -14,7 +14,9 @@
   `test_http_risk_block_reports_risk_blocked` fuerza una regla
   `UNUSUAL_AMOUNT=BLOCK` y hace `POST /transfers/third-party` a nivel API:
   verifica `201` + `data.status=REJECTED` +
-  `data.failure_code=RISK_BLOCKED` sin mover saldos ni crear asientos.
+  `data.failure_code=RISK_BLOCKED` sin mover saldos ni crear asientos
+ nuevos (tras una transferencia semilla de 10_000 que fija la ventana
+ viva: el motor ya no usa el escalar almacenado, fixes PR #26).
   Falla sin el fix (`INSUFFICIENT_FUNDS`), pasa con el.
 
 Sobre SQLite en memoria + schemas ATTACH, sin red, sin `float`, sin PII:
@@ -231,7 +233,26 @@ def test_http_risk_block_reports_risk_blocked(http_client, svc_session):
     risk_service.update_rule(session, "UNUSUAL_AMOUNT", actor=USER_A, action="BLOCK")
     session.commit()
 
+    # Baseline VIVO (fixes PR #26): el motor solo compara contra la
+    # ventana real, nunca contra el escalar almacenado. La primera
+    # transferencia liquida limpia (ventana vacia -> ALLOW).
+    seed = http_client.post(
+        "/api/v1/transfers/third-party",
+        json={
+            "source_account_id": str(a1),
+            "target_account_id": str(b1),
+            "amount_minor": 10_000,
+            "currency": "PEN",
+        },
+        headers={"Idempotency-Key": f"pr24-risk-seed-{uuid.uuid4()}"},
+    )
+    assert seed.status_code == 201, seed.text
+    assert seed.json()["data"]["status"] == "SETTLED"
+
     before_a1, before_b1 = _avail(session, a1), _avail(session, b1)
+    from app.modules.ledger.models import JournalEntry
+
+    before_entries = session.scalar(sa.select(sa.func.count()).select_from(JournalEntry))
 
     body = {
         "source_account_id": str(a1),
@@ -252,6 +273,4 @@ def test_http_risk_block_reports_risk_blocked(http_client, svc_session):
     session.expire_all()
     assert _avail(session, a1) == before_a1  # saldos intactos
     assert _avail(session, b1) == before_b1
-    from app.modules.ledger.models import JournalEntry
-
-    assert session.scalar(sa.select(sa.func.count()).select_from(JournalEntry)) == 0
+    assert session.scalar(sa.select(sa.func.count()).select_from(JournalEntry)) == before_entries

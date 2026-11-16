@@ -876,10 +876,13 @@ def test_empty_baseline_does_not_trigger_unusual_amount(session: Session):
     assert "UNUSUAL_AMOUNT" not in decision.matched_rules, "sin baseline no dispara"
 
 
-def test_window_read_failure_preserves_baseline_and_retries(session: Session, monkeypatch):
+def test_window_read_failure_preserves_baseline_and_reraises(session: Session, monkeypatch, caplog):
     """Fallo tecnico de `_window_average` (dictamen PR #26): el baseline NO
-    se limpia (se conserva el valor previo) y el handler revierte/relanza
-    (D-04). Cubre el feed normal y `transfer.reversed`."""
+    se limpia (se conserva el valor previo), se registra el aviso y el
+    handler revierte/relanza (D-04). Cubre el feed normal y
+    `transfer.reversed`."""
+    import logging
+
     from app.modules.risk import service as risk_service
     from app.modules.shared import repository as shared_repo
 
@@ -896,12 +899,18 @@ def test_window_read_failure_preserves_baseline_and_retries(session: Session, mo
 
     monkeypatch.setattr(risk_service, "_window_average", _boom)
 
-    feed_event = uuid.uuid4()
-    with pytest.raises(RuntimeError):
-        risk_service.handle_profile_transaction(
-            session, event_id=feed_event, payload={"transaction_id": str(tx.id)}
-        )
+    with caplog.at_level(logging.WARNING, logger="app.modules.risk.service"):
+        feed_event = uuid.uuid4()
+        with pytest.raises(RuntimeError):
+            risk_service.handle_profile_transaction(
+                session, event_id=feed_event, payload={"transaction_id": str(tx.id)}
+            )
     session.rollback()
+    assert any(
+        r.levelno == logging.WARNING
+        and r.getMessage() == "risk ventana no disponible: se conserva el baseline"
+        for r in caplog.records
+    ), "el feed normal registra el aviso antes de relanzar"
     # `revierte`: tras el rollback el baseline sigue intacto (no se limpio
     # a 0). `relanza`: la excepcion llego al llamante D-04, que aplica
     # `mark_failed` con backoff (el no-claim tras rollback solo rige en
@@ -912,14 +921,21 @@ def test_window_read_failure_preserves_baseline_and_retries(session: Session, mo
         shared_repo.is_processed(session, event_id=feed_event, consumer="risk-profile") is True
     ), "el claim previo al fallo queda registrado (quirk SQLite G94; en Postgres revierte)"
 
+    caplog.clear()
     tx.status = "REVERSED"
     session.commit()
-    reversal_event = uuid.uuid4()
-    with pytest.raises(RuntimeError):
-        risk_service.handle_profile_reversal(
-            session, event_id=reversal_event, payload={"transaction_id": str(tx.id)}
-        )
+    with caplog.at_level(logging.WARNING, logger="app.modules.risk.service"):
+        reversal_event = uuid.uuid4()
+        with pytest.raises(RuntimeError):
+            risk_service.handle_profile_reversal(
+                session, event_id=reversal_event, payload={"transaction_id": str(tx.id)}
+            )
     session.rollback()
+    assert any(
+        r.levelno == logging.WARNING
+        and r.getMessage() == "risk ventana no disponible tras reverso: se conserva el baseline"
+        for r in caplog.records
+    ), "el reverso registra su aviso antes de relanzar"
     assert _profile(session).avg_amount_minor == 10_000, "el reverso tampoco limpia ante fallo"
     assert (
         shared_repo.is_processed(session, event_id=reversal_event, consumer="risk-profile") is True

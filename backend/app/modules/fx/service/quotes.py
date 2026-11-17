@@ -7,13 +7,24 @@
   dinero (solo inserta la fila de tasa).
 - `create_quote(session, user_id, *, base, quote,
   source_amount_minor, spread=None)`: valida monedas (ISO-4217),
-  monto `> 0` y `base != quote`; obtiene la tasa; aplica `spread`
-  (`E7-T10` lo hara dinamico; default `0` en este brief); calcula
-  `target_amount_minor` con `fx.domain.target_for` (`Decimal` exacto
-  y redondeo `ROUND_HALF_UP` al centavo, supuesto aprobado por el
-  orquestador); fija `expires_at = now(UTC) + fx.quote_ttl_seconds`
-  (default `30`, `config.parameters`, regla de oro 6) y persiste
-  `fx_quotes` en `ACTIVE`. Hace `flush`, no `commit`.
+  monto `> 0` y `base != quote`; obtiene la tasa; con `spread=None`
+  (camino E7-T10) resuelve el `bps` por volumen
+  (`fx.domain.spread.spread_bps_for` sobre `fx.spread_tiers_json` de
+  `config.parameters`, best-effort con fallback al default
+  `fx.spread_bps_default`) y aplica `apply_spread` a la tasa
+  (con `spread` explicito rige el legado E7-T09: incremento absoluto
+  sobre la tasa); calcula `target_amount_minor` con
+  `fx.domain.target_for` (`Decimal` exacto y redondeo `ROUND_HALF_UP`
+  al centavo, supuesto aprobado por el orquestador); fija
+  `expires_at = now(UTC) + fx.quote_ttl_seconds` (default `30`,
+  `config.parameters`, regla de oro 6) y persiste `fx_quotes` en
+  `ACTIVE` (tasa efectiva en `rate`, porcentaje en `spread`).
+  Hace `flush`, no `commit`.
+- `preview_spread(session, *, base, quote, amount_minor)`: vista
+  previa de solo lectura (E7-T10, HU25) para que la UI muestre el
+  spread antes de cotizar (`{base, quote, amount_minor, spread_bps,
+  rate, effective_rate}`); no persiste nada (ni tasa ni cotizacion)
+  y no mueve dinero.
 - `get_quote(session, user_id, quote_id)`: devuelve la cotizacion del
   titular; si `now >= expires_at` y sigue `ACTIVE` la marca `EXPIRED`
   (expiracion on-read, el backend es la autoridad de la vigencia) y
@@ -141,6 +152,27 @@ def _quote_ttl_seconds(session: Session) -> int:
     return get_int_parameter(session, FX_QUOTE_TTL_SECONDS_KEY, DEFAULT_FX_QUOTE_TTL_SECONDS, 1)
 
 
+def _dynamic_spread(session: Session, amount_minor: int) -> tuple[int, Decimal]:
+    """`(bps, spread_porcentaje)` por volumen (E7-T10); nunca lanza.
+
+    Resuelve el tramo aplicable (`fx.spread_tiers_json`,
+    `config.parameters`, best-effort con fallback a la semilla
+    conservadora ante JSON invalido, desordenado o solapado) y cae al
+    default (`fx.spread_bps_default`, `100`) si ningun tramo aplica.
+    Retorna el porcentaje que se congela en `fx_quotes.spread`
+    (`bps / 100`, `Decimal`, nunca `float`).
+    """
+    from app.modules.fx.domain import spread as spread_domain
+    from app.modules.shared.config import parameters as fx_params
+
+    try:
+        bps = spread_domain.spread_bps_for(amount_minor, fx_params.get_fx_spread_tiers(session))
+    except Exception:  # noqa: BLE001 - config invalida cae al default, nunca bloquea
+        logger.warning("spread por volumen no resoluble: fallback al default")
+        bps = fx_params.get_fx_spread_bps_default(session)
+    return bps, spread_domain.spread_percent_for(bps)
+
+
 def to_rate_view(payload: FxRatePayload, fetched_at: datetime) -> dict:
     """Vista publica de la tasa vigente (sin persistir nada aqui)."""
     return {
@@ -202,6 +234,43 @@ def get_rate(
     return to_rate_view(payload, moment)
 
 
+def preview_spread(
+    session: Session,
+    *,
+    base: object,
+    quote: object,
+    amount_minor: object,
+    provider: FxRateProvider | None = None,
+) -> dict:
+    """Vista previa del spread por volumen sin persistir nada (E7-T10).
+
+    Valida el par (`422` si no es MVP o `base == quote`) y el monto
+    (`> 0`), consulta la tasa viva al adaptador `E7-T08` SIN guardar
+    snapshot en `fx_rates` (solo lectura) y aplica el mismo `bps` por
+    volumen que usaria `create_quote` (tramos de `config.parameters`
+    con fallback; nunca lanza por config). Retorna `{base, quote,
+    amount_minor, spread_bps, rate, effective_rate}` (`Decimal`,
+    nunca `float`). No mueve dinero (sin filas ni asientos).
+    """
+    from app.modules.fx.domain import spread as spread_domain
+
+    clean_base, clean_quote = _coerce_pair(base, quote)
+    amount = _coerce_source_amount(amount_minor)
+    active = provider if provider is not None else create_fx_rate_provider()
+    payload = active.get_rate(base=clean_base, quote=clean_quote)
+    spread_bps, _ = _dynamic_spread(session, amount)
+    effective = spread_domain.apply_spread(payload.rate, spread_bps)
+    logger.debug("fx spread preview %s/%s bps=%s", clean_base, clean_quote, spread_bps)
+    return {
+        "base": payload.base,
+        "quote": payload.quote,
+        "amount_minor": amount,
+        "spread_bps": spread_bps,
+        "rate": payload.rate,
+        "effective_rate": effective,
+    }
+
+
 def create_quote(
     session: Session,
     user_id: uuid.UUID | str,
@@ -213,24 +282,35 @@ def create_quote(
     provider: FxRateProvider | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """Congela una cotizacion `ACTIVE` por `fx.quote_ttl_seconds` (E7-T09).
+    """Congela una cotizacion `ACTIVE` por `fx.quote_ttl_seconds` (E7-T09/E7-T10).
 
     Valida todo ANTES de crear nada; obtiene la tasa via `get_rate`
-    (persiste su snapshot); calcula el destino con `fx.domain`
-    (`ROUND_HALF_UP` al centavo) y persiste `fx_quotes` `ACTIVE` con
+    (persiste su snapshot); con `spread=None` (camino E7-T10) calcula
+    el `bps` por volumen y la tasa efectiva (`apply_spread`), que se
+    congela en `fx_quotes.rate` con el porcentaje (`bps/100`) en
+    `fx_quotes.spread`; con `spread` explicito (legado E7-T09) la tasa
+    se congela tal cual y el `spread` es el incremento absoluto dado.
+    El destino usa la tasa con spread (`ROUND_HALF_UP` al centavo) y
     `expires_at = now + TTL`. Emite auditoria best-effort
     `fx.quote.created` (sin PII). Hace `flush`, no `commit`.
     No mueve dinero (la ejecucion es `E7-T11`).
     """
+    from app.modules.fx.domain import spread as spread_domain
+
     owner = _coerce_owner(user_id)
     clean_base, clean_quote = _coerce_pair(base, quote)
     source_minor = _coerce_source_amount(source_amount_minor)
-    clean_spread = _coerce_spread(spread)
+    explicit_spread = None if spread is None else _coerce_spread(spread)
     moment = now if now is not None else _utcnow()
 
     rate_view = get_rate(session, clean_base, clean_quote, provider=provider, now=moment)
-    rate = rate_view["rate"]
-    target_minor = target_for(source_minor, rate, clean_spread)
+    if explicit_spread is None:
+        spread_bps, frozen_spread = _dynamic_spread(session, source_minor)
+        frozen_rate = spread_domain.apply_spread(rate_view["rate"], spread_bps)
+        target_minor = target_for(source_minor, frozen_rate, Decimal(0))
+    else:
+        frozen_rate, frozen_spread = rate_view["rate"], explicit_spread
+        target_minor = target_for(source_minor, frozen_rate, frozen_spread)
     if target_minor <= 0:
         raise QuoteValidationError("target_amount_minor debe ser > 0")
     ttl = _quote_ttl_seconds(session)
@@ -239,8 +319,8 @@ def create_quote(
         user_id=owner,
         base=clean_base,
         quote=clean_quote,
-        rate=rate,
-        spread=clean_spread,
+        rate=frozen_rate,
+        spread=frozen_spread,
         source_amount_minor=source_minor,
         target_amount_minor=target_minor,
         expires_at=moment + timedelta(seconds=ttl),
@@ -424,6 +504,7 @@ __all__ = [
     "create_quote_idempotent",
     "get_quote",
     "get_rate",
+    "preview_spread",
     "to_quote_view",
     "to_rate_view",
 ]

@@ -118,6 +118,27 @@ DEFAULT_WALLET_QR_TTL_SECONDS = 300
 #: como fallback cuando la clave falta o el valor es invalido).
 DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE = 3
 
+#: Spread de `fx` por volumen (E7-T10, HU25, modulo `fx`): `bps`
+#: enteros, `rate`/`spread` `Decimal`, nunca `float` (regla de oro 3).
+#: Sin migracion nueva (los tramos viven en `config.parameters` si
+#: existen y en codigo como fallback determinista): clave default
+#: `fx.spread_bps_default` (`100 bps = 1 %`; rige cuando ningun tramo
+#: aplica o la lectura de tramos falla) y clave de tramos
+#: `fx.spread_tiers_json` (lista de `{min_amount_minor, bps}`
+#: ordenada por `min_amount_minor`, borde inferior inclusive, ultimo
+#: tramo sin maximo). Semilla conservadora (montos en centimos):
+#: `< 1,000 PEN` 150 bps, `>= 1,000 PEN` 100 bps, `>= 10,000 PEN`
+#: 50 bps. Lectura best-effort con fallback (JSON invalido,
+#: desordenado o solapado -> semilla); nunca lanza al cotizar.
+FX_SPREAD_BPS_DEFAULT_KEY = "fx.spread_bps_default"
+FX_SPREAD_TIERS_JSON_KEY = "fx.spread_tiers_json"
+DEFAULT_FX_SPREAD_BPS = 100
+DEFAULT_FX_SPREAD_TIERS_JSON = (
+    '[{"min_amount_minor": 0, "bps": 150}, '
+    '{"min_amount_minor": 100000, "bps": 100}, '
+    '{"min_amount_minor": 1000000, "bps": 50}]'
+)
+
 #: Perfiles con clave propia sembrada por migracion (`0023`).
 SEEDED_PROFILES: tuple[str, ...] = ("STANDARD",)
 
@@ -148,6 +169,8 @@ _SPECS: dict[str, tuple[int, int]] = {
         DEFAULT_WALLET_SERVICE_REMINDER_DAYS_BEFORE,
         1,
     ),
+    # Spread default de `fx` (E7-T10, HU25): puntos basicos `>= 0`.
+    FX_SPREAD_BPS_DEFAULT_KEY: (DEFAULT_FX_SPREAD_BPS, 0),
 }
 
 #: (default, minimo, maximo) por clave decimal conocida (`None` = sin
@@ -506,6 +529,39 @@ def get_wallet_service_reminder_days_before(session: Session) -> int:
     """
     default, minimum = _SPECS[WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY]
     return get_int_parameter(session, WALLET_SERVICE_REMINDER_DAYS_BEFORE_KEY, default, minimum)
+
+
+def get_fx_spread_bps_default(session: Session) -> int:
+    """Spread default en puntos basicos (E7-T10, HU25, modulo `fx`).
+
+    Rige cuando ningun tramo de `fx.spread_tiers_json` aplica o la
+    lectura de tramos falla. Lectura best-effort con fallback
+    (`DEFAULT_FX_SPREAD_BPS = 100` si la clave falta o el valor es
+    invalido); nunca lanza.
+    """
+    default, minimum = _SPECS[FX_SPREAD_BPS_DEFAULT_KEY]
+    return get_int_parameter(session, FX_SPREAD_BPS_DEFAULT_KEY, default, minimum)
+
+
+def get_fx_spread_tiers(session: Session) -> tuple[tuple[int, int], ...]:
+    """Tramos de spread por volumen (E7-T10, HU25, modulo `fx`).
+
+    Lee `fx.spread_tiers_json` (lista de `{min_amount_minor, bps}`)
+    y la valida con `fx.domain.spread.normalize_tiers` (ordenados
+    por `min_amount_minor`, sin solapamientos). Cualquier invalidez
+    (clave ausente, JSON roto, tipos fuera de rango, desordenados o
+    solapados) cae a la semilla conservadora
+    (`DEFAULT_FX_SPREAD_TIERS_JSON`); nunca lanza al cotizar.
+    """
+    from app.modules.fx.domain import spread as spread_domain
+
+    raw = get_parameter(session, FX_SPREAD_TIERS_JSON_KEY, DEFAULT_FX_SPREAD_TIERS_JSON)
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return spread_domain.normalize_tiers(parsed)
+    except Exception:  # noqa: BLE001 - cualquier invalidez cae a la semilla
+        logger.debug("fx spread tiers invalidos (%s): fallback a semilla", FX_SPREAD_TIERS_JSON_KEY)
+        return spread_domain.SEED_TIERS
 
 
 def get_loan_params(session: Session) -> dict[str, object]:

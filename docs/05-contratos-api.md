@@ -1309,7 +1309,8 @@ Detalle del flujo KYC (`identity`, E1-T29):
 | Metodo | Ruta | Proposito |
 |---|---|---|
 | GET | `/fx/rates` | Cotizacion vigente. |
-| POST | `/fx/quotes` | Congela cotizacion 30 s. |
+| POST | `/fx/quotes` | Congela cotizacion 30 s (con spread por volumen). |
+| GET | `/fx/spread` | Previa del spread por volumen (solo lectura). |
 | POST | `/fx/operations` | Ejecuta compra/venta. |
 | GET/POST | `/pockets` | Bolsillos y metas de ahorro. |
 | GET | `/pockets/{id}` | Detalle de un bolsillo (solo titular). |
@@ -1341,11 +1342,12 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   moneda fuera del MVP (`PEN`/`USD`/`EUR`) -> `422 VALIDATION_ERROR`;
 >   proveedor caido -> `503 FX_RATE_UNAVAILABLE`; timeout -> `502 FX_RATE_TIMEOUT`.
 > - `POST /fx/quotes` body `{base, quote, source_amount_minor (> 0)}` ->
->   `201 {"data": {quote_id, base, quote, rate, spread (= 0; el spread dinamico
->   es `E7-T10`), source_amount_minor, target_amount_minor, expires_at
+>   `201 {"data": {quote_id, base, quote, rate (= efectiva con spread,
+>   E7-T10), spread (= porcentaje `bps/100`), source_amount_minor,
+>   target_amount_minor, expires_at
 >   (= ahora + `fx.quote_ttl_seconds`, default `30`), status (= ACTIVE)},
 >   "meta": {"replayed"}}`. Calculo en `Decimal` exacto: `target =
->   source / (rate + spread)` cuantizado al centavo con `ROUND_HALF_UP`
+>   source / efectiva` cuantizado al centavo con `ROUND_HALF_UP`
 >   (supuesto aprobado por el orquestador; p. ej. `100 / 8.00 = 12.5 -> 13`);
 >   la tasa significa unidades de `base` por 1 unidad de `quote`
 >   (coherente con el adaptador `E7-T08`: `PEN/USD = 3.80` son `3.80 PEN`
@@ -1357,6 +1359,23 @@ Detalle del flujo KYC (`identity`, E1-T29):
 >   marca `ACTIVE -> EXPIRED` y es la autoridad de la vigencia; una `EXPIRED`
 >   no se puede ejecutar, la ejecuta `E7-T11`); ajena o inexistente -> `404
 >   NOT_FOUND` neutro.
+> Contrato E7-T10 (HU25 CA-02, `Bearer`; prevision del spread por volumen):
+> - `GET /fx/spread?base=&quote=&amount_minor=` -> `200 {"data": {base,
+>   quote, amount_minor, spread_bps, rate (mercado), effective_rate
+>   (= `rate * (1 + bps/10000)`, 8 decimales `ROUND_HALF_UP`)}, "meta":
+>   {}}`. Solo lectura: no persiste tasa ni cotizacion (mismo `bps`
+>   que usaria `POST /fx/quotes` para ese monto; el spread queda
+>   congelado recien al cotizar y no cambia al modificar los tramos).
+>   Tramos en `fx.spread_tiers_json` (`config.parameters`, editables
+>   sin codigo; semilla `< 1,000 PEN` 150 bps, `>= 1,000` 100 bps,
+>   `>= 10,000` 50 bps; JSON invalido -> semilla); sin tramo aplicable
+>   rige `fx.spread_bps_default` (default `100`).
+> - Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422
+>   VALIDATION_ERROR` (monto `<= 0`/no entero, par no MVP o `base ==
+>   quote`); proveedor caido/timeout -> `503 FX_RATE_UNAVAILABLE` /
+>   `502 FX_RATE_TIMEOUT`. Auditoria: ninguna (solo lectura).
+>   **No mueve dinero** (sin filas ni asientos).
+>
 > - Errores: `401 NOT_AUTHENTICATED` (sin JWT valido); `422 VALIDATION_ERROR`;
 >   `404 NOT_FOUND`; `409 CONFLICT`. Auditoria best-effort `fx.quote.created`
 >   (sin PII). **No mueve dinero** (sin asientos ni saldos).

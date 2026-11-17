@@ -94,6 +94,22 @@ class RateResponse(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class SpreadPreviewData(BaseModel):
+    """Vista previa del spread por volumen (E7-T10, HU25, solo lectura)."""
+
+    base: str
+    quote: str
+    amount_minor: int
+    spread_bps: int
+    rate: Decimal
+    effective_rate: Decimal
+
+
+class SpreadPreviewResponse(BaseModel):
+    data: SpreadPreviewData
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
 __all__ = [
     "PocketCreate",
     "PocketData",
@@ -104,4 +120,6 @@ __all__ = [
     "QuoteResponse",
     "RateData",
     "RateResponse",
+    "SpreadPreviewData",
+    "SpreadPreviewResponse",
 ]

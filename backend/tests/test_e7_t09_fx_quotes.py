@@ -211,11 +211,13 @@ def test_create_quote_freezes_rate_spread_amounts_and_ttl(fx_client):
     data = body["data"]
     assert uuid.UUID(data["quote_id"])
     assert (data["base"], data["quote"]) == ("PEN", "USD")
-    assert Decimal(str(data["rate"])) == Decimal("3.80")
-    assert Decimal(str(data["spread"])) == Decimal(0)
-    # 38000 PEN minor / 3.80 = 10000 USD minor exactos (sin float).
+    # Spread dinamico (E7-T10): 38000 minor (< 100000) -> 150 bps;
+    # tasa efectiva 3.80 * 1.015 = 3.857, spread 1.5 %.
+    assert Decimal(str(data["rate"])) == Decimal("3.857")
+    assert Decimal(str(data["spread"])) == Decimal("1.5")
+    # 38000 PEN minor / 3.857 = 9852.21... -> 9852 (sin float).
     assert data["source_amount_minor"] == 38000
-    assert data["target_amount_minor"] == 10000
+    assert data["target_amount_minor"] == 9852
     assert isinstance(data["target_amount_minor"], int)
     assert data["status"] == "ACTIVE"
 
@@ -279,8 +281,10 @@ def test_create_quote_applies_stub_rate_with_half_up_rounding(fx_client):
         source_amount_minor=100,
         provider=_Stub(),
     )
-    assert view["target_amount_minor"] == 13
-    assert view["rate"] == Decimal("8.00")
+    # Spread dinamico (E7-T10): 100 minor -> 150 bps; efectiva
+    # 8.00 * 1.015 = 8.12; 100 / 8.12 = 12.31... -> 12.
+    assert view["target_amount_minor"] == 12
+    assert view["rate"] == Decimal("8.12")
 
 
 @pytest.mark.parametrize(

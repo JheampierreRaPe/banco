@@ -923,8 +923,12 @@ Indices: `(account_id, created_at DESC)`.
 > `PROCESSING` queda reservado al enum `clearing_status`). Los items
 > nacen `PENDING` (`INBOUND`/`OUTBOUND`) y solo el matching (`E5-T18`)
 > los mueve a `MATCHED`/`EXCEPTION`. Indices: `(source)` y `(status)`
-> en archivos; `(file_id)`, `(external_ref)` y `(status)` en items
-> (ademas de la UQ `file_ref`).
+> en archivos; `(file_id)`, `(external_ref)`, `(status)`, `(run_id)` y
+> `(status, value_date, currency)` en items (ademas de la UQ `file_ref`);
+> la `0051` (E5-T18) anade `transactions (initiator_user_id, status,
+> created_at)` (R2), `transactions (currency, status, settled_at)` y
+> `clearing_items (status, value_date, currency)` + `clearing_items (run_id)`
+> (`clearing_files (status)` ya existia desde la `0050`).
 >
 > Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19): la corrida
 > persiste `reconciliation_runs` con la migracion `0051_reconciliation_runs`
@@ -932,8 +936,11 @@ Indices: `(account_id, created_at DESC)`.
 > `uq_reconciliation_runs_date_currency` por `(run_date, currency)` para la
 > idempotencia, `CHECK` de `status` y de no negatividad, indice
 > `ix_reconciliation_runs_status`). `matched_count` = pares conciliados;
-> `unmatched_count` = items de clearing no conciliados;
-> `total_minor` = suma en centimos de los items conciliados. La misma
+> `unmatched_count` = TOTAL de excepciones del dominio (incluye
+> `MISSING_EXTERNAL` de operaciones internas sin item, no solo items de
+> clearing no conciliados);
+> `total_minor` = suma con signo en centimos de los items conciliados
+> (`INBOUND` +, `OUTBOUND` -; puede ser negativa, sin CHECK `>= 0`). La misma
 > migracion siembra (idempotente, `ON CONFLICT DO NOTHING`) las claves
 > `reconciliation.amount_tolerance_minor` (`0`),
 > `reconciliation.date_tolerance_days` (`0`),
@@ -976,6 +983,56 @@ Indices: `(account_id, created_at DESC)`.
 > `run_date` (± tolerancia de fecha) con JOIN a `reconciliation_runs`, sin
 > traer toda la tabla. "Ultima corrida" = (`created_at DESC, id DESC`),
 > sin depender de los `NULL` de `finished_at` (orden por motor).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA M2-M7, HU19):
+> la misma `0051` (rama sin mergear, sin `0052`) ahora:
+> - M2: la fachada `transactions.service.list_reconciliation_candidates`
+>   acepta `date_tolerance_days` (default `0`) y cubre candidatos internos
+>   en [`run_date` - tol, `run_date` + tol]; el servicio pasa
+>   `reconciliation.date_tolerance_days` (config, default `0`, techo 31
+>   dias) y el dominio califica `DATE_DIFF`. El clearing sigue exacto en
+>   `run_date`.
+> - M3: dia de negocio en `reconciliation.business_timezone` (nueva
+>   semilla, default `America/Lima`, IANA configurable): la fachada
+>   consulta un rango UTC amplio ([`run_date`-tol-1, `run_date`+tol+2)) y
+>   recorta en Python convirtiendo `settled_at`/`created_at` con `ZoneInfo`
+>   (portable SQLite/Postgres; ingenuos = UTC). Liquidada 23:30 Lima =
+>   candidata del dia Lima, no del dia UTC.
+> - M4: `coerce_external_ref` acepta como maximo **80** (= la columna
+>   `VARCHAR(80)` de `0050`, sin migracion); 81+ es `VALIDATION_ERROR`.
+> - M5: `InternalOperation`/`ClearingEntry` llevan `direction`
+>   (`INBOUND`/`OUTBOUND`); el `Match` exige misma direccion (nuevo motivo
+>   `DIRECTION_MISMATCH`, nivel 2 como la moneda). La fachada deriva la
+>   direccion del tipo (`TOPUP`/`LOAN_DISBURSEMENT`/`SALARY_DISTRIBUTION`
+>   -> `INBOUND`; transferencias/QR/servicios/pagos/cuotas/FX/reversos y
+>   resto -> `OUTBOUND`). `total_minor` = suma con signo (`INBOUND` +,
+>   `OUTBOUND` -; puede ser negativa, sin CHECK `>= 0`).
+> - M6: indices nuevos en la `0051` (reversibles): `transactions`
+>   (`initiator_user_id`, `status`, `created_at`) — R2, bloqueante de
+>   produccion para `risk` —, `transactions` (`currency`, `status`,
+>   `settled_at`) — pre-filtro UTC de la fachada (se elige `settled_at`,
+>   no `created_at`, porque es el instante de negocio: no nulo en `SETTLED`;
+>   las `POSTED` sin liquidar entran por `created_at` en la rama `IS NULL`,
+>   cubierta por el prefijo) — y `clearing_items` (`status`, `value_date`,
+>   `currency`). `clearing_files (status)` ya existe desde `0050`.
+> - M7: la cota cuenta **pares examinados** (ventana `bisect` + pasada de
+>   excepciones con `_pair_key`), no solo aristas `Match`: un 501x501 con
+>   monedas distintas aborta; la cota ahora acota todo el trabajo.
+>
+> Nota de implementacion (2026-11-17, review PR #27 BAJO B1-B8, HU19; sin
+> migracion nueva, `0051` intacta):
+> - B1: `unmatched_count` = TOTAL de excepciones del dominio (opcion total
+>   sin columna nueva: incluye `MISSING_INTERNAL` de items huerfanos y
+>   `MISSING_EXTERNAL` de operaciones internas sin item, antes invisibles).
+> - B2: `executed_by` lo pasa el llamante autenticado (parametro explicito;
+>   E5-T21 debe pasarlo desde el principal del JWT, nunca del payload/body).
+> - B3: `_pair_key` deriva de la unica `_assess_pair` (sin duplicar reglas).
+> - B4: la asignacion de excepciones a sobrantes es codiciosa y
+>   determinista (puede no ser la explicacion optima global; solo dominio, y
+>   el servicio filtra por dia/moneda).
+> - B7: `run_reconciliation` NO esta cableada a job ni endpoint (correcto
+>   para el corte 2; no cambia produccion aun).
+> - B8: E5-T17 fuera de alcance (deuda documentada, sin implementar).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
@@ -987,7 +1044,7 @@ Indices: `(account_id, created_at DESC)`.
 | reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
 | reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
 | reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` |
-| reconciliation_runs | total_minor | BIGINT | No | 0 | CK `>= 0` (centimos, nunca `float`) |
+| reconciliation_runs | total_minor | BIGINT | No | 0 | con signo (M5: `INBOUND` +/`OUTBOUND` -; puede ser negativa, sin CK; centimos, nunca `float`) |
 | reconciliation_runs | executed_by | UUID | Si | - | REF users (sin FK fisica) |
 | reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | - |
 | reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | - |
@@ -1100,7 +1157,7 @@ Indices: `(account_id, created_at DESC)`.
 | account_balances | `(account_id)` PK |
 | beneficiaries | `(owner_user_id, alias)` |
 | movements_view | `(account_id, created_at DESC)` |
-| transactions | `(idempotency_key)`, `(status, created_at)`, `(source_account_id)`, `(external_ref)` |
+| transactions | `(idempotency_key)`, `(status, created_at)`, `(source_account_id)`, `(external_ref)`, `(initiator_user_id, status, created_at)` (R2), `(currency, status, settled_at)` |
 | transaction_status_history | `(transaction_id, created_at)` |
 | holds | `(status, expires_at)`, `(account_id)` |
 | idempotency_keys | `(key, user_id)` UQ, `(expires_at)` |
@@ -1111,7 +1168,8 @@ Indices: `(account_id, created_at DESC)`.
 | qr_payments | `uq_qr_payments_charge_active` UQ parcial (`charge_id` donde `status <> 'REJECTED' AND reusable = false`; E4-T21), `(payee_user_id)` |
 | fx_rates | `(base, quote, fetched_at DESC)` |
 | alerts | `(status, severity, created_at DESC)`, `(user_id)` |
-| clearing_items | `(file_id)`, `(external_ref)` |
+| clearing_files | `(source)`, `(status)` |
+| clearing_items | `(file_id)`, `(external_ref)`, `(status)`, `(run_id)`, `(status, value_date, currency)` |
 | notifications | `(user_id, created_at DESC)`, `(status)` |
 | audit_log | `(seq)` UQ, `(entity_type, entity_id)`, `(created_at)`, `(action)` |
 | outbox | `(status, available_at)` |

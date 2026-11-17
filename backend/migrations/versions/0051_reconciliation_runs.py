@@ -4,15 +4,18 @@ Revision ID: 0051_reconciliation_runs
 Revises: 0050_reconciliation
 Create Date: 2026-11-14
 
-Crea SOLO objetos propios del schema `reconciliation` (el schema ya existe
-desde `0001`; no toca `accounts`/`transactions`/`ledger`/`risk`/`fx`):
+Crea SOLO objetos del schema `reconciliation` (el schema ya existe
+desde `0001`; no toca `accounts`/`transactions`/`ledger`/`risk`/`fx`),
+mas tres indices de lectura en tablas existentes (M6 del review PR #27,
+reversibles; sin columnas nuevas ni FK nuevas):
 
 - `reconciliation.reconciliation_runs(id UUID PK, run_date DATE NOT NULL,
   currency CHAR(3) NOT NULL, status VARCHAR(15) NOT NULL default 'RUNNING'
   CHECK `ck_reconciliation_runs_status` (`RUNNING`/`COMPLETED`/`FAILED`),
   matched_count INTEGER NOT NULL default 0 CHECK >= 0,
   unmatched_count INTEGER NOT NULL default 0 CHECK >= 0,
-  total_minor BIGINT NOT NULL default 0 CHECK >= 0 (centimos, nunca float),
+  total_minor BIGINT NOT NULL default 0 SIN CHECK `>= 0` (M5: suma con
+  signo `INBOUND` + / `OUTBOUND` -, puede ser negativa),
   executed_by UUID NULL (REF logica a `identity.users`, sin FK fisica),
   created_at TIMESTAMPTZ NOT NULL default now(),
   finished_at TIMESTAMPTZ NULL)`;
@@ -26,7 +29,9 @@ desde `0001`; no toca `accounts`/`transactions`/`ledger`/`risk`/`fx`):
   `docs/03b#12.2`).
 - `reconciliation.clearing_items.run_id UUID NULL` (REF logica a
   `reconciliation_runs.id`, sin FK fisica: que corrida proceso el item) +
-  indice `ix_clearing_items_run_id`.
+  indice `ix_clearing_items_run_id` + indice compuesto
+  `ix_clearing_items_status_value_currency` (`status`, `value_date`,
+  `currency`: alcance de la corrida en un solo indice, M6).
 - `reconciliation.reconciliation_matches(id UUID PK, run_id UUID NOT NULL
   FK `fk_reconciliation_matches_run` -> `reconciliation_runs.id`,
   clearing_item_id UUID NOT NULL UQ `uq_reconciliation_matches_item`
@@ -40,6 +45,18 @@ desde `0001`; no toca `accounts`/`transactions`/`ledger`/`risk`/`fx`):
   currency CHAR(3) NOT NULL, created_at TIMESTAMPTZ NOT NULL default now())`;
   indices `ix_reconciliation_matches_run_id` (`run_id`) e
   `ix_reconciliation_matches_transaction_id` (`transaction_id`).
+- M6: `transactions.transactions`:
+  `ix_transactions_recon_candidates` (`initiator_user_id`, `status`,
+  `created_at`) — R2 del review PR #27 (bloqueante para produccion:
+  `risk` filtra por titular/estado/creacion) — e
+  `ix_transactions_recon_settle` (`currency`, `status`, `settled_at`) para
+  el pre-filtro UTC de la fachada (`settled_at` y no `created_at` porque
+  el instante de negocio es la liquidacion, no nulo en `SETTLED`, el estado
+  conciliable habitual; las `POSTED` aun sin liquidar entran por la rama
+  `settled_at IS NULL` + `created_at`, cubierta por el prefijo
+  `(currency, status)`).
+  `clearing_files (status)` ya existe desde `0050`
+  (`ix_clearing_files_status`): no se crea de nuevo.
 
 Siembra idempotente (`ON CONFLICT (key) DO NOTHING`, respeta valores
 personalizados) de las claves que lee `run_reconciliation`
@@ -47,13 +64,15 @@ personalizados) de las claves que lee `run_reconciliation`
 
 - `reconciliation.amount_tolerance_minor = 0` (centimos);
 - `reconciliation.date_tolerance_days = 0` (dias);
+- `reconciliation.business_timezone = "America/Lima"` (zona IANA del dia
+  de negocio, M3);
 - `reconciliation.max_candidate_pairs = 250000` (cota por grupo);
 - `reconciliation.max_candidate_pairs_per_run = 1000000` (cota por corrida).
 
-Reversible: `downgrade` elimina la tabla de matches, la columna `run_id`
-(con su indice), el indice unico parcial de `RUNNING` y la tabla de runs
-con sus indices (las semillas de `config.parameters` se conservan: son
-configuracion, no esquema).
+Reversible: `downgrade` elimina los tres indices M6, la tabla de matches,
+la columna `run_id` (con su indice), el indice unico parcial de `RUNNING`
+y la tabla de runs con sus indices (las semillas de `config.parameters`
+se conservan: son configuracion, no esquema).
 
 NOTA: el `revision` tiene maximo 32 caracteres (`alembic.version.
 version_num VARCHAR(32)`): `0051_reconciliation_runs` (24) lo respeta.
@@ -98,10 +117,8 @@ def upgrade() -> None:
             "unmatched_count >= 0",
             name="ck_reconciliation_runs_unmatched_nonneg",
         ),
-        sa.CheckConstraint(
-            "total_minor >= 0",
-            name="ck_reconciliation_runs_total_nonneg",
-        ),
+        # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
+        # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
         schema="reconciliation",
     )
     op.create_index(
@@ -137,6 +154,31 @@ def upgrade() -> None:
         "clearing_items",
         ["run_id"],
         schema="reconciliation",
+    )
+    # M6: alcance de la corrida (items `PENDING` de archivos `PROCESSED`
+    # por fecha/moneda) en un solo indice.
+    op.create_index(
+        "ix_clearing_items_status_value_currency",
+        "clearing_items",
+        ["status", "value_date", "currency"],
+        schema="reconciliation",
+    )
+    # M6: R2 (`initiator_user_id`, `status`, `created_at`) + pre-filtro de
+    # la fachada (`currency`, `status`, `settled_at`). Solo indices sobre la
+    # tabla existente: sin columnas nuevas, sin FK, sin CHECK nuevos.
+    # `clearing_files (status)` ya existe desde `0050`
+    # (`ix_clearing_files_status`): no se crea de nuevo.
+    op.create_index(
+        "ix_transactions_recon_candidates",
+        "transactions",
+        ["initiator_user_id", "status", "created_at"],
+        schema="transactions",
+    )
+    op.create_index(
+        "ix_transactions_recon_settle",
+        "transactions",
+        ["currency", "status", "settled_at"],
+        schema="transactions",
     )
     op.create_table(
         "reconciliation_matches",
@@ -205,6 +247,11 @@ def upgrade() -> None:
             "Tolerancia de fecha valor en dias para el cruce de conciliacion (E5-T18)",
         ),
         (
+            "reconciliation.business_timezone",
+            '"America/Lima"',
+            "Zona horaria IANA del dia de negocio de conciliacion (E5-T18 M3)",
+        ),
+        (
             "reconciliation.max_candidate_pairs",
             "250000",
             "Cota de pares evaluables por grupo de referencia en el cruce (E5-T18)",
@@ -231,6 +278,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_transactions_recon_settle",
+        table_name="transactions",
+        schema="transactions",
+    )
+    op.drop_index(
+        "ix_transactions_recon_candidates",
+        table_name="transactions",
+        schema="transactions",
+    )
+    op.drop_index(
+        "ix_clearing_items_status_value_currency",
+        table_name="clearing_items",
+        schema="reconciliation",
+    )
     op.drop_index(
         "ix_reconciliation_matches_transaction_id",
         table_name="reconciliation_matches",

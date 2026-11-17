@@ -52,12 +52,13 @@ def test_baseline_esquemas_y_parametros(test_engine) -> None:
     # `notifications.security_alerts_email_backup`)
     # + 2 de `0048_risk_rules` (E6-T01; `risk.velocity_window_seconds`,
     # `risk.unusual_amount_factor`)
-    # + 4 de `0051_reconciliation_runs` (E5-T18 corte 2;
+    # + 5 de `0051_reconciliation_runs` (E5-T18 corte 2 + review PR #27 MEDIA;
     # `reconciliation.amount_tolerance_minor`,
     # `reconciliation.date_tolerance_days`,
+    # `reconciliation.business_timezone` (M3: zona del dia de negocio),
     # `reconciliation.max_candidate_pairs`,
     # `reconciliation.max_candidate_pairs_per_run`).
-    assert report["parameter_count"] == 38
+    assert report["parameter_count"] == 39
 
 
 def test_carga_semilla_idempotente_y_roundtrip(test_engine, seed_dataset: dict) -> None:

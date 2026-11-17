@@ -10,9 +10,10 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
 - La referencia externa manda: solo se emparejan entradas que comparten
   ``external_ref``. Cada item/operacion se usa **como maximo una vez**.
 - Prioridad de emparejo (de mejor a peor): ``EXACT`` (0) > tolerado
-  ``AMOUNT_DIFF``/``DATE_DIFF`` (1) > ``CURRENCY_MISMATCH`` (2) > fuera de
-  tolerancia (3). La moneda distinta manda sobre un monto/fecha fuera de
-  tolerancia, pero nunca sobre un ``Match`` (exacto o tolerado).
+  ``AMOUNT_DIFF``/``DATE_DIFF`` (1) > ``CURRENCY_MISMATCH``/
+  ``DIRECTION_MISMATCH`` (2) > fuera de tolerancia (3). La moneda y la
+  direccion distintas mandan sobre un monto/fecha fuera de tolerancia, pero
+  nunca sobre un ``Match`` (exacto o tolerado).
 - El cruce maximiza la **cardinalidad por ``external_ref``** en un unico
   flujo de costo minimo por grupo: entre todos los emparejamientos de
   cardinalidad maxima sobre **todas** las aristas que clasifican como
@@ -44,21 +45,23 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   k)`` en vez de ``O(n^2)``). Con tolerancia enorme la ventana cubre todo el
   grupo y rige la cota de seguridad.
 - Cota de seguridad: ``MAX_CANDIDATE_PAIRS`` (default ``250_000`` pares
-  candidatos evaluables por grupo de ``external_ref``, aprox ``500x500``)
+  candidatos examinados por grupo de ``external_ref``, aprox ``500x500``)
   evita que un grupo patologico de refs repetidas agote memoria/tiempo:
   superarla lanza ``CandidateBudgetExceeded`` (subclase de ``ValueError``)
-  claro en vez de tardar minutos. La cota cuenta **solo pares que podrian
-  ser ``Match``**: en la pasada de matching, pares en la ventana de monto
-  que ademas pasan moneda/signo y quedan dentro de la tolerancia de fecha
-  (equivalente a aristas ``Match``; un grupo 501x501 con todas las monedas
-  distintas cuenta 0 y no aborta); en la pasada de excepciones, pares
-  libres con misma moneda, mismo signo y fecha dentro de tolerancia (sin
-  filtrar por distancia de monto, que es lo que el ``min()`` evalua;
-  coherente con el matching y documentado aqui). El error nunca incluye el
-  valor de ``external_ref`` (solo conteos + hash corto SHA-256 de 8 hex) y
-  el servicio lo mapea a corrida ``FAILED`` (motivo
-  ``CANDIDATE_BUDGET_EXCEEDED``); el default se configura por entorno via
-  ``reconciliation.max_candidate_pairs`` (hoy es la constante del dominio).
+  claro en vez de tardar minutos. La cota cuenta **pares examinados** (M7
+  del review PR #27: no solo aristas ``Match``): en la pasada de matching,
+  cada operacion de la ventana de monto (``bisect``) que se examina para un
+  item (pase o no los filtros de moneda/signo/direccion/fecha); en la
+  pasada de excepciones, cada par libre ``(op, item)`` evaluado con
+  ``_pair_key`` para el mejor candidato (sin filtrar por moneda, signo,
+  direccion ni distancias, que es lo que el ``min()`` evalua). Un grupo
+  501x501 con todas las monedas distintas **si** aborta (260k+ pares
+  examinados): la cota ahora acota todo el trabajo, no solo el que podria
+  ser ``Match``. El error nunca incluye el valor de ``external_ref``
+  (solo conteos + hash corto SHA-256 de 8 hex) y el servicio lo mapea a
+  corrida ``FAILED`` (motivo ``CANDIDATE_BUDGET_EXCEEDED``); el default se
+  configura por entorno via ``reconciliation.max_candidate_pairs`` (hoy es
+  la constante del dominio).
   Motivo: las refs deben ser casi unicas (decision corte 2: referencia
   unica por operacion); un grupo gigante con tolerancia amplia o con miles
   de sobrantes es un error de datos, no un cruce normal. Configurable via
@@ -84,6 +87,17 @@ Reglas (``docs/tasks/E5-T18.md#reglas-de-negocio``):
   primera dimension que falla (monto antes que fecha) y el detalle numerico.
 - Item de clearing sin operacion interna -> ``MISSING_INTERNAL``.
 - Operacion interna sin item de clearing -> ``MISSING_EXTERNAL``.
+- Direccion distinta -> ``DIRECTION_MISMATCH`` (nunca es ``Match``: un
+  cargo ``OUTBOUND`` no concilia contra un abono ``INBOUND`` aunque
+  coincidan ref/monto/moneda/fecha; ver politica de direccion abajo).
+
+Politica de direccion (M5 del review PR #27): ``InternalOperation`` y
+``ClearingEntry`` llevan ``direction`` (``INBOUND``/``OUTBOUND``,
+default ``OUTBOUND``) y un ``Match`` exige **misma direccion** en ambos
+lados (como el signo). La fachada la deriva del tipo de transaccion del
+motor (transferencias/QR/servicios/pagos -> ``OUTBOUND``;
+depositos/desembolsos/abonos -> ``INBOUND``; resto -> ``OUTBOUND``);
+el clearing trae su direccion del lote.
 
 Tolerancias (``docs/16#2`` regla 6): se reciben como parametro
 (:class:`Tolerances`, default ``0``/``0``); nunca cableadas aqui. El corte 2
@@ -131,6 +145,7 @@ DATE_DIFF = "DATE_DIFF"
 MISSING_INTERNAL = "MISSING_INTERNAL"
 MISSING_EXTERNAL = "MISSING_EXTERNAL"
 CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+DIRECTION_MISMATCH = "DIRECTION_MISMATCH"
 
 #: Calificadores de un par conciliado (``Match.qualifier``).
 MATCH_QUALIFIERS = (EXACT, AMOUNT_DIFF, DATE_DIFF)
@@ -142,6 +157,7 @@ EXCEPTION_REASONS = (
     MISSING_INTERNAL,
     MISSING_EXTERNAL,
     CURRENCY_MISMATCH,
+    DIRECTION_MISMATCH,
 )
 
 #: Claves aceptadas al recibir tolerancias como mapping.
@@ -211,6 +227,15 @@ def _require_currency(value: object) -> str:
     return value
 
 
+def _require_direction(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("direction debe ser texto INBOUND/OUTBOUND")
+    text = value.strip().upper()
+    if text not in ("INBOUND", "OUTBOUND"):
+        raise ValueError("direction debe ser INBOUND u OUTBOUND")
+    return text
+
+
 def _require_value_date(value: object) -> date:
     if isinstance(value, datetime) or not isinstance(value, date):
         raise TypeError("value_date debe ser datetime.date (sin hora)")
@@ -255,7 +280,9 @@ class InternalOperation:
 
     ``amount_minor`` es un entero distinto de cero: positivo (cargo/abono) o
     negativo (reverso/contracargo/ajuste). Un ``Match`` exige mismo signo en
-    ambos lados (ver politica de signo en el modulo).
+    ambos lados (ver politica de signo en el modulo) y **misma
+    ``direction``** (``INBOUND``/``OUTBOUND``, default ``OUTBOUND``; la
+    fija la fachada desde el tipo de transaccion).
     """
 
     op_id: str
@@ -263,6 +290,7 @@ class InternalOperation:
     amount_minor: int
     currency: str
     value_date: date
+    direction: str = "OUTBOUND"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op_id", _require_id(self.op_id, name="op_id"))
@@ -272,6 +300,7 @@ class InternalOperation:
         )
         object.__setattr__(self, "currency", _require_currency(self.currency))
         object.__setattr__(self, "value_date", _require_value_date(self.value_date))
+        object.__setattr__(self, "direction", _require_direction(self.direction))
 
 
 @dataclass(frozen=True)
@@ -280,6 +309,8 @@ class ClearingEntry:
 
     ``amount_minor`` es un entero distinto de cero: positivo o negativo
     (reversos/ajustes del clearing). Ver politica de signo en el modulo.
+    ``direction`` (``INBOUND``/``OUTBOUND``, default ``OUTBOUND``) viene
+    del lote y debe coincidir con la operacion para un ``Match``.
     """
 
     item_id: str
@@ -287,6 +318,7 @@ class ClearingEntry:
     amount_minor: int
     currency: str
     value_date: date
+    direction: str = "OUTBOUND"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "item_id", _require_id(self.item_id, name="item_id"))
@@ -296,6 +328,7 @@ class ClearingEntry:
         )
         object.__setattr__(self, "currency", _require_currency(self.currency))
         object.__setattr__(self, "value_date", _require_value_date(self.value_date))
+        object.__setattr__(self, "direction", _require_direction(self.direction))
 
 
 @dataclass(frozen=True)
@@ -330,7 +363,9 @@ class ReconException:
       cero**; ``DATE_DIFF`` exige ``date_diff_days`` no nulo y **distinto de
       cero** (un detalle cero significaria que esa dimension coincide y el
       motivo seria otro).
-    - ``CURRENCY_MISMATCH`` exige ambos lados presentes.
+    - ``CURRENCY_MISMATCH``/``DIRECTION_MISMATCH`` exigen ambos lados
+      presentes (sin detalles numericos: la dimension que falla es la
+      moneda/direccion, no el monto/fecha).
     """
 
     reason: str
@@ -370,10 +405,10 @@ class ReconException:
                 raise ValueError("DATE_DIFF exige date_diff_days no nulo")
             if self.date_diff_days == 0:
                 raise ValueError("DATE_DIFF exige date_diff_days distinto de cero")
-        elif self.reason == CURRENCY_MISMATCH and (
+        elif self.reason in (CURRENCY_MISMATCH, DIRECTION_MISMATCH) and (
             self.internal_id is None or self.clearing_id is None
         ):
-            raise ValueError("CURRENCY_MISMATCH exige ambos lados")
+            raise ValueError(f"{self.reason} exige ambos lados")
         if self.internal_id is None and self.clearing_id is None:
             raise ValueError("la excepcion debe referenciar al menos un lado")
         for diff_name in ("amount_diff_minor", "date_diff_days"):
@@ -458,16 +493,18 @@ def match_items(
 
     La fase de matching usa un indice por monto (``bisect`` sobre la ventana
     de tolerancia) para no generar ``O(n^2)`` pares con tolerancia 0/estrecha;
-    solo los pares que pasan moneda/signo/fecha (aristas ``Match``) cuentan
-    para ``max_candidate_pairs``; si los superan se lanza
-    ``CandidateBudgetExceeded`` (cota de seguridad para refs repetidas
-    patologicas; el mensaje lleva conteos + hash corto de la ref, nunca su
-    valor). ``max_total_pairs`` (``None`` = sin limite) acota ademas la suma
-    de pares evaluables de todos los grupos (matching + excepciones); al
-    superarlo se lanza ``CandidateBudgetExceeded`` sin ninguna ref. El
-    servicio mapea ese error a corrida ``FAILED`` (motivo
-    ``CANDIDATE_BUDGET_EXCEEDED``) y configura ambos defaults por entorno
-    (``reconciliation.max_candidate_pairs`` /
+    cada operacion examinada en la ventana cuenta para
+    ``max_candidate_pairs`` (pase o no los filtros: la cota acota todo el
+    trabajo, M7); si los superan se lanza ``CandidateBudgetExceeded``
+    (cota de seguridad para refs repetidas patologicas; el mensaje lleva
+    conteos + hash corto de la ref, nunca su valor). En la pasada de
+    excepciones cada par libre evaluado con ``_pair_key`` tambien cuenta
+    (misma cota y estilo de mensaje). ``max_total_pairs`` (``None`` = sin
+    limite) acota ademas la suma de pares examinados de todos los grupos
+    (matching + excepciones); al superarlo se lanza
+    ``CandidateBudgetExceeded`` sin ninguna ref. El servicio mapea ese error
+    a corrida ``FAILED`` (motivo ``CANDIDATE_BUDGET_EXCEEDED``) y configura
+    ambos defaults por entorno (``reconciliation.max_candidate_pairs`` /
     ``reconciliation.max_candidate_pairs_per_run``).
     """
     tol = _coerce_tolerances(tolerances)
@@ -532,32 +569,26 @@ def match_items(
             total_state,
         )
 
-    # Cota de la pasada de excepciones: cuenta solo pares libres evaluables
-    # (misma moneda, mismo signo, fecha dentro de tolerancia; la distancia de
-    # monto la evalua el min() sin filtrar). Evita el cartesiano por grupo
-    # pero no aborta cuando ningun par podria ser Match (p. ej. monedas
-    # distintas -> todo CURRENCY_MISMATCH). Sin la ref literal en el mensaje.
-    # Ademas carga el presupuesto total de la corrida.
+    # Cota de la pasada de excepciones (M7): cuenta cada par libre evaluado
+    # (sin filtrar por moneda/signo/direccion/fecha/distancias, que es lo
+    # que el ``min()`` con ``_pair_key`` evalua). El conteo ocurre dentro del
+    # bucle de evaluacion: al superar la cota se aborta antes de terminar
+    # el cartesiano, sin exponer la ref literal en el mensaje. Ademas carga
+    # el presupuesto total de la corrida.
     for ref in sorted(set(ops_by_ref) | set(items_by_ref)):
         free_ops = [op for op in ops_by_ref.get(ref, []) if op.op_id not in used_ops]
         free_items = [e for e in items_by_ref.get(ref, []) if e.item_id not in matched_items]
         if not free_ops or not free_items:
             continue
         evaluable = 0
-        for op in free_ops:
-            for e in free_items:
-                if op.currency != e.currency:
-                    continue
-                if (op.amount_minor > 0) != (e.amount_minor > 0):
-                    continue
-                if abs((e.value_date - op.value_date).days) > tol.date_tolerance_days:
-                    continue
+        for _op in free_ops:
+            for _entry in free_items:
                 evaluable += 1
                 if evaluable > max_candidate_pairs:
                     raise CandidateBudgetExceeded(
                         "grupo de referencia "
                         f"{_ref_hash(ref)} supera la cota de seguridad en excepciones "
-                        f"({evaluable} pares evaluables > {max_candidate_pairs}): refs "
+                        f"({evaluable} pares examinados > {max_candidate_pairs}): refs "
                         "repetidas patologicas; reduzca la tolerancia o exija "
                         "referencia unica por operacion"
                     )
@@ -566,7 +597,7 @@ def match_items(
                     if total_state[0] > total_state[1]:
                         raise CandidateBudgetExceeded(
                             "corrida supera la cota de seguridad total "
-                            f"(presupuesto total {total_state[0]} pares evaluables > "
+                            f"(presupuesto total {total_state[0]} pares examinados > "
                             f"{total_state[1]}): tolerancias amplias o referencias "
                             "repetidas; reduzca la tolerancia o exija referencia "
                             "unica por operacion"
@@ -620,15 +651,15 @@ def _match_group_min_cost_flow(
 
     Construye la adyacencia solo con pares que :func:`_classify` califica
     como ``Match``, usando la ventana de monto (``bisect``) + filtros de
-    moneda/signo/fecha; los vecinos se ordenan con exactos primero y luego
-    ``op_id`` (orden de insercion determinista). Solo los pares que pasan
-    moneda/signo/fecha (aristas ``Match``) cuentan para
-    ``max_candidate_pairs``: un grupo con todas las monedas distintas
-    cuenta 0 y no aborta. Si se supera lanza ``CandidateBudgetExceeded``
-    sin la ref literal (conteos + hash corto). ``total_state`` (``[usados,
-    limite]`` o ``None``) acumula el presupuesto total de la corrida y
-    tambien lanza ``CandidateBudgetExceeded`` (sin ninguna ref) al
-    superarlo.
+    moneda/signo/direccion/fecha; los vecinos se ordenan con exactos primero
+    y luego ``op_id`` (orden de insercion determinista). Cada operacion
+    examinada en la ventana cuenta para ``max_candidate_pairs`` (M7: pase o
+    no los filtros; un grupo con todas las monedas distintas tambien cuenta
+    y aborta: la cota acota todo el trabajo). Si se supera lanza
+    ``CandidateBudgetExceeded`` sin la ref literal (conteos + hash corto).
+    ``total_state`` (``[usados, limite]`` o ``None``) acumula el presupuesto
+    total de la corrida y tambien lanza ``CandidateBudgetExceeded`` (sin
+    ninguna ref) al superarlo.
 
     El cruce es un min-cost max-flow (:func:`_min_cost_flow_matches`):
     garantiza cardinalidad maxima sobre el grafo de aristas ``Match`` y,
@@ -651,32 +682,36 @@ def _match_group_min_cost_flow(
         for op in ops_sorted[left:right]:
             if op.op_id in used_ops:  # pragma: no cover - grupos frescos
                 continue
+            # M7: cada operacion examinada en la ventana cuenta (pase o no
+            # los filtros): la cota acota todo el trabajo examinado.
+            candidate_count += 1
+            if candidate_count > max_candidate_pairs:
+                raise CandidateBudgetExceeded(
+                    "grupo de referencia "
+                    f"{_ref_hash(entry.external_ref)} supera la cota de seguridad "
+                    f"({candidate_count} pares examinados > "
+                    f"{max_candidate_pairs}): refs repetidas con tolerancia amplia; "
+                    "reduzca la tolerancia o exija referencia unica por operacion"
+                )
+            if total_state is not None:
+                total_state[0] += 1
+                if total_state[0] > total_state[1]:
+                    raise CandidateBudgetExceeded(
+                        "corrida supera la cota de seguridad total "
+                        f"(presupuesto total {total_state[0]} pares examinados > "
+                        f"{total_state[1]}): tolerancias amplias o referencias "
+                        "repetidas; reduzca la tolerancia o exija referencia "
+                        "unica por operacion"
+                    )
             if op.currency != entry.currency:
                 continue
             if (op.amount_minor > 0) != (entry.amount_minor > 0):
                 continue
+            if op.direction != entry.direction:
+                continue
             outcome = _classify(op, entry, tol)
             if isinstance(outcome, Match):
                 item_neighbours.append((0 if outcome.qualifier == EXACT else 1, op.op_id))
-                candidate_count += 1
-                if candidate_count > max_candidate_pairs:
-                    raise CandidateBudgetExceeded(
-                        "grupo de referencia "
-                        f"{_ref_hash(entry.external_ref)} supera la cota de seguridad "
-                        f"({candidate_count} pares evaluables > "
-                        f"{max_candidate_pairs}): refs repetidas con tolerancia amplia; "
-                        "reduzca la tolerancia o exija referencia unica por operacion"
-                    )
-                if total_state is not None:
-                    total_state[0] += 1
-                    if total_state[0] > total_state[1]:
-                        raise CandidateBudgetExceeded(
-                            "corrida supera la cota de seguridad total "
-                            f"(presupuesto total {total_state[0]} pares evaluables > "
-                            f"{total_state[1]}): tolerancias amplias o referencias "
-                            "repetidas; reduzca la tolerancia o exija referencia "
-                            "unica por operacion"
-                        )
         item_neighbours.sort()
         neighbours[entry.item_id] = item_neighbours
 
@@ -830,25 +865,59 @@ def _push_blocking_unit(
     return False
 
 
+def _assess_pair(
+    op: InternalOperation, entry: ClearingEntry, tol: Tolerances
+) -> tuple[bool, bool, int, int, bool, bool, bool]:
+    """Dimensiones compartidas de un par (única fuente de reglas, B1-B3 PR #27).
+
+    Retorna `(currency_mismatch, direction_mismatch, amount_diff,
+    date_diff, same_sign, amount_ok, date_ok)` donde `amount_diff =
+    clearing - internal`, `date_diff` en días, `same_sign` exige igual
+    signo (un `Match` nunca cruza signos) y `amount_ok`/`date_ok`
+    comparan contra las tolerancias (`amount_ok` ya incluye
+    `same_sign`). :func:`_pair_key` y :func:`_classify` derivan de aquí
+    sin duplicar reglas: mismo orden de evaluación (moneda, luego
+    dirección, luego monto/fecha) y misma convención de signos.
+    """
+    amount_diff = entry.amount_minor - op.amount_minor
+    date_diff = (entry.value_date - op.value_date).days
+    currency_mismatch = entry.currency != op.currency
+    direction_mismatch = entry.direction != op.direction
+    same_sign = (op.amount_minor > 0) == (entry.amount_minor > 0)
+    amount_ok = same_sign and abs(amount_diff) <= tol.amount_tolerance_minor
+    date_ok = abs(date_diff) <= tol.date_tolerance_days
+    return (
+        currency_mismatch,
+        direction_mismatch,
+        amount_diff,
+        date_diff,
+        same_sign,
+        amount_ok,
+        date_ok,
+    )
+
+
 def _pair_key(
     op: InternalOperation, entry: ClearingEntry, tol: Tolerances
 ) -> tuple[int, int, int, str]:
     """Prioridad de emparejo (determinista).
 
-    Nivel: ``EXACT`` (0) > tolerado (1) > ``CURRENCY_MISMATCH`` (2) > fuera de
-    tolerancia (3); a igual nivel, menor diferencia absoluta primero
-    (monto y luego fecha, tambien en ``CURRENCY_MISMATCH`` para que gane la
-    operacion mas cercana y no el ``op_id`` alfabetico) y ``op_id`` como
-    desempate final. La moneda distinta manda sobre un monto/fecha fuera de
-    tolerancia, pero nunca sobre un ``Match``.
+    Deriva de :func:`_assess_pair` (sin duplicar reglas).
+    Nivel: ``EXACT`` (0) > tolerado (1) > ``CURRENCY_MISMATCH``/
+    ``DIRECTION_MISMATCH`` (2) > fuera de tolerancia (3); a igual nivel,
+    menor diferencia absoluta primero (monto y luego fecha, tambien en
+    moneda/direccion distinta para que gane la operacion mas cercana y no
+    el ``op_id`` alfabetico) y ``op_id`` como desempate final. La moneda
+    distinta manda sobre la direccion (se evalua primero) y ambas sobre un
+    monto/fecha fuera de tolerancia, pero nunca sobre un ``Match``.
     """
-    amount_diff = entry.amount_minor - op.amount_minor
-    date_diff = (entry.value_date - op.value_date).days
-    if entry.currency != op.currency:
+    currency_mismatch, direction_mismatch, amount_diff, date_diff, _, amount_ok, date_ok = (
+        _assess_pair(op, entry, tol)
+    )
+    if currency_mismatch:
         return (2, abs(amount_diff), abs(date_diff), op.op_id)
-    same_sign = (op.amount_minor > 0) == (entry.amount_minor > 0)
-    amount_ok = same_sign and abs(amount_diff) <= tol.amount_tolerance_minor
-    date_ok = abs(date_diff) <= tol.date_tolerance_days
+    if direction_mismatch:
+        return (2, abs(amount_diff), abs(date_diff), op.op_id)
     if amount_diff == 0 and date_diff == 0:
         return (0, 0, 0, op.op_id)
     if amount_ok and date_ok:
@@ -862,19 +931,30 @@ def _classify(
     """Clasifica un par con su motivo y detalle numerico.
 
     Politica de signo: un ``Match`` exige mismo signo; signos opuestos nunca
-    son ``Match`` (``AMOUNT_DIFF``). Convencion: ``amount_diff_minor =
-    clearing - internal`` (ej.: op ``100_00`` vs item ``99_00`` -> ``-100``)
-    y ``date_diff_days = clearing_date - internal_date``.
+    son ``Match`` (``AMOUNT_DIFF``). Politica de direccion (M5): un
+    ``Match`` exige misma ``direction``; direcciones distintas nunca son
+    ``Match`` (``DIRECTION_MISMATCH``, evaluada tras la moneda y antes que
+    monto/fecha). Convencion: ``amount_diff_minor = clearing - internal``
+    (ej.: op ``100_00`` vs item ``99_00`` -> ``-100``) y ``date_diff_days =
+    clearing_date - internal_date``. Deriva de :func:`_assess_pair` (misma
+    fuente que :func:`_pair_key`, sin duplicar reglas).
     """
-    if entry.currency != op.currency:
+    currency_mismatch, direction_mismatch, amount_diff, date_diff, same_sign, _, _ = _assess_pair(
+        op, entry, tol
+    )
+    if currency_mismatch:
         return ReconException(
             reason=CURRENCY_MISMATCH,
             internal_id=op.op_id,
             clearing_id=entry.item_id,
         )
-    amount_diff = entry.amount_minor - op.amount_minor
-    date_diff = (entry.value_date - op.value_date).days
-    if (op.amount_minor > 0) != (entry.amount_minor > 0):
+    if direction_mismatch:
+        return ReconException(
+            reason=DIRECTION_MISMATCH,
+            internal_id=op.op_id,
+            clearing_id=entry.item_id,
+        )
+    if not same_sign:
         return ReconException(
             reason=AMOUNT_DIFF,
             internal_id=op.op_id,

@@ -168,11 +168,13 @@ def _tx(
     return row
 
 
-def _ingest(db: Session, entries, *, seed=None):
+def _ingest(db: Session, entries, *, seed=None, direction="OUTBOUND"):
     """Crea un archivo de clearing con los items dados (todos `PENDING`).
 
     Marca el archivo `PROCESSED` como hace `ingest_clearing_file` en
     produccion: solo los `PROCESSED` entran al cruce (H1 del review PR #27).
+    `direction` por defecto `OUTBOUND` (cruza contra transferencias del
+    motor, que la fachada deriva a `OUTBOUND`; M5 exige misma direccion).
     """
     seed = seed or f"t{uuid.uuid4().hex[:8]}"
     items = [
@@ -181,7 +183,7 @@ def _ingest(db: Session, entries, *, seed=None):
             "amount_minor": amount,
             "currency": currency,
             "value_date": day,
-            "direction": "INBOUND",
+            "direction": direction,
         }
         for ref, amount, currency, day in entries
     ]
@@ -365,7 +367,8 @@ def test_run_completes_exact_batch(db: Session):
     assert run.status == "COMPLETED"
     assert run.matched_count == 3
     assert run.unmatched_count == 0
-    assert run.total_minor == 600_00
+    # M5: `total_minor` con signo (items `OUTBOUND` restan).
+    assert run.total_minor == -600_00
     assert run.finished_at is not None
     items = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
     assert items == []
@@ -396,7 +399,7 @@ def test_run_amount_tolerance_from_config(db: Session):
     second = recon_service.run_reconciliation(db, run_date=day2, currency="PEN")
     assert second.matched_count == 1
     assert second.unmatched_count == 0
-    assert second.total_minor == 101_00
+    assert second.total_minor == -101_00
 
 
 def test_run_tolerance_ceiling_clamps_instead_of_failing(db: Session):
@@ -508,15 +511,13 @@ def test_run_skips_empty_ref_and_rejected_and_includes_reversal(db: Session):
     _ingest(db, [("R-V", 100_00, "PEN", D)], seed="rev")
     run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
     assert (run.matched_count, run.unmatched_count) == (1, 0)
-    assert run.total_minor == 100_00
+    # M5: el `REVERSAL` del motor deriva a `OUTBOUND` (default) y el item es
+    # `OUTBOUND`: cruzan, y el total resta.
+    assert run.total_minor == -100_00
 
 
 def test_run_does_not_move_money(db: Session):
     """La corrida no crea ni modifica operaciones del motor."""
-    before = {
-        row.id: (row.status, row.amount_minor, row.currency)
-        for row in db.scalars(sa.select(Transaction)).all()
-    }
     _tx(db, ref="R-M", amount=100_00)
     _tx(db, ref="R-N", amount=200_00, status="REJECTED")
     _ingest(db, [("R-M", 100_00, "PEN", D), ("R-N", 200_00, "PEN", D)], seed="nomoney")
@@ -618,15 +619,43 @@ def test_facade_returns_minimal_dicts_sorted(db: Session):
         "value_date",
         "type",
         "status",
+        "direction",
     }
     assert rows[0]["amount_minor"] == 100_00
     assert rows[0]["value_date"] == D
     assert rows[0]["type"] == "THIRD_PARTY_TRANSFER"
     assert rows[0]["status"] == "SETTLED"
+    # M5: las transferencias derivan a `OUTBOUND` (default documentado).
+    assert rows[0]["direction"] == "OUTBOUND"
+
+
+def test_facade_derives_inbound_direction_for_deposits(db: Session):
+    """`TOPUP`/`LOAN_DISBURSEMENT`/`SALARY_DISTRIBUTION` -> `INBOUND` (M5)."""
+    from app.modules.transactions.service import list_reconciliation_candidates
+
+    _tx(db, ref="R-IN-T", amount=100_00, day=D, ttype="TOPUP")
+    _tx(db, ref="R-IN-L", amount=100_00, day=D, ttype="LOAN_DISBURSEMENT")
+    _tx(db, ref="R-IN-S", amount=100_00, day=D, ttype="SALARY_DISTRIBUTION")
+    _tx(db, ref="R-OUT-Q", amount=100_00, day=D, ttype="QR_PAYMENT")
+    by_ref = {
+        row["external_ref"]: row["direction"]
+        for row in list_reconciliation_candidates(db, D, "PEN")
+    }
+    assert by_ref == {
+        "R-IN-L": "INBOUND",
+        "R-IN-S": "INBOUND",
+        "R-IN-T": "INBOUND",
+        "R-OUT-Q": "OUTBOUND",
+    }
 
 
 def test_facade_filters_status_currency_and_date(db: Session):
-    """Solo conciliables de la moneda y fecha (`settled_at` manda)."""
+    """Solo conciliables de la moneda y dia de negocio (M2/M3).
+
+    Con tolerancia 0 el alcance es el dia exacto; `settled_at` manda sobre
+    `created_at` (si aun no liquida, `created_at`); el dia es de negocio en
+    Lima, no UTC (M3).
+    """
     from app.modules.transactions.service import list_reconciliation_candidates
 
     _tx(db, ref="R-OK", amount=100_00, day=D)
@@ -641,6 +670,64 @@ def test_facade_filters_status_currency_and_date(db: Session):
     assert created_only.settled_at is None
     refs = [row["external_ref"] for row in list_reconciliation_candidates(db, D, "PEN")]
     assert "R-POST" in refs
+
+
+def test_facade_window_expands_with_date_tolerance(db: Session):
+    """M2: `date_tolerance_days` amplia el alcance interno ([D-tol, D+tol]).
+
+    Con tol 0 la operacion liquidada el dia siguiente no es candidata; con
+    tol 1 si (y el dominio la califica `DATE_DIFF`).
+    """
+    from app.modules.transactions.service import list_reconciliation_candidates
+
+    _tx(db, ref="R-W", amount=100_00, day=D + timedelta(days=1))
+    assert list_reconciliation_candidates(db, D, "PEN") == []
+    assert list_reconciliation_candidates(db, D, "PEN", date_tolerance_days=0) == []
+    rows = list_reconciliation_candidates(db, D, "PEN", date_tolerance_days=1)
+    assert [row["external_ref"] for row in rows] == ["R-W"]
+    assert rows[0]["value_date"] == D + timedelta(days=1)
+    with pytest.raises(TypeError):
+        list_reconciliation_candidates(db, D, "PEN", date_tolerance_days=True)
+    with pytest.raises(ValueError):
+        list_reconciliation_candidates(db, D, "PEN", date_tolerance_days=-1)
+
+
+def test_facade_business_day_is_lima_not_utc(db: Session):
+    """M3: dia de negocio `America/Lima` (liquidada 23:30 Lima = candidata del 14).
+
+    Operacion liquidada el 2026-11-14 23:30 Lima (2026-11-15 04:30 UTC):
+    es candidata de la corrida del 14 y NO de la del 15 (con `date()` UTC
+    seria al reves).
+    """
+    from app.modules.transactions.service import list_reconciliation_candidates
+
+    row = _tx(db, ref="R-LIMA", amount=100_00, day=D)
+    # 2026-11-14 23:30 en Lima = 2026-11-15 04:30 UTC (ingenuo = UTC).
+    row.settled_at = datetime(2026, 11, 15, 4, 30, 0)
+    db.flush()
+    assert [r["external_ref"] for r in list_reconciliation_candidates(db, D, "PEN")] == ["R-LIMA"]
+    assert list_reconciliation_candidates(db, D + timedelta(days=1), "PEN") == []
+
+
+def test_facade_business_timezone_explicit_and_invalid(db: Session):
+    """M3: `business_timezone` explicita manda; invalida -> `ValueError`.
+
+    Con `UTC` la operacion de las 04:30 UTC es del dia 15 (no del 14).
+    """
+    from app.modules.transactions.service import list_reconciliation_candidates
+
+    row = _tx(db, ref="R-TZ", amount=100_00, day=D)
+    row.settled_at = datetime(2026, 11, 15, 4, 30, 0)
+    db.flush()
+    assert list_reconciliation_candidates(db, D, "PEN", business_timezone="UTC") == []
+    assert [
+        r["external_ref"]
+        for r in list_reconciliation_candidates(
+            db, D + timedelta(days=1), "PEN", business_timezone="UTC"
+        )
+    ] == ["R-TZ"]
+    with pytest.raises(ValueError):
+        list_reconciliation_candidates(db, D, "PEN", business_timezone="No/Existe")
 
 
 def test_facade_falls_back_to_metadata_reference(db: Session):
@@ -669,14 +756,34 @@ def test_facade_validates_inputs(db: Session):
 
 
 def test_facade_is_read_only(db: Session):
-    """La fachada no deja pendientes (`new`) ni muta filas."""
+    """La fachada no deja pendientes (`new`) ni muta filas (B5: con flush real).
+
+    BAJO PR #27 B5: con `autoflush=True` un `add`/`flush` accidental se
+    haria visible (o fallaria el `assert` de `new`/`dirty`); ademas se
+    detecta cualquier `flush` via listener para que un `flush` silencioso
+    haga fallar la prueba.
+    """
     from app.modules.transactions.service import list_reconciliation_candidates
 
-    before = [(row.id, row.status) for row in db.scalars(sa.select(Transaction)).all()]
-    list_reconciliation_candidates(db, D, "PEN")
-    assert len(db.new) == 0
-    after = [(row.id, row.status) for row in db.scalars(sa.select(Transaction)).all()]
-    assert after == before
+    flushed: list[str] = []
+
+    def _on_flush(session, _ctx) -> None:  # pragma: no cover - solo guarda bandera
+        flushed.append("flush")
+
+    db.autoflush = True
+    event.listen(db, "after_flush", _on_flush)
+    try:
+        before = [(row.id, row.status) for row in db.scalars(sa.select(Transaction)).all()]
+        flushes_before = len(flushed)
+        list_reconciliation_candidates(db, D, "PEN")
+        assert len(flushed) == flushes_before
+        assert len(db.new) == 0
+        assert len(db.dirty) == 0
+        after = [(row.id, row.status) for row in db.scalars(sa.select(Transaction)).all()]
+        assert after == before
+    finally:
+        event.remove(db, "after_flush", _on_flush)
+        db.autoflush = False
 
 
 # ------------------------------------------------- fronteras, migracion, PII
@@ -729,21 +836,30 @@ def test_migration_0051_chains_0050_with_runs_table_and_seeds():
         "ck_reconciliation_runs_status",
         "ck_reconciliation_runs_matched_nonneg",
         "ck_reconciliation_runs_unmatched_nonneg",
-        "ck_reconciliation_runs_total_nonneg",
         "ck_reconciliation_matches_type",
         "ck_reconciliation_matches_amount_nonneg",
         "ix_reconciliation_runs_status",
         "ix_reconciliation_runs_date_currency",
         "ix_clearing_items_run_id",
+        # M6 (review PR #27): alcance + R2 (la `clearing_files (status)` ya
+        # existe desde `0050`: `ix_clearing_files_status`, sin duplicar).
+        "ix_clearing_items_status_value_currency",
+        "ix_transactions_recon_candidates",
+        "ix_transactions_recon_settle",
         "ix_reconciliation_matches_run_id",
         "ix_reconciliation_matches_transaction_id",
         "reconciliation.amount_tolerance_minor",
         "reconciliation.date_tolerance_days",
+        "reconciliation.business_timezone",
         "reconciliation.max_candidate_pairs",
         "reconciliation.max_candidate_pairs_per_run",
         "ON CONFLICT (key) DO NOTHING",
     ):
         assert token in text, f"migracion 0051 sin {token}"
+    # M5: `total_minor` con signo (sin CHECK `>= 0`).
+    assert (
+        "ck_reconciliation_runs_total_nonneg" not in text
+    ), "M5: total con signo INBOUND +/OUTBOUND -, sin CHECK de no negatividad"
     assert "uq_reconciliation_runs_date_currency" not in text, (
         "sin UQ natural: las COMPLETED son inmutables y los lotes tardios "
         "crean corridas nuevas (H3)"
@@ -762,7 +878,9 @@ def test_run_ignores_failed_file_items(db: Session):
     Regresion: un archivo `FAILED` con items `PENDING` (residuo de una
     ingesta que marco el archivo sin borrar items) mas un archivo
     `PROCESSED` con un item cruzable -> solo cruza el del `PROCESSED`
-    (`matched=1`); los del `FAILED` siguen `PENDING` e intactos.
+    (`matched=1`); los del `FAILED` siguen `PENDING` e intactos. B1 (BAJO
+    PR #27, `unmatched_count` total): la operacion `H1-B` queda sin item
+    cruzable -> `MISSING_EXTERNAL` y cuenta (`unmatched=1`).
     """
     _tx(db, ref="H1-A", amount=100_00)
     _tx(db, ref="H1-B", amount=200_00)
@@ -778,7 +896,7 @@ def test_run_ignores_failed_file_items(db: Session):
                 "amount_minor": 200_00,
                 "currency": "PEN",
                 "value_date": D,
-                "direction": "INBOUND",
+                "direction": "OUTBOUND",
             }
         ],
     )
@@ -786,7 +904,7 @@ def test_run_ignores_failed_file_items(db: Session):
     _ingest(db, [("H1-A", 100_00, "PEN", D)], seed="h1-ok")
     run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
     assert run.status == "COMPLETED"
-    assert (run.matched_count, run.unmatched_count) == (1, 0)
+    assert (run.matched_count, run.unmatched_count) == (1, 1)
     left = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
     assert left == []
     failed_items = recon_repo.list_pending_items(db, file_id=failed.id)
@@ -796,7 +914,11 @@ def test_run_ignores_failed_file_items(db: Session):
 
 
 def test_run_ignores_received_file_items(db: Session):
-    """H1: archivos aun `RECEIVED` (sin procesar) tampoco entran al cruce."""
+    """H1: archivos aun `RECEIVED` (sin procesar) tampoco entran al cruce.
+
+    B1 (BAJO PR #27, `unmatched_count` total): la operacion `H1-R` queda
+    sin item cruzable -> `MISSING_EXTERNAL` y cuenta (`unmatched=1`).
+    """
     _tx(db, ref="H1-R", amount=100_00)
     recon_repo.create_file_with_items(
         db,
@@ -810,13 +932,13 @@ def test_run_ignores_received_file_items(db: Session):
                 "amount_minor": 100_00,
                 "currency": "PEN",
                 "value_date": D,
-                "direction": "INBOUND",
+                "direction": "OUTBOUND",
             }
         ],
     )
     run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
     assert run.status == "COMPLETED"
-    assert (run.matched_count, run.unmatched_count) == (0, 0)
+    assert (run.matched_count, run.unmatched_count) == (0, 1)
 
 
 # ------------------------------------------------- H2: emparejamiento persistido
@@ -928,3 +1050,121 @@ def test_run_late_batch_creates_new_run_and_reexecution_reuses_it(db: Session):
     matches = recon_repo.list_matches_by_run(db, second.id)
     assert len(matches) == 1
     assert matches[0].match_type == "EXACT"
+
+
+# ------------------------------------------------- MEDIA (review PR #27 M2/M5)
+
+
+def test_run_date_tolerance_widens_internal_scope_to_date_diff(db: Session):
+    """M2: operacion interna en D+1 con tol 1 -> `DATE_DIFF`; con tol 0 -> huerfano.
+
+    La fachada cubre [`run_date` - tol, `run_date` + tol] por dia de negocio
+    y el dominio califica el par (el clearing sigue exacto en `run_date`).
+    """
+    _tx(db, ref="M2-D", amount=100_00, day=D + timedelta(days=1))
+    _ingest(db, [("M2-D", 100_00, "PEN", D)], seed="m2")
+    bare = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert (bare.matched_count, bare.unmatched_count) == (0, 1)
+    db.rollback()
+
+    _set_param(db, "reconciliation.date_tolerance_days", "1")
+    day2 = D + timedelta(days=2)
+    _tx(db, ref="M2-E", amount=100_00, day=day2 + timedelta(days=1))
+    _ingest(db, [("M2-E", 100_00, "PEN", day2)], seed="m2tol")
+    tolled = recon_service.run_reconciliation(db, run_date=day2, currency="PEN")
+    assert tolled.status == "COMPLETED"
+    assert (tolled.matched_count, tolled.unmatched_count) == (1, 0)
+    (match,) = recon_repo.list_matches_by_run(db, tolled.id)
+    assert match.match_type == "DATE_DIFF"
+
+
+def test_run_direction_mismatch_does_not_match(db: Session):
+    """M5: cargo `OUTBOUND` vs abono `INBOUND` (misma ref/monto) no matchean.
+
+    La transferencia del motor deriva a `OUTBOUND` y el item es `INBOUND`:
+    0 matches y 1 excepcion (`DIRECTION_MISMATCH`), sin fila de match.
+    """
+    _tx(db, ref="M5-D", amount=100_00, ttype="THIRD_PARTY_TRANSFER")
+    _ingest(db, [("M5-D", 100_00, "PEN", D)], seed="m5", direction="INBOUND")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (0, 1)
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+    assert run.total_minor == 0
+
+
+def test_run_total_minor_is_signed_by_direction(db: Session):
+    """M5: `total_minor` suma con signo (`INBOUND` +, `OUTBOUND` -).
+
+    Un abono `INBOUND` (+100) y un cargo `OUTBOUND` (-200) conciliados dan
+    neto -100 (puede ser negativo: sin CHECK `>= 0` desde la `0051`).
+    """
+    _tx(db, ref="M5-IN", amount=100_00, ttype="TOPUP")
+    _tx(db, ref="M5-OUT", amount=200_00, ttype="THIRD_PARTY_TRANSFER")
+    _ingest(db, [("M5-IN", 100_00, "PEN", D)], seed="m5in", direction="INBOUND")
+    _ingest(db, [("M5-OUT", 200_00, "PEN", D)], seed="m5out", direction="OUTBOUND")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (2, 0)
+    assert run.total_minor == 100_00 - 200_00
+
+
+def test_run_complete_run_accepts_negative_signed_total(db: Session):
+    """M5: `complete_run` persiste totales negativos (suma con signo)."""
+    run = recon_repo.create_run(db, run_date=D, currency="PEN")
+    recon_repo.complete_run(db, run, matched_count=1, unmatched_count=0, total_minor=-5000)
+    assert run.status == "COMPLETED"
+    assert run.total_minor == -5000
+
+
+# ------------------------------------------------- BAJO (review PR #27 B1/B2)
+
+
+def test_run_unmatched_counts_missing_external_total(db: Session):
+    """B1: `unmatched_count` = TOTAL de excepciones (incluye `MISSING_EXTERNAL`).
+
+    Opcion total sin columna nueva: una operacion interna sin item de
+    clearing deja `unmatched_count >= 1` (antes era invisible: solo se
+    contaba el lado clearing). Sin PII en el conteo: solo fecha/moneda.
+    """
+    _tx(db, ref="B1-SOLO", amount=100_00)
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert run.matched_count == 0
+    assert run.unmatched_count == 1
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+
+
+def test_run_executed_by_comes_from_caller_not_payload(db: Session):
+    """B2: `executed_by` lo pasa el llamante autenticado, no el payload.
+
+    El servicio jamas lee `executed_by` de los datos de entrada (el lote
+    trae un `raw` con un actor falso y la corrida persiste el del llamante;
+    E5-T21 debe pasarlo desde el principal del JWT). `None` = sistema.
+    """
+    actor = uuid.uuid4()
+    impostor = uuid.uuid4()
+    _tx(db, ref="B2-A", amount=100_00)
+    row = recon_repo.create_file_with_items(
+        db,
+        source="NETWORK",
+        file_ref="FILE-b2",
+        checksum="b2" * 32,
+        item_count=1,
+        items=[
+            {
+                "external_ref": "B2-A",
+                "amount_minor": 100_00,
+                "currency": "PEN",
+                "value_date": D,
+                "direction": "OUTBOUND",
+                "raw": {"executed_by": str(impostor)},
+            }
+        ],
+    )
+    recon_repo.mark_file_status(db, row, "PROCESSED")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN", executed_by=actor)
+    assert run.executed_by == actor
+    assert run.executed_by != impostor
+    system = recon_service.run_reconciliation(db, run_date=D + timedelta(days=30), currency="PEN")
+    assert system.executed_by is None

@@ -180,6 +180,18 @@ transactions (REF) <── reconciliation_matches / reconciliation_exceptions
 > cruzan items de archivos `PROCESSED`; sin UQ natural en runs
 > (`COMPLETED` inmutable, lotes tardios crean corridas nuevas; sin doble
 > conciliacion por `transaction_id` usado o estado `CONCILIATED`).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA M2-M7, HU19):
+> la misma `0051` (sin `0052`) ahora: alcance interno en ventana
+> [`run_date` - tol, `run_date` + tol] por dia de negocio
+> (`reconciliation.business_timezone`, default `America/Lima`; M2/M3) con
+> `DATE_DIFF` del dominio (clearing exacto en `run_date`); `external_ref`
+> maximo 80 (M4, sin migracion); `direction` (`INBOUND`/`OUTBOUND`) exigida
+> para el `Match` (M5, derivada del tipo; `total_minor` con signo);
+> indices `transactions` (`initiator_user_id`, `status`, `created_at`)
+> — R2 de produccion —, (`currency`, `status`, `settled_at`) y
+> `clearing_items` (`status`, `value_date`, `currency`) (M6, reversibles);
+> la cota cuenta pares examinados (M7).
 
 ## 11. Modulo `notifications`
 

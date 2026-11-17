@@ -15,7 +15,15 @@ fecha/moneda contra los candidatos internos de la fachada de solo lectura
 (min-cost max-flow: cardinalidad maxima + maximo de `EXACT`), persiste un
 `reconciliation_matches` por par, actualiza los items (`MATCHED`/`EXCEPTION`,
 siempre con `run_id`) y persiste la corrida `reconciliation_runs` con
-contadores. Idempotencia y corridas tardias: `COMPLETED` inmutable (sin
+contadores (`matched_count`, `unmatched_count` = TOTAL de excepciones del
+dominio —incluye `MISSING_EXTERNAL` de operaciones internas sin item, BAJO
+PR #27 B1 opcion total sin columna nueva—, `total_minor` = suma con signo
+de los items conciliados). El alcance interno cubre la ventana de negocio
+[`run_date` - tol, `run_date` + tol] en la zona
+`reconciliation.business_timezone` (M2/M3: la tolerancia de fecha amplia el
+alcance y el dominio califica `DATE_DIFF`); el clearing sigue exacto en
+`run_date`. `total_minor` es la suma con signo de los items conciliados
+(M5: `INBOUND` +, `OUTBOUND` -). Idempotencia y corridas tardias: `COMPLETED` inmutable (sin
 `PENDING` nuevos se reutiliza; con `PENDING` nuevos se crea una corrida
 nueva); `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en la
 misma fila; candidatos ya usados o `CONCILIATED` se excluyen. Si se supera
@@ -331,16 +339,25 @@ def run_reconciliation(
     """Cruza los `PENDING` de `(run_date, currency)` y persiste la corrida.
 
     Lee candidatos internos por la fachada de solo lectura
-    `transactions.service.list_reconciliation_candidates` (montos positivos
-    del motor, incluidos `REVERSAL`: el dominio exige mismo signo y ambos
-    lados son positivos, sin adaptacion de signo) y los items `PENDING` de
-    archivos `PROCESSED` con `value_date == run_date`; ejecuta el dominio
-    puro (min-cost max-flow: cardinalidad maxima + maximo de `EXACT`);
+    `transactions.service.list_reconciliation_candidates` con la ventana de
+    negocio [`run_date` - tol, `run_date` + tol] (M2/M3 del review PR #27:
+    la fachada deriva el dia de negocio en la zona
+    `reconciliation.business_timezone` desde `settled_at`/`created_at`; la
+    tolerancia de fecha `reconciliation.date_tolerance_days` amplia el
+    alcance interno y el dominio califica `DATE_DIFF`; montos positivos del
+    motor, incluidos `REVERSAL`: el dominio exige mismo signo y ambos lados
+    son positivos, sin adaptacion de signo) y los items `PENDING` de
+    archivos `PROCESSED` con `value_date == run_date` (alcance de clearing
+    exacto); ejecuta el dominio puro (min-cost max-flow: cardinalidad maxima
+    + maximo de `EXACT`; exige misma `direction` en ambos lados, M5);
     persiste un `reconciliation_matches` por par (auditoria item ->
     `transaction_id`), actualiza los items (`MATCHED`/`EXCEPTION`, siempre
     con `run_id`) y cierra la corrida `COMPLETED` con contadores
-    (`matched_count`, `unmatched_count` = items no conciliados,
-    `total_minor` = suma de los items conciliados).
+    (`matched_count`, `unmatched_count` = TOTAL de excepciones del dominio
+    —incluye `MISSING_EXTERNAL` de operaciones internas sin item, BAJO PR
+    #27 B1 opcion total sin columna nueva—,
+    `total_minor` = suma con signo de los items conciliados: `INBOUND` +,
+    `OUTBOUND` -, M5).
 
     Idempotencia y corridas tardias (H2/H3 del review PR #27): las
     `COMPLETED` son inmutables y nunca se reabren. Si la ultima corrida del
@@ -351,11 +368,21 @@ def run_reconciliation(
     `ReconciliationConflictError` (`409`); `FAILED` se reintenta en la misma
     fila. Doble conciliacion: los candidatos ya usados en
     `reconciliation_matches` (por `transaction_id`) o con estado
-    `CONCILIATED` se excluyen antes de cruzar. Cota superada
+    `CONCILIATED` se excluyen antes de cruzar. La asignacion de excepciones
+    a sobrantes es codiciosa y determinista (se recorre por (`external_ref`,
+    `item_id`) y cada item toma su mejor candidato libre por `_pair_key`):
+    puede no ser la explicacion optima global, solo la del dominio; el
+    servicio ademas filtra por dia/moneda (BAJO PR #27 B4). `executed_by`
+    lo pasa el llamante autenticado (E5-T21 debe pasarlo desde el principal
+    del JWT, nunca desde el payload/body: el servicio jamas lo lee de los
+    datos de entrada; BAJO PR #27 B2). `None` = corrida del sistema.
+    Cota superada
     (`CandidateBudgetExceeded`) -> corrida `FAILED` sin parciales (el
     cruce es puro y ocurre antes de mutar; motivo
     `CANDIDATE_BUDGET_EXCEEDED` en log/auditoria, sin `external_ref`).
-    No mueve dinero ni crea asientos. `flush` sin `commit`.
+    No mueve dinero ni crea asientos. `flush` sin `commit`. NO esta cableada
+    a job ni endpoint (correcto para el corte 2; E5-T21 la expondra — BAJO
+    PR #27 B7: hoy no cambia produccion aun).
     """
     day = recon_repo.coerce_run_date(run_date)
     code = recon_repo.coerce_run_currency(currency)
@@ -374,7 +401,9 @@ def run_reconciliation(
         list_reconciliation_candidates as _candidates,
     )
 
-    raw_candidates = _candidates(session, day, code)
+    raw_candidates = _candidates(
+        session, day, code, date_tolerance_days=tolerances.date_tolerance_days
+    )
     # BAJO-2: solo los ya usados en la ventana de la corrida (misma moneda
     # y `run_date` ± tolerancia de fecha), sin traer toda la tabla.
     used_transaction_ids = recon_repo.list_used_transaction_ids(
@@ -403,6 +432,7 @@ def run_reconciliation(
             amount_minor=int(row["amount_minor"]),
             currency=str(row["currency"]),
             value_date=row["value_date"],
+            direction=str(row.get("direction") or "OUTBOUND"),
         )
         for row in candidates
     ]
@@ -413,6 +443,7 @@ def run_reconciliation(
             amount_minor=item.amount_minor,
             currency=item.currency,
             value_date=item.value_date,
+            direction=item.direction,
         )
         for item in items
     ]
@@ -479,7 +510,7 @@ def run_reconciliation(
 
     items_by_id = {str(item.id): item for item in items}
     matched_item_ids = {m.clearing_id for m in result.matches}
-    matched_amounts = {str(item.id): item.amount_minor for item in items}
+    matched_amounts = {str(item.id): item for item in items}
     for match in result.matches:
         item = items_by_id[match.clearing_id]
         recon_repo.create_match(
@@ -492,14 +523,22 @@ def run_reconciliation(
             currency=item.currency,
         )
         recon_repo.mark_item_status(session, item, "MATCHED", run_id=run.id)
-    unmatched_count = 0
     for exc in result.exceptions:
         if exc.clearing_id is not None and exc.clearing_id in items_by_id:
             recon_repo.mark_item_status(
                 session, items_by_id[exc.clearing_id], "EXCEPTION", run_id=run.id
             )
-            unmatched_count += 1
-    total_minor = sum(matched_amounts[mid] for mid in matched_item_ids)
+    # B1 (BAJO PR #27): `unmatched_count` = TOTAL de excepciones del dominio
+    # (incluye `MISSING_EXTERNAL` de operaciones internas sin item, que no
+    # tocan items pero si cuentan). Opcion total sin columna nueva.
+    unmatched_count = len(result.exceptions)
+    # M5: `total_minor` con signo (documentado en `docs/03b#12.2`): cada item
+    # conciliado suma `+amount` si es `INBOUND` y `-amount` si es
+    # `OUTBOUND`; puede ser negativo (sin CHECK `>= 0` desde la `0051`).
+    total_minor = sum(
+        item.amount_minor if item.direction == "INBOUND" else -item.amount_minor
+        for item in (matched_amounts[mid] for mid in matched_item_ids)
+    )
     recon_repo.complete_run(
         session,
         run,

@@ -289,6 +289,30 @@ def test_invalid_file_ref_raises_without_file(db: Session):
     db.rollback()
 
 
+def test_external_ref_capped_at_80_columns_width(db: Session):
+    """M4 (review PR #27): `external_ref` de 80 OK; de 81 -> `VALIDATION_ERROR`.
+
+    La columna `clearing_items.external_ref` es `VARCHAR(80)` (migracion
+    `0050`); el validador acepta como maximo 80, sin migracion.
+    """
+    assert recon_repo.coerce_external_ref("R" + "x" * 79) == "R" + "x" * 79
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_repo.coerce_external_ref("R" + "x" * 80)
+    payload = _payload(seed="ref80")
+    payload["items"][0]["external_ref"] = "R" + "x" * 79
+    result = recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+    assert result["inserted"] == 3
+    bad = _payload(seed="ref81")
+    bad["items"][0]["external_ref"] = "R" + "x" * 80
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, bad)
+    db.commit()
+    row = recon_repo.get_file_by_ref(db, bad["file_ref"])
+    assert row is not None and row.status == "FAILED"
+    assert _count_items(db, row.id) == 0
+
+
 # ------------------------------------------------- repositorio
 def test_repository_get_create_list_mark(db: Session):
     """`get_file_by_ref` / `create_file_with_items` / `list` / `mark`."""

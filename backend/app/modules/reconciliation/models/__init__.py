@@ -139,6 +139,14 @@ class ClearingItem(Base):
         sa.Index("ix_clearing_items_external_ref", "external_ref"),
         sa.Index("ix_clearing_items_status", "status"),
         sa.Index("ix_clearing_items_run_id", "run_id"),
+        # M6 (review PR #27): alcance de la corrida (items `PENDING` de
+        # archivos `PROCESSED` por fecha/moneda) en un solo indice.
+        sa.Index(
+            "ix_clearing_items_status_value_currency",
+            "status",
+            "value_date",
+            "currency",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -175,10 +183,13 @@ class ReconciliationRun(Base):
     `COMPLETED`. Solo una `RUNNING` por `(run_date, currency)` (indice unico
     parcial `uq_reconciliation_runs_single_running` `WHERE status='RUNNING'`;
     segunda `RUNNING` concurrente = `CONFLICT` por la BD); `FAILED` se
-    reintenta en la misma fila. `matched_count` = pares conciliados; `unmatched_count`
-    = items de clearing no conciliados (lado clearing de las excepciones);
-    `total_minor` = suma en centimos de los items conciliados (nunca
-    `float`). Sin PII: solo fecha, moneda y conteos. Los items los mueve
+    reintenta en la misma fila. `matched_count` = pares conciliados;
+    `unmatched_count` = TOTAL de excepciones del dominio (BAJO PR #27 B1,
+    opcion total sin columna nueva: incluye `MISSING_INTERNAL` de items
+    huerfanos y `MISSING_EXTERNAL` de operaciones internas sin item);
+    `total_minor` = suma con signo en centimos de los items conciliados
+    (M5 del review PR #27: `INBOUND` +, `OUTBOUND` -; puede ser negativo,
+    sin CHECK `>= 0`; nunca `float`). Sin PII: solo fecha, moneda y conteos. Los items los mueve
     solo el servicio ``run_reconciliation`` (``PENDING`` -> ``MATCHED`` /
     ``EXCEPTION``); este modelo no toca dinero ni asientos.
     """
@@ -197,10 +208,8 @@ class ReconciliationRun(Base):
             "unmatched_count >= 0",
             name="ck_reconciliation_runs_unmatched_nonneg",
         ),
-        sa.CheckConstraint(
-            "total_minor >= 0",
-            name="ck_reconciliation_runs_total_nonneg",
-        ),
+        # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
+        # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
         sa.Index("ix_reconciliation_runs_status", "status"),
         sa.Index("ix_reconciliation_runs_date_currency", "run_date", "currency"),
         # Guarda de BD (MEDIO-2): una sola `RUNNING` por `(run_date,
@@ -232,7 +241,8 @@ class ReconciliationRun(Base):
     unmatched_count: Mapped[int] = mapped_column(
         sa.Integer(), nullable=False, default=0, server_default="0"
     )
-    # Suma en centimos de los items conciliados; nunca `float` (regla 3).
+    # Suma con signo en centimos de los items conciliados (`INBOUND` +,
+    # `OUTBOUND` -; M5); nunca `float` (regla 3).
     total_minor: Mapped[int] = mapped_column(
         sa.BigInteger(), nullable=False, default=0, server_default="0"
     )

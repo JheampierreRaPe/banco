@@ -10,7 +10,8 @@ asientos (eso es `E5-T18`..`E5-T20` via el motor). Sin PII en logs
 Validaciones (el brief exige `ValueError` por datos invalidos):
 `file_ref` opaco (`1..64`, sin eco en errores), `source` normalizada a
 mayusculas, `checksum` SHA-256 hex de 64, `item_count` entero `>= 0`,
-`external_ref` opaco (`1..128`), `amount_minor` entero en centimos
+`external_ref` opaco (`1..80`, igual que la columna `VARCHAR(80)` de la
+migracion `0050`, M4), `amount_minor` entero en centimos
 `> 0` (sin `bool`), `currency` ISO-4217 (3 letras ASCII, se normaliza a
 mayusculas), `value_date` fecha valida, `direction` solo
 `INBOUND`/`OUTBOUND`, `raw` mapeo o `None`.
@@ -44,7 +45,10 @@ from app.modules.reconciliation.models import (
 logger = logging.getLogger(__name__)
 
 _FILE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,63}$")
-_EXTERNAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,127}$")
+# M4 (review PR #27): `clearing_items.external_ref` es `VARCHAR(80)` en la
+# migracion `0050` (ver `docs/03b#12.1`); el validador acepta como maximo
+# 80 (1 + 79), sin migracion. Una ref de 81+ es `VALIDATION_ERROR`.
+_EXTERNAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,79}$")
 _CHECKSUM_RE = re.compile(r"^[0-9a-f]{64}$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
@@ -107,9 +111,9 @@ def coerce_item_count(value: object) -> int:
 
 
 def coerce_external_ref(value: object) -> str:
-    """Normaliza y valida `external_ref` (opaco, sin eco en errores)."""
+    """Normaliza y valida `external_ref` (opaco, `1..80`, sin eco en errores)."""
     text = str(value or "").strip()
-    if not text or len(text) > 128 or not _EXTERNAL_REF_RE.match(text):
+    if not text or len(text) > 80 or not _EXTERNAL_REF_RE.match(text):
         raise ReconciliationValidationError("referencia externa invalida")
     return text
 
@@ -518,16 +522,19 @@ def complete_run(
     Solo desde `RUNNING`: `UPDATE ... WHERE id=:id AND status='RUNNING'`
     y `rowcount == 0` => `ReconciliationConflictError`; no se confia en el
     estado en memoria (un objeto stale con `status='RUNNING'` no gana si
-    la fila ya se cerro: solo un cierre gana). Contadores enteros `>= 0`
-    (se validan antes de mutar). Hace `flush`, no `commit`.
+    la fila ya se cerro: solo un cierre gana). `matched_count`/
+    `unmatched_count` enteros `>= 0`; `total_minor` entero con signo
+    (M5 del review PR #27: `INBOUND` suma, `OUTBOUND` resta; puede ser
+    negativo). Se validan antes de mutar. Hace `flush`, no `commit`.
     """
     for name, value in (
         ("matched_count", matched_count),
         ("unmatched_count", unmatched_count),
-        ("total_minor", total_minor),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ReconciliationValidationError(f"contador de corrida invalido: {name}")
+    if isinstance(total_minor, bool) or not isinstance(total_minor, int):
+        raise ReconciliationValidationError("contador de corrida invalido: total_minor")
     finished = datetime.now(UTC)
     result = session.execute(
         update(ReconciliationRun)

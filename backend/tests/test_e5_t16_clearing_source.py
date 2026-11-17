@@ -159,6 +159,20 @@ def test_parse_item_rejects_non_dict():
         parse_item_payload([1, 2, 3])
 
 
+def test_parse_item_external_ref_capped_at_80_columns_width():
+    """BAJO-4 (review PR #27): el adaptador acepta como maximo 80.
+
+    Una sola fuente con la columna `VARCHAR(80)` de `clearing_items` y con
+    `coerce_external_ref` del repositorio: ref de 80 OK, de 81 ->
+    `VALIDATION_ERROR` (sin truncado silencioso).
+    """
+    ok = parse_item_payload(_item_dict(external_ref="R" + "x" * 79))
+    assert ok.external_ref == "R" + "x" * 79
+    with pytest.raises(ClearingSourceValidationError) as exc:
+        parse_item_payload(_item_dict(external_ref="R" + "x" * 80))
+    assert exc.value.code == CLEARING_SOURCE_VALIDATION_ERROR
+
+
 @pytest.mark.parametrize(
     "override",
     [

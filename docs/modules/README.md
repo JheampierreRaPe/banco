@@ -413,19 +413,33 @@ eventos (`outbox`/`inbox`).
   desembolsos (capital, no gasto) ni transferencias entre cuentas propias
   (`OWN_TRANSFER` mueve fondos entre cuentas del mismo titular: no es gasto);
   para el perfil y el motor; D-01, solo lectura).
-- **Fachada de candidatos para conciliacion (E5-T18 corte 2, HU19):**
+- **Fachada de candidatos para conciliacion (E5-T18 corte 2 + review
+  PR #27 MEDIA M2/M3/M5, HU19):**
   `transactions.service.list_reconciliation_candidates(session, value_date,
-  currency) -> list[{transaction_id, external_ref, amount_minor, currency,
-  value_date, type, status}]` (solo lectura, sin `flush`/`commit`; orden
+  currency, date_tolerance_days=0, business_timezone=None) ->
+  list[{transaction_id, external_ref, amount_minor, currency, value_date,
+  type, status, direction}]` (solo lectura, sin `flush`/`commit`; orden
   estable por `external_ref`/`transaction_id`). Alcance: moneda indicada,
-  estados conciliables (`POSTED`/`SETTLED`/`CONCILIATED`) y fecha valor del
-  dia (`settled_at` o, si aun no liquida, `created_at`); `value_date` exige
-  `date` y `currency` ISO-4217 (`TypeError`/`ValueError` mapeables a
-  `VALIDATION_ERROR`). Reversos verificados (nota (d) de `E5-T18`):
+  estados conciliables (`POSTED`/`SETTLED`/`CONCILIATED`) y dia de negocio
+  en [`value_date` - tol, `value_date` + tol] en la zona `business_timezone`
+  (explicita > `reconciliation.business_timezone` de `config.parameters`
+  > default `America/Lima`; M3: convierte `settled_at` — o `created_at` si
+  aun no liquida — con `ZoneInfo`, nunca `date()` UTC; pre-filtro SQL en un
+  rango UTC amplio, recorte exacto en Python, portable SQLite/Postgres).
+  `value_date` exige `date`, `date_tolerance_days` entero `>= 0` y
+  `currency` ISO-4217 (`TypeError`/`ValueError` mapeables a
+  `VALIDATION_ERROR`). Direccion (M5): `direction` `INBOUND`/`OUTBOUND`
+  derivada del tipo (`TOPUP`/`LOAN_DISBURSEMENT`/`SALARY_DISTRIBUTION` ->
+  `INBOUND`; transferencias/QR/servicios/pagos/cuotas/FX/reversos y resto
+  -> `OUTBOUND`); el dominio exige misma direccion para el `Match`.
+  Reversos verificados (nota (d) de `E5-T18`):
   `amount_minor` siempre `> 0` y el reverso es `type='REVERSAL'` con monto
   positivo (sin adaptacion de signo); filas sin `external_ref` usan
   `metadata.reference` y, sin ambas, se omiten. La consume `reconciliation`
   (`run_reconciliation`) sin importar modelos ajenos (regla de oro 4).
+  Indices (M6, migracion `0051_reconciliation_runs`): `transactions`
+  (`initiator_user_id`, `status`, `created_at`) — R2 — y (`currency`,
+  `status`, `settled_at`).
 - **Consume:** `fraud.alert.raised` (bloqueo), `account.created`.
 - **Puede llamar a:** `accounts` (validar/actualizar saldos), `ledger` (asientos), `risk`, `fx`,
   `wallet`, `notifications`, `audit`.
@@ -1043,8 +1057,9 @@ eventos (`outbox`/`inbox`).
   (decision de alcance aceptada R5: sin fuente server-side IP/geo; el cliente
   no elige su pais). **No mueve dinero** ni crea `risk.alerts` (eso es `E6-T04`); E6-T03 queda `Hecho`
   (sin migracion; la ventana configurable por admin queda diferida; el indice
-  `(initiator_user_id, status, created_at)` de `transactions` sigue pendiente
-  tras #27 como bloqueante para produccion, R2).
+  `(initiator_user_id, status, created_at)` de `transactions` (R2,
+  bloqueante para produccion) lo crea la migracion
+  `0051_reconciliation_runs` (E5-T18 review PR #27 MEDIA M6).
 - **Escalado del reporte "no reconozco" (E6-T14, HU22 CA-02):** el consumidor
   D-04 `risk.events.on_unrecognized_operation_reported` (consumidor
   `risk-unrecognized-reports`, idempotente por `processed_events`) consume
@@ -1131,24 +1146,27 @@ eventos (`outbox`/`inbox`).
   menos `EXACT` que otro maximo alternativo y 120 con un maximo alternativo
   100% exacto; el corte 2 puede adoptar min-cost max-flow — coste 0 exacto /
   1 tolerado — si quiere consistencia total). Los sobrantes se clasifican como excepcion. Mejor candidato con prioridad `EXACT` > tolerado
-  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH` > fuera de tolerancia;
-  en `CURRENCY_MISMATCH` desempata la cercania (monto/fecha) antes que el
-  `op_id`; califica el par conciliado como `EXACT`, `AMOUNT_DIFF` o
-  `DATE_DIFF` (diferencia dentro de tolerancia) y el resto como excepcion
-  tipada (`CURRENCY_MISMATCH`, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia
+  (`AMOUNT_DIFF`/`DATE_DIFF`) > `CURRENCY_MISMATCH`/`DIRECTION_MISMATCH` >
+  fuera de tolerancia (B3: `_pair_key` deriva de la unica funcion de
+  clasificacion `_assess_pair`, sin duplicar reglas; `_classify` usa la
+  misma fuente); en moneda/direccion distinta desempata la cercania
+  (monto/fecha) antes que el `op_id`; califica el par conciliado como `EXACT`,
+  `AMOUNT_DIFF` o `DATE_DIFF` (diferencia dentro de tolerancia) y el resto como excepcion
+  tipada (`CURRENCY_MISMATCH`, `DIRECTION_MISMATCH` — M5: misma ref/monto pero
+  direccion distinta nunca es `Match` —, `AMOUNT_DIFF`/`DATE_DIFF` fuera de tolerancia
   con el detalle numerico —detalle `!= 0` por invariante—, `MISSING_INTERNAL`,
   `MISSING_EXTERNAL`). `MatchResult` expone tuplas inmutables (acepta listas
   y las convierte).
   **Rendimiento/cota:** indice por monto (`bisect` sobre la ventana de
-  tolerancia + filtro de moneda/signo/fecha: `O(n log n + k)`, sin `O(n^2)`
+  tolerancia + filtro de moneda/signo/direccion/fecha: `O(n log n + k)`, sin `O(n^2)`
   con tolerancia 0/estrecha) y cota `MAX_CANDIDATE_PAIRS`
-  (`250_000` pares evaluables/grupo, `~500x500`, configurable) que falla con
+  (`250_000` pares examinados/grupo, `~500x500`, configurable) que falla con
   `ValueError` claro ante refs repetidas patologicas con tolerancia amplia,
-  tanto en la pasada de matching (ventana + moneda/signo/fecha: solo cuenta
-  aristas `Match`) como en la pasada de excepciones (solo pares libres con
-  misma moneda, mismo signo y fecha dentro de tolerancia; mismo
-  `max_candidate_pairs` y mismo estilo de mensaje). Un 600x600 con todas las
-  monedas distintas cuenta 0 y no aborta (todo `CURRENCY_MISMATCH`). El
+  tanto en la pasada de matching (cada operacion examinada en la ventana
+  cuenta, pase o no los filtros — M7: un 600x600 con todas las monedas
+  distintas aborta) como en la pasada de excepciones (cada par libre
+  evaluado con `_pair_key`; mismo `max_candidate_pairs` y mismo estilo de
+  mensaje). El
   `ValueError` nunca expone la ref literal (conteos + hash SHA-256 8 hex);
   el corte 2 debe mapearlo a corrida `FAILED` (o degradacion por grupo) y
   poder configurar el default por entorno. Casos A/B del validador (exacto que compite con tolerados)
@@ -1176,11 +1194,15 @@ eventos (`outbox`/`inbox`).
 - **Corrida persistida (E5-T18 + review PR #27 H1/H2/H3 + MEDIO/BAJO, HU19):** servicio
   `run_reconciliation(session, *, run_date, currency, executed_by=None)
   -> ReconciliationRun` (misma sesion: `flush` sin `commit`): lee los
-  candidatos por la fachada, los `PENDING` de archivos `PROCESSED` de
+  candidatos por la fachada con ventana de negocio [`run_date` - tol,
+  `run_date` + tol] en la zona `reconciliation.business_timezone`
+  (M2/M3: la tolerancia de fecha amplia el alcance interno; el dominio
+  califica `DATE_DIFF`), los `PENDING` de archivos `PROCESSED` de
   alcance exacto (`value_date == run_date`, moneda; H1: los archivos
   `FAILED`/`RECEIVED` nunca cruzan), tolerancias y cotas desde
   `config.parameters` (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`,
   default `0`/`0` con techos `1_000_000`/`31 dias`;
+  `reconciliation.business_timezone`, default `America/Lima`),
   `reconciliation.max_candidate_pairs` por grupo, default `250_000`, y
   `reconciliation.max_candidate_pairs_per_run` por corrida, default
   `1_000_000`, techo defensivo `5_000_000`), excluye los ya usados en
@@ -1197,8 +1219,10 @@ eventos (`outbox`/`inbox`).
   atomico — MEDIO-2: `UPDATE ... WHERE PENDING`, solo un worker gana) y
   cierra
   `reconciliation_runs` con contadores (`matched_count`,
-  `unmatched_count` = items no conciliados, `total_minor` = suma de
-  conciliados). Idempotencia y corridas tardias (H3, sin UQ natural: las
+  `unmatched_count` = TOTAL de excepciones del dominio, incluidas las
+  `MISSING_EXTERNAL` de operaciones internas sin item — BAJO PR #27 B1,
+  opcion total sin columna nueva —, `total_minor` = suma con signo
+  de conciliados: `INBOUND` +, `OUTBOUND` -, M5, sin CHECK `>= 0`). Idempotencia y corridas tardias (H3, sin UQ natural: las
   `COMPLETED` son inmutables y nunca se reabren; sin `PENDING` nuevos se
   reutiliza la ultima (orden determinista `created_at DESC, id DESC`,
   BAJO-3: sin depender de los `NULL` de `finished_at`), con `PENDING`
@@ -1210,14 +1234,25 @@ eventos (`outbox`/`inbox`).
   en la misma fila; cota superada
   (`CandidateBudgetExceeded`) deja la corrida `FAILED` sin parciales
   (motivo `CANDIDATE_BUDGET_EXCEEDED`, sin `external_ref` en logs) porque
-  el cruce es puro y ocurre antes de mutar. Auditoria best-effort sin
-  PII. No mueve dinero ni crea asientos. Repositorio con
+  el cruce es puro y ocurre antes de mutar. La asignacion de excepciones a
+  sobrantes es codiciosa y determinista (B4: se recorre por
+  (`external_ref`, `item_id`) y cada item toma su mejor candidato libre por
+  `_pair_key`): puede no ser la explicacion optima global, solo la del
+  dominio; el servicio ademas filtra por dia/moneda. `executed_by` lo pasa
+  el llamante autenticado (B2: E5-T21 debe pasarlo desde el principal del
+  JWT, nunca desde el payload/body; `None` = sistema). Auditoria
+  best-effort sin
+  PII. No mueve dinero ni crea asientos. `run_reconciliation` NO esta
+  cableada a job ni endpoint (B7: correcto para el corte 2, no cambia
+  produccion aun; la expondra E5-T21). Repositorio con
   `create_run`/`get_run_by_date_currency`/`list_runs_by_date_currency`/
   `complete_run`/`fail_run`/`mark_run_running`/`list_pending_items_for_run`/
   `mark_item_status`/`create_match`/`get_match_by_item`/
   `list_matches_by_run`/`list_used_transaction_ids`;
   modelos `ReconciliationRun`/`ReconciliationMatch` + `ClearingItem.run_id`
-  (`0051_reconciliation_runs`).
+  + indice compuesto (`status`, `value_date`, `currency`) en items
+  (`0051_reconciliation_runs`, que tambien crea los indices M6/R2 de
+  `transactions`).
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

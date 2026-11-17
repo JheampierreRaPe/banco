@@ -31,6 +31,7 @@ from app.modules.reconciliation.domain.matching import (
     AMOUNT_DIFF,
     CURRENCY_MISMATCH,
     DATE_DIFF,
+    DIRECTION_MISMATCH,
     EXACT,
     MAX_CANDIDATE_PAIRS,
     MISSING_EXTERNAL,
@@ -45,23 +46,34 @@ from app.modules.reconciliation.domain.matching import (
 D = date(2026, 11, 13)
 
 
-def _op(op_id="op-1", ref="REF-1", amount=100_00, currency="PEN", value_date=D):
+def _op(
+    op_id="op-1", ref="REF-1", amount=100_00, currency="PEN", value_date=D, direction="OUTBOUND"
+):
     return InternalOperation(
         op_id=op_id,
         external_ref=ref,
         amount_minor=amount,
         currency=currency,
         value_date=value_date,
+        direction=direction,
     )
 
 
-def _item(item_id="it-1", ref="REF-1", amount=100_00, currency="PEN", value_date=D):
+def _item(
+    item_id="it-1",
+    ref="REF-1",
+    amount=100_00,
+    currency="PEN",
+    value_date=D,
+    direction="OUTBOUND",
+):
     return ClearingEntry(
         item_id=item_id,
         external_ref=ref,
         amount_minor=amount,
         currency=currency,
         value_date=value_date,
+        direction=direction,
     )
 
 
@@ -965,7 +977,7 @@ def test_max_cardinality_2x2_sweep_no_suboptimal():
 def test_exceptions_pass_bound_fails_fast():
     """Grupo patologico sin matches: la pasada de excepciones falla rapido.
 
-    500 libres x 500 libres = 250_000+ con cota 10 -> ValueError inmediato,
+    500 libres x 500 libres = 250_000 examinados con cota 10 -> ValueError inmediato,
     no minutos de `min()` cartesiano.
     """
     import time
@@ -1004,24 +1016,44 @@ def test_match_result_rejects_invalid_elements():
         )
 
 
-# --- Fix comentario PR #25 (2026-11-13): cota cuenta solo aristas Match ---
+# --- Fix M7 review PR #27 (2026-11-17): la cota cuenta pares examinados ---
 
 
-def test_bound_counts_only_matchable_pairs_all_currencies_differ():
-    """600x600 misma ref, monedas distintas: no aborta (0 aristas Match).
+def test_bound_counts_all_examined_pairs_all_currencies_differ():
+    """600x600 misma ref, monedas distintas: aborta (la cota acota todo).
 
-    Falla sin el fix (la ventana 600x600 = 360_000 > cota default cuenta
-    pares que nunca podrian ser Match y lanza ValueError); pasa con el fix
-    (cuenta 0 evaluables) y todo queda como CURRENCY_MISMATCH.
+    M7: la cota cuenta pares EXAMINADOS en la ventana (pase o no los
+    filtros), no solo aristas `Match`. Con la misma ref y montos iguales la
+    ventana cubre todo el grupo (360_000 examinados > cota default) y se
+    lanza `CandidateBudgetExceeded` antes del cartesiano, sin exponer la ref
+    (conteos + hash). Reemplaza al invariante anterior (contar 0 y no
+    abortar), que dejaba el trabajo real sin acotar.
     """
 
     tol = Tolerances(amount_tolerance_minor=10**9, date_tolerance_days=10**4)
     internal = [_op(op_id=f"op-{i:04d}", ref="REF-DIFF", currency="PEN") for i in range(600)]
     clearing = [_item(item_id=f"it-{i:04d}", ref="REF-DIFF", currency="USD") for i in range(600)]
-    result = match_items(internal, clearing, tol)
-    assert result.matched_count == 0
-    assert result.exception_count == 600
-    assert {e.reason for e in result.exceptions} == {CURRENCY_MISMATCH}
+    with pytest.raises(ValueError, match="cota de seguridad"):
+        match_items(internal, clearing, tol)
+
+
+def test_bound_counts_window_examinations_not_only_edges():
+    """4x4 exacto: la ventana examina 16 pares (cota 16 OK, 15 aborta).
+
+    M7: cada operacion de la ventana `bisect` cuenta aunque termine en arista
+    `Match` (antes solo contaban las aristas y este caso sumaba 16 igual;
+    el invariante nuevo se ve en que un 4x4 SIN coincidencias tambien suma
+    16 y aborta con cota 15).
+    """
+    internal = [_op(op_id=f"op-{i}", ref="REF-W", amount=100_00) for i in range(4)]
+    clearing = [_item(item_id=f"it-{i}", ref="REF-W", amount=100_00) for i in range(4)]
+    ok_result = match_items(internal, clearing, None, max_candidate_pairs=16)
+    assert ok_result.matched_count == 4
+    with pytest.raises(ValueError, match="cota de seguridad"):
+        match_items(internal, clearing, None, max_candidate_pairs=15)
+    other = [_item(item_id=f"it-{i}", ref="REF-W", amount=900_00 + i) for i in range(4)]
+    with pytest.raises(ValueError, match="cota de seguridad"):
+        match_items(internal, other, None, max_candidate_pairs=15)
 
 
 def test_bound_error_hides_external_ref_value():
@@ -1078,7 +1110,7 @@ def test_deep_augmenting_chain_completes_without_recursion_error(n):
     la reasignacion hasta `op-00000` (profundidad `n`). Con `_augment`
     recursivo falla con `RecursionError` desde `n = 1000` (limite 1000;
     con 950 pasa); el iterativo con pila explicita completa con
-    cardinalidad maxima. Candidatos `~3n`, muy bajo la cota (`250_000`),
+    cardinalidad maxima. Pares examinados `~3n`, muy bajo la cota (`250_000`),
     para ejercitar la profundidad sin dispararla.
     """
     import time
@@ -1093,3 +1125,80 @@ def test_deep_augmenting_chain_completes_without_recursion_error(n):
     assert time.perf_counter() - start < 10.0
     assert result.matched_count == n
     assert result.exception_count == 0
+
+
+# --- Review PR #27 MEDIA M5 (2026-11-17): `direction` obligatoria para Match ---
+
+
+def test_direction_mismatch_never_matches():
+    """Cargo OUTBOUND vs abono INBOUND (misma ref/monto/moneda/fecha): no matchean.
+
+    M5: el `Match` exige misma `direction`; el par clasifica como
+    `DIRECTION_MISMATCH` con ambos lados (sin detalles numericos, como
+    `CURRENCY_MISMATCH`).
+    """
+    from app.modules.reconciliation.domain.matching import _classify
+
+    tol = Tolerances()
+    outcome = _classify(_op(direction="OUTBOUND"), _item(direction="INBOUND"), tol)
+    from app.modules.reconciliation.domain.matching import ReconException
+
+    assert isinstance(outcome, ReconException)
+    assert outcome.reason == DIRECTION_MISMATCH
+    result = match_items([_op(direction="OUTBOUND")], [_item(direction="INBOUND")], tol)
+    assert result.matched_count == 0
+    assert result.exception_count == 1
+    (only,) = result.exceptions
+    assert only.reason == DIRECTION_MISMATCH
+    assert (only.internal_id, only.clearing_id) == ("op-1", "it-1")
+
+
+def test_same_direction_matches_exact():
+    """Misma `direction` (INBOUND/INBOUND): `EXACT` normal."""
+    result = match_items([_op(direction="INBOUND")], [_item(direction="INBOUND")], Tolerances())
+    assert result.matched_count == 1
+    assert result.matches[0].qualifier == EXACT
+    assert result.exception_count == 0
+
+
+def test_direction_pair_key_level_and_currency_first():
+    """`_pair_key`: direccion distinta es nivel 2; moneda manda sobre direccion."""
+    from app.modules.reconciliation.domain.matching import _pair_key
+
+    tol = Tolerances()
+    assert _pair_key(_op(), _item(direction="INBOUND"), tol)[0] == 2
+    assert _pair_key(_op(), _item(direction="INBOUND", currency="USD"), tol)[0] == 2
+    from app.modules.reconciliation.domain.matching import _classify
+
+    assert (
+        _classify(_op(currency="PEN"), _item(currency="USD", direction="INBOUND"), tol).reason
+        == CURRENCY_MISMATCH
+    )
+
+
+def test_direction_validation_and_invariant():
+    """`direction` invalida -> `TypeError`/`ValueError`; invariante por motivo."""
+    from app.modules.reconciliation.domain.matching import ReconException
+
+    with pytest.raises(TypeError):
+        InternalOperation(
+            op_id="op-1",
+            external_ref="R",
+            amount_minor=100,
+            currency="PEN",
+            value_date=D,
+            direction=123,
+        )
+    with pytest.raises(ValueError):
+        ClearingEntry(
+            item_id="it-1",
+            external_ref="R",
+            amount_minor=100,
+            currency="PEN",
+            value_date=D,
+            direction="SIDEWAYS",
+        )
+    exc = ReconException(reason=DIRECTION_MISMATCH, internal_id="op-1", clearing_id="it-1")
+    assert exc.reason == DIRECTION_MISMATCH
+    with pytest.raises(ValueError, match="ambos lados"):
+        ReconException(reason=DIRECTION_MISMATCH, internal_id="op-1", clearing_id=None)

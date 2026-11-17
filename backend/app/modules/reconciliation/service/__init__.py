@@ -52,6 +52,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -226,6 +227,15 @@ RECONCILIATION_DATE_TOLERANCE_KEY = "reconciliation.date_tolerance_days"
 RECONCILIATION_MAX_PAIRS_KEY = "reconciliation.max_candidate_pairs"
 RECONCILIATION_MAX_TOTAL_PAIRS_KEY = "reconciliation.max_candidate_pairs_per_run"
 
+#: Lease de una corrida `RUNNING` en minutos (MEDIA del review PR #27):
+#: una `RUNNING` con `created_at` anterior a `ahora - lease` se considera
+#: huerfana (el worker murio sin cerrarla) y `run_reconciliation` la
+#: reclama a `FAILED` (`reclaim_stale_running`, sin columnas nuevas) para
+#: continuar con una corrida nueva o un reintento; una `RUNNING` reciente
+#: sigue siendo `CONFLICT`. Sin semilla en migraciones: ausente/ilegible
+#: rige el default.
+RECONCILIATION_RUN_LEASE_KEY = "reconciliation.run_lease_minutes"
+
 #: Techos sensatos antes de cruzar (nota (a) del brief): una tolerancia
 #: mayor es error de configuracion y se recorta (nunca se rechaza la
 #: corrida por un parametro alto: rige el techo y se registra).
@@ -238,6 +248,12 @@ MAX_MAX_CANDIDATE_PAIRS = 5_000_000
 #: Default del presupuesto total de pares evaluables por corrida cuando
 #: `config.parameters` no esta sembrado (4x la cota por grupo).
 DEFAULT_MAX_TOTAL_PAIRS = 1_000_000
+
+#: Default del lease de `RUNNING` (30 minutos) y techo defensivo (24 h:
+#: un valor absurdo se recorta, nunca se rechaza la corrida por un
+#: parametro alto; un valor no positivo cae al default documentado).
+DEFAULT_RUN_LEASE_MINUTES = 30
+MAX_RUN_LEASE_MINUTES = 24 * 60
 
 #: Motivo de negocio cuando una cota de pares evaluables aborta la corrida
 #: (decision del dueno (b): corrida `FAILED` + rollback, sin parciales).
@@ -287,6 +303,19 @@ def _read_budgets(session: Session) -> tuple[int, int]:
         per_run = DEFAULT_MAX_TOTAL_PAIRS
     per_run = min(per_run, MAX_MAX_CANDIDATE_PAIRS)
     return per_group, per_run
+
+
+def _read_run_lease_minutes(session: Session) -> int:
+    """Lease de `RUNNING` en minutos desde `config.parameters` (nunca lanza).
+
+    Valores ausentes/ilegibles/no positivos -> default documentado
+    (`DEFAULT_RUN_LEASE_MINUTES`); por encima del techo defensivo ->
+    techo (`MAX_RUN_LEASE_MINUTES`).
+    """
+    lease = get_int_parameter(session, RECONCILIATION_RUN_LEASE_KEY, DEFAULT_RUN_LEASE_MINUTES)
+    if lease <= 0:
+        return DEFAULT_RUN_LEASE_MINUTES
+    return min(lease, MAX_RUN_LEASE_MINUTES)
 
 
 def _coerce_executed_by(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -364,8 +393,12 @@ def run_reconciliation(
     alcance esta `COMPLETED` y no hay `PENDING` nuevos (de archivos
     `PROCESSED`), se devuelve sin re-cruzar; si hay `PENDING` nuevos (lote
     tardio), se crea una corrida NUEVA que procesa solo esos items (varias
-    corridas por fecha/moneda). `RUNNING` existente ->
-    `ReconciliationConflictError` (`409`); `FAILED` se reintenta en la misma
+    corridas por fecha/moneda). `RUNNING` reciente ->
+    `ReconciliationConflictError` (`409`); las `RUNNING` huerfanas (lease
+    `reconciliation.run_lease_minutes`, default 30 minutos: `created_at`
+    anterior a `ahora - lease`) se reclaman primero a `FAILED`
+    (`reclaim_stale_running`, sin columnas nuevas) y se continua con una
+    corrida nueva o un reintento. `FAILED` se reintenta en la misma
     fila. Doble conciliacion: los candidatos ya usados en
     `reconciliation_matches` (por `transaction_id`) o con estado
     `CONCILIATED` se excluyen antes de cruzar. La asignacion de excepciones
@@ -387,6 +420,15 @@ def run_reconciliation(
     day = recon_repo.coerce_run_date(run_date)
     code = recon_repo.coerce_run_currency(currency)
     actor = _coerce_executed_by(executed_by)
+
+    # MEDIA del review PR #27 (lease de `RUNNING`): antes de decidir si
+    # hay corrida en curso se reclaman las huerfanas del alcance
+    # (`created_at` anterior a `ahora - lease` -> `FAILED`); si se
+    # recupero alguna se continua con una corrida nueva o un reintento.
+    # Solo una `RUNNING` reciente sigue siendo `CONFLICT`.
+    lease_minutes = _read_run_lease_minutes(session)
+    cutoff = datetime.now(UTC) - timedelta(minutes=lease_minutes)
+    recon_repo.reclaim_stale_running(session, run_date=day, currency=code, older_than=cutoff)
 
     existing = recon_repo.get_run_by_date_currency(session, day, code)
     if existing is not None and existing.status == "RUNNING":
@@ -458,6 +500,9 @@ def run_reconciliation(
     except CandidateBudgetExceeded:
         # Sin parciales: el cruce es puro y ocurre antes de mutar, asi que
         # solo persiste la fila `FAILED` (nueva o reintentada en su fila).
+        # La carrera con otra corrida concurrente se resuelve igual que la
+        # rama feliz: `create_run` convierte la guarda de BD en `CONFLICT`
+        # y aqui se devuelve el `CONFLICT` coherente (no un `FAILED`).
         if retry_in_place:
             assert existing is not None
             run = recon_repo.mark_run_running(session, existing)
@@ -465,12 +510,20 @@ def run_reconciliation(
                 run.executed_by = actor
             recon_repo.fail_run(session, run)
         else:
-            if existing is not None and existing.status == "RUNNING":
+            try:
+                run = recon_repo.create_run(session, run_date=day, currency=code, executed_by=actor)
+                recon_repo.fail_run(session, run)
+            except recon_repo.ReconciliationConflictError:
+                # Carrera real: otro proceso inserto una corrida `RUNNING`
+                # para la misma fecha/moneda y el indice unico parcial
+                # `uq_reconciliation_runs_single_running` lo rechazo;
+                # re-leer y decidir (mismo criterio que la rama feliz).
+                raced = recon_repo.get_run_by_date_currency(session, day, code)
+                if raced is not None and raced.status == "COMPLETED" and not items:
+                    return raced
                 raise recon_repo.ReconciliationConflictError(
                     "corrida de conciliacion ya en curso para la fecha y moneda"
-                )
-            run = recon_repo.create_run(session, run_date=day, currency=code, executed_by=actor)
-            recon_repo.fail_run(session, run)
+                ) from None
         logger.warning(
             "reconciliation run fallida run_hash=%s motivo=%s matched=0 unmatched=0",
             recon_repo.hash_run_scope(day, code),

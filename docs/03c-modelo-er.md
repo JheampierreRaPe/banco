@@ -162,7 +162,9 @@ transactions (REF) <── reconciliation_matches / reconciliation_exceptions
 >
 > Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19):
 > `reconciliation_runs` queda implementada (`0051_reconciliation_runs`,
-> UQ por fecha/moneda, `CHECK`s e indice; semillas idempotentes de
+> sin UQ natural —indice `ix_reconciliation_runs_date_currency` por
+> fecha/moneda y unicidad solo para `RUNNING` via indice parcial—,
+> `CHECK`s e indice; semillas idempotentes de
 > tolerancias y cotas); el servicio `run_reconciliation` cruza los
 > `PENDING` del alcance exacto `(run_date, currency)` contra los
 > candidatos de la fachada de solo lectura

@@ -1168,3 +1168,68 @@ def test_run_executed_by_comes_from_caller_not_payload(db: Session):
     assert run.executed_by != impostor
     system = recon_service.run_reconciliation(db, run_date=D + timedelta(days=30), currency="PEN")
     assert system.executed_by is None
+
+
+# ------------------------------------------------- MEDIA (review PR #27): lease/reclaim + CONFLICT coherente
+
+
+def test_run_reclaims_stale_running_and_retries_in_place(db: Session):
+    """MEDIA: `RUNNING` huerfana (lease vencido) no bloquea: se reclama y reintenta.
+
+    Regresion: sin reclaim la segunda llamada es `CONFLICT` aunque el worker
+    muriera hace una hora; con el fix (lease default 30 min) la huerfana
+    pasa a `FAILED` y la corrida se reintenta en su fila hasta `COMPLETED`.
+    """
+    orphan = recon_repo.create_run(db, run_date=D, currency="PEN")
+    orphan.created_at = orphan.created_at - timedelta(minutes=60)
+    db.flush()
+    _tx(db, ref="L-1", amount=100_00)
+    _ingest(db, [("L-1", 100_00, "PEN", D)], seed="lease")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.id == orphan.id
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (1, 0)
+
+
+def test_run_recent_running_is_conflict_within_lease(db: Session):
+    """MEDIA: `RUNNING` reciente (dentro del lease) sigue siendo `CONFLICT`."""
+    recon_repo.create_run(db, run_date=D, currency="PEN")
+    with pytest.raises(recon_repo.ReconciliationConflictError):
+        recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+
+
+def test_run_lease_minutes_is_configurable(db: Session):
+    """MEDIA: `reconciliation.run_lease_minutes` configura el lease (default 30)."""
+    assert recon_service._read_run_lease_minutes(db) == recon_service.DEFAULT_RUN_LEASE_MINUTES
+    assert recon_service.DEFAULT_RUN_LEASE_MINUTES == 30
+    _set_param(db, "reconciliation.run_lease_minutes", "0")
+    assert recon_service._read_run_lease_minutes(db) == 30
+    _set_param(db, "reconciliation.run_lease_minutes", "120")
+    assert recon_service._read_run_lease_minutes(db) == 120
+    orphan = recon_repo.create_run(db, run_date=D, currency="PEN")
+    orphan.created_at = orphan.created_at - timedelta(minutes=60)
+    db.flush()
+    # Con lease 120, la de hace 60 min sigue vigente: `CONFLICT`.
+    with pytest.raises(recon_repo.ReconciliationConflictError):
+        recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+
+
+def test_run_budget_race_returns_coherent_conflict(db: Session, monkeypatch):
+    """MEDIA: carrera en la rama `CandidateBudgetExceeded` -> `CONFLICT` coherente.
+
+    Regresion: sin el `try/except` de la rama de presupuesto, la carrera
+    (otro worker inserto la `RUNNING` tras el chequeo inicial) propagaba el
+    error crudo de `create_run` ("duplicada"); con el fix se relee y se
+    devuelve el `CONFLICT` coherente ("ya en curso", igual que la rama feliz).
+    """
+    _set_param(db, "reconciliation.max_candidate_pairs_per_run", "1")
+    for i in range(2):
+        _tx(db, ref=f"REF-Q-{i}", amount=100_00)
+    _ingest(db, [(f"REF-Q-{i}", 100_00, "PEN", D) for i in range(2)], seed="bque")
+
+    def _racing_create(session, **kwargs):
+        raise recon_repo.ReconciliationConflictError("corrida de conciliacion duplicada")
+
+    monkeypatch.setattr(recon_repo, "create_run", _racing_create)
+    with pytest.raises(recon_repo.ReconciliationConflictError, match="ya en curso"):
+        recon_service.run_reconciliation(db, run_date=D, currency="PEN")

@@ -1231,7 +1231,12 @@ eventos (`outbox`/`inbox`).
   `uq_reconciliation_runs_single_running` (`UNIQUE (run_date, currency)
   WHERE status = 'RUNNING'`, MEDIO-2: la BD decide la carrera y el `except`
   de `create_run` vuelve a ser alcanzable, BAJO-1), `FAILED` se reintenta
-  en la misma fila; cota superada
+  en la misma fila; lease de `RUNNING` (`reconciliation.run_lease_minutes`,
+  default 30 min, techo 24 h): al inicio se reclaman las huerfanas del
+  alcance (`created_at` anterior al corte -> `FAILED` con `finished_at` via
+  `reclaim_stale_running`, sin columnas nuevas) y se continua con corrida
+  nueva/reintento; una `RUNNING` reciente sigue siendo `CONFLICT` (tambien
+  en la rama de presupuesto, con el mismo mensaje coherente); cota superada
   (`CandidateBudgetExceeded`) deja la corrida `FAILED` sin parciales
   (motivo `CANDIDATE_BUDGET_EXCEEDED`, sin `external_ref` en logs) porque
   el cruce es puro y ocurre antes de mutar. La asignacion de excepciones a
@@ -1246,7 +1251,8 @@ eventos (`outbox`/`inbox`).
   cableada a job ni endpoint (B7: correcto para el corte 2, no cambia
   produccion aun; la expondra E5-T21). Repositorio con
   `create_run`/`get_run_by_date_currency`/`list_runs_by_date_currency`/
-  `complete_run`/`fail_run`/`mark_run_running`/`list_pending_items_for_run`/
+  `complete_run`/`fail_run`/`mark_run_running`/`reclaim_stale_running`/
+  `list_pending_items_for_run`/
   `mark_item_status`/`create_match`/`get_match_by_item`/
   `list_matches_by_run`/`list_used_transaction_ids`;
   modelos `ReconciliationRun`/`ReconciliationMatch` + `ClearingItem.run_id`

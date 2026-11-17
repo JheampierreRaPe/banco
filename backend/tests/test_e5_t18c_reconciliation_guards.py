@@ -354,3 +354,43 @@ def test_last_run_ignores_finished_at_nulls(db: Session):
     assert older.finished_at is not None
     assert newer.finished_at is None
     assert recon_repo.get_run_by_date_currency(db, D, "PEN").id == newer.id
+
+
+# ------------------------------------------------- MEDIA: lease/reclaim de RUNNING huerfanas
+
+
+def test_reclaim_stale_running_marks_orphan_failed(db: Session):
+    """MEDIA: `reclaim_stale_running` cierra huerfanas y conserva recientes.
+
+    Regresion: sin reclaim, una `RUNNING` cuyo worker murio bloquea el
+    alcance para siempre (toda llamada posterior es `CONFLICT`); con el fix
+    las anteriores al corte pasan a `FAILED` con `finished_at` (`rowcount`
+    reportado) y las recientes u otros alcances quedan intactas.
+    """
+    orphan = recon_repo.create_run(db, run_date=D, currency="PEN")
+    orphan.created_at = orphan.created_at - timedelta(minutes=60)
+    recent = recon_repo.create_run(db, run_date=D + timedelta(days=1), currency="PEN")
+    other = recon_repo.create_run(db, run_date=D, currency="USD")
+    other.created_at = other.created_at - timedelta(minutes=60)
+    db.flush()
+    cutoff = orphan.created_at + timedelta(minutes=30)
+
+    reclaimed = recon_repo.reclaim_stale_running(db, run_date=D, currency="PEN", older_than=cutoff)
+    assert reclaimed == 1
+    assert orphan.status == "FAILED"
+    assert orphan.finished_at is not None
+    assert recent.status == "RUNNING"
+    assert other.status == "RUNNING"
+    # Corte anterior a todo: nada que reclamar.
+    assert (
+        recon_repo.reclaim_stale_running(
+            db,
+            run_date=D,
+            currency="USD",
+            older_than=other.created_at - timedelta(seconds=1),
+        )
+        == 0
+    )
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_repo.reclaim_stale_running(db, run_date=D, currency="PEN", older_than="ayer")
+    db.rollback()

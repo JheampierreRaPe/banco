@@ -586,6 +586,55 @@ def fail_run(session: Session, run: ReconciliationRun) -> ReconciliationRun:
     return run
 
 
+def reclaim_stale_running(
+    session: Session,
+    *,
+    run_date: date,
+    currency: str,
+    older_than: datetime,
+) -> int:
+    """Marca `FAILED` las corridas `RUNNING` huerfanas del alcance (lease).
+
+    MEDIA del review PR #27: una `RUNNING` con `created_at < older_than`
+    se considera huerfana (el worker murio sin cerrarla) y se cierra como
+    `FAILED` con `finished_at` para que la proxima `run_reconciliation`
+    continue con una corrida nueva o un reintento; las `RUNNING` recientes
+    se conservan (el llamante las trata como `CONFLICT`). `UPDATE` masivo
+    por alcance (`run_date`, `currency`), sin columnas nuevas (usa el
+    `created_at` existente). Hace `flush`, no `commit`. Retorna las filas
+    recuperadas (`rowcount`).
+    """
+
+    day = coerce_run_date(run_date)
+    code = coerce_run_currency(currency)
+    if isinstance(older_than, bool) or not isinstance(older_than, datetime):
+        raise ReconciliationValidationError("corte de antiguedad invalido")
+    finished = datetime.now(UTC)
+    result = session.execute(
+        update(ReconciliationRun)
+        .where(
+            ReconciliationRun.run_date == day,
+            ReconciliationRun.currency == code,
+            ReconciliationRun.status == "RUNNING",
+            ReconciliationRun.created_at < older_than,
+        )
+        .values(status="FAILED", finished_at=finished)
+    )
+    reclaimed = int(result.rowcount or 0)
+    if reclaimed:
+        session.flush()
+        # El `UPDATE` masivo no toca el mapa de identidad: expirar para
+        # que la siguiente lectura vea el `FAILED` real (no el `RUNNING`
+        # stale en memoria).
+        session.expire_all()
+        logger.info(
+            "reconciliation run huerfana recuperada run_hash=%s recuperadas=%d",
+            hash_run_scope(day, code),
+            reclaimed,
+        )
+    return reclaimed
+
+
 def list_pending_items_for_run(
     session: Session,
     *,
@@ -834,5 +883,6 @@ __all__ = [
     "mark_file_status",
     "mark_item_status",
     "mark_run_running",
+    "reclaim_stale_running",
     "record_failed_file",
 ]

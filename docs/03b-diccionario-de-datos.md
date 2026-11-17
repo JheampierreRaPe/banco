@@ -932,10 +932,12 @@ Indices: `(account_id, created_at DESC)`.
 >
 > Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19): la corrida
 > persiste `reconciliation_runs` con la migracion `0051_reconciliation_runs`
-> (`down_revision="0050_reconciliation"`; UQ natural
-> `uq_reconciliation_runs_date_currency` por `(run_date, currency)` para la
-> idempotencia, `CHECK` de `status` y de no negatividad, indice
-> `ix_reconciliation_runs_status`). `matched_count` = pares conciliados;
+> (`down_revision="0050_reconciliation"`; sin UQ natural —H3 la elimino—:
+> indice `ix_reconciliation_runs_date_currency` por `(run_date, currency)`
+> e indice `ix_reconciliation_runs_status`; unicidad solo para `RUNNING`
+> via indice parcial `uq_reconciliation_runs_single_running` (`UNIQUE
+> (run_date, currency) WHERE status = 'RUNNING'`), `CHECK` de `status` y
+> de no negatividad —salvo `total_minor`, con signo—). `matched_count` = pares conciliados;
 > `unmatched_count` = TOTAL de excepciones del dominio (incluye
 > `MISSING_EXTERNAL` de operaciones internas sin item, no solo items de
 > clearing no conciliados);
@@ -1033,6 +1035,19 @@ Indices: `(account_id, created_at DESC)`.
 > - B7: `run_reconciliation` NO esta cableada a job ni endpoint (correcto
 >   para el corte 2; no cambia produccion aun).
 > - B8: E5-T17 fuera de alcance (deuda documentada, sin implementar).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA lease/reclaim,
+> HU19; sin migracion nueva, `0051` intacta, sin columnas nuevas):
+> lease de `RUNNING` configurable (`reconciliation.run_lease_minutes`,
+> default 30 minutos, techo 24 h; ausente/ilegible rige el default).
+> `run_reconciliation` reclama primero las `RUNNING` huerfanas del alcance
+> (`created_at` anterior a `ahora - lease` -> `FAILED` con `finished_at`
+> via `reclaim_stale_running`, `rowcount` reportado) y continua con una
+> corrida nueva o un reintento; si sigue habiendo `RUNNING` reciente es
+> `CONFLICT` (la BD decide la carrera por el indice parcial). La rama
+> `CandidateBudgetExceeded` envuelve `create_run` en el mismo
+> `try/except ReconciliationConflictError` que la rama feliz (`CONFLICT`
+> coherente).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 

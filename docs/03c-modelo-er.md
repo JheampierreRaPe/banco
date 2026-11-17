@@ -147,9 +147,10 @@ blocked_entities  (por entidad)
 
 ```
 [AGREGADO: ReconciliationRun]
-clearing_files ──< clearing_items
+clearing_files ──< clearing_items ──1 reconciliation_matches
+reconciliation_runs ──< reconciliation_matches
 reconciliation_runs ──< reconciliation_exceptions ──< claims
-transactions (REF) <── reconciliation_exceptions
+transactions (REF) <── reconciliation_matches / reconciliation_exceptions
 ```
 
 > Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta de
@@ -171,6 +172,14 @@ transactions (REF) <── reconciliation_exceptions
 > `CONFLICT`, cota superada = `FAILED` con motivo
 > `CANDIDATE_BUDGET_EXCEEDED` y sin parciales).
 > `reconciliation_exceptions`/`claims` siguen pendientes (`E5-T19`/`E5-T20`).
+>
+> Nota de implementacion (2026-11-17, review PR #27 H1/H2/H3, HU19): la
+> misma `0051` (rama sin mergear) ahora crea `reconciliation_matches`
+> (auditoria item -> `transaction_id`, UQ por item) + `clearing_items.
+> run_id` (que corrida proceso cada item, incluidas excepciones); solo
+> cruzan items de archivos `PROCESSED`; sin UQ natural en runs
+> (`COMPLETED` inmutable, lotes tardios crean corridas nuevas; sin doble
+> conciliacion por `transaction_id` usado o estado `CONCILIATED`).
 
 ## 11. Modulo `notifications`
 

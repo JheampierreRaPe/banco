@@ -9,16 +9,19 @@ publica eventos (si se agrega uno, va por `shared.outbox` en la misma
 transaccion, regla de oro 8).
 
 `run_reconciliation(session, *, run_date, currency, executed_by=None)` (E5-T18
-corte 2): cruza los items `PENDING` de la fecha/moneda contra los candidatos
-internos de la fachada de solo lectura
++ review PR #27): cruza los items `PENDING` de archivos `PROCESSED` de la
+fecha/moneda contra los candidatos internos de la fachada de solo lectura
 `transactions.service.list_reconciliation_candidates` con el dominio puro
-(min-cost max-flow: cardinalidad maxima + maximo de `EXACT`), actualiza los
-items (`MATCHED`/`EXCEPTION`) y persiste la corrida `reconciliation_runs`
-con contadores. Idempotente por `(run_date, currency)` (`COMPLETED` se
-reutiliza; `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en la
-misma fila). Si se supera una cota de pares evaluables la corrida queda
-`FAILED` sin parciales (motivo `CANDIDATE_BUDGET_EXCEEDED`). No mueve
-dinero ni crea asientos; auditoria best-effort sin PII.
+(min-cost max-flow: cardinalidad maxima + maximo de `EXACT`), persiste un
+`reconciliation_matches` por par, actualiza los items (`MATCHED`/`EXCEPTION`,
+siempre con `run_id`) y persiste la corrida `reconciliation_runs` con
+contadores. Idempotencia y corridas tardias: `COMPLETED` inmutable (sin
+`PENDING` nuevos se reutiliza; con `PENDING` nuevos se crea una corrida
+nueva); `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en la
+misma fila; candidatos ya usados o `CONCILIATED` se excluyen. Si se supera
+una cota de pares evaluables la corrida queda `FAILED` sin parciales
+(motivo `CANDIDATE_BUDGET_EXCEEDED`). No mueve dinero ni crea asientos;
+auditoria best-effort sin PII.
 
 Contrato de errores (sin eco de valores, sin PII en logs):
 - `VALIDATION_ERROR` (`ReconciliationValidationError`): `file_ref`,
@@ -330,16 +333,25 @@ def run_reconciliation(
     Lee candidatos internos por la fachada de solo lectura
     `transactions.service.list_reconciliation_candidates` (montos positivos
     del motor, incluidos `REVERSAL`: el dominio exige mismo signo y ambos
-    lados son positivos, sin adaptacion de signo) y los items `PENDING`
-    con `value_date == run_date`; ejecuta el dominio puro (min-cost
-    max-flow: cardinalidad maxima + maximo de `EXACT`); actualiza los items
-    (`MATCHED`/`EXCEPTION`) y cierra la corrida `COMPLETED` con contadores
+    lados son positivos, sin adaptacion de signo) y los items `PENDING` de
+    archivos `PROCESSED` con `value_date == run_date`; ejecuta el dominio
+    puro (min-cost max-flow: cardinalidad maxima + maximo de `EXACT`);
+    persiste un `reconciliation_matches` por par (auditoria item ->
+    `transaction_id`), actualiza los items (`MATCHED`/`EXCEPTION`, siempre
+    con `run_id`) y cierra la corrida `COMPLETED` con contadores
     (`matched_count`, `unmatched_count` = items no conciliados,
     `total_minor` = suma de los items conciliados).
 
-    Idempotencia: `COMPLETED` existente se devuelve sin re-cruzar;
-    `RUNNING` concurrente -> `ReconciliationConflictError` (`409`);
-    `FAILED` se reintenta en la misma fila. Cota superada
+    Idempotencia y corridas tardias (H2/H3 del review PR #27): las
+    `COMPLETED` son inmutables y nunca se reabren. Si la ultima corrida del
+    alcance esta `COMPLETED` y no hay `PENDING` nuevos (de archivos
+    `PROCESSED`), se devuelve sin re-cruzar; si hay `PENDING` nuevos (lote
+    tardio), se crea una corrida NUEVA que procesa solo esos items (varias
+    corridas por fecha/moneda). `RUNNING` existente ->
+    `ReconciliationConflictError` (`409`); `FAILED` se reintenta en la misma
+    fila. Doble conciliacion: los candidatos ya usados en
+    `reconciliation_matches` (por `transaction_id`) o con estado
+    `CONCILIATED` se excluyen antes de cruzar. Cota superada
     (`CandidateBudgetExceeded`) -> corrida `FAILED` sin parciales (el
     cruce es puro y ocurre antes de mutar; motivo
     `CANDIDATE_BUDGET_EXCEEDED` en log/auditoria, sin `external_ref`).
@@ -350,13 +362,10 @@ def run_reconciliation(
     actor = _coerce_executed_by(executed_by)
 
     existing = recon_repo.get_run_by_date_currency(session, day, code)
-    if existing is not None:
-        if existing.status == "COMPLETED":
-            return existing
-        if existing.status == "RUNNING":
-            raise recon_repo.ReconciliationConflictError(
-                "corrida de conciliacion ya en curso para la fecha y moneda"
-            )
+    if existing is not None and existing.status == "RUNNING":
+        raise recon_repo.ReconciliationConflictError(
+            "corrida de conciliacion ya en curso para la fecha y moneda"
+        )
 
     tolerances = _read_tolerances(session)
     per_group, per_run = _read_budgets(session)
@@ -365,8 +374,27 @@ def run_reconciliation(
         list_reconciliation_candidates as _candidates,
     )
 
-    candidates = _candidates(session, day, code)
+    raw_candidates = _candidates(session, day, code)
+    # BAJO-2: solo los ya usados en la ventana de la corrida (misma moneda
+    # y `run_date` ± tolerancia de fecha), sin traer toda la tabla.
+    used_transaction_ids = recon_repo.list_used_transaction_ids(
+        session,
+        currency=code,
+        run_date=day,
+        date_tolerance_days=tolerances.date_tolerance_days,
+    )
+    candidates = [
+        row
+        for row in raw_candidates
+        if str(row.get("transaction_id")) not in used_transaction_ids
+        and str(row.get("status")) != "CONCILIATED"
+    ]
     items = recon_repo.list_pending_items_for_run(session, run_date=day, currency=code)
+
+    # H3: `COMPLETED` inmutable; sin pendientes nuevos se reutiliza.
+    if existing is not None and existing.status == "COMPLETED" and not items:
+        return existing
+    retry_in_place = existing is not None and existing.status == "FAILED"
 
     internal = [
         InternalOperation(
@@ -399,12 +427,17 @@ def run_reconciliation(
     except CandidateBudgetExceeded:
         # Sin parciales: el cruce es puro y ocurre antes de mutar, asi que
         # solo persiste la fila `FAILED` (nueva o reintentada en su fila).
-        if existing is not None:
+        if retry_in_place:
+            assert existing is not None
             run = recon_repo.mark_run_running(session, existing)
             if actor is not None:
                 run.executed_by = actor
             recon_repo.fail_run(session, run)
         else:
+            if existing is not None and existing.status == "RUNNING":
+                raise recon_repo.ReconciliationConflictError(
+                    "corrida de conciliacion ya en curso para la fecha y moneda"
+                )
             run = recon_repo.create_run(session, run_date=day, currency=code, executed_by=actor)
             recon_repo.fail_run(session, run)
         logger.warning(
@@ -420,17 +453,25 @@ def run_reconciliation(
         )
         return run
 
-    if existing is not None:
+    if retry_in_place:
+        assert existing is not None
         run = recon_repo.mark_run_running(session, existing)
         if actor is not None:
             run.executed_by = actor
     else:
+        if existing is not None and existing.status == "RUNNING":
+            raise recon_repo.ReconciliationConflictError(
+                "corrida de conciliacion ya en curso para la fecha y moneda"
+            )
         try:
             run = recon_repo.create_run(session, run_date=day, currency=code, executed_by=actor)
         except recon_repo.ReconciliationConflictError:
-            # Carrera: otro proceso creo la corrida; re-leer y decidir.
+            # Carrera real (MEDIO-2, BAJO-1): otro proceso inserto una
+            # corrida `RUNNING` para la misma fecha/moneda y el indice
+            # unico parcial `uq_reconciliation_runs_single_running` lo
+            # rechazo; re-leer y decidir.
             raced = recon_repo.get_run_by_date_currency(session, day, code)
-            if raced is not None and raced.status == "COMPLETED":
+            if raced is not None and raced.status == "COMPLETED" and not items:
                 return raced
             raise recon_repo.ReconciliationConflictError(
                 "corrida de conciliacion ya en curso para la fecha y moneda"
@@ -440,11 +481,23 @@ def run_reconciliation(
     matched_item_ids = {m.clearing_id for m in result.matches}
     matched_amounts = {str(item.id): item.amount_minor for item in items}
     for match in result.matches:
-        recon_repo.mark_item_status(session, items_by_id[match.clearing_id], "MATCHED")
+        item = items_by_id[match.clearing_id]
+        recon_repo.create_match(
+            session,
+            run_id=run.id,
+            clearing_item_id=item.id,
+            transaction_id=match.internal_id,
+            match_type=match.qualifier,
+            amount_minor=item.amount_minor,
+            currency=item.currency,
+        )
+        recon_repo.mark_item_status(session, item, "MATCHED", run_id=run.id)
     unmatched_count = 0
     for exc in result.exceptions:
         if exc.clearing_id is not None and exc.clearing_id in items_by_id:
-            recon_repo.mark_item_status(session, items_by_id[exc.clearing_id], "EXCEPTION")
+            recon_repo.mark_item_status(
+                session, items_by_id[exc.clearing_id], "EXCEPTION", run_id=run.id
+            )
             unmatched_count += 1
     total_minor = sum(matched_amounts[mid] for mid in matched_item_ids)
     recon_repo.complete_run(

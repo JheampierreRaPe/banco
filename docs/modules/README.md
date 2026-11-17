@@ -1173,30 +1173,51 @@ eventos (`outbox`/`inbox`).
   `amount_minor` siempre `> 0` y el reverso es `type='REVERSAL'` con monto
   positivo (nunca negativo): ambos lados del cruce son positivos y el
   dominio (mismo signo para `Match`) no necesita adaptacion.
-- **Corrida persistida (E5-T18 corte 2, HU19):** servicio
+- **Corrida persistida (E5-T18 + review PR #27 H1/H2/H3 + MEDIO/BAJO, HU19):** servicio
   `run_reconciliation(session, *, run_date, currency, executed_by=None)
   -> ReconciliationRun` (misma sesion: `flush` sin `commit`): lee los
-  candidatos por la fachada, los `PENDING` de alcance exacto
-  (`value_date == run_date`, moneda), tolerancias y cotas desde
+  candidatos por la fachada, los `PENDING` de archivos `PROCESSED` de
+  alcance exacto (`value_date == run_date`, moneda; H1: los archivos
+  `FAILED`/`RECEIVED` nunca cruzan), tolerancias y cotas desde
   `config.parameters` (`reconciliation.amount_tolerance_minor`/`date_tolerance_days`,
   default `0`/`0` con techos `1_000_000`/`31 dias`;
   `reconciliation.max_candidate_pairs` por grupo, default `250_000`, y
   `reconciliation.max_candidate_pairs_per_run` por corrida, default
-  `1_000_000`, techo defensivo `5_000_000`), ejecuta el dominio min-cost
-  max-flow (cardinalidad maxima + maximo de `EXACT`; el ejemplo del
-  revisor da 2 `EXACT` + `AMOUNT_DIFF`), actualiza los items
-  (`MATCHED`/`EXCEPTION`) y cierra `reconciliation_runs` con contadores
-  (`matched_count`, `unmatched_count` = items no conciliados,
-  `total_minor` = suma de conciliados). Idempotencia por UQ
-  `(run_date, currency)`: `COMPLETED` se reutiliza, `RUNNING` concurrente
-  es `CONFLICT`, `FAILED` se reintenta en la misma fila; cota superada
+  `1_000_000`, techo defensivo `5_000_000`), excluye los ya usados en
+  `reconciliation_matches` en la ventana de la corrida (misma moneda y
+  `run_date` ± tolerancia de fecha, BAJO-2: sin traer toda la tabla) o con
+  estado `CONCILIATED` (H2: sin doble conciliacion), ejecuta el dominio
+  min-cost max-flow (cardinalidad maxima
+  + maximo de `EXACT`; el ejemplo del revisor da 2 `EXACT` + `AMOUNT_DIFF`),
+  persiste un `reconciliation_matches` por par (H2: auditoria item ->
+  `transaction_id` con `match_type`/`amount_minor`/`currency`, UQ por item y
+  UQ por `transaction_id` — MEDIO-1: una operacion interna se concilia una
+  sola vez en todo el historial), actualiza los items
+  (`MATCHED`/`EXCEPTION`, siempre con `run_id`, con `mark_item_status`
+  atomico — MEDIO-2: `UPDATE ... WHERE PENDING`, solo un worker gana) y
+  cierra
+  `reconciliation_runs` con contadores (`matched_count`,
+  `unmatched_count` = items no conciliados, `total_minor` = suma de
+  conciliados). Idempotencia y corridas tardias (H3, sin UQ natural: las
+  `COMPLETED` son inmutables y nunca se reabren; sin `PENDING` nuevos se
+  reutiliza la ultima (orden determinista `created_at DESC, id DESC`,
+  BAJO-3: sin depender de los `NULL` de `finished_at`), con `PENDING`
+  nuevos de un lote tardio se crea una corrida nueva que procesa solo
+  esos), `RUNNING` concurrente es `CONFLICT` por el indice unico parcial
+  `uq_reconciliation_runs_single_running` (`UNIQUE (run_date, currency)
+  WHERE status = 'RUNNING'`, MEDIO-2: la BD decide la carrera y el `except`
+  de `create_run` vuelve a ser alcanzable, BAJO-1), `FAILED` se reintenta
+  en la misma fila; cota superada
   (`CandidateBudgetExceeded`) deja la corrida `FAILED` sin parciales
   (motivo `CANDIDATE_BUDGET_EXCEEDED`, sin `external_ref` en logs) porque
   el cruce es puro y ocurre antes de mutar. Auditoria best-effort sin
   PII. No mueve dinero ni crea asientos. Repositorio con
-  `create_run`/`get_run_by_date_currency`/`complete_run`/`fail_run`/
-  `mark_run_running`/`list_pending_items_for_run`/`mark_item_status`;
-  modelo `ReconciliationRun` (`0051_reconciliation_runs`).
+  `create_run`/`get_run_by_date_currency`/`list_runs_by_date_currency`/
+  `complete_run`/`fail_run`/`mark_run_running`/`list_pending_items_for_run`/
+  `mark_item_status`/`create_match`/`get_match_by_item`/
+  `list_matches_by_run`/`list_used_transaction_ids`;
+  modelos `ReconciliationRun`/`ReconciliationMatch` + `ClearingItem.run_id`
+  (`0051_reconciliation_runs`).
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

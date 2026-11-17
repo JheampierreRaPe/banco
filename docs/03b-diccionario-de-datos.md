@@ -911,6 +911,7 @@ Indices: `(account_id, created_at DESC)`.
 | clearing_items | value_date | DATE | No | - | |
 | clearing_items | direction | VARCHAR(10) | No | - | INBOUND/OUTBOUND |
 | clearing_items | status | VARCHAR(15) | No | 'PENDING' | CK |
+| clearing_items | run_id | UUID | Si | - | REF runs (logica, H2) |
 | clearing_items | raw | JSONB | Si | - | |
 
 > Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta crea
@@ -941,14 +942,48 @@ Indices: `(account_id, created_at DESC)`.
 > corrida). `reconciliation_exceptions`/`claims` siguen pendientes
 > (`E5-T19`/`E5-T20`); el alcance de la corrida es exacto por
 > `(run_date, currency)` y la tolerancia de fecha solo califica pares.
+>
+> Nota de implementacion (2026-11-17, review PR #27 H1/H2/H3, HU19): la
+> misma migracion `0051` (rama sin mergear, sin `0052`) ahora crea ademas
+> `reconciliation.reconciliation_matches` (emparejamiento persistido item
+> -> operacion, ver `12.2`) y `clearing_items.run_id UUID NULL` (REF logica
+> a `reconciliation_runs.id`, sin FK fisica: que corrida proceso el item,
+> incluidas las excepciones) con indice `ix_clearing_items_run_id`. Solo
+> cruzan los items `PENDING` de archivos `PROCESSED` (JOIN con
+> `clearing_files`: los `FAILED`/`RECEIVED` nunca concilian). Politica de
+> corridas tardias (sin UQ natural: `COMPLETED` inmutable, varias corridas
+> por fecha/moneda con indice `ix_reconciliation_runs_date_currency`): si
+> la ultima corrida del alcance esta `COMPLETED` y no hay `PENDING` nuevos
+> se reutiliza; si hay `PENDING` nuevos (lote tardio) se crea una corrida
+> nueva; `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en su
+> fila. Sin doble conciliacion: los candidatos ya usados en
+> `reconciliation_matches` (por `transaction_id`) o con estado
+> `CONCILIATED` se excluyen antes de cruzar.
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIO/BAJO, HU19):
+> `reconciliation_matches.transaction_id` lleva `UQ
+> uq_reconciliation_matches_transaction` (una operacion interna se concilia
+> como maximo una vez en todo el historial; doble uso = conflicto, y la
+> corrida excluye los ya usados en su ventana antes de cruzar). Guarda de
+> BD para una sola corrida en curso (MEDIO-2): indice unico parcial
+> `uq_reconciliation_runs_single_running` (`UNIQUE (run_date, currency)
+> WHERE status = 'RUNNING'`; `create_run` convierte su `IntegrityError` en
+> `ReconciliationConflictError`: la carrera entre dos corridas concurrentes
+> la decide la BD). `mark_item_status` es atomico (`UPDATE ... WHERE id =
+> ... AND status = 'PENDING'`, `rowcount == 0` = conflicto, sin confiar en
+> el estado en memoria: dos workers marcando el mismo item -> solo uno
+> gana). `list_used_transaction_ids` filtra por moneda y ventana de
+> `run_date` (± tolerancia de fecha) con JOIN a `reconciliation_runs`, sin
+> traer toda la tabla. "Ultima corrida" = (`created_at DESC, id DESC`),
+> sin depender de los `NULL` de `finished_at` (orden por motor).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
 | Tabla | Columna | Tipo | Nulo | Default | Clave |
 |---|---|---|---|---|---|
 | reconciliation_runs | id | UUID | No | gen_random_uuid() | PK |
-| reconciliation_runs | run_date | DATE | No | - | UQ(con currency) |
-| reconciliation_runs | currency | CHAR(3) | No | - | UQ(con run_date) |
+| reconciliation_runs | run_date | DATE | No | - | IDX(con currency) |
+| reconciliation_runs | currency | CHAR(3) | No | - | IDX(con run_date) |
 | reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
 | reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
 | reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` |
@@ -956,6 +991,14 @@ Indices: `(account_id, created_at DESC)`.
 | reconciliation_runs | executed_by | UUID | Si | - | REF users (sin FK fisica) |
 | reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | - |
 | reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | - |
+| reconciliation_matches | id | UUID | No | gen_random_uuid() | PK |
+| reconciliation_matches | run_id | UUID | No | - | FK runs |
+| reconciliation_matches | clearing_item_id | UUID | No | - | UQ + FK clearing_items |
+| reconciliation_matches | transaction_id | UUID | No | - | UQ + REF transactions (logica) |
+| reconciliation_matches | match_type | VARCHAR(15) | No | - | CK `EXACT`/`AMOUNT_DIFF`/`DATE_DIFF` |
+| reconciliation_matches | amount_minor | BIGINT | No | - | CK `>= 0` (centimos) |
+| reconciliation_matches | currency | CHAR(3) | No | - | - |
+| reconciliation_matches | created_at | TIMESTAMPTZ | No | now() | - |
 | reconciliation_exceptions | id | UUID | No | gen_random_uuid() | PK |
 | reconciliation_exceptions | run_id | UUID | No | - | FK runs |
 | reconciliation_exceptions | transaction_id | UUID | Si | - | REF transactions |

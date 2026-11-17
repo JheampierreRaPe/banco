@@ -23,19 +23,21 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.reconciliation.models import (
     CLEARING_DIRECTIONS,
     CLEARING_FILE_STATUSES,
+    MATCH_TYPES,
     RUN_STATUSES,
     ClearingFile,
     ClearingItem,
+    ReconciliationMatch,
     ReconciliationRun,
 )
 
@@ -390,15 +392,42 @@ def coerce_run_status(value: object) -> str:
 def get_run_by_date_currency(
     session: Session, run_date: date, currency: str
 ) -> ReconciliationRun | None:
-    """Corrida por `(run_date, currency)` o `None` (solo lectura)."""
+    """Ultima corrida por `(run_date, currency)` o `None` (solo lectura).
+
+    Sin UQ natural (review PR #27, H3): una fecha/moneda puede tener varias
+    corridas (lotes tardios); se retorna la mas reciente por
+    (`created_at`, `id`) como desempates estables y deterministas: mismos
+    datos -> misma respuesta (BAJO-3: sin depender de los `NULL` de
+    `finished_at`, cuyo orden varia por motor).
+    """
     return session.scalars(
         select(ReconciliationRun)
         .where(
             ReconciliationRun.run_date == run_date,
             ReconciliationRun.currency == currency,
         )
+        .order_by(
+            ReconciliationRun.created_at.desc(),
+            ReconciliationRun.id.desc(),
+        )
         .limit(1)
     ).first()
+
+
+def list_runs_by_date_currency(
+    session: Session, run_date: date, currency: str
+) -> list[ReconciliationRun]:
+    """Todas las corridas de `(run_date, currency)` (antiguas primero)."""
+    return list(
+        session.scalars(
+            select(ReconciliationRun)
+            .where(
+                ReconciliationRun.run_date == run_date,
+                ReconciliationRun.currency == currency,
+            )
+            .order_by(ReconciliationRun.created_at, ReconciliationRun.id)
+        ).all()
+    )
 
 
 def create_run(
@@ -409,10 +438,16 @@ def create_run(
     executed_by: uuid.UUID | None = None,
     status: str = "RUNNING",
 ) -> ReconciliationRun:
-    """Crea la corrida en `status` (UQ natural por fecha/moneda).
+    """Crea la corrida en `status` (varias por fecha/moneda, H3).
 
-    Hace `flush`, no `commit`. `(run_date, currency)` duplicado (carrera)
-    -> `ReconciliationConflictError` (la UQ decide; el perdedor re-lee).
+    Hace `flush`, no `commit`. Sin UQ natural: una fecha/moneda admite
+    varias corridas (la idempotencia la decide el servicio: sin pendientes
+    nuevos se reutiliza la ultima `COMPLETED`; con pendientes se crea una
+    nueva). Guarda de BD (MEDIO-2, indice parcial
+    `uq_reconciliation_runs_single_running`): una segunda `RUNNING` para la
+    misma fecha/moneda falla aqui con `ReconciliationConflictError` (la
+    rama `except` del servicio vuelve a ser alcanzable: carrera real entre
+    dos corridas concurrentes).
     """
     state = coerce_run_status(status)
     row = ReconciliationRun(
@@ -441,12 +476,25 @@ def create_run(
 def mark_run_running(session: Session, run: ReconciliationRun) -> ReconciliationRun:
     """Reabre una corrida `FAILED` como `RUNNING` (reintento en la misma fila).
 
-    Resetea contadores y `finished_at`. Solo desde `FAILED`; otro estado ->
+    Resetea contadores y `finished_at`. Solo desde `FAILED`: `UPDATE ...
+    WHERE id=:id AND status='FAILED'` y `rowcount == 0` =>
     `ReconciliationConflictError` (el llamante decide: `COMPLETED` se
-    reutiliza, `RUNNING` concurrente es conflicto). Hace `flush`, no
-    `commit`.
+    reutiliza, `RUNNING` concurrente es conflicto); no se confia en el
+    estado en memoria (un objeto stale con `status='FAILED'` no gana si la
+    fila ya se cerro: solo un reintento gana). Hace `flush`, no `commit`.
     """
-    if run.status != "FAILED":
+    result = session.execute(
+        update(ReconciliationRun)
+        .where(ReconciliationRun.id == run.id, ReconciliationRun.status == "FAILED")
+        .values(
+            status="RUNNING",
+            matched_count=0,
+            unmatched_count=0,
+            total_minor=0,
+            finished_at=None,
+        )
+    )
+    if result.rowcount == 0:
         raise ReconciliationConflictError("la corrida no admite reintento en su estado actual")
     run.status = "RUNNING"
     run.matched_count = 0
@@ -467,11 +515,12 @@ def complete_run(
 ) -> ReconciliationRun:
     """Cierra la corrida como `COMPLETED` con sus contadores.
 
-    Solo desde `RUNNING`; contadores enteros `>= 0`. Hace `flush`, no
-    `commit`.
+    Solo desde `RUNNING`: `UPDATE ... WHERE id=:id AND status='RUNNING'`
+    y `rowcount == 0` => `ReconciliationConflictError`; no se confia en el
+    estado en memoria (un objeto stale con `status='RUNNING'` no gana si
+    la fila ya se cerro: solo un cierre gana). Contadores enteros `>= 0`
+    (se validan antes de mutar). Hace `flush`, no `commit`.
     """
-    if run.status != "RUNNING":
-        raise ReconciliationConflictError("la corrida no esta en curso")
     for name, value in (
         ("matched_count", matched_count),
         ("unmatched_count", unmatched_count),
@@ -479,11 +528,25 @@ def complete_run(
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ReconciliationValidationError(f"contador de corrida invalido: {name}")
+    finished = datetime.now(UTC)
+    result = session.execute(
+        update(ReconciliationRun)
+        .where(ReconciliationRun.id == run.id, ReconciliationRun.status == "RUNNING")
+        .values(
+            matched_count=matched_count,
+            unmatched_count=unmatched_count,
+            total_minor=total_minor,
+            status="COMPLETED",
+            finished_at=finished,
+        )
+    )
+    if result.rowcount == 0:
+        raise ReconciliationConflictError("la corrida no esta en curso")
     run.matched_count = matched_count
     run.unmatched_count = unmatched_count
     run.total_minor = total_minor
     run.status = "COMPLETED"
-    run.finished_at = datetime.now(UTC)
+    run.finished_at = finished
     session.flush()
     logger.debug(
         "reconciliation run completado run_hash=%s matched=%d unmatched=%d",
@@ -497,12 +560,21 @@ def complete_run(
 def fail_run(session: Session, run: ReconciliationRun) -> ReconciliationRun:
     """Cierra la corrida como `FAILED` (sin parciales; el motivo va al log).
 
-    Solo desde `RUNNING`. Hace `flush`, no `commit`.
+    Solo desde `RUNNING`: `UPDATE ... WHERE id=:id AND status='RUNNING'`
+    y `rowcount == 0` => `ReconciliationConflictError`; no se confia en el
+    estado en memoria (un objeto stale con `status='RUNNING'` no gana si
+    la fila ya se cerro). Hace `flush`, no `commit`.
     """
-    if run.status != "RUNNING":
+    finished = datetime.now(UTC)
+    result = session.execute(
+        update(ReconciliationRun)
+        .where(ReconciliationRun.id == run.id, ReconciliationRun.status == "RUNNING")
+        .values(status="FAILED", finished_at=finished)
+    )
+    if result.rowcount == 0:
         raise ReconciliationConflictError("la corrida no esta en curso")
     run.status = "FAILED"
-    run.finished_at = datetime.now(UTC)
+    run.finished_at = finished
     session.flush()
     return run
 
@@ -513,36 +585,207 @@ def list_pending_items_for_run(
     run_date: date,
     currency: str,
 ) -> list[ClearingItem]:
-    """Items `PENDING` con `value_date == run_date` y `currency` (orden estable).
+    """Items `PENDING` de archivos `PROCESSED` con `value_date` y moneda.
 
-    Alcance exacto de la corrida: la tolerancia de fecha solo califica
-    pares (dominio), no amplia el alcance. Solo lectura.
+    H1 (review PR #27): el JOIN con `clearing_files` exige
+    `status='PROCESSED'` (no basta `ClearingItem.status=PENDING`): los items
+    de archivos `FAILED` (o `RECEIVED`) nunca se cruzan. Alcance exacto de
+    la corrida: la tolerancia de fecha solo califica pares (dominio), no
+    amplia el alcance. Solo lectura; orden estable.
     """
     stmt = (
         select(ClearingItem)
+        .join(ClearingFile, ClearingItem.file_id == ClearingFile.id)
         .where(
             ClearingItem.status == "PENDING",
             ClearingItem.value_date == run_date,
             ClearingItem.currency == currency,
+            ClearingFile.status == "PROCESSED",
         )
         .order_by(ClearingItem.value_date, ClearingItem.external_ref, ClearingItem.id)
     )
     return list(session.scalars(stmt).all())
 
 
-def mark_item_status(session: Session, item: ClearingItem, status: object) -> ClearingItem:
+def mark_item_status(
+    session: Session,
+    item: ClearingItem,
+    status: object,
+    *,
+    run_id: uuid.UUID | str | None = None,
+) -> ClearingItem:
     """Mueve un item `PENDING` a `MATCHED`/`EXCEPTION` (solo el matching).
 
-    Hace `flush`, no `commit`.
+    Atomico (MEDIO-2): `UPDATE ... WHERE id=... AND status='PENDING'` y
+    `rowcount == 0` => `ReconciliationConflictError`; no se confia en el
+    estado en memoria (un objeto stale con `status='PENDING'` no gana si
+    la fila ya se concilio: solo un worker gana). Si se indica `run_id`,
+    lo registra en el item (que corrida lo proceso; H2 del review PR #27:
+    tambien las excepciones registran `run_id`). Hace `flush`, no `commit`.
     """
     text = str(status or "").strip().upper()
     if text not in ("MATCHED", "EXCEPTION"):
         raise ReconciliationValidationError("estado de item invalido")
-    if item.status != "PENDING":
+    if run_id is not None:
+        try:
+            rid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ReconciliationValidationError("corrida de item invalida") from exc
+        values: dict[str, Any] = {"status": text, "run_id": rid}
+    else:
+        values = {"status": text}
+    result = session.execute(
+        update(ClearingItem)
+        .where(ClearingItem.id == item.id, ClearingItem.status == "PENDING")
+        .values(**values)
+    )
+    if result.rowcount == 0:
         raise ReconciliationConflictError("el item ya fue conciliado")
     item.status = text
+    if run_id is not None:
+        item.run_id = rid
     session.flush()
     return item
+
+
+# ------------------------------------------------- matches (H2 review PR #27)
+
+
+def coerce_match_type(value: object) -> str:
+    """Valida el calificador del emparejamiento (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`)."""
+    text = str(value or "").strip().upper()
+    if text not in MATCH_TYPES:
+        raise ReconciliationValidationError("tipo de emparejamiento invalido")
+    return text
+
+
+def create_match(
+    session: Session,
+    *,
+    run_id: uuid.UUID | str,
+    clearing_item_id: uuid.UUID | str,
+    transaction_id: uuid.UUID | str,
+    match_type: object,
+    amount_minor: object,
+    currency: object,
+) -> ReconciliationMatch:
+    """Persiste el emparejamiento item -> operacion interna (H2).
+
+    `UQ(clearing_item_id)`: un item se concilia como maximo una vez;
+    `UQ(transaction_id)` (MEDIO-1): una operacion interna se concilia como
+    maximo una vez en todo el historial (doble match/uso ->
+    `ReconciliationConflictError`; la UQ decide). Hace `flush`, no
+    `commit`.
+    """
+    try:
+        rid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReconciliationValidationError("corrida de emparejamiento invalida") from exc
+    try:
+        iid = (
+            clearing_item_id
+            if isinstance(clearing_item_id, uuid.UUID)
+            else uuid.UUID(str(clearing_item_id))
+        )
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReconciliationValidationError("item de emparejamiento invalido") from exc
+    try:
+        tid = (
+            transaction_id
+            if isinstance(transaction_id, uuid.UUID)
+            else uuid.UUID(str(transaction_id))
+        )
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReconciliationValidationError("operacion de emparejamiento invalida") from exc
+    qualifier = coerce_match_type(match_type)
+    # `amount_minor` del match admite `0` (CHECK `>= 0`): el item siempre es
+    # `> 0`, pero la validacion propia no reutiliza el `> 0` del clearing.
+    if isinstance(amount_minor, bool) or not isinstance(amount_minor, int) or amount_minor < 0:
+        raise ReconciliationValidationError("monto de emparejamiento invalido")
+    amount = int(amount_minor)
+    code = coerce_currency(currency)
+    row = ReconciliationMatch(
+        run_id=rid,
+        clearing_item_id=iid,
+        transaction_id=tid,
+        match_type=qualifier,
+        amount_minor=amount,
+        currency=code,
+    )
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError as exc:
+        raise ReconciliationConflictError("emparejamiento duplicado") from exc
+    return row
+
+
+def get_match_by_item(
+    session: Session, clearing_item_id: uuid.UUID | str
+) -> ReconciliationMatch | None:
+    """Emparejamiento del item o `None` (auditoria item -> operacion)."""
+    try:
+        iid = (
+            clearing_item_id
+            if isinstance(clearing_item_id, uuid.UUID)
+            else uuid.UUID(str(clearing_item_id))
+        )
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReconciliationValidationError("item de emparejamiento invalido") from exc
+    return session.scalars(
+        select(ReconciliationMatch).where(ReconciliationMatch.clearing_item_id == iid).limit(1)
+    ).first()
+
+
+def list_matches_by_run(session: Session, run_id: uuid.UUID | str) -> list[ReconciliationMatch]:
+    """Emparejamientos de la corrida (orden estable por item)."""
+    try:
+        rid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReconciliationValidationError("corrida de emparejamiento invalida") from exc
+    return list(
+        session.scalars(
+            select(ReconciliationMatch)
+            .where(ReconciliationMatch.run_id == rid)
+            .order_by(ReconciliationMatch.clearing_item_id, ReconciliationMatch.id)
+        ).all()
+    )
+
+
+def list_used_transaction_ids(
+    session: Session,
+    *,
+    currency: str | None = None,
+    run_date: date | str | None = None,
+    date_tolerance_days: int = 0,
+) -> set[str]:
+    """IDs de operaciones internas ya emparejadas (evita reutilizarlas, H2).
+
+    Con alcance (`currency`/`run_date` ± `date_tolerance_days`, BAJO-2):
+    solo los emparejados en esa moneda y en corridas con `run_date` dentro
+    de la ventana (JOIN a `reconciliation_runs` por `run_id`), sin traer
+    toda la tabla. Sin alcance (compatibilidad): todos los emparejados.
+    Solo lectura.
+    """
+    stmt = select(ReconciliationMatch.transaction_id)
+    if currency is not None or run_date is not None:
+        stmt = stmt.join(ReconciliationRun, ReconciliationMatch.run_id == ReconciliationRun.id)
+        if currency is not None:
+            stmt = stmt.where(ReconciliationMatch.currency == coerce_currency(currency))
+        if run_date is not None:
+            day = coerce_run_date(run_date)
+            if (
+                isinstance(date_tolerance_days, bool)
+                or not isinstance(date_tolerance_days, int)
+                or date_tolerance_days < 0
+            ):
+                raise ReconciliationValidationError("tolerancia de fecha invalida")
+            start = day - timedelta(days=date_tolerance_days)
+            end = day + timedelta(days=date_tolerance_days)
+            stmt = stmt.where(ReconciliationRun.run_date.between(start, end))
+    rows = session.scalars(stmt).all()
+    return {str(tid) for tid in rows}
 
 
 __all__ = [
@@ -558,6 +801,7 @@ __all__ = [
     "coerce_file_ref",
     "coerce_file_status",
     "coerce_item_count",
+    "coerce_match_type",
     "coerce_raw",
     "coerce_run_currency",
     "coerce_run_date",
@@ -566,15 +810,20 @@ __all__ = [
     "coerce_value_date",
     "complete_run",
     "create_file_with_items",
+    "create_match",
     "create_run",
     "fail_run",
     "get_file_by_ref",
+    "get_match_by_item",
     "get_run_by_date_currency",
     "hash_external_ref",
     "hash_file_ref",
     "hash_run_scope",
+    "list_matches_by_run",
     "list_pending_items",
     "list_pending_items_for_run",
+    "list_runs_by_date_currency",
+    "list_used_transaction_ids",
     "mark_file_status",
     "mark_item_status",
     "mark_run_running",

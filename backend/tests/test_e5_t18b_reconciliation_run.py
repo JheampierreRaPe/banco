@@ -88,6 +88,7 @@ def db():
             Base.metadata.tables["reconciliation.clearing_files"],
             Base.metadata.tables["reconciliation.clearing_items"],
             Base.metadata.tables[RUN_TABLE],
+            Base.metadata.tables["reconciliation.reconciliation_matches"],
             Base.metadata.tables["transactions.transactions"],
             Base.metadata.tables["transactions.transaction_status_history"],
             Base.metadata.tables["transactions.holds"],
@@ -168,7 +169,11 @@ def _tx(
 
 
 def _ingest(db: Session, entries, *, seed=None):
-    """Crea un archivo de clearing con los items dados (todos `PENDING`)."""
+    """Crea un archivo de clearing con los items dados (todos `PENDING`).
+
+    Marca el archivo `PROCESSED` como hace `ingest_clearing_file` en
+    produccion: solo los `PROCESSED` entran al cruce (H1 del review PR #27).
+    """
     seed = seed or f"t{uuid.uuid4().hex[:8]}"
     items = [
         {
@@ -180,7 +185,7 @@ def _ingest(db: Session, entries, *, seed=None):
         }
         for ref, amount, currency, day in entries
     ]
-    return recon_repo.create_file_with_items(
+    row = recon_repo.create_file_with_items(
         db,
         source="NETWORK",
         file_ref=f"FILE-{seed}",
@@ -188,6 +193,8 @@ def _ingest(db: Session, entries, *, seed=None):
         item_count=len(items),
         items=items,
     )
+    recon_repo.mark_file_status(db, row, "PROCESSED")
+    return row
 
 
 # ------------------------------------------------- dominio: min-cost max-flow
@@ -548,10 +555,23 @@ def test_run_stores_executed_by(db: Session):
 
 
 def test_run_repository_transitions(db: Session):
-    """Repositorio de corridas: crear, duplicar, completar, fallar, reintentar."""
+    """Repositorio de corridas: crear, completar, fallar, reintentar (H3).
+
+    Sin UQ natural (review PR #27, H3): una fecha/moneda admite varias
+    corridas (lotes tardios); la idempotencia la decide el servicio. Con
+    guarda de BD (MEDIO-2, indice parcial
+    `uq_reconciliation_runs_single_running`): dos `RUNNING` simultaneas
+    para la misma fecha/moneda -> `ReconciliationConflictError`; el lote
+    tardio se crea tras cerrar la anterior.
+    """
     run = recon_repo.create_run(db, run_date=D, currency="PEN")
     assert run.status == "RUNNING"
+    # Relojes gruesos (Windows) pueden empatar `created_at`: se fuerza un
+    # instante anterior para que "ultima" sea determinista.
+    run.created_at = run.created_at - timedelta(days=1)
+    db.flush()
     assert recon_repo.get_run_by_date_currency(db, D, "PEN").id == run.id
+    # Segunda `RUNNING` simultanea: conflicto por la guarda de BD (MEDIO-2).
     with pytest.raises(recon_repo.ReconciliationConflictError):
         recon_repo.create_run(db, run_date=D, currency="PEN")
     with pytest.raises(recon_repo.ReconciliationValidationError):
@@ -560,6 +580,14 @@ def test_run_repository_transitions(db: Session):
     assert run.status == "COMPLETED"
     assert run.finished_at is not None
     assert (run.matched_count, run.unmatched_count, run.total_minor) == (2, 1, 300)
+    # Lote tardio (H3): tras `COMPLETED` si se admite otra corrida.
+    run_late = recon_repo.create_run(db, run_date=D, currency="PEN")
+    assert run_late.id != run.id
+    assert recon_repo.get_run_by_date_currency(db, D, "PEN").id == run_late.id
+    assert [r.id for r in recon_repo.list_runs_by_date_currency(db, D, "PEN")] == [
+        run.id,
+        run_late.id,
+    ]
     with pytest.raises(recon_repo.ReconciliationConflictError):
         recon_repo.mark_run_running(db, run)
     run2 = recon_repo.create_run(db, run_date=D + timedelta(days=1), currency="PEN")
@@ -686,18 +714,29 @@ def test_reconciliation_boundary_allows_only_facade():
 
 
 def test_migration_0051_chains_0050_with_runs_table_and_seeds():
-    """`0051` encadena `0050`, crea `reconciliation_runs` y siembra claves."""
+    """`0051` encadena `0050`: runs + `run_id` + `reconciliation_matches`."""
     text = MIGRATION_0051.read_text(encoding="utf-8")
     assert 'revision = "0051_reconciliation_runs"' in text
     assert 'down_revision = "0050_reconciliation"' in text
     for token in (
         "reconciliation_runs",
-        "uq_reconciliation_runs_date_currency",
+        "reconciliation_matches",
+        "uq_reconciliation_matches_item",
+        "uq_reconciliation_matches_transaction",
+        "uq_reconciliation_runs_single_running",
+        "fk_reconciliation_matches_run",
+        "fk_reconciliation_matches_item",
         "ck_reconciliation_runs_status",
         "ck_reconciliation_runs_matched_nonneg",
         "ck_reconciliation_runs_unmatched_nonneg",
         "ck_reconciliation_runs_total_nonneg",
+        "ck_reconciliation_matches_type",
+        "ck_reconciliation_matches_amount_nonneg",
         "ix_reconciliation_runs_status",
+        "ix_reconciliation_runs_date_currency",
+        "ix_clearing_items_run_id",
+        "ix_reconciliation_matches_run_id",
+        "ix_reconciliation_matches_transaction_id",
         "reconciliation.amount_tolerance_minor",
         "reconciliation.date_tolerance_days",
         "reconciliation.max_candidate_pairs",
@@ -705,4 +744,187 @@ def test_migration_0051_chains_0050_with_runs_table_and_seeds():
         "ON CONFLICT (key) DO NOTHING",
     ):
         assert token in text, f"migracion 0051 sin {token}"
+    assert "uq_reconciliation_runs_date_currency" not in text, (
+        "sin UQ natural: las COMPLETED son inmutables y los lotes tardios "
+        "crean corridas nuevas (H3)"
+    )
+    assert 'drop_table("reconciliation_matches"' in text
+    assert 'drop_column("clearing_items", "run_id"' in text
     assert 'drop_table("reconciliation_runs"' in text
+
+
+# ------------------------------------------------- H1: FAILED nunca cruza
+
+
+def test_run_ignores_failed_file_items(db: Session):
+    """H1: items `PENDING` de archivos `FAILED` no se cruzan.
+
+    Regresion: un archivo `FAILED` con items `PENDING` (residuo de una
+    ingesta que marco el archivo sin borrar items) mas un archivo
+    `PROCESSED` con un item cruzable -> solo cruza el del `PROCESSED`
+    (`matched=1`); los del `FAILED` siguen `PENDING` e intactos.
+    """
+    _tx(db, ref="H1-A", amount=100_00)
+    _tx(db, ref="H1-B", amount=200_00)
+    failed = recon_repo.create_file_with_items(
+        db,
+        source="NETWORK",
+        file_ref="FILE-h1-failed",
+        checksum="cd" * 32,
+        item_count=1,
+        items=[
+            {
+                "external_ref": "H1-B",
+                "amount_minor": 200_00,
+                "currency": "PEN",
+                "value_date": D,
+                "direction": "INBOUND",
+            }
+        ],
+    )
+    recon_repo.mark_file_status(db, failed, "FAILED")
+    _ingest(db, [("H1-A", 100_00, "PEN", D)], seed="h1-ok")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (1, 0)
+    left = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
+    assert left == []
+    failed_items = recon_repo.list_pending_items(db, file_id=failed.id)
+    assert len(failed_items) == 1
+    assert failed_items[0].status == "PENDING"
+    assert failed_items[0].run_id is None
+
+
+def test_run_ignores_received_file_items(db: Session):
+    """H1: archivos aun `RECEIVED` (sin procesar) tampoco entran al cruce."""
+    _tx(db, ref="H1-R", amount=100_00)
+    recon_repo.create_file_with_items(
+        db,
+        source="NETWORK",
+        file_ref="FILE-h1-received",
+        checksum="ef" * 32,
+        item_count=1,
+        items=[
+            {
+                "external_ref": "H1-R",
+                "amount_minor": 100_00,
+                "currency": "PEN",
+                "value_date": D,
+                "direction": "INBOUND",
+            }
+        ],
+    )
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (0, 0)
+
+
+# ------------------------------------------------- H2: emparejamiento persistido
+
+
+def test_run_persists_matches_and_item_run_id(db: Session):
+    """H2: cada `Match` deja fila auditable y marca `run_id` en el item."""
+    tx = _tx(db, ref="H2-A", amount=100_00)
+    _ingest(db, [("H2-A", 100_00, "PEN", D)], seed="h2")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    matches = recon_repo.list_matches_by_run(db, run.id)
+    assert len(matches) == 1
+    (match,) = matches
+    assert match.run_id == run.id
+    assert str(match.transaction_id) == str(tx.id)
+    assert match.match_type == "EXACT"
+    assert (match.amount_minor, match.currency) == (100_00, "PEN")
+    item = recon_repo.get_match_by_item(db, match.clearing_item_id)
+    assert item is not None and item.id == match.id
+    stored = db.scalars(
+        sa.select(recon_repo.ClearingItem).where(
+            recon_repo.ClearingItem.id == match.clearing_item_id
+        )
+    ).one()
+    assert stored.status == "MATCHED"
+    assert stored.run_id == run.id
+    with pytest.raises(recon_repo.ReconciliationConflictError):
+        recon_repo.create_match(
+            db,
+            run_id=run.id,
+            clearing_item_id=match.clearing_item_id,
+            transaction_id=tx.id,
+            match_type="EXACT",
+            amount_minor=100_00,
+            currency="PEN",
+        )
+    db.rollback()
+
+
+def test_run_exception_items_record_run_id_without_match(db: Session):
+    """H2: las excepciones registran `run_id` en el item (sin crear match)."""
+    _ingest(db, [("H2-X", 100_00, "PEN", D)], seed="h2x")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (0, 1)
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+    pending_all = db.scalars(
+        sa.select(recon_repo.ClearingItem).where(recon_repo.ClearingItem.status == "EXCEPTION")
+    ).all()
+    assert len(pending_all) == 1
+    assert pending_all[0].run_id == run.id
+
+
+def test_run_does_not_reuse_matched_operation(db: Session):
+    """H2: dos corridas no reutilizan la misma operacion interna."""
+    tx = _tx(db, ref="H2-R", amount=100_00)
+    _ingest(db, [("H2-R", 100_00, "PEN", D)], seed="h2r1")
+    first = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert first.matched_count == 1
+    _ingest(db, [("H2-R", 100_00, "PEN", D)], seed="h2r2")
+    second = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert second.id != first.id
+    assert second.status == "COMPLETED"
+    assert (second.matched_count, second.unmatched_count) == (0, 1)
+    used = recon_repo.list_used_transaction_ids(db)
+    assert str(tx.id) in used
+
+
+def test_run_replay_without_new_items_creates_no_duplicate_match(db: Session):
+    """H2: replay sin pendientes nuevos no duplica matches."""
+    _tx(db, ref="H2-D", amount=100_00)
+    _ingest(db, [("H2-D", 100_00, "PEN", D)], seed="h2d")
+    first = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    count_before = len(recon_repo.list_matches_by_run(db, first.id))
+    assert count_before == 1
+    again = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert again.id == first.id
+    assert len(recon_repo.list_matches_by_run(db, again.id)) == 1
+
+
+# ------------------------------------------------- H3: corridas tardias
+
+
+def test_run_late_batch_creates_new_run_and_reexecution_reuses_it(db: Session):
+    """H3: lote tardio -> corrida nueva; reejecutar sin nuevos la reutiliza."""
+    _tx(db, ref="H3-A", amount=100_00)
+    _ingest(db, [("H3-A", 100_00, "PEN", D)], seed="h3lote1")
+    first = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert first.status == "COMPLETED"
+    assert first.matched_count == 1
+    # `created_at` anteriores: la segunda corrida debe ser la "ultima" aun
+    # con relojes gruesos que empatarian los instantes (determinismo H3).
+    first.created_at = first.created_at - timedelta(seconds=10)
+    db.flush()
+
+    _tx(db, ref="H3-B", amount=200_00)
+    _ingest(db, [("H3-B", 200_00, "PEN", D)], seed="h3lote2")
+    second = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert second.id != first.id
+    assert second.status == "COMPLETED"
+    assert (second.matched_count, second.unmatched_count) == (1, 0)
+    assert first.status == "COMPLETED"
+    assert first.matched_count == 1
+
+    third = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert third.id == second.id
+    assert db.scalars(sa.select(sa.func.count()).select_from(ReconciliationRun)).one() == 2
+    matches = recon_repo.list_matches_by_run(db, second.id)
+    assert len(matches) == 1
+    assert matches[0].match_type == "EXACT"

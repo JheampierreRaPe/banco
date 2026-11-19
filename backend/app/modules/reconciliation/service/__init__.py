@@ -16,17 +16,21 @@ fecha/moneda contra los candidatos internos de la fachada de solo lectura
 `reconciliation_matches` por par, actualiza los items (`MATCHED`/`EXCEPTION`,
 siempre con `run_id`) y persiste la corrida `reconciliation_runs` con
 contadores (`matched_count`, `unmatched_count` = TOTAL de excepciones del
-dominio —incluye `MISSING_EXTERNAL` de operaciones internas sin item, BAJO
-PR #27 B1 opcion total sin columna nueva—, `total_minor` = suma con signo
-de los items conciliados). El alcance interno cubre la ventana de negocio
-[`run_date` - tol, `run_date` + tol] en la zona
+dominio —incluye `MISSING_EXTERNAL` de operaciones internas sin item— con
+desglose `unmatched_item_count`/`unmatched_operation_count` por lado,
+`total_minor` = suma con signo de los items conciliados). El alcance interno
+cubre la ventana de negocio [`run_date` - tol, `run_date` + tol] en la zona
 `reconciliation.business_timezone` (M2/M3: la tolerancia de fecha amplia el
 alcance y el dominio califica `DATE_DIFF`); el clearing sigue exacto en
 `run_date`. `total_minor` es la suma con signo de los items conciliados
-(M5: `INBOUND` +, `OUTBOUND` -). Idempotencia y corridas tardias: `COMPLETED` inmutable (sin
-`PENDING` nuevos se reutiliza; con `PENDING` nuevos se crea una corrida
+(M5: `INBOUND` +, `OUTBOUND` -). Los ya usados se excluyen por conjunto de
+candidatos (`WHERE transaction_id IN (...)`, sin ventana de fechas: 3.1 del
+comentario PR #27) y la mutacion corre en `SAVEPOINT` (si falla, `FAILED`
+sin parciales y sesion usable: 3.2). Idempotencia y corridas tardias:
+`COMPLETED` inmutable (sin `PENDING` nuevos se reutiliza sin consultar
+candidatos/usados; con `PENDING` nuevos se crea una corrida
 nueva); `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en la
-misma fila; candidatos ya usados o `CONCILIATED` se excluyen. Si se supera
+misma fila; candidatos `CONCILIATED` se excluyen. Si se supera
 una cota de pares evaluables la corrida queda `FAILED` sin parciales
 (motivo `CANDIDATE_BUDGET_EXCEEDED`). No mueve dinero ni crea asientos;
 auditoria best-effort sin PII.
@@ -37,8 +41,12 @@ Contrato de errores (sin eco de valores, sin PII en logs):
   `FAILED` sin items huerfanos ni escrituras parciales.
 - `DUPLICATE_FILE` (replay controlado, no es error): mismo `file_ref` +
   mismo checksum ya ingerido; retorna el estado almacenado sin duplicar.
-- Mismo `file_ref` + checksum distinto -> `VALIDATION_ERROR` y el
-  archivo existente queda `FAILED` (no se pisan items).
+- Mismo `file_ref` + checksum distinto -> `VALIDATION_ERROR` SIN mutar el
+  archivo original (sigue conciliable); el rechazo se registra aparte como
+  fila `FAILED` con `file_ref` derivado (evidencia, sin items). Si el
+  archivo pasa legitimamente a `FAILED` (ingesta invalida), sus items
+  `PENDING` se cierran como `EXCEPTION` (sin `run_id`) para que no queden
+  en el limbo.
 
 Transaccion: `flush` sin `commit` (decide el llamante). Ante un fallo
 de validacion con archivo nuevo, la fila `FAILED` ya queda en `flush`
@@ -49,6 +57,7 @@ de mutar).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Mapping
@@ -112,21 +121,42 @@ def ingest_clearing_file(session: Session, payload: Mapping[str, Any]) -> dict[s
     )
 
 
+def _rejection_file_ref(code: str, checksum: object) -> str:
+    """`file_ref` derivado para registrar un rechazo sin mutar el original.
+
+    Determinista (`file_ref` + checksum entrante): un segundo replay con el
+    mismo checksum colisiona en la UQ y se trata como rechazo ya registrado
+    (se sigue devolviendo el error, sin duplicar). Truncado a 64
+    (`coerce_file_ref`) y solo caracteres del regex de `file_ref`.
+    """
+    digest = hashlib.sha256(str(checksum).encode("utf-8")).hexdigest()[:8]
+    suffix = f"-REJ-{digest}"
+    return f"{code[: 64 - len(suffix)]}{suffix}"
+
+
 def _replay_or_reject(
     session: Session, existing: ClearingFile, *, checksum: object
 ) -> dict[str, Any]:
-    """Replay sin duplicar o rechazo por checksum distinto."""
+    """Replay sin duplicar o rechazo por checksum distinto (sin mutar).
+
+    3.4 del comentario PR #27: un replay con checksum distinto NO muta el
+    archivo original valido (seguiria conciliable en la corrida posterior);
+    el rechazo se registra aparte como una fila `FAILED` con `file_ref`
+    derivado (evidencia, sin items) y se devuelve el error
+    (`VALIDATION_ERROR`). Lo mismo ante checksum malformado (ni siquiera
+    se puede comparar: se registra el rechazo y se lanza).
+    """
     try:
         digest = recon_repo.coerce_checksum(checksum)
     except recon_repo.ReconciliationValidationError:
-        recon_repo.mark_file_status(session, existing, "FAILED")
+        _record_rejection(session, existing, checksum=checksum)
         raise
     if existing.checksum != digest:
-        recon_repo.mark_file_status(session, existing, "FAILED")
         logger.warning(
             "clearing ingest checksum distinto file_hash=%s",
             recon_repo.hash_file_ref(existing.file_ref),
         )
+        _record_rejection(session, existing, checksum=digest)
         raise recon_repo.ReconciliationValidationError("checksum del lote inconsistente")
     stored = session.scalars(
         select(func.count()).select_from(ClearingItem).where(ClearingItem.file_id == existing.id)
@@ -144,6 +174,37 @@ def _replay_or_reject(
         "duplicates": int(stored),
         "code": RECONCILIATION_DUPLICATE_FILE,
     }
+
+
+def _record_rejection(session: Session, existing: ClearingFile, *, checksum: object) -> None:
+    """Registra el rechazo aparte (fila `FAILED` con `file_ref` derivado).
+
+    Best-effort (H-5 del review PR #27): si el rechazo ya estaba registrado
+    (UQ del derivado) no se duplica, y si el registro falla por cualquier
+    otra causa (p. ej. un fallo tecnico) se registra y se continua: el
+    error original de validacion/rechazo siempre se propaga intacto, nunca
+    se enmascara. Nunca muta `existing` (el original conserva su estado y
+    sus items).
+    """
+    try:
+        recon_repo.record_failed_file(
+            session,
+            source=existing.source,
+            file_ref=_rejection_file_ref(existing.file_ref, checksum),
+            checksum=checksum,
+            item_count=0,
+            storage_ref=None,
+        )
+    except recon_repo.ReconciliationConflictError:
+        logger.debug(
+            "clearing ingest rechazo ya registrado file_hash=%s",
+            recon_repo.hash_file_ref(existing.file_ref),
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort: no enmascara el error original
+        logger.warning(
+            "clearing ingest rechazo no registrado err=%s",
+            type(exc).__name__,
+        )
 
 
 def _ingest_new(
@@ -342,6 +403,8 @@ def _audit_run_best_effort(
         metadata: dict[str, Any] = {
             "matched_count": run.matched_count,
             "unmatched_count": run.unmatched_count,
+            "unmatched_item_count": run.unmatched_item_count,
+            "unmatched_operation_count": run.unmatched_operation_count,
             "total_minor": run.total_minor,
         }
         if reason is not None:
@@ -380,27 +443,35 @@ def run_reconciliation(
     exacto); ejecuta el dominio puro (min-cost max-flow: cardinalidad maxima
     + maximo de `EXACT`; exige misma `direction` en ambos lados, M5);
     persiste un `reconciliation_matches` por par (auditoria item ->
-    `transaction_id`), actualiza los items (`MATCHED`/`EXCEPTION`, siempre
-    con `run_id`) y cierra la corrida `COMPLETED` con contadores
+    `transaction_id`, con `amount_diff_minor`/`date_diff_days` para
+    `AMOUNT_DIFF`/`DATE_DIFF`) y cierra la corrida `COMPLETED` con contadores
     (`matched_count`, `unmatched_count` = TOTAL de excepciones del dominio
-    —incluye `MISSING_EXTERNAL` de operaciones internas sin item, BAJO PR
-    #27 B1 opcion total sin columna nueva—,
+    —incluye `MISSING_EXTERNAL` de operaciones internas sin item— con
+    desglose `unmatched_item_count`/`unmatched_operation_count`,
     `total_minor` = suma con signo de los items conciliados: `INBOUND` +,
-    `OUTBOUND` -, M5).
+    `OUTBOUND` -, M5). La fase de mutacion (matches + marcas + cierre)
+    corre en un `SAVEPOINT`: si falla a mitad, la corrida queda `FAILED`
+    sin parciales y la sesion externa sigue usable (3.2 del comentario
+    PR #27).
 
     Idempotencia y corridas tardias (H2/H3 del review PR #27): las
     `COMPLETED` son inmutables y nunca se reabren. Si la ultima corrida del
     alcance esta `COMPLETED` y no hay `PENDING` nuevos (de archivos
-    `PROCESSED`), se devuelve sin re-cruzar; si hay `PENDING` nuevos (lote
-    tardio), se crea una corrida NUEVA que procesa solo esos items (varias
-    corridas por fecha/moneda). `RUNNING` reciente ->
+    `PROCESSED`), se devuelve sin re-cruzar NI consultar candidatos/usados
+    (menor 7 del comentario PR #27: el replay no hace trabajo
+    innecesario); si hay `PENDING` nuevos (lote tardio), se crea una
+    corrida NUEVA que procesa solo esos items (varias corridas por
+    fecha/moneda). `RUNNING` reciente ->
     `ReconciliationConflictError` (`409`); las `RUNNING` huerfanas (lease
     `reconciliation.run_lease_minutes`, default 30 minutos: `created_at`
     anterior a `ahora - lease`) se reclaman primero a `FAILED`
     (`reclaim_stale_running`, sin columnas nuevas) y se continua con una
     corrida nueva o un reintento. `FAILED` se reintenta en la misma
     fila. Doble conciliacion: los candidatos ya usados en
-    `reconciliation_matches` (por `transaction_id`) o con estado
+    `reconciliation_matches` (solo ese conjunto: `WHERE transaction_id IN
+    (...)` troceado en lotes de 5.000 —H-1 del review PR #27: Postgres
+    admite 65.535 parametros y SQLite 32.767 por consulta—, sin ventana de
+    fechas —3.1 del comentario PR #27—) o con estado
     `CONCILIATED` se excluyen antes de cruzar. La asignacion de excepciones
     a sobrantes es codiciosa y determinista (se recorre por (`external_ref`,
     `item_id`) y cada item toma su mejor candidato libre por `_pair_key`):
@@ -436,6 +507,16 @@ def run_reconciliation(
             "corrida de conciliacion ya en curso para la fecha y moneda"
         )
 
+    # Menor 7 del comentario PR #27: el early-return de `COMPLETED` sin
+    # pendientes va ANTES de consultar candidatos/usados (el replay no hace
+    # trabajo innecesario: ni la fachada ni el `IN` de usados se tocan).
+    items = recon_repo.list_pending_items_for_run(session, run_date=day, currency=code)
+
+    # H3: `COMPLETED` inmutable; sin pendientes nuevos se reutiliza.
+    if existing is not None and existing.status == "COMPLETED" and not items:
+        return existing
+    retry_in_place = existing is not None and existing.status == "FAILED"
+
     tolerances = _read_tolerances(session)
     per_group, per_run = _read_budgets(session)
 
@@ -446,13 +527,16 @@ def run_reconciliation(
     raw_candidates = _candidates(
         session, day, code, date_tolerance_days=tolerances.date_tolerance_days
     )
-    # BAJO-2: solo los ya usados en la ventana de la corrida (misma moneda
-    # y `run_date` ± tolerancia de fecha), sin traer toda la tabla.
+    # 3.1 del comentario PR #27: los ya usados se consultan SOLO para este
+    # conjunto de candidatos (`WHERE transaction_id IN (...)`, sin ventana
+    # de fechas). El dominio puede emparejar operaciones a ± tolerancia y
+    # acotar por ventana de `run_date` reoferta operaciones ya conciliadas
+    # en corridas vecinas (D-1/D/D+1): con el `IN` se excluyen siempre y
+    # nunca rompen la corrida vecina (se excluyen o quedan como excepcion,
+    # nunca `ReconciliationConflictError`).
     used_transaction_ids = recon_repo.list_used_transaction_ids(
         session,
-        currency=code,
-        run_date=day,
-        date_tolerance_days=tolerances.date_tolerance_days,
+        transaction_ids=[str(row.get("transaction_id")) for row in raw_candidates],
     )
     candidates = [
         row
@@ -460,12 +544,6 @@ def run_reconciliation(
         if str(row.get("transaction_id")) not in used_transaction_ids
         and str(row.get("status")) != "CONCILIATED"
     ]
-    items = recon_repo.list_pending_items_for_run(session, run_date=day, currency=code)
-
-    # H3: `COMPLETED` inmutable; sin pendientes nuevos se reutiliza.
-    if existing is not None and existing.status == "COMPLETED" and not items:
-        return existing
-    retry_in_place = existing is not None and existing.status == "FAILED"
 
     internal = [
         InternalOperation(
@@ -504,7 +582,10 @@ def run_reconciliation(
         # rama feliz: `create_run` convierte la guarda de BD en `CONFLICT`
         # y aqui se devuelve el `CONFLICT` coherente (no un `FAILED`).
         if retry_in_place:
-            assert existing is not None
+            if existing is None:  # sin `assert`: error explicito en produccion
+                raise recon_repo.ReconciliationConflictError(
+                    "corrida de conciliacion ya en curso para la fecha y moneda"
+                )
             run = recon_repo.mark_run_running(session, existing)
             if actor is not None:
                 run.executed_by = actor
@@ -538,7 +619,10 @@ def run_reconciliation(
         return run
 
     if retry_in_place:
-        assert existing is not None
+        if existing is None:  # sin `assert`: error explicito en produccion
+            raise recon_repo.ReconciliationConflictError(
+                "corrida de conciliacion ya en curso para la fecha y moneda"
+            )
         run = recon_repo.mark_run_running(session, existing)
         if actor is not None:
             run.executed_by = actor
@@ -562,43 +646,86 @@ def run_reconciliation(
             ) from None
 
     items_by_id = {str(item.id): item for item in items}
+    internal_by_id = {op.op_id: op for op in internal}
     matched_item_ids = {m.clearing_id for m in result.matches}
-    matched_amounts = {str(item.id): item for item in items}
-    for match in result.matches:
-        item = items_by_id[match.clearing_id]
-        recon_repo.create_match(
-            session,
-            run_id=run.id,
-            clearing_item_id=item.id,
-            transaction_id=match.internal_id,
-            match_type=match.qualifier,
-            amount_minor=item.amount_minor,
-            currency=item.currency,
-        )
-        recon_repo.mark_item_status(session, item, "MATCHED", run_id=run.id)
-    for exc in result.exceptions:
-        if exc.clearing_id is not None and exc.clearing_id in items_by_id:
-            recon_repo.mark_item_status(
-                session, items_by_id[exc.clearing_id], "EXCEPTION", run_id=run.id
+    # 3.2 del comentario PR #27: la fase de mutacion (matches + marcas +
+    # cierre) corre en un `SAVEPOINT`. Si algo falla a mitad (p. ej. un
+    # `CONFLICT` de la UQ en carrera), el savepoint revierte los parciales,
+    # se expira el mapa de identidad (los objetos en memoria dirian
+    # `MATCHED` pero la BD dice `PENDING`), la corrida queda `FAILED` y se
+    # relanza el error original: el llamante conserva una sesion usable
+    # (puede hacer `commit` y la corrida queda `FAILED`, sin parciales).
+    # Nota de motores (H-4 del review PR #27): en Postgres el error aborta
+    # la transaccion y el rollback del savepoint la recupera; en SQLite el
+    # rollback revierte los parciales y la sesion sigue usable.
+    try:
+        with session.begin_nested():
+            for match in result.matches:
+                item = items_by_id[match.clearing_id]
+                op = internal_by_id[match.internal_id]
+                amount_diff = item.amount_minor - op.amount_minor
+                date_diff = (item.value_date - op.value_date).days
+                recon_repo.create_match(
+                    session,
+                    run_id=run.id,
+                    clearing_item_id=item.id,
+                    transaction_id=match.internal_id,
+                    match_type=match.qualifier,
+                    amount_minor=item.amount_minor,
+                    currency=item.currency,
+                    # 10 del comentario PR #27: diferencias persistidas
+                    # (solo `AMOUNT_DIFF`/`DATE_DIFF`; `EXACT` deja `NULL`).
+                    amount_diff_minor=amount_diff if amount_diff != 0 else None,
+                    date_diff_days=date_diff if date_diff != 0 else None,
+                )
+                recon_repo.mark_item_status(session, item, "MATCHED", run_id=run.id)
+            for exc in result.exceptions:
+                if exc.clearing_id is not None and exc.clearing_id in items_by_id:
+                    recon_repo.mark_item_status(
+                        session, items_by_id[exc.clearing_id], "EXCEPTION", run_id=run.id
+                    )
+            # 3.3 del comentario PR #27: desglose por lado. `unmatched_count`
+            # se mantiene como el TOTAL (suma del desglose) por
+            # compatibilidad (`E5-T18` CA-01).
+            unmatched_item_count = sum(
+                1 for exc in result.exceptions if exc.clearing_id is not None
             )
-    # B1 (BAJO PR #27): `unmatched_count` = TOTAL de excepciones del dominio
-    # (incluye `MISSING_EXTERNAL` de operaciones internas sin item, que no
-    # tocan items pero si cuentan). Opcion total sin columna nueva.
-    unmatched_count = len(result.exceptions)
-    # M5: `total_minor` con signo (documentado en `docs/03b#12.2`): cada item
-    # conciliado suma `+amount` si es `INBOUND` y `-amount` si es
-    # `OUTBOUND`; puede ser negativo (sin CHECK `>= 0` desde la `0051`).
-    total_minor = sum(
-        item.amount_minor if item.direction == "INBOUND" else -item.amount_minor
-        for item in (matched_amounts[mid] for mid in matched_item_ids)
-    )
-    recon_repo.complete_run(
-        session,
-        run,
-        matched_count=len(result.matches),
-        unmatched_count=unmatched_count,
-        total_minor=total_minor,
-    )
+            unmatched_operation_count = sum(
+                1 for exc in result.exceptions if exc.clearing_id is None
+            )
+            unmatched_count = unmatched_item_count + unmatched_operation_count
+            # M5: `total_minor` con signo (documentado en `docs/03b#12.2`):
+            # cada item conciliado suma `+amount` si es `INBOUND` y `-amount`
+            # si es `OUTBOUND`; puede ser negativo (sin CHECK `>= 0`).
+            total_minor = sum(
+                item.amount_minor if item.direction == "INBOUND" else -item.amount_minor
+                for item in (items_by_id[mid] for mid in matched_item_ids)
+            )
+            recon_repo.complete_run(
+                session,
+                run,
+                matched_count=len(result.matches),
+                unmatched_count=unmatched_count,
+                unmatched_item_count=unmatched_item_count,
+                unmatched_operation_count=unmatched_operation_count,
+                total_minor=total_minor,
+            )
+    except Exception as exc:
+        session.expire_all()
+        try:
+            recon_repo.fail_run(session, run)
+        except Exception:  # noqa: BLE001 - el error original manda; solo se registra
+            logger.warning(
+                "reconciliation run no pudo marcarse FAILED run_hash=%s",
+                recon_repo.hash_run_scope(day, code),
+            )
+        _audit_run_best_effort(
+            session,
+            run=run,
+            action="reconciliation.run.failed",
+            reason=type(exc).__name__,
+        )
+        raise
     logger.info(
         "reconciliation run completada run_hash=%s matched=%d unmatched=%d",
         recon_repo.hash_run_scope(day, code),

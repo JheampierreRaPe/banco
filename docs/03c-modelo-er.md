@@ -194,6 +194,20 @@ transactions (REF) <── reconciliation_matches / reconciliation_exceptions
 > — R2 de produccion —, (`currency`, `status`, `settled_at`) y
 > `clearing_items` (`status`, `value_date`, `currency`) (M6, reversibles);
 > la cota cuenta pares examinados (M7).
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 3.1/3.2/3.3/3.4 +
+> menores, HU19; `0051` sigue unica y reversible, sin `0052`): los ya
+> usados se excluyen por conjunto de candidatos (`WHERE transaction_id IN
+> (...)`, sin ventana de fechas: una op conciliada no se reoferta en
+> corridas vecinas); la mutacion corre en `SAVEPOINT` (`FAILED` sin
+> parciales, sesion usable); `reconciliation_runs` desglosa
+> `unmatched_item_count`/`unmatched_operation_count` (`unmatched_count` =
+> suma, compatibilidad); el replay con checksum distinto no muta el
+> original (rechazo aparte `FAILED`, evidencia sin items) y el `FAILED`
+> legitimo cierra sus items como `EXCEPTION` (sin `run_id`);
+> `reconciliation_matches` persiste `amount_diff_minor`/`date_diff_days`
+> (nullable, solo tolerados); replay `COMPLETED` sin pendientes no
+> consulta candidatos/usados.
 
 ## 11. Modulo `notifications`
 

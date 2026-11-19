@@ -426,6 +426,12 @@ eventos (`outbox`/`inbox`).
   > default `America/Lima`; M3: convierte `settled_at` — o `created_at` si
   aun no liquida — con `ZoneInfo`, nunca `date()` UTC; pre-filtro SQL en un
   rango UTC amplio, recorte exacto en Python, portable SQLite/Postgres).
+  Zona malformada en config (`ValueError` ademas de
+  `ZoneInfoNotFoundError`, p. ej. `'/etc/passwd'`) cae al default sin
+  lanzar; el parametro explicito invalido sigue siendo `ValueError`
+  (`VALIDATION_ERROR`). La base IANA la aporta el paquete `tzdata`
+  (dependencia de `backend/pyproject.toml`), necesaria en
+  Windows/docker-slim.
   `value_date` exige `date`, `date_tolerance_days` entero `>= 0` y
   `currency` ISO-4217 (`TypeError`/`ValueError` mapeables a
   `VALIDATION_ERROR`). Direccion (M5): `direction` `INBOUND`/`OUTBOUND`
@@ -1121,9 +1127,13 @@ eventos (`outbox`/`inbox`).
   `ingest_clearing_file(session, payload) -> {file_id, status, inserted,
   duplicates}`: valida `file_ref`, checksum SHA-256, `item_count`,
   montos/monedas/fechas; mismo `file_ref` + mismo checksum = replay sin
-  duplicar (`DUPLICATE_FILE`); checksum distinto o `item_count`/item
+  duplicar (`DUPLICATE_FILE`); replay con checksum distinto NO muta el
+  original valido (el rechazo se registra aparte como fila `FAILED` con
+  `file_ref` derivado `-REJ-<hash>`, evidencia sin items; se devuelve
+  `VALIDATION_ERROR`, 3.4 del comentario PR #27); `item_count`/item
   invalido -> `VALIDATION_ERROR` y archivo `FAILED` (sin items huerfanos
-  ni parciales). Los items nacen `PENDING` (el matching es `E5-T18`).
+  ni parciales; si el archivo pasa a `FAILED`, sus items `PENDING` se
+  cierran como `EXCEPTION` sin `run_id`, sin limbo). Los items nacen `PENDING` (el matching es `E5-T18`).
   Job `run_clearing_ingest_once(session, source=None)` (una pasada,
   `commit` por archivo) cableado en `composition`
   (`reconciliation_ingest_enabled`,
@@ -1206,25 +1216,33 @@ eventos (`outbox`/`inbox`).
   `reconciliation.max_candidate_pairs` por grupo, default `250_000`, y
   `reconciliation.max_candidate_pairs_per_run` por corrida, default
   `1_000_000`, techo defensivo `5_000_000`), excluye los ya usados en
-  `reconciliation_matches` en la ventana de la corrida (misma moneda y
-  `run_date` ± tolerancia de fecha, BAJO-2: sin traer toda la tabla) o con
+  `reconciliation_matches` SOLO para el conjunto de candidatos
+  (`WHERE transaction_id IN (...)`, sin ventana de fechas: 3.1, una op ya
+  conciliada nunca se reoferta en corridas vecinas) o con
   estado `CONCILIATED` (H2: sin doble conciliacion), ejecuta el dominio
   min-cost max-flow (cardinalidad maxima
   + maximo de `EXACT`; el ejemplo del revisor da 2 `EXACT` + `AMOUNT_DIFF`),
   persiste un `reconciliation_matches` por par (H2: auditoria item ->
-  `transaction_id` con `match_type`/`amount_minor`/`currency`, UQ por item y
+  `transaction_id` con `match_type`/`amount_minor`/`currency` +
+  `amount_diff_minor`/`date_diff_days` (nullable, solo
+  `AMOUNT_DIFF`/`DATE_DIFF`; 10), UQ por item y
   UQ por `transaction_id` — MEDIO-1: una operacion interna se concilia una
-  sola vez en todo el historial), actualiza los items
+  sola vez en todo el historial; `create_match` distingue UQ duplicada
+  (`CONFLICT`) de otro `IntegrityError` (error de persistencia)), actualiza los items
   (`MATCHED`/`EXCEPTION`, siempre con `run_id`, con `mark_item_status`
   atomico — MEDIO-2: `UPDATE ... WHERE PENDING`, solo un worker gana) y
   cierra
   `reconciliation_runs` con contadores (`matched_count`,
   `unmatched_count` = TOTAL de excepciones del dominio, incluidas las
   `MISSING_EXTERNAL` de operaciones internas sin item — BAJO PR #27 B1,
-  opcion total sin columna nueva —, `total_minor` = suma con signo
-  de conciliados: `INBOUND` +, `OUTBOUND` -, M5, sin CHECK `>= 0`). Idempotencia y corridas tardias (H3, sin UQ natural: las
+  con desglose `unmatched_item_count`/`unmatched_operation_count` (3.3;
+  el total se mantiene como suma por compatibilidad) —, `total_minor` = suma con signo
+  de conciliados: `INBOUND` +, `OUTBOUND` -, M5, sin CHECK `>= 0`). La fase
+  de mutacion corre en un `SAVEPOINT` (3.2: si falla a mitad, `FAILED` sin
+  parciales y sesion usable; se relanza el error). Idempotencia y corridas tardias (H3, sin UQ natural: las
   `COMPLETED` son inmutables y nunca se reabren; sin `PENDING` nuevos se
-  reutiliza la ultima (orden determinista `created_at DESC, id DESC`,
+  reutiliza la ultima sin consultar candidatos/usados (menor 7: el replay
+  no hace trabajo innecesario) (orden determinista `created_at DESC, id DESC`,
   BAJO-3: sin depender de los `NULL` de `finished_at`), con `PENDING`
   nuevos de un lote tardio se crea una corrida nueva que procesa solo
   esos), `RUNNING` concurrente es `CONFLICT` por el indice unico parcial

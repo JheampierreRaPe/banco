@@ -577,7 +577,9 @@ def test_run_repository_transitions(db: Session):
         recon_repo.create_run(db, run_date=D, currency="PEN")
     with pytest.raises(recon_repo.ReconciliationValidationError):
         recon_repo.complete_run(db, run, matched_count=-1, unmatched_count=0, total_minor=0)
-    recon_repo.complete_run(db, run, matched_count=2, unmatched_count=1, total_minor=300)
+    recon_repo.complete_run(
+        db, run, matched_count=2, unmatched_count=1, unmatched_item_count=1, total_minor=300
+    )
     assert run.status == "COMPLETED"
     assert run.finished_at is not None
     assert (run.matched_count, run.unmatched_count, run.total_minor) == (2, 1, 300)
@@ -836,6 +838,12 @@ def test_migration_0051_chains_0050_with_runs_table_and_seeds():
         "ck_reconciliation_runs_status",
         "ck_reconciliation_runs_matched_nonneg",
         "ck_reconciliation_runs_unmatched_nonneg",
+        "ck_reconciliation_runs_unmatched_item_nonneg",
+        "ck_reconciliation_runs_unmatched_operation_nonneg",
+        "unmatched_item_count",
+        "unmatched_operation_count",
+        "amount_diff_minor",
+        "date_diff_days",
         "ck_reconciliation_matches_type",
         "ck_reconciliation_matches_amount_nonneg",
         "ix_reconciliation_runs_status",
@@ -873,14 +881,15 @@ def test_migration_0051_chains_0050_with_runs_table_and_seeds():
 
 
 def test_run_ignores_failed_file_items(db: Session):
-    """H1: items `PENDING` de archivos `FAILED` no se cruzan.
+    """H1: items de archivos `FAILED` no se cruzan.
 
-    Regresion: un archivo `FAILED` con items `PENDING` (residuo de una
-    ingesta que marco el archivo sin borrar items) mas un archivo
-    `PROCESSED` con un item cruzable -> solo cruza el del `PROCESSED`
-    (`matched=1`); los del `FAILED` siguen `PENDING` e intactos. B1 (BAJO
-    PR #27, `unmatched_count` total): la operacion `H1-B` queda sin item
-    cruzable -> `MISSING_EXTERNAL` y cuenta (`unmatched=1`).
+    Regresion: un archivo que pasa legitimamente a `FAILED` cierra sus
+    items `PENDING` como `EXCEPTION` (sin `run_id`: 3.4 del comentario
+    PR #27, sin limbo) mas un archivo `PROCESSED` con un item cruzable ->
+    solo cruza el del `PROCESSED` (`matched=1`); los del `FAILED` quedan
+    `EXCEPTION` con `run_id` nulo. B1 (BAJO PR #27, `unmatched_count`
+    total): la operacion `H1-B` queda sin item cruzable ->
+    `MISSING_EXTERNAL` y cuenta (`unmatched=1`).
     """
     _tx(db, ref="H1-A", amount=100_00)
     _tx(db, ref="H1-B", amount=200_00)
@@ -908,9 +917,13 @@ def test_run_ignores_failed_file_items(db: Session):
     left = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
     assert left == []
     failed_items = recon_repo.list_pending_items(db, file_id=failed.id)
-    assert len(failed_items) == 1
-    assert failed_items[0].status == "PENDING"
-    assert failed_items[0].run_id is None
+    assert failed_items == [], "el FAILED no deja PENDING en el limbo"
+    stored_failed = db.scalars(
+        sa.select(recon_repo.ClearingItem).where(recon_repo.ClearingItem.file_id == failed.id)
+    ).all()
+    assert len(stored_failed) == 1
+    assert stored_failed[0].status == "EXCEPTION"
+    assert stored_failed[0].run_id is None
 
 
 def test_run_ignores_received_file_items(db: Session):
@@ -1233,3 +1246,273 @@ def test_run_budget_race_returns_coherent_conflict(db: Session, monkeypatch):
     monkeypatch.setattr(recon_repo, "create_run", _racing_create)
     with pytest.raises(recon_repo.ReconciliationConflictError, match="ya en curso"):
         recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+
+
+# ------------------------------------------------- comentario PR #27 (3.1/3.2/3.3/3.4 + menores 5/7/9/10)
+
+
+def test_run_date_tolerance_reoffer_excludes_used_in_neighbor_runs(db: Session):
+    """3.1: tol=1 en D-1/D/D+1: la op del 14 conciliada el 13 no rompe el 15.
+
+    Regresion: con usados acotados por ventana de `run_date`, la corrida
+    del 15 volvia a ofertar la operacion del 14 (ya conciliada el 13) y el
+    intento de re-match la marcaba como conflicto/duplicado. Con el enfoque
+    por conjunto (`WHERE transaction_id IN (...)`, sin ventana), la op se
+    excluye en las vecinas: cada corrida queda `COMPLETED` (la del 13 con
+    `DATE_DIFF`; 14/15 con el item como excepcion) y nunca se lanza
+    `ReconciliationConflictError`.
+    """
+    _set_param(db, "reconciliation.date_tolerance_days", "1")
+    _tx(db, ref="TOL-1", amount=100_00, day=D)
+    _ingest(db, [("TOL-1", 100_00, "PEN", D - timedelta(days=1))], seed="tol13")
+    run13 = recon_service.run_reconciliation(db, run_date=D - timedelta(days=1), currency="PEN")
+    assert run13.status == "COMPLETED"
+    assert (run13.matched_count, run13.unmatched_count) == (1, 0)
+    _ingest(db, [("TOL-1", 100_00, "PEN", D)], seed="tol14")
+    run14 = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run14.status == "COMPLETED"
+    assert (run14.matched_count, run14.unmatched_count) == (0, 1)
+    assert run14.unmatched_item_count == 1
+    assert run14.unmatched_operation_count == 0
+    _ingest(db, [("TOL-1", 100_00, "PEN", D + timedelta(days=1))], seed="tol15")
+    run15 = recon_service.run_reconciliation(db, run_date=D + timedelta(days=1), currency="PEN")
+    assert run15.status == "COMPLETED"
+    assert (run15.matched_count, run15.unmatched_count) == (0, 1)
+    total_matches = db.scalars(
+        sa.select(sa.func.count()).select_from(recon_repo.ReconciliationMatch)
+    ).one()
+    assert total_matches == 1, "la operacion no se reoferta en las vecinas"
+
+
+def test_run_mutation_conflict_leaves_failed_without_partials_and_session_usable(
+    db: Session, monkeypatch
+):
+    """3.2: conflicto a mitad de mutacion -> `FAILED` sin parciales, sesion usable.
+
+    Regresion: sin `SAVEPOINT`, el primer match/marca quedaba en `flush` y la
+    sesion externa moria (el `commit` del llamante persistia parciales). Con
+    el fix, el savepoint revierte, la corrida queda `FAILED`, el llamante
+    confirma y la sesion sigue usable (el reintento en la misma fila
+    concilia todo).
+    """
+    _tx(db, ref="P-1", amount=100_00)
+    _tx(db, ref="P-2", amount=200_00)
+    _ingest(db, [("P-1", 100_00, "PEN", D), ("P-2", 200_00, "PEN", D)], seed="part")
+    real_create_match = recon_repo.create_match
+    calls = {"n": 0}
+
+    def _flaky(session, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_create_match(session, **kwargs)
+        raise recon_repo.ReconciliationConflictError("emparejamiento duplicado")
+
+    monkeypatch.setattr(recon_repo, "create_match", _flaky)
+    with pytest.raises(recon_repo.ReconciliationConflictError):
+        recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    # El llamante confirma: la corrida queda `FAILED` y la sesion sirve.
+    db.commit()
+    run = recon_repo.get_run_by_date_currency(db, D, "PEN")
+    assert run is not None and run.status == "FAILED"
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+    leftovers = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
+    assert len(leftovers) == 2
+    assert all(item.status == "PENDING" and item.run_id is None for item in leftovers)
+    monkeypatch.undo()
+    retried = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert retried.id == run.id
+    assert retried.status == "COMPLETED"
+    assert (retried.matched_count, retried.unmatched_count) == (2, 0)
+    assert len(recon_repo.list_matches_by_run(db, run.id)) == 2
+
+
+def test_run_real_unique_violation_mid_mutation_leaves_failed_and_retries(db: Session, monkeypatch):
+    """H-4 del review PR #27: `IntegrityError` real de UQ a mitad de mutacion.
+
+    Carrera real: la operacion se concilio en otra corrida despues de leer
+    los usados (aqui se fuerza con `list_used_transaction_ids` -> vacio).
+    El `create_match` choca con `uq_reconciliation_matches_transaction` en
+    mitad de la mutacion: el savepoint revierte los parciales, la corrida
+    queda `FAILED`, la sesion sigue usable (`commit` del llamante) y el
+    reintento queda `COMPLETED` (la op ya usada se excluye y el item queda
+    como excepcion).
+    Nota de motores: en SQLite el `IntegrityError` deja la sesion usable
+    tras el rollback del savepoint; en Postgres el error aborta la
+    transaccion y el rollback del `SAVEPOINT` (`begin_nested`) la recupera.
+    """
+    op = _tx(db, ref="R-1", amount=100_00)
+    _ingest(db, [("R-1", 100_00, "PEN", D)], seed="race")
+    # La "otra corrida" (D-1) concilia la misma operacion primero.
+    rival = recon_repo.create_run(db, run_date=D - timedelta(days=1), currency="PEN")
+    rival_file = _ingest(db, [("RIVAL-1", 50_00, "PEN", D - timedelta(days=1))], seed="rival")
+    (rival_item,) = recon_repo.list_pending_items(db, file_id=rival_file.id)
+    recon_repo.create_match(
+        db,
+        run_id=rival.id,
+        clearing_item_id=rival_item.id,
+        transaction_id=op.id,
+        match_type="EXACT",
+        amount_minor=100_00,
+        currency="PEN",
+    )
+    recon_repo.mark_item_status(db, rival_item, "MATCHED", run_id=rival.id)
+    recon_repo.complete_run(db, rival, matched_count=1, unmatched_count=0, total_minor=50_00)
+    # Simula la carrera: los usados se leyeron antes de que la otra
+    # corrida persistiera su match.
+    monkeypatch.setattr(recon_repo, "list_used_transaction_ids", lambda *a, **k: set())
+    with pytest.raises(recon_repo.ReconciliationConflictError):
+        recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    # El llamante confirma: la corrida queda `FAILED` y la sesion sirve.
+    db.commit()
+    run = recon_repo.get_run_by_date_currency(db, D, "PEN")
+    assert run is not None and run.status == "FAILED"
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+    leftovers = recon_repo.list_pending_items_for_run(db, run_date=D, currency="PEN")
+    assert len(leftovers) == 1
+    assert leftovers[0].status == "PENDING" and leftovers[0].run_id is None
+    monkeypatch.undo()
+    retried = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert retried.id == run.id
+    assert retried.status == "COMPLETED"
+    assert (retried.matched_count, retried.unmatched_count) == (0, 1)
+    assert retried.unmatched_item_count == 1
+    assert retried.unmatched_operation_count == 0
+    assert recon_repo.list_matches_by_run(db, run.id) == []
+
+
+def test_run_unmatched_breakdown_item_vs_operation(db: Session):
+    """3.3: 100 ops internas + 1 item -> matched=1, item=0, operation=99, total=99."""
+    for i in range(100):
+        _tx(db, ref=f"B-{i:03d}", amount=100_00 + i)
+    _ingest(db, [("B-000", 100_00, "PEN", D)], seed="brk")
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert run.matched_count == 1
+    assert run.unmatched_item_count == 0
+    assert run.unmatched_operation_count == 99
+    assert run.unmatched_count == 99
+    assert run.unmatched_count == run.unmatched_item_count + run.unmatched_operation_count
+
+
+def test_run_checksum_mismatch_replay_still_conciliates_afterwards(db: Session):
+    """3.4: el replay con checksum distinto no bloquea la corrida posterior."""
+    _tx(db, ref="C-1", amount=100_00)
+    payload = {
+        "source": "NETWORK",
+        "file_ref": "CLR-POST-1",
+        "checksum": "ab" * 32,
+        "item_count": 1,
+        "items": [
+            {
+                "external_ref": "C-1",
+                "amount_minor": 100_00,
+                "currency": "PEN",
+                "value_date": D,
+                "direction": "OUTBOUND",
+            }
+        ],
+    }
+    recon_service.ingest_clearing_file(db, payload)
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, dict(payload, checksum="00" * 32))
+    db.commit()
+    assert recon_repo.get_file_by_ref(db, "CLR-POST-1").status == "PROCESSED"
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert (run.matched_count, run.unmatched_count) == (1, 0)
+
+
+def test_run_completed_replay_skips_candidate_lookups(db: Session, monkeypatch):
+    """Menor 7: replay `COMPLETED` sin pendientes no consulta candidatos/usados."""
+    _tx(db, ref="E-1", amount=100_00)
+    _ingest(db, [("E-1", 100_00, "PEN", D)], seed="early")
+    first = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert first.status == "COMPLETED"
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("no debe consultar candidatos/usados en replay")
+
+    import app.modules.transactions.service as tx_service
+
+    monkeypatch.setattr(tx_service, "list_reconciliation_candidates", _boom)
+    monkeypatch.setattr(recon_repo, "list_used_transaction_ids", _boom)
+    again = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert again.id == first.id
+    assert again.status == "COMPLETED"
+
+
+def test_run_persists_amount_and_date_diffs(db: Session):
+    """Menor 10: los matches guardan `amount_diff_minor`/`date_diff_days`."""
+    _set_param(db, "reconciliation.amount_tolerance_minor", "100")
+    _set_param(db, "reconciliation.date_tolerance_days", "1")
+    _tx(db, ref="DF-A", amount=100_00, day=D)
+    _tx(db, ref="DF-B", amount=100_00, day=D)
+    _tx(db, ref="DF-C", amount=100_00, day=D + timedelta(days=1))
+    _ingest(
+        db,
+        [
+            ("DF-A", 100_00, "PEN", D),
+            ("DF-B", 101_00, "PEN", D),
+            ("DF-C", 100_00, "PEN", D),
+        ],
+        seed="dif",
+    )
+    run = recon_service.run_reconciliation(db, run_date=D, currency="PEN")
+    assert run.status == "COMPLETED"
+    assert run.matched_count == 3
+    items_by_id = {
+        str(item.id): item.external_ref
+        for item in db.scalars(sa.select(recon_repo.ClearingItem)).all()
+    }
+    diffs = {
+        items_by_id[str(match.clearing_item_id)]: (
+            match.match_type,
+            match.amount_diff_minor,
+            match.date_diff_days,
+        )
+        for match in recon_repo.list_matches_by_run(db, run.id)
+    }
+    assert diffs["DF-A"] == ("EXACT", None, None)
+    assert diffs["DF-B"] == ("AMOUNT_DIFF", 100, None)
+    assert diffs["DF-C"] == ("DATE_DIFF", None, -1)
+
+
+def test_facade_invalid_config_timezone_falls_back_to_default(db: Session):
+    """Menor 5: zona malformada en config (`'/etc/passwd'`) -> default sin lanzar."""
+    from app.modules.transactions.service import list_reconciliation_candidates
+
+    _set_param(db, "reconciliation.business_timezone", '"/etc/passwd"')
+    row = _tx(db, ref="TZ-F", amount=100_00, day=D)
+    found = list_reconciliation_candidates(db, D, "PEN")
+    assert [entry["transaction_id"] for entry in found] == [str(row.id)]
+    with pytest.raises(ValueError):
+        list_reconciliation_candidates(db, D, "PEN", business_timezone="/etc/passwd")
+
+
+def test_create_match_non_unique_integrity_is_persistence_error(db: Session, monkeypatch):
+    """Menor 9: `IntegrityError` no-UQ en `create_match` -> persistencia (no `CONFLICT`)."""
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+    from sqlalchemy.orm import Session as SASession
+
+    run = recon_repo.create_run(db, run_date=D, currency="PEN")
+
+    def _broken_flush(self):
+        raise SAIntegrityError(
+            "INSERT INTO reconciliation.reconciliation_matches",
+            {},
+            Exception("CHECK constraint failed: ck_reconciliation_matches_amount_nonneg"),
+        )
+
+    monkeypatch.setattr(SASession, "flush", _broken_flush)
+    with pytest.raises(recon_repo.ReconciliationError) as excinfo:
+        recon_repo.create_match(
+            db,
+            run_id=run.id,
+            clearing_item_id=uuid.uuid4(),
+            transaction_id=uuid.uuid4(),
+            match_type="EXACT",
+            amount_minor=100_00,
+            currency="PEN",
+        )
+    assert type(excinfo.value) is recon_repo.ReconciliationError
+    assert "persistir" in str(excinfo.value)

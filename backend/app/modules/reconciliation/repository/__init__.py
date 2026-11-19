@@ -279,8 +279,13 @@ def record_failed_file(
 
     Tolerante a proposito: si algun campo secundario es invalido se
     normaliza (`source` -> `NETWORK`, `item_count` -> `0`,
-    `checksum`/`storage_ref` se guardan tal cual truncados) porque lo
-    que importa es la clave (`file_ref`) y el estado. `file_ref`
+    `storage_ref` se guarda tal cual truncado) porque lo que importa es
+    la clave (`file_ref`) y el estado. `checksum` siempre queda en 64
+    hex: si ya es SHA-256 valido se guarda tal cual; si es malformado o
+    ausente se persiste el digest derivado
+    `sha256(str(checksum).encode()).hexdigest()` (determinista por valor
+    entrante: conserva la evidencia sin romper el contrato de 64 hex de
+    `clearing_files.checksum`, F2 del dictamen PR #27). `file_ref`
     invalido -> `ReconciliationValidationError` (no hay clave que
     evidenciar). `file_ref` duplicado (carrera) ->
     `ReconciliationConflictError` (la UQ decide). Hace `flush`, no
@@ -295,7 +300,11 @@ def record_failed_file(
         count = coerce_item_count(item_count)
     except ReconciliationValidationError:
         count = 0
-    digest = str(checksum or "").strip().lower()[:64]
+    try:
+        digest = coerce_checksum(checksum)
+    except ReconciliationValidationError:
+        raw_text = "" if checksum is None else str(checksum)
+        digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
     storage: str | None = None
     if isinstance(storage_ref, str) and storage_ref.strip():
         storage = storage_ref.strip()[:500]
@@ -340,13 +349,33 @@ def list_pending_items(
 def mark_file_status(session: Session, file: ClearingFile, status: object) -> ClearingFile:
     """Avanza el estado del archivo (`RECEIVED`/`PROCESSED`/`FAILED`).
 
-    Idempotente si ya esta en el estado. Hace `flush`, no `commit`.
+    Idempotente si ya esta en el estado. Si el archivo pasa a `FAILED`,
+    sus items aun `PENDING` se marcan `EXCEPTION` (sin `run_id`: no los
+    proceso ninguna corrida, pero ya no quedan en el limbo: el cruce
+    `list_pending_items_for_run` solo lee `PENDING` de `PROCESSED`).
+    Hace `flush`, no `commit`.
     """
     state = coerce_file_status(status)
     if file.status == state:
+        # Ya en `FAILED`: los items ya se cerraron en la transicion
+        # original; nada que hacer.
         return file
     file.status = state
     session.flush()
+    if state == "FAILED":
+        result = session.execute(
+            update(ClearingItem)
+            .where(ClearingItem.file_id == file.id, ClearingItem.status == "PENDING")
+            .values(status="EXCEPTION")
+        )
+        closed = int(result.rowcount or 0)
+        if closed:
+            session.flush()
+            logger.debug(
+                "clearing file fallido items cerrados file_hash=%s cerrados=%d",
+                hash_file_ref(file.file_ref),
+                closed,
+            )
     logger.debug(
         "clearing file marcado file_hash=%s status=%s",
         hash_file_ref(file.file_ref),
@@ -460,6 +489,8 @@ def create_run(
         status=state,
         matched_count=0,
         unmatched_count=0,
+        unmatched_item_count=0,
+        unmatched_operation_count=0,
         total_minor=0,
         executed_by=executed_by,
     )
@@ -494,6 +525,8 @@ def mark_run_running(session: Session, run: ReconciliationRun) -> Reconciliation
             status="RUNNING",
             matched_count=0,
             unmatched_count=0,
+            unmatched_item_count=0,
+            unmatched_operation_count=0,
             total_minor=0,
             finished_at=None,
         )
@@ -503,6 +536,8 @@ def mark_run_running(session: Session, run: ReconciliationRun) -> Reconciliation
     run.status = "RUNNING"
     run.matched_count = 0
     run.unmatched_count = 0
+    run.unmatched_item_count = 0
+    run.unmatched_operation_count = 0
     run.total_minor = 0
     run.finished_at = None
     session.flush()
@@ -516,6 +551,8 @@ def complete_run(
     matched_count: int,
     unmatched_count: int,
     total_minor: int,
+    unmatched_item_count: int = 0,
+    unmatched_operation_count: int = 0,
 ) -> ReconciliationRun:
     """Cierra la corrida como `COMPLETED` con sus contadores.
 
@@ -523,18 +560,35 @@ def complete_run(
     y `rowcount == 0` => `ReconciliationConflictError`; no se confia en el
     estado en memoria (un objeto stale con `status='RUNNING'` no gana si
     la fila ya se cerro: solo un cierre gana). `matched_count`/
-    `unmatched_count` enteros `>= 0`; `total_minor` entero con signo
+    `unmatched_count`/`unmatched_item_count`/`unmatched_operation_count`
+    enteros `>= 0` (`unmatched_count` = TOTAL = suma del desglose;
+    H-6 del review PR #27: se exige la igualdad
+    `unmatched_count == unmatched_item_count +
+    unmatched_operation_count`, `VALIDATION_ERROR` si no cuadra).
+    Compatibilidad acotada (F4 del dictamen PR #27): los defaults `0`
+    del desglose solo preservan a los llamantes con totales 0 (p. ej.
+    `matched=1, unmatched=0` sin desglose sigue cerrando); si
+    `unmatched_count > 0` el desglose es obligatorio y debe sumar el
+    total (un llamante legacy con `unmatched_count=5` sin desglose
+    recibe `VALIDATION_ERROR`, no un cierre silencioso).
+    `total_minor` entero con signo
     (M5 del review PR #27: `INBOUND` suma, `OUTBOUND` resta; puede ser
     negativo). Se validan antes de mutar. Hace `flush`, no `commit`.
     """
     for name, value in (
         ("matched_count", matched_count),
         ("unmatched_count", unmatched_count),
+        ("unmatched_item_count", unmatched_item_count),
+        ("unmatched_operation_count", unmatched_operation_count),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ReconciliationValidationError(f"contador de corrida invalido: {name}")
     if isinstance(total_minor, bool) or not isinstance(total_minor, int):
         raise ReconciliationValidationError("contador de corrida invalido: total_minor")
+    if unmatched_count != unmatched_item_count + unmatched_operation_count:
+        raise ReconciliationValidationError(
+            "contador de corrida inconsistente: unmatched_count != desglose"
+        )
     finished = datetime.now(UTC)
     result = session.execute(
         update(ReconciliationRun)
@@ -542,6 +596,8 @@ def complete_run(
         .values(
             matched_count=matched_count,
             unmatched_count=unmatched_count,
+            unmatched_item_count=unmatched_item_count,
+            unmatched_operation_count=unmatched_operation_count,
             total_minor=total_minor,
             status="COMPLETED",
             finished_at=finished,
@@ -551,6 +607,8 @@ def complete_run(
         raise ReconciliationConflictError("la corrida no esta en curso")
     run.matched_count = matched_count
     run.unmatched_count = unmatched_count
+    run.unmatched_item_count = unmatched_item_count
+    run.unmatched_operation_count = unmatched_operation_count
     run.total_minor = total_minor
     run.status = "COMPLETED"
     run.finished_at = finished
@@ -706,6 +764,13 @@ def mark_item_status(
 
 # ------------------------------------------------- matches (H2 review PR #27)
 
+#: Tamano de lote del `IN` de usados (H-1 del review PR #27): Postgres
+#: limita los parametros por consulta a 65.535 y SQLite a 32.767
+#: (`SQLITE_MAX_VARIABLE_NUMBER`); trocear en 5.000 deja margen amplio y
+#: evita que una corrida con muchos candidatos explote. Los resultados de
+#: cada lote se unen en un solo conjunto.
+_USED_IDS_BATCH_SIZE = 5_000
+
 
 def coerce_match_type(value: object) -> str:
     """Valida el calificador del emparejamiento (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`)."""
@@ -713,6 +778,32 @@ def coerce_match_type(value: object) -> str:
     if text not in MATCH_TYPES:
         raise ReconciliationValidationError("tipo de emparejamiento invalido")
     return text
+
+
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """Distingue UQ duplicada de otro fallo de persistencia (sin PII).
+
+    Solo `uq_reconciliation_matches_item` / `uq_reconciliation_matches_transaction`
+    (o el `SQLSTATE 23505` / `UNIQUE constraint failed` del motor) es
+    duplicado (`CONFLICT`); cualquier otro `IntegrityError` (FK, CHECK) es
+    error de persistencia. Sin eco de valores: solo nombres de constraint.
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        diag = getattr(orig, "diag", None)
+        if getattr(diag, "constraint_name", None) in (
+            "uq_reconciliation_matches_item",
+            "uq_reconciliation_matches_transaction",
+        ):
+            return True
+        if getattr(orig, "pgcode", None) == "23505":
+            return True
+        text = str(orig).lower()
+    else:
+        text = str(exc).lower()
+    if "uq_reconciliation_matches_item" in text or "uq_reconciliation_matches_transaction" in text:
+        return True
+    return "unique constraint failed" in text or "unique constraint" in text
 
 
 def create_match(
@@ -724,14 +815,20 @@ def create_match(
     match_type: object,
     amount_minor: object,
     currency: object,
+    amount_diff_minor: object = None,
+    date_diff_days: object = None,
 ) -> ReconciliationMatch:
     """Persiste el emparejamiento item -> operacion interna (H2).
 
-    `UQ(clearing_item_id)`: un item se concilia como maximo una vez;
-    `UQ(transaction_id)` (MEDIO-1): una operacion interna se concilia como
-    maximo una vez en todo el historial (doble match/uso ->
-    `ReconciliationConflictError`; la UQ decide). Hace `flush`, no
-    `commit`.
+    `amount_diff_minor` (`clearing - internal`, centimos) y `date_diff_days`
+    (`clearing_date - internal_date`, dias) conservan la diferencia que
+    califico el par (nullable; `EXACT` deja `NULL`): misma convencion que
+    el dominio (`matching._assess_pair`). `UQ(clearing_item_id)`: un item
+    se concilia como maximo una vez; `UQ(transaction_id)` (MEDIO-1): una
+    operacion interna se concilia como maximo una vez en todo el historial
+    (doble match/uso -> `ReconciliationConflictError`; la UQ decide).
+    Otro `IntegrityError` (FK/CHECK) -> `ReconciliationError` (error de
+    persistencia, no conflicto). Hace `flush`, no `commit`.
     """
     try:
         rid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
@@ -760,12 +857,20 @@ def create_match(
         raise ReconciliationValidationError("monto de emparejamiento invalido")
     amount = int(amount_minor)
     code = coerce_currency(currency)
+    for name, value in (
+        ("amount_diff_minor", amount_diff_minor),
+        ("date_diff_days", date_diff_days),
+    ):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ReconciliationValidationError(f"diferencia de emparejamiento invalida: {name}")
     row = ReconciliationMatch(
         run_id=rid,
         clearing_item_id=iid,
         transaction_id=tid,
         match_type=qualifier,
         amount_minor=amount,
+        amount_diff_minor=None if amount_diff_minor is None else int(amount_diff_minor),
+        date_diff_days=None if date_diff_days is None else int(date_diff_days),
         currency=code,
     )
     try:
@@ -773,7 +878,9 @@ def create_match(
             session.add(row)
             session.flush()
     except IntegrityError as exc:
-        raise ReconciliationConflictError("emparejamiento duplicado") from exc
+        if _is_unique_violation(exc):
+            raise ReconciliationConflictError("emparejamiento duplicado") from exc
+        raise ReconciliationError("no se pudo persistir el emparejamiento") from exc
     return row
 
 
@@ -815,15 +922,47 @@ def list_used_transaction_ids(
     currency: str | None = None,
     run_date: date | str | None = None,
     date_tolerance_days: int = 0,
+    transaction_ids: object | None = None,
 ) -> set[str]:
     """IDs de operaciones internas ya emparejadas (evita reutilizarlas, H2).
 
-    Con alcance (`currency`/`run_date` ± `date_tolerance_days`, BAJO-2):
-    solo los emparejados en esa moneda y en corridas con `run_date` dentro
-    de la ventana (JOIN a `reconciliation_runs` por `run_id`), sin traer
-    toda la tabla. Sin alcance (compatibilidad): todos los emparejados.
-    Solo lectura.
+    Con `transaction_ids` (3.1 del comentario PR #27): solo los ya usados
+    dentro de ese conjunto de candidatos (`WHERE transaction_id IN (...)`,
+    sin ventana de fechas: el dominio puede emparejar a ± tolerancia y una
+    ventana por `run_date` reoferta operaciones ya conciliadas en corridas
+    vecinas). El `IN` se trocea en lotes de `_USED_IDS_BATCH_SIZE`
+    (H-1: Postgres admite 65.535 parametros y SQLite 32.767 por consulta;
+    el troceo evita que muchos candidatos exploten) y los resultados se
+    unen. Sin `transaction_ids` rige el alcance legacy
+    (`currency`/`run_date` ± `date_tolerance_days`, BAJO-2) o, sin alcance,
+    todos los emparejados (compatibilidad). Solo lectura.
     """
+    if transaction_ids is not None:
+        if isinstance(transaction_ids, (str, bytes)):
+            raise ReconciliationValidationError("identificadores de operacion invalidos")
+        try:
+            wanted = list(transaction_ids)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ReconciliationValidationError("identificadores de operacion invalidos") from exc
+        tids: list[uuid.UUID] = []
+        for raw in wanted:
+            try:
+                tids.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ReconciliationValidationError("identificador de operacion invalido") from exc
+        if not tids:
+            return set()
+        found: set[str] = set()
+        for start in range(0, len(tids), _USED_IDS_BATCH_SIZE):
+            rows = session.scalars(
+                select(ReconciliationMatch.transaction_id).where(
+                    ReconciliationMatch.transaction_id.in_(
+                        tids[start : start + _USED_IDS_BATCH_SIZE]
+                    )
+                )
+            ).all()
+            found.update(str(tid) for tid in rows)
+        return found
     stmt = select(ReconciliationMatch.transaction_id)
     if currency is not None or run_date is not None:
         stmt = stmt.join(ReconciliationRun, ReconciliationMatch.run_id == ReconciliationRun.id)

@@ -6,7 +6,8 @@ Cubre `docs/tasks/E5-T17.md#pruebas-requeridas`:
   indices, `downgrade` reversible; un solo head.
 - Camino feliz: lote valido -> archivo `PROCESSED` + items `PENDING`.
 - Idempotencia: mismo lote dos veces -> un archivo y N items.
-- Errores: checksum distinto, `item_count` inconsistente, monto <= 0,
+- Errores: replay con checksum distinto (no muta el original: rechazo
+  aparte `FAILED`), `item_count` inconsistente, monto <= 0,
   moneda invalida, fecha invalida, checksum malformado -> `FAILED`
   sin items parciales.
 - Job: una pasada con fuente mock; `commit` por archivo; no arranca
@@ -207,8 +208,15 @@ def test_checksum_stable_across_builds():
 
 
 # ------------------------------------------------- errores -> FAILED sin parciales
-def test_checksum_mismatch_marks_failed_without_touching_items(db: Session):
-    """Mismo `file_ref` + checksum distinto -> `FAILED`, items intactos."""
+def test_checksum_mismatch_does_not_mutate_original_and_records_rejection(db: Session):
+    """3.4 del comentario PR #27: replay con checksum distinto NO muta el original.
+
+    Mismo `file_ref` + checksum distinto -> `VALIDATION_ERROR`; el archivo
+    original sigue `PROCESSED` con sus items `PENDING` intactos (conciliable
+    en la corrida posterior) y el rechazo queda registrado aparte como fila
+    `FAILED` con `file_ref` derivado (evidencia, sin items). Un segundo
+    replay identico no duplica el rechazo (sigue lanzando el error).
+    """
     payload = _payload()
     recon_service.ingest_clearing_file(db, payload)
     db.commit()
@@ -217,8 +225,41 @@ def test_checksum_mismatch_marks_failed_without_touching_items(db: Session):
         recon_service.ingest_clearing_file(db, tampered)
     db.commit()
     row = recon_repo.get_file_by_ref(db, payload["file_ref"])
-    assert row is not None and row.status == "FAILED"
+    assert row is not None and row.status == "PROCESSED"
     assert _count_items(db, row.id) == 3, "no se pisan ni agregan items"
+    pending = recon_repo.list_pending_items(db, file_id=row.id)
+    assert len(pending) == 3 and all(item.status == "PENDING" for item in pending)
+    derived = recon_service._rejection_file_ref(payload["file_ref"], tampered["checksum"])
+    assert derived != payload["file_ref"]
+    rejected = recon_repo.get_file_by_ref(db, derived)
+    assert rejected is not None and rejected.status == "FAILED"
+    assert _count_items(db, rejected.id) == 0
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, tampered)
+    db.commit()
+    assert _count_items(db, rejected.id) == 0, "el rechazo no se duplica"
+    assert recon_repo.get_file_by_ref(db, payload["file_ref"]).status == "PROCESSED"
+
+
+def test_rejection_record_failure_does_not_mask_original_error(db: Session, monkeypatch):
+    """H-5 del review PR #27: si el registro del rechazo falla, el error original manda.
+
+    Regresion: `_record_rejection` solo absorbia
+    `ReconciliationConflictError`; otro fallo (p. ej. tecnico) enmascaraba
+    el `VALIDATION_ERROR` original (el llamante veia el fallo del registro,
+    no el checksum inconsistente). Con el fix el registro es best-effort
+    (se registra y se continua) y el `VALIDATION_ERROR` se propaga intacto.
+    """
+    payload = _payload()
+    recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("fallo tecnico simulado")
+
+    monkeypatch.setattr(recon_repo, "record_failed_file", _boom)
+    with pytest.raises(recon_repo.ReconciliationValidationError, match="inconsistente"):
+        recon_service.ingest_clearing_file(db, dict(payload, checksum="0" * 64))
 
 
 def test_item_count_mismatch_leaves_failed_without_items(db: Session):
@@ -277,6 +318,43 @@ def test_malformed_checksum_leaves_failed_without_items(db: Session):
     row = recon_repo.get_file_by_ref(db, payload["file_ref"])
     assert row is not None and row.status == "FAILED"
     assert _count_items(db, row.id) == 0
+
+
+def test_malformed_checksum_persists_derived_hex_digest(db: Session):
+    """F2 del dictamen PR #27: checksum malformado -> `FAILED` con 64 hex.
+
+    Regresion: el valor crudo (p. ej. `"corto"`) se persistia tal cual
+    en `clearing_files.checksum` (columna de 64 hex); con el fix se
+    guarda el digest derivado `sha256(raw.encode()).hexdigest()` (64
+    hex, determinista por valor entrante), nunca el texto crudo. Cubre
+    ambas ramas: ingesta nueva malformada y rechazo aparte ante replay
+    con checksum malformado sobre un archivo ya ingerido.
+    """
+    raw = "corto"
+    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    payload = _payload(checksum=raw)
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+    row = recon_repo.get_file_by_ref(db, payload["file_ref"])
+    assert row is not None and row.status == "FAILED"
+    assert row.checksum != raw
+    assert row.checksum == expected
+    assert recon_repo.coerce_checksum(row.checksum) == row.checksum
+
+    good = _payload(seed="f2replay")
+    recon_service.ingest_clearing_file(db, good)
+    db.commit()
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, dict(good, checksum=raw))
+    db.commit()
+    derived = recon_service._rejection_file_ref(good["file_ref"], raw)
+    rejected = recon_repo.get_file_by_ref(db, derived)
+    assert rejected is not None and rejected.status == "FAILED"
+    assert rejected.checksum != raw
+    assert rejected.checksum == expected
+    assert recon_repo.coerce_checksum(rejected.checksum) == rejected.checksum
 
 
 def test_invalid_file_ref_raises_without_file(db: Session):

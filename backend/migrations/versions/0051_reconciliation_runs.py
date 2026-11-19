@@ -13,7 +13,12 @@ reversibles; sin columnas nuevas ni FK nuevas):
   currency CHAR(3) NOT NULL, status VARCHAR(15) NOT NULL default 'RUNNING'
   CHECK `ck_reconciliation_runs_status` (`RUNNING`/`COMPLETED`/`FAILED`),
   matched_count INTEGER NOT NULL default 0 CHECK >= 0,
-  unmatched_count INTEGER NOT NULL default 0 CHECK >= 0,
+  unmatched_count INTEGER NOT NULL default 0 CHECK >= 0 (TOTAL de
+  excepciones del dominio, suma de los dos desgloses por compatibilidad),
+  unmatched_item_count INTEGER NOT NULL default 0 CHECK >= 0
+  (excepciones del lado clearing: items sin conciliar),
+  unmatched_operation_count INTEGER NOT NULL default 0 CHECK >= 0
+  (excepciones del lado interno: `MISSING_EXTERNAL`),
   total_minor BIGINT NOT NULL default 0 SIN CHECK `>= 0` (M5: suma con
   signo `INBOUND` + / `OUTBOUND` -, puede ser negativa),
   executed_by UUID NULL (REF logica a `identity.users`, sin FK fisica),
@@ -42,6 +47,10 @@ reversibles; sin columnas nuevas ni FK nuevas):
   match_type VARCHAR(15) NOT NULL CHECK `ck_reconciliation_matches_type`
   (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`), amount_minor BIGINT NOT NULL
   CHECK `ck_reconciliation_matches_amount_nonneg` (`>= 0`, centimos),
+  amount_diff_minor BIGINT NULL (`clearing - internal`, solo
+  `AMOUNT_DIFF`/`DATE_DIFF`; `EXACT` deja `NULL`),
+  date_diff_days INTEGER NULL (`clearing_date - internal_date`, dias;
+  misma regla),
   currency CHAR(3) NOT NULL, created_at TIMESTAMPTZ NOT NULL default now())`;
   indices `ix_reconciliation_matches_run_id` (`run_id`) e
   `ix_reconciliation_matches_transaction_id` (`transaction_id`).
@@ -96,6 +105,10 @@ def upgrade() -> None:
         sa.Column("status", sa.String(15), nullable=False, server_default="RUNNING"),
         sa.Column("matched_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("unmatched_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("unmatched_item_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "unmatched_operation_count", sa.Integer(), nullable=False, server_default="0"
+        ),
         sa.Column("total_minor", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("executed_by", sa.Uuid(), nullable=True),
         sa.Column(
@@ -116,6 +129,14 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "unmatched_count >= 0",
             name="ck_reconciliation_runs_unmatched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_item_count >= 0",
+            name="ck_reconciliation_runs_unmatched_item_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_operation_count >= 0",
+            name="ck_reconciliation_runs_unmatched_operation_nonneg",
         ),
         # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
         # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
@@ -188,6 +209,8 @@ def upgrade() -> None:
         sa.Column("transaction_id", sa.Uuid(), nullable=False),
         sa.Column("match_type", sa.String(15), nullable=False),
         sa.Column("amount_minor", sa.BigInteger(), nullable=False),
+        sa.Column("amount_diff_minor", sa.BigInteger(), nullable=True),
+        sa.Column("date_diff_days", sa.Integer(), nullable=True),
         sa.Column("currency", sa.CHAR(3), nullable=False),
         sa.Column(
             "created_at",

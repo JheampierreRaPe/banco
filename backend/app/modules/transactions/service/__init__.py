@@ -1761,7 +1761,10 @@ def _resolve_business_timezone(session: Session, business_timezone: str | None) 
 
     Retorna `(ZoneInfo, nombre)`. Un nombre explicito invalido es
     `ValueError` (`VALIDATION_ERROR`); un valor de config invalido/ausente
-    cae al default (`America/Lima`) sin lanzar (best-effort, regla de oro 6).
+    cae al default (`America/Lima`) sin lanzar (best-effort, regla de oro 6:
+    `ZoneInfo` lanza `ZoneInfoNotFoundError` ante zona desconocida y
+    `ValueError` ante clave malformada —p. ej. `'/etc/passwd'—, ambas se
+    recortan al default).
     """
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -1772,7 +1775,7 @@ def _resolve_business_timezone(session: Session, business_timezone: str | None) 
             )
         try:
             return ZoneInfo(business_timezone.strip()), business_timezone.strip()
-        except ZoneInfoNotFoundError as exc:
+        except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(
                 f"business_timezone desconocida: {business_timezone.strip()!r}"
             ) from exc
@@ -1783,7 +1786,7 @@ def _resolve_business_timezone(session: Session, business_timezone: str | None) 
     )
     try:
         return ZoneInfo(name), name
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):
         logger.debug("reconciliation business_timezone invalida en config: default")
         return ZoneInfo(DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE), (
             DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE

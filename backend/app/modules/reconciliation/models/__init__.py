@@ -185,9 +185,14 @@ class ReconciliationRun(Base):
     segunda `RUNNING` concurrente = `CONFLICT` por la BD); `FAILED` se
     reintenta en la misma fila. `matched_count` = pares conciliados;
     `unmatched_count` = TOTAL de excepciones del dominio (BAJO PR #27 B1,
-    opcion total sin columna nueva: incluye `MISSING_INTERNAL` de items
-    huerfanos y `MISSING_EXTERNAL` de operaciones internas sin item);
-    `total_minor` = suma con signo en centimos de los items conciliados
+    opcion total: incluye `MISSING_INTERNAL` de items huerfanos y
+    `MISSING_EXTERNAL` de operaciones internas sin item) y se mantiene por
+    compatibilidad como `unmatched_item_count + unmatched_operation_count`;
+    el desglose vive en `unmatched_item_count` (excepciones del lado
+    clearing: items sin conciliar) y `unmatched_operation_count`
+    (excepciones del lado interno: `MISSING_EXTERNAL`, operaciones sin
+    item); `total_minor` = suma con signo en centimos de los items
+    conciliados
     (M5 del review PR #27: `INBOUND` +, `OUTBOUND` -; puede ser negativo,
     sin CHECK `>= 0`; nunca `float`). Sin PII: solo fecha, moneda y conteos. Los items los mueve
     solo el servicio ``run_reconciliation`` (``PENDING`` -> ``MATCHED`` /
@@ -207,6 +212,14 @@ class ReconciliationRun(Base):
         sa.CheckConstraint(
             "unmatched_count >= 0",
             name="ck_reconciliation_runs_unmatched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_item_count >= 0",
+            name="ck_reconciliation_runs_unmatched_item_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_operation_count >= 0",
+            name="ck_reconciliation_runs_unmatched_operation_nonneg",
         ),
         # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
         # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
@@ -241,6 +254,16 @@ class ReconciliationRun(Base):
     unmatched_count: Mapped[int] = mapped_column(
         sa.Integer(), nullable=False, default=0, server_default="0"
     )
+    # Desglose del total (3.3 del comentario PR #27): excepciones del lado
+    # clearing (items sin conciliar) y del lado interno (`MISSING_EXTERNAL`,
+    # operaciones sin item). `unmatched_count` se mantiene como la suma por
+    # compatibilidad (`E5-T18` CA-01 y lectores de `docs/03b#12.2`).
+    unmatched_item_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    unmatched_operation_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
     # Suma con signo en centimos de los items conciliados (`INBOUND` +,
     # `OUTBOUND` -; M5); nunca `float` (regla 3).
     total_minor: Mapped[int] = mapped_column(
@@ -262,6 +285,10 @@ class ReconciliationMatch(Base):
     Una fila por par conciliado: que clearing_item cruzo con que operacion
     interna (`transaction_id` logico, sin FK fisica fuera del schema),
     con que calificador (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`), monto y moneda.
+    `amount_diff_minor` (`clearing - internal`, centimos) y `date_diff_days`
+    (`clearing_date - internal_date`, dias) conservan la diferencia que
+    califico el par (solo para `AMOUNT_DIFF`/`DATE_DIFF`; `EXACT` deja
+    `NULL`): la misma convencion del dominio (`matching._assess_pair`).
     `UQ(clearing_item_id)`: un item se concilia como maximo una vez (doble
     match = conflicto). `UQ(transaction_id)`: una operacion interna se
     concilia como maximo una vez en todo el historial (doble uso =
@@ -311,6 +338,11 @@ class ReconciliationMatch(Base):
     # Monto en centimos `>= 0` del item conciliado; nunca `float` (regla 3).
     amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
     currency: Mapped[str] = mapped_column(sa.CHAR(3), nullable=False)
+    # Diferencias que calificaron el par (nullable; `EXACT` deja `NULL`).
+    # Convencion del dominio: `clearing - internal` y dias
+    # `clearing_date - internal_date` (pueden ser negativas).
+    amount_diff_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    date_diff_days: Mapped[int | None] = mapped_column(sa.Integer(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
         default=_utcnow,

@@ -194,7 +194,14 @@ def test_only_one_running_per_date_currency(db: Session):
     assert {row.status for row in rows} == {"RUNNING", "FAILED"}
     # Tras `COMPLETED` la guarda parcial ya no bloquea (sin `RUNNING`).
     running = next(row for row in rows if row.status == "RUNNING")
-    recon_repo.complete_run(db, running, matched_count=0, unmatched_count=1, total_minor=0)
+    recon_repo.complete_run(
+        db,
+        running,
+        matched_count=0,
+        unmatched_count=1,
+        unmatched_item_count=1,
+        total_minor=0,
+    )
     reopened = recon_repo.create_run(db, run_date=D, currency="PEN")
     assert reopened.status == "RUNNING"
     assert reopened.id != running.id
@@ -244,7 +251,7 @@ def test_run_transitions_conditional_stale_memory_loses(db: Session):
     assert run.status == "COMPLETED"
     run.status = "RUNNING"
     with db.no_autoflush, pytest.raises(recon_repo.ReconciliationConflictError):
-        recon_repo.complete_run(db, run, matched_count=9, unmatched_count=9, total_minor=9)
+        recon_repo.complete_run(db, run, matched_count=9, unmatched_count=0, total_minor=9)
     db.rollback()
 
     # `mark_run_running` stale: fila `COMPLETED`, memoria forjada a `FAILED`.
@@ -258,12 +265,89 @@ def test_run_transitions_conditional_stale_memory_loses(db: Session):
 
     # `fail_run` stale: fila `COMPLETED`, memoria forjada a `RUNNING`.
     run = recon_repo.create_run(db, run_date=D + timedelta(days=2), currency="PEN")
-    recon_repo.complete_run(db, run, matched_count=0, unmatched_count=1, total_minor=0)
+    recon_repo.complete_run(
+        db,
+        run,
+        matched_count=0,
+        unmatched_count=1,
+        unmatched_item_count=1,
+        total_minor=0,
+    )
     db.commit()
     run.status = "RUNNING"
     with db.no_autoflush, pytest.raises(recon_repo.ReconciliationConflictError):
         recon_repo.fail_run(db, run)
     db.rollback()
+
+
+# ------------------------------------------------- H-6: coherencia del total en complete_run
+
+
+def test_complete_run_rejects_inconsistent_unmatched_breakdown(db: Session):
+    """H-6 del review PR #27: `unmatched_count == item + operation`.
+
+    Regresion: sin el chequeo, un total distinto de la suma del desglose
+    se persistia (contadores incoherentes); con el fix lanza
+    `ReconciliationValidationError` sin mutar (la corrida sigue `RUNNING`
+    y acepta el cierre consistente).
+    """
+    run = recon_repo.create_run(db, run_date=D, currency="PEN")
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_repo.complete_run(
+            db,
+            run,
+            matched_count=1,
+            unmatched_count=2,
+            unmatched_item_count=1,
+            unmatched_operation_count=0,
+            total_minor=100_00,
+        )
+    assert run.status == "RUNNING"
+    recon_repo.complete_run(
+        db,
+        run,
+        matched_count=1,
+        unmatched_count=1,
+        unmatched_item_count=1,
+        unmatched_operation_count=0,
+        total_minor=100_00,
+    )
+    assert run.status == "COMPLETED"
+    assert (run.unmatched_count, run.unmatched_item_count, run.unmatched_operation_count) == (
+        1,
+        1,
+        0,
+    )
+
+
+def test_complete_run_legacy_defaults_only_cover_zero_totals(db: Session):
+    """F4 del dictamen PR #27: los defaults `0` solo cubren totales 0.
+
+    Contrato aclarado en `complete_run`: un cierre con
+    `unmatched_count=0` sin desglose sigue siendo valido
+    (compatibilidad); un llamante legacy con `unmatched_count=5` sin
+    desglose recibe `VALIDATION_ERROR` (el desglose es obligatorio si el
+    total > 0), sin mutar la corrida.
+    """
+    run = recon_repo.create_run(db, run_date=D, currency="PEN")
+    recon_repo.complete_run(db, run, matched_count=1, unmatched_count=0, total_minor=100_00)
+    assert run.status == "COMPLETED"
+
+    legacy = recon_repo.create_run(db, run_date=D + timedelta(days=1), currency="PEN")
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_repo.complete_run(db, legacy, matched_count=0, unmatched_count=5, total_minor=0)
+    assert legacy.status == "RUNNING"
+    recon_repo.complete_run(
+        db,
+        legacy,
+        matched_count=0,
+        unmatched_count=5,
+        unmatched_item_count=2,
+        unmatched_operation_count=3,
+        total_minor=0,
+    )
+    assert legacy.status == "COMPLETED"
+    assert (legacy.unmatched_count, legacy.unmatched_item_count) == (5, 2)
 
 
 # ------------------------------------------------- BAJO-2: usados con ventana
@@ -320,6 +404,49 @@ def test_used_transaction_ids_scoped_by_window(db: Session):
     assert scoped == {str(tx_pen), str(tx_late)}
     with pytest.raises(recon_repo.ReconciliationValidationError):
         recon_repo.list_used_transaction_ids(db, currency="PEN", run_date=D, date_tolerance_days=-1)
+
+
+# ------------------------------------------------- H-1: troceo del IN de usados
+
+
+def test_used_transaction_ids_chunks_large_in_lists(db: Session, monkeypatch):
+    """H-1 del review PR #27: el `IN` de usados se trocea en lotes.
+
+    Regresion: sin troceo, una sola consulta con todos los ids explota en
+    PG (>65.535 parametros) y SQLite (>32.767). Con el fix (lotes de
+    `_USED_IDS_BATCH_SIZE`, 5.000), 7 ids con lote 3 hacen 3 consultas y
+    el resultado es la union; 6.001 ids reales no explotan.
+    """
+    run = recon_repo.create_run(db, run_date=D, currency="PEN")
+    used_a, used_b = uuid.uuid4(), uuid.uuid4()
+    for tid in (used_a, used_b):
+        recon_repo.create_match(
+            db,
+            run_id=run.id,
+            clearing_item_id=uuid.uuid4(),
+            transaction_id=tid,
+            match_type="EXACT",
+            amount_minor=100_00,
+            currency="PEN",
+        )
+    wanted = [used_a, used_b, *(uuid.uuid4() for _ in range(5))]
+    monkeypatch.setattr(recon_repo, "_USED_IDS_BATCH_SIZE", 3)
+    calls = {"n": 0}
+    real_scalars = db.scalars
+
+    def _counting(stmt, *args, **kwargs):
+        calls["n"] += 1
+        return real_scalars(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(db, "scalars", _counting)
+    assert recon_repo.list_used_transaction_ids(db, transaction_ids=wanted) == {
+        str(used_a),
+        str(used_b),
+    }
+    assert calls["n"] == 3, "7 ids en lotes de 3 = 3 consultas"
+    monkeypatch.undo()
+    big = [uuid.uuid4() for _ in range(6000)]
+    assert recon_repo.list_used_transaction_ids(db, transaction_ids=[used_a, *big]) == {str(used_a)}
 
 
 # ------------------------------------------------- BAJO-3: ultima determinista

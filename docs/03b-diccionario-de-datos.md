@@ -1048,6 +1048,37 @@ Indices: `(account_id, created_at DESC)`.
 > `CandidateBudgetExceeded` envuelve `create_run` en el mismo
 > `try/except ReconciliationConflictError` que la rama feliz (`CONFLICT`
 > coherente).
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 3.1/3.2/3.3/3.4 +
+> menores, HU19; `0051` sigue unica y reversible, sin `0052`):
+> - 3.1: los ya usados se consultan SOLO para el conjunto de candidatos de
+>   la corrida (`WHERE transaction_id IN (...)`, sin ventana de `run_date`:
+>   el dominio empareja a ± tolerancia y la ventana reoferta operaciones ya
+>   conciliadas en corridas vecinas). `list_used_transaction_ids` acepta
+>   `transaction_ids` (conjunto); el alcance legacy por moneda/ventana se
+>   conserva por compatibilidad.
+> - 3.2: la fase de mutacion (`create_match`/`mark_item_status`/`complete_run`)
+>   corre en un `SAVEPOINT`: si falla a mitad, la corrida queda `FAILED`, sin
+>   parciales, y la sesion externa sigue usable (el llamante puede hacer
+>   `commit`; se relanza el error original).
+> - 3.3: `reconciliation_runs` suma `unmatched_item_count` (lado clearing) y
+>   `unmatched_operation_count` (lado interno, `MISSING_EXTERNAL`);
+>   `unmatched_count` se mantiene como el TOTAL (suma) por compatibilidad.
+> - 3.4: el replay con checksum distinto NO muta el archivo original valido
+>   (el rechazo se registra aparte como fila `FAILED` con `file_ref`
+>   derivado `-REJ-<hash>`, evidencia sin items; se devuelve
+>   `VALIDATION_ERROR`); si un archivo pasa legitimamente a `FAILED`,
+>   `mark_file_status` cierra sus items `PENDING` como `EXCEPTION` (sin
+>   `run_id`, sin limbo).
+> - Menores: config de zona malformada (`ValueError` ademas de
+>   `ZoneInfoNotFoundError`, p. ej. `'/etc/passwd'`) cae al default
+>   `America/Lima` (el parametro explicito sigue lanzando); `tzdata` es
+>   dependencia de `backend/pyproject.toml`; early-return de `COMPLETED` sin
+>   pendientes ANTES de consultar candidatos/usados; sin `assert` en
+>   produccion (error explicito); `create_match` distingue UQ duplicada
+>   (`CONFLICT`) de otro `IntegrityError` (persistencia);
+>   `reconciliation_matches` persiste `amount_diff_minor`/`date_diff_days`
+>   (nullable, solo `AMOUNT_DIFF`/`DATE_DIFF`).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
@@ -1058,7 +1089,9 @@ Indices: `(account_id, created_at DESC)`.
 | reconciliation_runs | currency | CHAR(3) | No | - | IDX(con run_date) |
 | reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
 | reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
-| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` |
+| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` (TOTAL = suma del desglose; compatibilidad) |
+| reconciliation_runs | unmatched_item_count | INTEGER | No | 0 | CK `>= 0` (lado clearing) |
+| reconciliation_runs | unmatched_operation_count | INTEGER | No | 0 | CK `>= 0` (lado interno, `MISSING_EXTERNAL`) |
 | reconciliation_runs | total_minor | BIGINT | No | 0 | con signo (M5: `INBOUND` +/`OUTBOUND` -; puede ser negativa, sin CK; centimos, nunca `float`) |
 | reconciliation_runs | executed_by | UUID | Si | - | REF users (sin FK fisica) |
 | reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | - |
@@ -1069,6 +1102,8 @@ Indices: `(account_id, created_at DESC)`.
 | reconciliation_matches | transaction_id | UUID | No | - | UQ + REF transactions (logica) |
 | reconciliation_matches | match_type | VARCHAR(15) | No | - | CK `EXACT`/`AMOUNT_DIFF`/`DATE_DIFF` |
 | reconciliation_matches | amount_minor | BIGINT | No | - | CK `>= 0` (centimos) |
+| reconciliation_matches | amount_diff_minor | BIGINT | Si | NULL | `clearing - internal` (solo `AMOUNT_DIFF`/`DATE_DIFF`) |
+| reconciliation_matches | date_diff_days | INTEGER | Si | NULL | `clearing_date - internal_date` (misma regla) |
 | reconciliation_matches | currency | CHAR(3) | No | - | - |
 | reconciliation_matches | created_at | TIMESTAMPTZ | No | now() | - |
 | reconciliation_exceptions | id | UUID | No | gen_random_uuid() | PK |

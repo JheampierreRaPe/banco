@@ -1066,7 +1066,7 @@ Indices: `(account_id, created_at DESC)`.
 >   `unmatched_count` se mantiene como el TOTAL (suma) por compatibilidad.
 > - 3.4: el replay con checksum distinto NO muta el archivo original valido
 >   (el rechazo se registra aparte como fila `FAILED` con `file_ref`
->   derivado `-REJ-<hash>`, evidencia sin items; se devuelve
+>   derivado `-REJ-<sha8(file_ref)>-<sha8(checksum)>`, evidencia sin items; se devuelve
 >   `VALIDATION_ERROR`); si un archivo pasa legitimamente a `FAILED`,
 >   `mark_file_status` cierra sus items `PENDING` como `EXCEPTION` (sin
 >   `run_id`, sin limbo).
@@ -1079,6 +1079,30 @@ Indices: `(account_id, created_at DESC)`.
 >   (`CONFLICT`) de otro `IntegrityError` (persistencia);
 >   `reconciliation_matches` persiste `amount_diff_minor`/`date_diff_days`
 >   (nullable, solo `AMOUNT_DIFF`/`DATE_DIFF`).
+> - 3.4 (colision): el derivado de rechazo es
+>   `-REJ-<sha8(file_ref)>-<sha8(checksum)>` (recorte para no superar 64):
+>   dos `file_ref` distintos con el mismo prefijo y el mismo checksum
+>   producen rechazos distintos; el mismo `file_ref`+checksum sigue
+>   idempotente.
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 `7000792544`, HU19;
+> `0051` editada in-place, sin `0052`):
+> - `reconciliation_runs` suma el `CHECK`
+>   `ck_reconciliation_runs_unmatched_total` (`unmatched_count =
+>   unmatched_item_count + unmatched_operation_count`): la BD rechaza
+>   cualquier `INSERT`/`UPDATE` inconsistente (`complete_run` lo valida
+>   antes en Python). El `downgrade` elimina la tabla con sus `CHECK`.
+> - Nota de release in-place: cualquier entorno estampado con una version
+>   anterior de la `0051` debe recrearse o re-estamparse (`stamp 0050` +
+>   `upgrade head` sobre los objetos nuevos); `upgrade head` desde `0050`
+>   crea las columnas nuevas, pero NO las anade sobre una `0051` ya
+>   aplicada.
+> - Contadores no aditivos: `unmatched_*` son por corrida y NO deben
+>   sumarse entre corridas de la misma fecha (`MISSING_EXTERNAL` se
+>   recuenta en cada corrida que lo ve).
+> - Residuales aceptados: ventana UTC amplia de la fachada con tolerancia
+>   alta (rendimiento, documentado), `executed_by` sin verificar existencia
+>   hasta E5-T21, y `raw` JSONB sin limite (preexistente de E5-T17).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
@@ -1089,7 +1113,7 @@ Indices: `(account_id, created_at DESC)`.
 | reconciliation_runs | currency | CHAR(3) | No | - | IDX(con run_date) |
 | reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
 | reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
-| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` (TOTAL = suma del desglose; compatibilidad) |
+| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` + CK `= item + operation` (TOTAL = suma del desglose; compatibilidad; no aditivo entre corridas) |
 | reconciliation_runs | unmatched_item_count | INTEGER | No | 0 | CK `>= 0` (lado clearing) |
 | reconciliation_runs | unmatched_operation_count | INTEGER | No | 0 | CK `>= 0` (lado interno, `MISSING_EXTERNAL`) |
 | reconciliation_runs | total_minor | BIGINT | No | 0 | con signo (M5: `INBOUND` +/`OUTBOUND` -; puede ser negativa, sin CK; centimos, nunca `float`) |

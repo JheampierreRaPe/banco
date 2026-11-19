@@ -19,6 +19,8 @@ reversibles; sin columnas nuevas ni FK nuevas):
   (excepciones del lado clearing: items sin conciliar),
   unmatched_operation_count INTEGER NOT NULL default 0 CHECK >= 0
   (excepciones del lado interno: `MISSING_EXTERNAL`),
+  CHECK `ck_reconciliation_runs_unmatched_total`
+  (`unmatched_count = unmatched_item_count + unmatched_operation_count`),
   total_minor BIGINT NOT NULL default 0 SIN CHECK `>= 0` (M5: suma con
   signo `INBOUND` + / `OUTBOUND` -, puede ser negativa),
   executed_by UUID NULL (REF logica a `identity.users`, sin FK fisica),
@@ -135,6 +137,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "unmatched_operation_count >= 0",
             name="ck_reconciliation_runs_unmatched_operation_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_count = unmatched_item_count + unmatched_operation_count",
+            name="ck_reconciliation_runs_unmatched_total",
         ),
         # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
         # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.

@@ -1129,7 +1129,7 @@ eventos (`outbox`/`inbox`).
   montos/monedas/fechas; mismo `file_ref` + mismo checksum = replay sin
   duplicar (`DUPLICATE_FILE`); replay con checksum distinto NO muta el
   original valido (el rechazo se registra aparte como fila `FAILED` con
-  `file_ref` derivado `-REJ-<hash>`, evidencia sin items; se devuelve
+  `file_ref` derivado `-REJ-<sha8(file_ref)>-<sha8(checksum)>`, evidencia sin items; se devuelve
   `VALIDATION_ERROR`, 3.4 del comentario PR #27); `item_count`/item
   invalido -> `VALIDATION_ERROR` y archivo `FAILED` (sin items huerfanos
   ni parciales; si el archivo pasa a `FAILED`, sus items `PENDING` se
@@ -1276,7 +1276,16 @@ eventos (`outbox`/`inbox`).
   modelos `ReconciliationRun`/`ReconciliationMatch` + `ClearingItem.run_id`
   + indice compuesto (`status`, `value_date`, `currency`) en items
   (`0051_reconciliation_runs`, que tambien crea los indices M6/R2 de
-  `transactions`).
+  `transactions`). `reconciliation_runs` suma el `CHECK`
+  `ck_reconciliation_runs_unmatched_total` (`unmatched_count =
+  item + operation`, 2026-11-19). Nota de release in-place: un entorno
+  estampado con una `0051` anterior debe recrearse o re-estamparse
+  (`stamp 0050` + `upgrade head`); `upgrade head` no anade columnas
+  nuevas. Contadores no aditivos: `unmatched_*` son por corrida y NO
+  deben sumarse entre corridas de la misma fecha (`MISSING_EXTERNAL`
+  se recuenta). Residuales aceptados: ventana UTC amplia con tolerancia
+  alta (rendimiento), `executed_by` sin verificar existencia hasta
+  E5-T21, `raw` JSONB sin limite (preexistente E5-T17).
 - **Puede llamar a:** adaptador `ClearingSource`, `ledger` (asiento de ajuste), `audit`.
 - **Prohibido:** editar el asiento original; todo ajuste es un asiento nuevo.
 

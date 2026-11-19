@@ -840,6 +840,7 @@ def test_migration_0051_chains_0050_with_runs_table_and_seeds():
         "ck_reconciliation_runs_unmatched_nonneg",
         "ck_reconciliation_runs_unmatched_item_nonneg",
         "ck_reconciliation_runs_unmatched_operation_nonneg",
+        "ck_reconciliation_runs_unmatched_total",
         "unmatched_item_count",
         "unmatched_operation_count",
         "amount_diff_minor",

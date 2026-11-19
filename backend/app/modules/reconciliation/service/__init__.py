@@ -126,11 +126,15 @@ def _rejection_file_ref(code: str, checksum: object) -> str:
 
     Determinista (`file_ref` + checksum entrante): un segundo replay con el
     mismo checksum colisiona en la UQ y se trata como rechazo ya registrado
-    (se sigue devolviendo el error, sin duplicar). Truncado a 64
+    (se sigue devolviendo el error, sin duplicar). Formato
+    `-REJ-<sha8(file_ref)>-<sha8(checksum)>`: el hash corto del `file_ref`
+    evita colisiones entre dos `file_ref` distintos que compartan los
+    primeros 51 caracteres con el mismo checksum. Truncado a 64
     (`coerce_file_ref`) y solo caracteres del regex de `file_ref`.
     """
+    file_digest = hashlib.sha256(code.encode("utf-8")).hexdigest()[:8]
     digest = hashlib.sha256(str(checksum).encode("utf-8")).hexdigest()[:8]
-    suffix = f"-REJ-{digest}"
+    suffix = f"-REJ-{file_digest}-{digest}"
     return f"{code[: 64 - len(suffix)]}{suffix}"
 
 

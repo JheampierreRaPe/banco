@@ -241,6 +241,36 @@ def test_checksum_mismatch_does_not_mutate_original_and_records_rejection(db: Se
     assert recon_repo.get_file_by_ref(db, payload["file_ref"]).status == "PROCESSED"
 
 
+def test_rejection_file_ref_distinguishes_long_prefix_collision(db: Session):
+    """Colision del `file_ref` de rechazo: dos refs con el mismo prefijo difieren.
+
+    Regresion: el derivado antiguo (`-REJ-<sha8(checksum)>` con recorte a
+    51 chars) colisionaba para dos `file_ref` distintos con los mismos
+    primeros 51 caracteres y el mismo checksum (una sola fila de rechazo).
+    Con el fix (`-REJ-<sha8(file_ref)>-<sha8(checksum)>`) producen filas
+    distintas; el mismo `file_ref`+checksum sigue idempotente.
+    """
+    prefix = "A" * 51
+    ref_a = prefix + "A-TAIL-ONE"
+    ref_b = prefix + "B-TAIL-TWO"
+    checksum = "ab" * 32
+    der_a = recon_service._rejection_file_ref(ref_a, checksum)
+    der_b = recon_service._rejection_file_ref(ref_b, checksum)
+    assert der_a != der_b, "refs distintos con mismo prefijo y checksum deben diferir"
+    assert len(der_a) <= 64 and len(der_b) <= 64
+    recon_repo.record_failed_file(
+        db, source="NETWORK", file_ref=der_a, checksum=checksum, item_count=0
+    )
+    recon_repo.record_failed_file(
+        db, source="NETWORK", file_ref=der_b, checksum=checksum, item_count=0
+    )
+    db.commit()
+    assert recon_repo.get_file_by_ref(db, der_a) is not None
+    assert recon_repo.get_file_by_ref(db, der_b) is not None
+    assert recon_repo.get_file_by_ref(db, der_a).id != recon_repo.get_file_by_ref(db, der_b).id
+    assert recon_service._rejection_file_ref(ref_a, checksum) == der_a, "idempotente"
+
+
 def test_rejection_record_failure_does_not_mask_original_error(db: Session, monkeypatch):
     """H-5 del review PR #27: si el registro del rechazo falla, el error original manda.
 

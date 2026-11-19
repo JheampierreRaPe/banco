@@ -221,6 +221,10 @@ class ReconciliationRun(Base):
             "unmatched_operation_count >= 0",
             name="ck_reconciliation_runs_unmatched_operation_nonneg",
         ),
+        sa.CheckConstraint(
+            "unmatched_count = unmatched_item_count + unmatched_operation_count",
+            name="ck_reconciliation_runs_unmatched_total",
+        ),
         # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
         # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
         sa.Index("ix_reconciliation_runs_status", "status"),

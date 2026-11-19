@@ -521,3 +521,34 @@ def test_reclaim_stale_running_marks_orphan_failed(db: Session):
     with pytest.raises(recon_repo.ReconciliationValidationError):
         recon_repo.reclaim_stale_running(db, run_date=D, currency="PEN", older_than="ayer")
     db.rollback()
+
+
+# ------------------------------------------------- BD: CHECK del total de contadores
+
+
+def test_db_check_rejects_inconsistent_unmatched_total(db: Session):
+    """La BD exige `unmatched_count = item + operation` (`0051` + modelo).
+
+    Regresion: sin el `CHECK ck_reconciliation_runs_unmatched_total` un
+    `INSERT`/`UPDATE` directo inconsistente pasaba en BD (solo lo
+    validaba `complete_run` en Python); con el fix la BD lo rechaza.
+    """
+    bad = ReconciliationRun(
+        run_date=D,
+        currency="PEN",
+        status="RUNNING",
+        matched_count=0,
+        unmatched_count=5,
+        unmatched_item_count=2,
+        unmatched_operation_count=2,
+        total_minor=0,
+    )
+    db.add(bad)
+    with pytest.raises(sa.exc.IntegrityError):
+        db.flush()
+    db.rollback()
+    ok = recon_repo.create_run(db, run_date=D, currency="PEN")
+    ok.unmatched_count = 99
+    with pytest.raises(sa.exc.IntegrityError):
+        db.flush()
+    db.rollback()

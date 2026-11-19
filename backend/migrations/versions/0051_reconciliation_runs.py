@@ -106,9 +106,7 @@ def upgrade() -> None:
         sa.Column("matched_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("unmatched_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("unmatched_item_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column(
-            "unmatched_operation_count", sa.Integer(), nullable=False, server_default="0"
-        ),
+        sa.Column("unmatched_operation_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("total_minor", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("executed_by", sa.Uuid(), nullable=True),
         sa.Column(

@@ -86,7 +86,10 @@ DIRECTIONS = ("INBOUND", "OUTBOUND")
 #: Monedas aceptadas en el MVP (ISO-4217 de 3 letras; se valida formato).
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 _FILE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,63}$")
-_EXTERNAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,127}$")
+#: `external_ref` opaco (`1..80`, igual que la columna `VARCHAR(80)` de
+#: `clearing_items` y que `coerce_external_ref` del repositorio: una sola
+#: fuente, BAJO-4 del review PR #27).
+_EXTERNAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-.]{0,79}$")
 _MAX_SOURCE_LEN = 64
 _DEFAULT_SOURCE = "NETWORK"
 _DEFAULT_ITEMS_PER_FILE = 3

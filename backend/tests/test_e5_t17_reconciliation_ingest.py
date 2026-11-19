@@ -6,7 +6,8 @@ Cubre `docs/tasks/E5-T17.md#pruebas-requeridas`:
   indices, `downgrade` reversible; un solo head.
 - Camino feliz: lote valido -> archivo `PROCESSED` + items `PENDING`.
 - Idempotencia: mismo lote dos veces -> un archivo y N items.
-- Errores: checksum distinto, `item_count` inconsistente, monto <= 0,
+- Errores: replay con checksum distinto (no muta el original: rechazo
+  aparte `FAILED`), `item_count` inconsistente, monto <= 0,
   moneda invalida, fecha invalida, checksum malformado -> `FAILED`
   sin items parciales.
 - Job: una pasada con fuente mock; `commit` por archivo; no arranca
@@ -156,11 +157,15 @@ def test_migration_has_no_cross_schema_fk():
     assert '["reconciliation.clearing_files.id"]' in text
 
 
-def test_single_head_is_0050():
-    """Un solo head tras el brief (`alembic check` limpio lo exige)."""
+def test_single_head_is_0051():
+    """Un solo head tras el brief (`alembic check` limpio lo exige).
+
+    E5-T18 corte 2 encadena `0051_reconciliation_runs` sobre `0050` (el
+    head se mueve; el invariante es que haya uno solo).
+    """
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0050_reconciliation",)
+    assert get_head_revisions() == ("0051_reconciliation_runs",)
 
 
 # ------------------------------------------------- camino feliz e idempotencia
@@ -203,8 +208,15 @@ def test_checksum_stable_across_builds():
 
 
 # ------------------------------------------------- errores -> FAILED sin parciales
-def test_checksum_mismatch_marks_failed_without_touching_items(db: Session):
-    """Mismo `file_ref` + checksum distinto -> `FAILED`, items intactos."""
+def test_checksum_mismatch_does_not_mutate_original_and_records_rejection(db: Session):
+    """3.4 del comentario PR #27: replay con checksum distinto NO muta el original.
+
+    Mismo `file_ref` + checksum distinto -> `VALIDATION_ERROR`; el archivo
+    original sigue `PROCESSED` con sus items `PENDING` intactos (conciliable
+    en la corrida posterior) y el rechazo queda registrado aparte como fila
+    `FAILED` con `file_ref` derivado (evidencia, sin items). Un segundo
+    replay identico no duplica el rechazo (sigue lanzando el error).
+    """
     payload = _payload()
     recon_service.ingest_clearing_file(db, payload)
     db.commit()
@@ -213,8 +225,71 @@ def test_checksum_mismatch_marks_failed_without_touching_items(db: Session):
         recon_service.ingest_clearing_file(db, tampered)
     db.commit()
     row = recon_repo.get_file_by_ref(db, payload["file_ref"])
-    assert row is not None and row.status == "FAILED"
+    assert row is not None and row.status == "PROCESSED"
     assert _count_items(db, row.id) == 3, "no se pisan ni agregan items"
+    pending = recon_repo.list_pending_items(db, file_id=row.id)
+    assert len(pending) == 3 and all(item.status == "PENDING" for item in pending)
+    derived = recon_service._rejection_file_ref(payload["file_ref"], tampered["checksum"])
+    assert derived != payload["file_ref"]
+    rejected = recon_repo.get_file_by_ref(db, derived)
+    assert rejected is not None and rejected.status == "FAILED"
+    assert _count_items(db, rejected.id) == 0
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, tampered)
+    db.commit()
+    assert _count_items(db, rejected.id) == 0, "el rechazo no se duplica"
+    assert recon_repo.get_file_by_ref(db, payload["file_ref"]).status == "PROCESSED"
+
+
+def test_rejection_file_ref_distinguishes_long_prefix_collision(db: Session):
+    """Colision del `file_ref` de rechazo: dos refs con el mismo prefijo difieren.
+
+    Regresion: el derivado antiguo (`-REJ-<sha8(checksum)>` con recorte a
+    51 chars) colisionaba para dos `file_ref` distintos con los mismos
+    primeros 51 caracteres y el mismo checksum (una sola fila de rechazo).
+    Con el fix (`-REJ-<sha8(file_ref)>-<sha8(checksum)>`) producen filas
+    distintas; el mismo `file_ref`+checksum sigue idempotente.
+    """
+    prefix = "A" * 51
+    ref_a = prefix + "A-TAIL-ONE"
+    ref_b = prefix + "B-TAIL-TWO"
+    checksum = "ab" * 32
+    der_a = recon_service._rejection_file_ref(ref_a, checksum)
+    der_b = recon_service._rejection_file_ref(ref_b, checksum)
+    assert der_a != der_b, "refs distintos con mismo prefijo y checksum deben diferir"
+    assert len(der_a) <= 64 and len(der_b) <= 64
+    recon_repo.record_failed_file(
+        db, source="NETWORK", file_ref=der_a, checksum=checksum, item_count=0
+    )
+    recon_repo.record_failed_file(
+        db, source="NETWORK", file_ref=der_b, checksum=checksum, item_count=0
+    )
+    db.commit()
+    assert recon_repo.get_file_by_ref(db, der_a) is not None
+    assert recon_repo.get_file_by_ref(db, der_b) is not None
+    assert recon_repo.get_file_by_ref(db, der_a).id != recon_repo.get_file_by_ref(db, der_b).id
+    assert recon_service._rejection_file_ref(ref_a, checksum) == der_a, "idempotente"
+
+
+def test_rejection_record_failure_does_not_mask_original_error(db: Session, monkeypatch):
+    """H-5 del review PR #27: si el registro del rechazo falla, el error original manda.
+
+    Regresion: `_record_rejection` solo absorbia
+    `ReconciliationConflictError`; otro fallo (p. ej. tecnico) enmascaraba
+    el `VALIDATION_ERROR` original (el llamante veia el fallo del registro,
+    no el checksum inconsistente). Con el fix el registro es best-effort
+    (se registra y se continua) y el `VALIDATION_ERROR` se propaga intacto.
+    """
+    payload = _payload()
+    recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("fallo tecnico simulado")
+
+    monkeypatch.setattr(recon_repo, "record_failed_file", _boom)
+    with pytest.raises(recon_repo.ReconciliationValidationError, match="inconsistente"):
+        recon_service.ingest_clearing_file(db, dict(payload, checksum="0" * 64))
 
 
 def test_item_count_mismatch_leaves_failed_without_items(db: Session):
@@ -275,6 +350,43 @@ def test_malformed_checksum_leaves_failed_without_items(db: Session):
     assert _count_items(db, row.id) == 0
 
 
+def test_malformed_checksum_persists_derived_hex_digest(db: Session):
+    """F2 del dictamen PR #27: checksum malformado -> `FAILED` con 64 hex.
+
+    Regresion: el valor crudo (p. ej. `"corto"`) se persistia tal cual
+    en `clearing_files.checksum` (columna de 64 hex); con el fix se
+    guarda el digest derivado `sha256(raw.encode()).hexdigest()` (64
+    hex, determinista por valor entrante), nunca el texto crudo. Cubre
+    ambas ramas: ingesta nueva malformada y rechazo aparte ante replay
+    con checksum malformado sobre un archivo ya ingerido.
+    """
+    raw = "corto"
+    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    payload = _payload(checksum=raw)
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+    row = recon_repo.get_file_by_ref(db, payload["file_ref"])
+    assert row is not None and row.status == "FAILED"
+    assert row.checksum != raw
+    assert row.checksum == expected
+    assert recon_repo.coerce_checksum(row.checksum) == row.checksum
+
+    good = _payload(seed="f2replay")
+    recon_service.ingest_clearing_file(db, good)
+    db.commit()
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, dict(good, checksum=raw))
+    db.commit()
+    derived = recon_service._rejection_file_ref(good["file_ref"], raw)
+    rejected = recon_repo.get_file_by_ref(db, derived)
+    assert rejected is not None and rejected.status == "FAILED"
+    assert rejected.checksum != raw
+    assert rejected.checksum == expected
+    assert recon_repo.coerce_checksum(rejected.checksum) == rejected.checksum
+
+
 def test_invalid_file_ref_raises_without_file(db: Session):
     """`file_ref` invalido -> `VALIDATION_ERROR` sin fila (no hay clave)."""
     with pytest.raises(recon_repo.ReconciliationValidationError):
@@ -283,6 +395,30 @@ def test_invalid_file_ref_raises_without_file(db: Session):
     with pytest.raises(recon_repo.ReconciliationValidationError):
         recon_service.ingest_clearing_file(db, "no-es-mapeo")
     db.rollback()
+
+
+def test_external_ref_capped_at_80_columns_width(db: Session):
+    """M4 (review PR #27): `external_ref` de 80 OK; de 81 -> `VALIDATION_ERROR`.
+
+    La columna `clearing_items.external_ref` es `VARCHAR(80)` (migracion
+    `0050`); el validador acepta como maximo 80, sin migracion.
+    """
+    assert recon_repo.coerce_external_ref("R" + "x" * 79) == "R" + "x" * 79
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_repo.coerce_external_ref("R" + "x" * 80)
+    payload = _payload(seed="ref80")
+    payload["items"][0]["external_ref"] = "R" + "x" * 79
+    result = recon_service.ingest_clearing_file(db, payload)
+    db.commit()
+    assert result["inserted"] == 3
+    bad = _payload(seed="ref81")
+    bad["items"][0]["external_ref"] = "R" + "x" * 80
+    with pytest.raises(recon_repo.ReconciliationValidationError):
+        recon_service.ingest_clearing_file(db, bad)
+    db.commit()
+    row = recon_repo.get_file_by_ref(db, bad["file_ref"])
+    assert row is not None and row.status == "FAILED"
+    assert _count_items(db, row.id) == 0
 
 
 # ------------------------------------------------- repositorio
@@ -650,7 +786,13 @@ def test_entrypoint_starts_when_enabled(monkeypatch):
 
 # ------------------------------------------------- fronteras (reglas de oro)
 def test_no_money_movement():
-    """`reconciliation` no importa el motor ni el ledger (regla 1/4)."""
+    """`reconciliation` no importa el motor ni el ledger (regla 1/4).
+
+    E5-T18 corte 2 usa la fachada de solo lectura
+    `transactions.service.list_reconciliation_candidates` (unico uso
+    permitido de `app.modules.transactions.service`); siguen prohibidos
+    los modelos/repositorios ajenos, el ledger y las cuentas.
+    """
     for rel in (
         "app/modules/reconciliation/models/__init__.py",
         "app/modules/reconciliation/repository/__init__.py",
@@ -659,13 +801,21 @@ def test_no_money_movement():
     ):
         text = (BACKEND_DIR / rel).read_text(encoding="utf-8")
         for forbidden in (
-            "app.modules.transactions",
+            "app.modules.transactions.models",
+            "app.modules.transactions.repository",
             "app.modules.ledger",
             "app.modules.accounts",
             "post_entry",
             "journal_entry",
         ):
             assert forbidden not in text, f"frontera rota en {rel}: {forbidden}"
+    service_text = (BACKEND_DIR / "app/modules/reconciliation/service/__init__.py").read_text(
+        encoding="utf-8"
+    )
+    tx_refs = [line for line in service_text.splitlines() if "app.modules.transactions" in line]
+    assert tx_refs, "la corrida debe cruzar por la fachada de transactions"
+    assert all("app.modules.transactions.service" in line for line in tx_refs)
+    assert "list_reconciliation_candidates" in service_text
 
 
 def test_models_registered_without_pii_columns():

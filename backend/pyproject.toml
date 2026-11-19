@@ -14,6 +14,11 @@ dependencies = [
     "pyjwt>=2.8",
     "reportlab>=4.0",
     "httpx>=0.27",
+    # Zona horaria del dia de negocio de conciliacion (`America/Lima`,
+    # E5-T18 M3): `zoneinfo` la necesita en Windows/docker-slim donde la
+    # base IANA del SO puede faltar; en Linux con tzdata del sistema no
+    # estorba (el paquete solo aporta los archivos de zona).
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

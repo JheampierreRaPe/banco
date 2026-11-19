@@ -911,34 +911,225 @@ Indices: `(account_id, created_at DESC)`.
 | clearing_items | value_date | DATE | No | - | |
 | clearing_items | direction | VARCHAR(10) | No | - | INBOUND/OUTBOUND |
 | clearing_items | status | VARCHAR(15) | No | 'PENDING' | CK |
+| clearing_items | run_id | UUID | Si | - | REF runs (logica, H2) |
 | clearing_items | raw | JSONB | Si | - | |
 
 > Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta crea
 > ambas tablas con la migracion `0050_reconciliation`
 > (`down_revision="0049_fx"`). `clearing_files.checksum` se persiste
 > `NOT NULL` (el `Si` de la tabla es tentativo: un lote sin checksum no
-> se puede validar ni re-identificar) y el `status` efectivo es
+> se puede ni validar ni re-identificar) y el `status` efectivo es
 > `RECEIVED`/`PROCESSED`/`FAILED` (la ingesta solo escribe esos tres;
 > `PROCESSING` queda reservado al enum `clearing_status`). Los items
 > nacen `PENDING` (`INBOUND`/`OUTBOUND`) y solo el matching (`E5-T18`)
 > los mueve a `MATCHED`/`EXCEPTION`. Indices: `(source)` y `(status)`
-> en archivos; `(file_id)`, `(external_ref)` y `(status)` en items
-> (ademas de la UQ `file_ref`).
+> en archivos; `(file_id)`, `(external_ref)`, `(status)`, `(run_id)` y
+> `(status, value_date, currency)` en items (ademas de la UQ `file_ref`);
+> la `0051` (E5-T18) anade `transactions (initiator_user_id, status,
+> created_at)` (R2), `transactions (currency, status, settled_at)` y
+> `clearing_items (status, value_date, currency)` + `clearing_items (run_id)`
+> (`clearing_files (status)` ya existia desde la `0050`).
+>
+> Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19): la corrida
+> persiste `reconciliation_runs` con la migracion `0051_reconciliation_runs`
+> (`down_revision="0050_reconciliation"`; sin UQ natural —H3 la elimino—:
+> indice `ix_reconciliation_runs_date_currency` por `(run_date, currency)`
+> e indice `ix_reconciliation_runs_status`; unicidad solo para `RUNNING`
+> via indice parcial `uq_reconciliation_runs_single_running` (`UNIQUE
+> (run_date, currency) WHERE status = 'RUNNING'`), `CHECK` de `status` y
+> de no negatividad —salvo `total_minor`, con signo—). `matched_count` = pares conciliados;
+> `unmatched_count` = TOTAL de excepciones del dominio (incluye
+> `MISSING_EXTERNAL` de operaciones internas sin item, no solo items de
+> clearing no conciliados);
+> `total_minor` = suma con signo en centimos de los items conciliados
+> (`INBOUND` +, `OUTBOUND` -; puede ser negativa, sin CHECK `>= 0`). La misma
+> migracion siembra (idempotente, `ON CONFLICT DO NOTHING`) las claves
+> `reconciliation.amount_tolerance_minor` (`0`),
+> `reconciliation.date_tolerance_days` (`0`),
+> `reconciliation.max_candidate_pairs` (`250000`, cota por grupo) y
+> `reconciliation.max_candidate_pairs_per_run` (`1000000`, presupuesto por
+> corrida). `reconciliation_exceptions`/`claims` siguen pendientes
+> (`E5-T19`/`E5-T20`); el alcance de la corrida es exacto por
+> `(run_date, currency)` y la tolerancia de fecha solo califica pares.
+>
+> Nota de implementacion (2026-11-17, review PR #27 H1/H2/H3, HU19): la
+> misma migracion `0051` (rama sin mergear, sin `0052`) ahora crea ademas
+> `reconciliation.reconciliation_matches` (emparejamiento persistido item
+> -> operacion, ver `12.2`) y `clearing_items.run_id UUID NULL` (REF logica
+> a `reconciliation_runs.id`, sin FK fisica: que corrida proceso el item,
+> incluidas las excepciones) con indice `ix_clearing_items_run_id`. Solo
+> cruzan los items `PENDING` de archivos `PROCESSED` (JOIN con
+> `clearing_files`: los `FAILED`/`RECEIVED` nunca concilian). Politica de
+> corridas tardias (sin UQ natural: `COMPLETED` inmutable, varias corridas
+> por fecha/moneda con indice `ix_reconciliation_runs_date_currency`): si
+> la ultima corrida del alcance esta `COMPLETED` y no hay `PENDING` nuevos
+> se reutiliza; si hay `PENDING` nuevos (lote tardio) se crea una corrida
+> nueva; `RUNNING` concurrente es `CONFLICT`; `FAILED` se reintenta en su
+> fila. Sin doble conciliacion: los candidatos ya usados en
+> `reconciliation_matches` (por `transaction_id`) o con estado
+> `CONCILIATED` se excluyen antes de cruzar.
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIO/BAJO, HU19):
+> `reconciliation_matches.transaction_id` lleva `UQ
+> uq_reconciliation_matches_transaction` (una operacion interna se concilia
+> como maximo una vez en todo el historial; doble uso = conflicto, y la
+> corrida excluye los ya usados en su ventana antes de cruzar). Guarda de
+> BD para una sola corrida en curso (MEDIO-2): indice unico parcial
+> `uq_reconciliation_runs_single_running` (`UNIQUE (run_date, currency)
+> WHERE status = 'RUNNING'`; `create_run` convierte su `IntegrityError` en
+> `ReconciliationConflictError`: la carrera entre dos corridas concurrentes
+> la decide la BD). `mark_item_status` es atomico (`UPDATE ... WHERE id =
+> ... AND status = 'PENDING'`, `rowcount == 0` = conflicto, sin confiar en
+> el estado en memoria: dos workers marcando el mismo item -> solo uno
+> gana). `list_used_transaction_ids` filtra por moneda y ventana de
+> `run_date` (± tolerancia de fecha) con JOIN a `reconciliation_runs`, sin
+> traer toda la tabla. "Ultima corrida" = (`created_at DESC, id DESC`),
+> sin depender de los `NULL` de `finished_at` (orden por motor).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA M2-M7, HU19):
+> la misma `0051` (rama sin mergear, sin `0052`) ahora:
+> - M2: la fachada `transactions.service.list_reconciliation_candidates`
+>   acepta `date_tolerance_days` (default `0`) y cubre candidatos internos
+>   en [`run_date` - tol, `run_date` + tol]; el servicio pasa
+>   `reconciliation.date_tolerance_days` (config, default `0`, techo 31
+>   dias) y el dominio califica `DATE_DIFF`. El clearing sigue exacto en
+>   `run_date`.
+> - M3: dia de negocio en `reconciliation.business_timezone` (nueva
+>   semilla, default `America/Lima`, IANA configurable): la fachada
+>   consulta un rango UTC amplio ([`run_date`-tol-1, `run_date`+tol+2)) y
+>   recorta en Python convirtiendo `settled_at`/`created_at` con `ZoneInfo`
+>   (portable SQLite/Postgres; ingenuos = UTC). Liquidada 23:30 Lima =
+>   candidata del dia Lima, no del dia UTC.
+> - M4: `coerce_external_ref` acepta como maximo **80** (= la columna
+>   `VARCHAR(80)` de `0050`, sin migracion); 81+ es `VALIDATION_ERROR`.
+> - M5: `InternalOperation`/`ClearingEntry` llevan `direction`
+>   (`INBOUND`/`OUTBOUND`); el `Match` exige misma direccion (nuevo motivo
+>   `DIRECTION_MISMATCH`, nivel 2 como la moneda). La fachada deriva la
+>   direccion del tipo (`TOPUP`/`LOAN_DISBURSEMENT`/`SALARY_DISTRIBUTION`
+>   -> `INBOUND`; transferencias/QR/servicios/pagos/cuotas/FX/reversos y
+>   resto -> `OUTBOUND`). `total_minor` = suma con signo (`INBOUND` +,
+>   `OUTBOUND` -; puede ser negativa, sin CHECK `>= 0`).
+> - M6: indices nuevos en la `0051` (reversibles): `transactions`
+>   (`initiator_user_id`, `status`, `created_at`) — R2, bloqueante de
+>   produccion para `risk` —, `transactions` (`currency`, `status`,
+>   `settled_at`) — pre-filtro UTC de la fachada (se elige `settled_at`,
+>   no `created_at`, porque es el instante de negocio: no nulo en `SETTLED`;
+>   las `POSTED` sin liquidar entran por `created_at` en la rama `IS NULL`,
+>   cubierta por el prefijo) — y `clearing_items` (`status`, `value_date`,
+>   `currency`). `clearing_files (status)` ya existe desde `0050`.
+> - M7: la cota cuenta **pares examinados** (ventana `bisect` + pasada de
+>   excepciones con `_pair_key`), no solo aristas `Match`: un 501x501 con
+>   monedas distintas aborta; la cota ahora acota todo el trabajo.
+>
+> Nota de implementacion (2026-11-17, review PR #27 BAJO B1-B8, HU19; sin
+> migracion nueva, `0051` intacta):
+> - B1: `unmatched_count` = TOTAL de excepciones del dominio (opcion total
+>   sin columna nueva: incluye `MISSING_INTERNAL` de items huerfanos y
+>   `MISSING_EXTERNAL` de operaciones internas sin item, antes invisibles).
+> - B2: `executed_by` lo pasa el llamante autenticado (parametro explicito;
+>   E5-T21 debe pasarlo desde el principal del JWT, nunca del payload/body).
+> - B3: `_pair_key` deriva de la unica `_assess_pair` (sin duplicar reglas).
+> - B4: la asignacion de excepciones a sobrantes es codiciosa y
+>   determinista (puede no ser la explicacion optima global; solo dominio, y
+>   el servicio filtra por dia/moneda).
+> - B7: `run_reconciliation` NO esta cableada a job ni endpoint (correcto
+>   para el corte 2; no cambia produccion aun).
+> - B8: E5-T17 fuera de alcance (deuda documentada, sin implementar).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA lease/reclaim,
+> HU19; sin migracion nueva, `0051` intacta, sin columnas nuevas):
+> lease de `RUNNING` configurable (`reconciliation.run_lease_minutes`,
+> default 30 minutos, techo 24 h; ausente/ilegible rige el default).
+> `run_reconciliation` reclama primero las `RUNNING` huerfanas del alcance
+> (`created_at` anterior a `ahora - lease` -> `FAILED` con `finished_at`
+> via `reclaim_stale_running`, `rowcount` reportado) y continua con una
+> corrida nueva o un reintento; si sigue habiendo `RUNNING` reciente es
+> `CONFLICT` (la BD decide la carrera por el indice parcial). La rama
+> `CandidateBudgetExceeded` envuelve `create_run` en el mismo
+> `try/except ReconciliationConflictError` que la rama feliz (`CONFLICT`
+> coherente).
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 3.1/3.2/3.3/3.4 +
+> menores, HU19; `0051` sigue unica y reversible, sin `0052`):
+> - 3.1: los ya usados se consultan SOLO para el conjunto de candidatos de
+>   la corrida (`WHERE transaction_id IN (...)`, sin ventana de `run_date`:
+>   el dominio empareja a ± tolerancia y la ventana reoferta operaciones ya
+>   conciliadas en corridas vecinas). `list_used_transaction_ids` acepta
+>   `transaction_ids` (conjunto); el alcance legacy por moneda/ventana se
+>   conserva por compatibilidad.
+> - 3.2: la fase de mutacion (`create_match`/`mark_item_status`/`complete_run`)
+>   corre en un `SAVEPOINT`: si falla a mitad, la corrida queda `FAILED`, sin
+>   parciales, y la sesion externa sigue usable (el llamante puede hacer
+>   `commit`; se relanza el error original).
+> - 3.3: `reconciliation_runs` suma `unmatched_item_count` (lado clearing) y
+>   `unmatched_operation_count` (lado interno, `MISSING_EXTERNAL`);
+>   `unmatched_count` se mantiene como el TOTAL (suma) por compatibilidad.
+> - 3.4: el replay con checksum distinto NO muta el archivo original valido
+>   (el rechazo se registra aparte como fila `FAILED` con `file_ref`
+>   derivado `-REJ-<sha8(file_ref)>-<sha8(checksum)>`, evidencia sin items; se devuelve
+>   `VALIDATION_ERROR`); si un archivo pasa legitimamente a `FAILED`,
+>   `mark_file_status` cierra sus items `PENDING` como `EXCEPTION` (sin
+>   `run_id`, sin limbo).
+> - Menores: config de zona malformada (`ValueError` ademas de
+>   `ZoneInfoNotFoundError`, p. ej. `'/etc/passwd'`) cae al default
+>   `America/Lima` (el parametro explicito sigue lanzando); `tzdata` es
+>   dependencia de `backend/pyproject.toml`; early-return de `COMPLETED` sin
+>   pendientes ANTES de consultar candidatos/usados; sin `assert` en
+>   produccion (error explicito); `create_match` distingue UQ duplicada
+>   (`CONFLICT`) de otro `IntegrityError` (persistencia);
+>   `reconciliation_matches` persiste `amount_diff_minor`/`date_diff_days`
+>   (nullable, solo `AMOUNT_DIFF`/`DATE_DIFF`).
+> - 3.4 (colision): el derivado de rechazo es
+>   `-REJ-<sha8(file_ref)>-<sha8(checksum)>` (recorte para no superar 64):
+>   dos `file_ref` distintos con el mismo prefijo y el mismo checksum
+>   producen rechazos distintos; el mismo `file_ref`+checksum sigue
+>   idempotente.
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 `7000792544`, HU19;
+> `0051` editada in-place, sin `0052`):
+> - `reconciliation_runs` suma el `CHECK`
+>   `ck_reconciliation_runs_unmatched_total` (`unmatched_count =
+>   unmatched_item_count + unmatched_operation_count`): la BD rechaza
+>   cualquier `INSERT`/`UPDATE` inconsistente (`complete_run` lo valida
+>   antes en Python). El `downgrade` elimina la tabla con sus `CHECK`.
+> - Nota de release in-place: cualquier entorno estampado con una version
+>   anterior de la `0051` debe recrearse o re-estamparse (`stamp 0050` +
+>   `upgrade head` sobre los objetos nuevos); `upgrade head` desde `0050`
+>   crea las columnas nuevas, pero NO las anade sobre una `0051` ya
+>   aplicada.
+> - Contadores no aditivos: `unmatched_*` son por corrida y NO deben
+>   sumarse entre corridas de la misma fecha (`MISSING_EXTERNAL` se
+>   recuenta en cada corrida que lo ve).
+> - Residuales aceptados: ventana UTC amplia de la fachada con tolerancia
+>   alta (rendimiento, documentado), `executed_by` sin verificar existencia
+>   hasta E5-T21, y `raw` JSONB sin limite (preexistente de E5-T17).
 
 ### 12.2 `reconciliation_runs`, `reconciliation_exceptions`, `claims`
 
 | Tabla | Columna | Tipo | Nulo | Default | Clave |
 |---|---|---|---|---|---|
 | reconciliation_runs | id | UUID | No | gen_random_uuid() | PK |
-| reconciliation_runs | run_date | DATE | No | - | IDX |
-| reconciliation_runs | currency | CHAR(3) | No | - | |
-| reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | |
-| reconciliation_runs | matched_count | INTEGER | No | 0 | |
-| reconciliation_runs | unmatched_count | INTEGER | No | 0 | |
-| reconciliation_runs | total_minor | BIGINT | No | 0 | |
-| reconciliation_runs | executed_by | UUID | Si | - | REF users |
-| reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | |
-| reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | |
+| reconciliation_runs | run_date | DATE | No | - | IDX(con currency) |
+| reconciliation_runs | currency | CHAR(3) | No | - | IDX(con run_date) |
+| reconciliation_runs | status | VARCHAR(15) | No | 'RUNNING' | CK `RUNNING`/`COMPLETED`/`FAILED` |
+| reconciliation_runs | matched_count | INTEGER | No | 0 | CK `>= 0` |
+| reconciliation_runs | unmatched_count | INTEGER | No | 0 | CK `>= 0` + CK `= item + operation` (TOTAL = suma del desglose; compatibilidad; no aditivo entre corridas) |
+| reconciliation_runs | unmatched_item_count | INTEGER | No | 0 | CK `>= 0` (lado clearing) |
+| reconciliation_runs | unmatched_operation_count | INTEGER | No | 0 | CK `>= 0` (lado interno, `MISSING_EXTERNAL`) |
+| reconciliation_runs | total_minor | BIGINT | No | 0 | con signo (M5: `INBOUND` +/`OUTBOUND` -; puede ser negativa, sin CK; centimos, nunca `float`) |
+| reconciliation_runs | executed_by | UUID | Si | - | REF users (sin FK fisica) |
+| reconciliation_runs | created_at | TIMESTAMPTZ | No | now() | - |
+| reconciliation_runs | finished_at | TIMESTAMPTZ | Si | - | - |
+| reconciliation_matches | id | UUID | No | gen_random_uuid() | PK |
+| reconciliation_matches | run_id | UUID | No | - | FK runs |
+| reconciliation_matches | clearing_item_id | UUID | No | - | UQ + FK clearing_items |
+| reconciliation_matches | transaction_id | UUID | No | - | UQ + REF transactions (logica) |
+| reconciliation_matches | match_type | VARCHAR(15) | No | - | CK `EXACT`/`AMOUNT_DIFF`/`DATE_DIFF` |
+| reconciliation_matches | amount_minor | BIGINT | No | - | CK `>= 0` (centimos) |
+| reconciliation_matches | amount_diff_minor | BIGINT | Si | NULL | `clearing - internal` (solo `AMOUNT_DIFF`/`DATE_DIFF`) |
+| reconciliation_matches | date_diff_days | INTEGER | Si | NULL | `clearing_date - internal_date` (misma regla) |
+| reconciliation_matches | currency | CHAR(3) | No | - | - |
+| reconciliation_matches | created_at | TIMESTAMPTZ | No | now() | - |
 | reconciliation_exceptions | id | UUID | No | gen_random_uuid() | PK |
 | reconciliation_exceptions | run_id | UUID | No | - | FK runs |
 | reconciliation_exceptions | transaction_id | UUID | Si | - | REF transactions |
@@ -1040,7 +1231,7 @@ Indices: `(account_id, created_at DESC)`.
 | account_balances | `(account_id)` PK |
 | beneficiaries | `(owner_user_id, alias)` |
 | movements_view | `(account_id, created_at DESC)` |
-| transactions | `(idempotency_key)`, `(status, created_at)`, `(source_account_id)`, `(external_ref)` |
+| transactions | `(idempotency_key)`, `(status, created_at)`, `(source_account_id)`, `(external_ref)`, `(initiator_user_id, status, created_at)` (R2), `(currency, status, settled_at)` |
 | transaction_status_history | `(transaction_id, created_at)` |
 | holds | `(status, expires_at)`, `(account_id)` |
 | idempotency_keys | `(key, user_id)` UQ, `(expires_at)` |
@@ -1051,7 +1242,8 @@ Indices: `(account_id, created_at DESC)`.
 | qr_payments | `uq_qr_payments_charge_active` UQ parcial (`charge_id` donde `status <> 'REJECTED' AND reusable = false`; E4-T21), `(payee_user_id)` |
 | fx_rates | `(base, quote, fetched_at DESC)` |
 | alerts | `(status, severity, created_at DESC)`, `(user_id)` |
-| clearing_items | `(file_id)`, `(external_ref)` |
+| clearing_files | `(source)`, `(status)` |
+| clearing_items | `(file_id)`, `(external_ref)`, `(status)`, `(run_id)`, `(status, value_date, currency)` |
 | notifications | `(user_id, created_at DESC)`, `(status)` |
 | audit_log | `(seq)` UQ, `(entity_type, entity_id)`, `(created_at)`, `(action)` |
 | outbox | `(status, available_at)` |

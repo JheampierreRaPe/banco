@@ -147,9 +147,10 @@ blocked_entities  (por entidad)
 
 ```
 [AGREGADO: ReconciliationRun]
-clearing_files ──< clearing_items
+clearing_files ──< clearing_items ──1 reconciliation_matches
+reconciliation_runs ──< reconciliation_matches
 reconciliation_runs ──< reconciliation_exceptions ──< claims
-transactions (REF) <── reconciliation_exceptions
+transactions (REF) <── reconciliation_matches / reconciliation_exceptions
 ```
 
 > Nota de implementacion (2026-11-12, E5-T17, HU19): la ingesta de
@@ -158,6 +159,55 @@ transactions (REF) <── reconciliation_exceptions
 > checksum distinto = `FAILED`); los items nacen `PENDING` y solo el
 > matching (`E5-T18`) los mueve a `MATCHED`/`EXCEPTION`. Sin FK entre
 > modulos: el cruce con `transactions` se hace por IDs en `E5-T18`.
+>
+> Nota de implementacion (2026-11-14, E5-T18 corte 2, HU19):
+> `reconciliation_runs` queda implementada (`0051_reconciliation_runs`,
+> sin UQ natural —indice `ix_reconciliation_runs_date_currency` por
+> fecha/moneda y unicidad solo para `RUNNING` via indice parcial—,
+> `CHECK`s e indice; semillas idempotentes de
+> tolerancias y cotas); el servicio `run_reconciliation` cruza los
+> `PENDING` del alcance exacto `(run_date, currency)` contra los
+> candidatos de la fachada de solo lectura
+> `transactions.service.list_reconciliation_candidates` con min-cost
+> max-flow (cardinalidad maxima + maximo de `EXACT`), actualiza los items
+> y cierra la corrida (`COMPLETED` idempotente, `RUNNING` concurrente =
+> `CONFLICT`, cota superada = `FAILED` con motivo
+> `CANDIDATE_BUDGET_EXCEEDED` y sin parciales).
+> `reconciliation_exceptions`/`claims` siguen pendientes (`E5-T19`/`E5-T20`).
+>
+> Nota de implementacion (2026-11-17, review PR #27 H1/H2/H3, HU19): la
+> misma `0051` (rama sin mergear) ahora crea `reconciliation_matches`
+> (auditoria item -> `transaction_id`, UQ por item) + `clearing_items.
+> run_id` (que corrida proceso cada item, incluidas excepciones); solo
+> cruzan items de archivos `PROCESSED`; sin UQ natural en runs
+> (`COMPLETED` inmutable, lotes tardios crean corridas nuevas; sin doble
+> conciliacion por `transaction_id` usado o estado `CONCILIATED`).
+>
+> Nota de implementacion (2026-11-17, review PR #27 MEDIA M2-M7, HU19):
+> la misma `0051` (sin `0052`) ahora: alcance interno en ventana
+> [`run_date` - tol, `run_date` + tol] por dia de negocio
+> (`reconciliation.business_timezone`, default `America/Lima`; M2/M3) con
+> `DATE_DIFF` del dominio (clearing exacto en `run_date`); `external_ref`
+> maximo 80 (M4, sin migracion); `direction` (`INBOUND`/`OUTBOUND`) exigida
+> para el `Match` (M5, derivada del tipo; `total_minor` con signo);
+> indices `transactions` (`initiator_user_id`, `status`, `created_at`)
+> — R2 de produccion —, (`currency`, `status`, `settled_at`) y
+> `clearing_items` (`status`, `value_date`, `currency`) (M6, reversibles);
+> la cota cuenta pares examinados (M7).
+>
+> Nota de implementacion (2026-11-19, comentario PR #27 3.1/3.2/3.3/3.4 +
+> menores, HU19; `0051` sigue unica y reversible, sin `0052`): los ya
+> usados se excluyen por conjunto de candidatos (`WHERE transaction_id IN
+> (...)`, sin ventana de fechas: una op conciliada no se reoferta en
+> corridas vecinas); la mutacion corre en `SAVEPOINT` (`FAILED` sin
+> parciales, sesion usable); `reconciliation_runs` desglosa
+> `unmatched_item_count`/`unmatched_operation_count` (`unmatched_count` =
+> suma, compatibilidad); el replay con checksum distinto no muta el
+> original (rechazo aparte `FAILED`, evidencia sin items) y el `FAILED`
+> legitimo cierra sus items como `EXCEPTION` (sin `run_id`);
+> `reconciliation_matches` persiste `amount_diff_minor`/`date_diff_days`
+> (nullable, solo tolerados); replay `COMPLETED` sin pendientes no
+> consulta candidatos/usados.
 
 ## 11. Modulo `notifications`
 

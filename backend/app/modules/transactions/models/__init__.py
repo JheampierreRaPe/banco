@@ -48,6 +48,24 @@ class Transaction(Base):
         sa.Index("ix_transactions_status_created", "status", "created_at"),
         sa.Index("ix_transactions_source_account", "source_account_id"),
         sa.Index("ix_transactions_external_ref", "external_ref"),
+        # M6 (review PR #27, R2 + conciliacion): `risk` filtra por titular
+        # + estado + creacion (bloqueante para produccion, R2); la
+        # conciliacion filtra por moneda + estado + liquidacion
+        # (`settled_at`, no nulo en `SETTLED`; las `POSTED` aun sin liquidar
+        # entran por `created_at` en la rama `IS NULL`, cubierta por el
+        # prefijo `(currency, status)`). Solo indices: sin columnas nuevas.
+        sa.Index(
+            "ix_transactions_recon_candidates",
+            "initiator_user_id",
+            "status",
+            "created_at",
+        ),
+        sa.Index(
+            "ix_transactions_recon_settle",
+            "currency",
+            "status",
+            "settled_at",
+        ),
         {"schema": SCHEMA},
     )
 

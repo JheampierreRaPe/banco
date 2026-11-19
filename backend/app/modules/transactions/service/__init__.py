@@ -58,6 +58,7 @@ Frontera (reglas de oro 1/3/4/8):
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -1685,8 +1686,247 @@ def validate_holder(
     return result
 
 
+#: Estados del motor conciliables por `reconciliation` (E5-T18 corte 2):
+#: operaciones liquidadas o en firme. `REJECTED`/`FAILED` (negocio fallido)
+#: y `REVERSED` (fondos devueltos) nunca concilian; los intermedios
+#: (`INITIATED`/`VALIDATED`/`PENDING_AUTHORIZATION`/`AUTHORIZED`/
+#: `FUNDS_HELD`) aun no son firmes.
+RECONCILIATION_CONCILIABLE_STATUSES = ("POSTED", "SETTLED", "CONCILIATED")
+
+
+#: Tipos de transaccion del motor que mueven fondos HACIA el titular
+#: (``INBOUND`` en conciliacion, M5 del review PR #27): depositos y
+#: recargas (`TOPUP`), desembolsos de credito (acreditan capital,
+#: `LOAN_DISBURSEMENT`) y abonos de haberes (`SALARY_DISTRIBUTION`).
+#: Todo otro tipo (transferencias propias/de terceros/interbancarias,
+#: pagos QR y de servicios, cuotas, movimientos entre bolsillos, FX,
+#: reversos y desconocidos) es ``OUTBOUND`` por defecto.
+RECONCILIATION_INBOUND_TX_TYPES = frozenset({"TOPUP", "LOAN_DISBURSEMENT", "SALARY_DISTRIBUTION"})
+
+#: Clave de `config.parameters` con la zona horaria del dia de negocio
+#: (M3 del review PR #27; regla de oro 6: regla configurable, no cableada).
+RECONCILIATION_BUSINESS_TIMEZONE_KEY = "reconciliation.business_timezone"
+
+#: Dia de negocio por defecto (Lima, UTC-5 sin horario de verano).
+DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE = "America/Lima"
+
+
+def _direction_for_tx_type(tx_type: object) -> str:
+    """Direccion de conciliacion desde el tipo de transaccion (M5).
+
+    Mapeo documentado (perspectiva del titular):
+    `TOPUP`/`LOAN_DISBURSEMENT`/`SALARY_DISTRIBUTION` (depositos,
+    desembolsos, abonos) -> ``INBOUND``; transferencias (`OWN_TRANSFER`,
+    `THIRD_PARTY_TRANSFER`, `INTERBANK_TRANSFER`), pagos (`QR_PAYMENT`,
+    `SERVICE_PAYMENT`), cuotas (`LOAN_INSTALLMENT`), movimientos propios
+    (`POCKET_TRANSFER`), FX (`FX_EXCHANGE`), reversos (`REVERSAL`) y
+    cualquier otro tipo -> ``OUTBOUND`` (default). El dominio exige misma
+    direccion en ambos lados para un `Match`: un cargo ``OUTBOUND`` nunca
+    concilia contra un abono ``INBOUND``.
+    """
+    text = str(tx_type or "").strip().upper()
+    return "INBOUND" if text in RECONCILIATION_INBOUND_TX_TYPES else "OUTBOUND"
+
+
+def _read_str_parameter(session: Session, key: str, default: str) -> str:
+    """Lee `config.parameters.<key>` como texto best-effort (fallback a `default`).
+
+    Mismo patron que `_read_int_parameter`: SQL acotado a la tabla
+    transversal dentro de un `SAVEPOINT`; tabla ausente, clave faltante o
+    valor no texto -> `default`. Sin `float`; sin secretos/PII en logs.
+    """
+    try:
+        with session.begin_nested():
+            raw = session.execute(
+                sa.text("SELECT value_json FROM config.parameters WHERE key = :key"),
+                {"key": key},
+            ).scalar()
+    except Exception:  # noqa: BLE001 - sin acceso a parameters rige el default
+        logger.debug("transfer parameters sin acceso (%s): default", key)
+        return default
+    if isinstance(raw, bool):
+        return default
+    if isinstance(raw, str):
+        text = raw.strip()
+        # `value_json` guarda el texto como JSON (`"America/Lima"` con
+        # comillas) o como texto plano segun la semilla: se aceptan ambas.
+        if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+            text = text[1:-1].strip()
+        return text or default
+    return default
+
+
+def _resolve_business_timezone(session: Session, business_timezone: str | None) -> tuple[Any, str]:
+    """Zona del dia de negocio (M3): explicita > `config.parameters` > default.
+
+    Retorna `(ZoneInfo, nombre)`. Un nombre explicito invalido es
+    `ValueError` (`VALIDATION_ERROR`); un valor de config invalido/ausente
+    cae al default (`America/Lima`) sin lanzar (best-effort, regla de oro 6:
+    `ZoneInfo` lanza `ZoneInfoNotFoundError` ante zona desconocida y
+    `ValueError` ante clave malformada —p. ej. `'/etc/passwd'—, ambas se
+    recortan al default).
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if business_timezone is not None:
+        if not isinstance(business_timezone, str) or not business_timezone.strip():
+            raise ValueError(
+                f"business_timezone debe ser texto IANA, recibido: {business_timezone!r}"
+            )
+        try:
+            return ZoneInfo(business_timezone.strip()), business_timezone.strip()
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"business_timezone desconocida: {business_timezone.strip()!r}"
+            ) from exc
+    name = _read_str_parameter(
+        session,
+        RECONCILIATION_BUSINESS_TIMEZONE_KEY,
+        DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE,
+    )
+    try:
+        return ZoneInfo(name), name
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.debug("reconciliation business_timezone invalida en config: default")
+        return ZoneInfo(DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE), (
+            DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE
+        )
+
+
+def list_reconciliation_candidates(
+    session: Session,
+    value_date: Any,
+    currency: str,
+    date_tolerance_days: int = 0,
+    business_timezone: str | None = None,
+) -> list[dict[str, Any]]:
+    """Candidatos internos para la conciliacion (E5-T18 corte 2 + review PR #27, HU19).
+
+    Fachada de **solo lectura** para `reconciliation` (regla de oro 4: el
+    cruce se hace por IDs/dicts, nunca importando modelos ajenos): retorna
+    dicts minimos (`transaction_id`, `external_ref`, `amount_minor`,
+    `currency`, `value_date`, `type`, `status`, `direction`), ordenados por
+    (`external_ref`, `transaction_id`). Sin `flush`/`commit`.
+
+    Alcance (M2/M3): operaciones con `currency`, estado conciliable
+    (`POSTED`/`SETTLED`/`CONCILIATED`) y dia de negocio dentro de
+    [`value_date` - tol, `value_date` + tol]. El dia de negocio se calcula
+    en la zona `business_timezone` (M3: default
+    `reconciliation.business_timezone` = `America/Lima`, via
+    `config.parameters`; explicito > config > default) convirtiendo
+    `settled_at` (o, si aun no liquida, `created_at`) con `ZoneInfo` — nunca
+    con `date()` UTC, que desplaza la vispera limena (23:30 Lima = 04:30
+    UTC del dia siguiente). En SQL se pre-filtra un rango UTC amplio
+    ([`value_date`-tol-1, `value_date`+tol+2)) para no traer la tabla
+    entera (portable SQLite/Postgres: los bounds son UTC); el recorte exacto
+    al dia de negocio ocurre en Python. La tolerancia solo amplia el alcance
+    interno: el dominio califica el par (`DATE_DIFF` si difiere dentro de
+    tolerancia). `value_date` exige `datetime.date` (sin hora),
+    `date_tolerance_days` entero `>= 0` y `currency` ISO-4217 (se normaliza
+    a mayusculas); otro valor -> `TypeError`/`ValueError`
+    (`VALIDATION_ERROR`).
+
+    Direccion (M5): cada candidato lleva `direction` (`INBOUND`/
+    `OUTBOUND`) derivada del tipo (ver `_direction_for_tx_type`); el dominio
+    exige misma direccion para un `Match`.
+
+    Representacion de reversos (verificado corte 2, nota (d) de `E5-T18`):
+    `transactions.amount_minor` es siempre `> 0` (CHECK) y el reverso es
+    una fila `type='REVERSAL'` con monto positivo (nunca negativo), asi que
+    ambos lados del cruce son positivos y el dominio (mismo signo para
+    `Match`) no necesita adaptacion. Filas sin `external_ref` ni
+    `metadata.reference` se omiten (no se inventa referencia). Los instantes
+    ingenuos (SQLite sin tz) se asumen UTC.
+    """
+    from datetime import UTC as _UTC
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _timedelta
+
+    if isinstance(value_date, _datetime) or not isinstance(value_date, _date):
+        raise TypeError(f"value_date debe ser datetime.date, recibido: {value_date!r}")
+    if not isinstance(currency, str):
+        raise TypeError(f"currency debe ser texto ISO-4217, recibido: {currency!r}")
+    code = currency.strip().upper()
+    if not code.isascii() or re.fullmatch(r"[A-Z]{3}", code) is None:
+        raise ValueError(f"currency debe ser ISO-4217 en mayusculas, recibido: {currency!r}")
+    if isinstance(date_tolerance_days, bool) or not isinstance(date_tolerance_days, int):
+        raise TypeError(
+            "date_tolerance_days debe ser un entero >= 0, " f"recibido: {date_tolerance_days!r}"
+        )
+    if date_tolerance_days < 0:
+        raise ValueError(f"date_tolerance_days debe ser >= 0, recibido: {date_tolerance_days!r}")
+    tz, _tz_name = _resolve_business_timezone(session, business_timezone)
+    start_day = value_date - _timedelta(days=date_tolerance_days)
+    end_day = value_date + _timedelta(days=date_tolerance_days)
+    # Rango UTC amplio: el dia de negocio D en zona -05:00..+14:00 cae en
+    # [D-1, D+2) UTC; con tolerancia se ensancha en consecuencia. El recorte
+    # exacto al dia de negocio ocurre en Python (portable SQLite/Postgres).
+    start_utc = _datetime(start_day.year, start_day.month, start_day.day, tzinfo=_UTC) - _timedelta(
+        days=1
+    )
+    end_utc = _datetime(end_day.year, end_day.month, end_day.day, tzinfo=_UTC) + _timedelta(days=2)
+    settled_in = sa.and_(
+        Transaction.settled_at.is_not(None),
+        Transaction.settled_at >= start_utc,
+        Transaction.settled_at < end_utc,
+    )
+    created_in = sa.and_(
+        Transaction.settled_at.is_(None),
+        Transaction.created_at >= start_utc,
+        Transaction.created_at < end_utc,
+    )
+    # Sin filtro de `external_ref` en SQL: una fila con `external_ref`
+    # NULL/vacio pero `metadata.reference` tambien es candidata (el
+    # descarte de vacias ocurre en Python, sin eco de valores).
+    stmt = (
+        sa.select(Transaction)
+        .where(
+            Transaction.currency == code,
+            Transaction.status.in_(RECONCILIATION_CONCILIABLE_STATUSES),
+            sa.or_(settled_in, created_in),
+        )
+        .order_by(Transaction.external_ref, Transaction.id)
+    )
+    rows = session.scalars(stmt).all()
+    candidates: list[dict[str, Any]] = []
+    for tx in rows:
+        ref = (tx.external_ref or "").strip()
+        if not ref and isinstance(tx.meta, dict):
+            fallback = tx.meta.get("reference")
+            ref = fallback.strip() if isinstance(fallback, str) else ""
+        if not ref:
+            continue
+        moment = tx.settled_at if tx.settled_at is not None else tx.created_at
+        if moment is None:
+            continue
+        if not isinstance(moment, _datetime):
+            continue
+        if moment.tzinfo is None:
+            # SQLite no conserva la tz: los instantes se asumen UTC.
+            moment = moment.replace(tzinfo=_UTC)
+        business_day = moment.astimezone(tz).date()
+        if business_day < start_day or business_day > end_day:
+            continue
+        candidates.append(
+            {
+                "transaction_id": str(tx.id),
+                "external_ref": ref,
+                "amount_minor": int(tx.amount_minor),
+                "currency": tx.currency,
+                "value_date": business_day,
+                "type": tx.type,
+                "status": tx.status,
+                "direction": _direction_for_tx_type(tx.type),
+            }
+        )
+    candidates.sort(key=lambda row: (row["external_ref"], row["transaction_id"]))
+    return candidates
+
+
 __all__ = [
     "DEFAULT_BALANCE_PORT",
+    "DEFAULT_RECONCILIATION_BUSINESS_TIMEZONE",
     "FEE_ACCOUNT_CODE",
     "HOLD_ENTRY_TYPE",
     "INSUFFICIENT_FUNDS",
@@ -1698,6 +1938,9 @@ __all__ = [
     "LOAN_INSTALLMENT_TX_TYPE",
     "OWN_SETTLE_ENTRY_TYPE",
     "PORTFOLIO_ACCOUNT_CODE",
+    "RECONCILIATION_BUSINESS_TIMEZONE_KEY",
+    "RECONCILIATION_CONCILIABLE_STATUSES",
+    "RECONCILIATION_INBOUND_TX_TYPES",
     "SETTLE_ENTRY_TYPE",
     "THIRD_PARTY_FEE_DEFAULT_MINOR",
     "THIRD_PARTY_FEE_PARAM_KEY",
@@ -1730,6 +1973,7 @@ __all__ = [
     "find_disbursement_tx",
     "find_transaction_by_id",
     "hold_src_hold_id",
+    "list_reconciliation_candidates",
     "mask_account_number",
     "pay_loan_installment",
     "resolve_third_party_fee",

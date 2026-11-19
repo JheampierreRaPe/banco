@@ -133,10 +133,14 @@ def test_migration_has_no_cross_schema_fk():
 
 
 def test_single_head_is_0049():
-    """Un solo head tras el brief (`alembic check` limpio lo exige)."""
+    """Un solo head tras el brief (`alembic check` limpio lo exige).
+
+    E5-T18 corte 2 (2026-11-14): la cabeza avanza a
+    `0051_reconciliation_runs` (corridas + semillas, tras 0050).
+    """
     from tests.db_utils import get_head_revisions
 
-    assert get_head_revisions() == ("0050_reconciliation",)
+    assert get_head_revisions() == ("0051_reconciliation_runs",)
 
 
 # ------------------------------------------------- tasas (camino feliz)

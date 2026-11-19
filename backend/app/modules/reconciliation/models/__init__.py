@@ -34,6 +34,13 @@ CLEARING_FILE_STATUSES = ("RECEIVED", "PROCESSED", "FAILED")
 #: Estados de `clearing_items.status` (`03b#12.1`, E5-T17).
 CLEARING_ITEM_STATUSES = ("PENDING", "MATCHED", "EXCEPTION")
 
+#: Estados de `reconciliation_runs.status` (`03b#12.2`, E5-T18).
+RUN_STATUSES = ("RUNNING", "COMPLETED", "FAILED")
+
+#: Calificadores de `reconciliation_matches.match_type` (`03b#12.2`, E5-T18
+#: review PR #27): solo pares conciliados (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`).
+MATCH_TYPES = ("EXACT", "AMOUNT_DIFF", "DATE_DIFF")
+
 #: Direcciones de `clearing_items.direction` (`03b#12.1`, E5-T17).
 CLEARING_DIRECTIONS = ("INBOUND", "OUTBOUND")
 
@@ -131,6 +138,15 @@ class ClearingItem(Base):
         sa.Index("ix_clearing_items_file_id", "file_id"),
         sa.Index("ix_clearing_items_external_ref", "external_ref"),
         sa.Index("ix_clearing_items_status", "status"),
+        sa.Index("ix_clearing_items_run_id", "run_id"),
+        # M6 (review PR #27): alcance de la corrida (items `PENDING` de
+        # archivos `PROCESSED` por fecha/moneda) en un solo indice.
+        sa.Index(
+            "ix_clearing_items_status_value_currency",
+            "status",
+            "value_date",
+            "currency",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -145,6 +161,11 @@ class ClearingItem(Base):
     status: Mapped[str] = mapped_column(
         sa.String(15), nullable=False, default="PENDING", server_default="PENDING"
     )
+    # Corrida que proceso el item (`NULL` = aun no procesado). REF logica a
+    # `reconciliation_runs.id` sin FK fisica (el item nace sin corrida y la
+    # FK fisica impediria el `flush` por orden en SQLite); la fija solo el
+    # servicio `run_reconciliation` (H2/H3 del review PR #27).
+    run_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
     raw: Mapped[dict[str, Any] | None] = mapped_column(
         postgresql.JSONB(astext_type=sa.Text()), nullable=True
     )
@@ -152,11 +173,197 @@ class ClearingItem(Base):
     file: Mapped[ClearingFile] = relationship(back_populates="items")
 
 
+class ReconciliationRun(Base):
+    """Corrida de conciliacion (`03b#12.2`, E5-T18 + review PR #27).
+
+    Una fecha/moneda puede tener VARIAS corridas (sin UQ natural): las
+    `COMPLETED` son inmutables y nunca se reabren; si llegan items `PENDING`
+    nuevos (lotes tardios de archivos `PROCESSED`) se crea una corrida nueva
+    que procesa solo esos items; reejecutar sin pendientes devuelve la ultima
+    `COMPLETED`. Solo una `RUNNING` por `(run_date, currency)` (indice unico
+    parcial `uq_reconciliation_runs_single_running` `WHERE status='RUNNING'`;
+    segunda `RUNNING` concurrente = `CONFLICT` por la BD); `FAILED` se
+    reintenta en la misma fila. `matched_count` = pares conciliados;
+    `unmatched_count` = TOTAL de excepciones del dominio (BAJO PR #27 B1,
+    opcion total: incluye `MISSING_INTERNAL` de items huerfanos y
+    `MISSING_EXTERNAL` de operaciones internas sin item) y se mantiene por
+    compatibilidad como `unmatched_item_count + unmatched_operation_count`;
+    el desglose vive en `unmatched_item_count` (excepciones del lado
+    clearing: items sin conciliar) y `unmatched_operation_count`
+    (excepciones del lado interno: `MISSING_EXTERNAL`, operaciones sin
+    item); `total_minor` = suma con signo en centimos de los items
+    conciliados
+    (M5 del review PR #27: `INBOUND` +, `OUTBOUND` -; puede ser negativo,
+    sin CHECK `>= 0`; nunca `float`). Sin PII: solo fecha, moneda y conteos. Los items los mueve
+    solo el servicio ``run_reconciliation`` (``PENDING`` -> ``MATCHED`` /
+    ``EXCEPTION``); este modelo no toca dinero ni asientos.
+    """
+
+    __tablename__ = "reconciliation_runs"
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('RUNNING','COMPLETED','FAILED')",
+            name="ck_reconciliation_runs_status",
+        ),
+        sa.CheckConstraint(
+            "matched_count >= 0",
+            name="ck_reconciliation_runs_matched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_count >= 0",
+            name="ck_reconciliation_runs_unmatched_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_item_count >= 0",
+            name="ck_reconciliation_runs_unmatched_item_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_operation_count >= 0",
+            name="ck_reconciliation_runs_unmatched_operation_nonneg",
+        ),
+        sa.CheckConstraint(
+            "unmatched_count = unmatched_item_count + unmatched_operation_count",
+            name="ck_reconciliation_runs_unmatched_total",
+        ),
+        # Sin CHECK `>= 0` en `total_minor` (M5 del review PR #27): suma con
+        # signo (`INBOUND` +, `OUTBOUND` -), puede ser negativa.
+        sa.Index("ix_reconciliation_runs_status", "status"),
+        sa.Index("ix_reconciliation_runs_date_currency", "run_date", "currency"),
+        # Guarda de BD (MEDIO-2): una sola `RUNNING` por `(run_date,
+        # currency)`. Parcial `WHERE status='RUNNING'` para permitir varias
+        # corridas por fecha/moneda (`COMPLETED` inmutables, lotes tardios) y
+        # reintentos de `FAILED` en su fila. El `sqlite_where` replica la
+        # semantica en SQLite (tests); en Postgres manda `postgresql_where`
+        # (mismo criterio que `beneficiaries`).
+        sa.Index(
+            "uq_reconciliation_runs_single_running",
+            "run_date",
+            "currency",
+            unique=True,
+            postgresql_where=sa.text("status = 'RUNNING'"),
+            sqlite_where=sa.text("status = 'RUNNING'"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    run_date: Mapped[date] = mapped_column(sa.Date(), nullable=False)
+    currency: Mapped[str] = mapped_column(sa.CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(
+        sa.String(15), nullable=False, default="RUNNING", server_default="RUNNING"
+    )
+    matched_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    unmatched_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    # Desglose del total (3.3 del comentario PR #27): excepciones del lado
+    # clearing (items sin conciliar) y del lado interno (`MISSING_EXTERNAL`,
+    # operaciones sin item). `unmatched_count` se mantiene como la suma por
+    # compatibilidad (`E5-T18` CA-01 y lectores de `docs/03b#12.2`).
+    unmatched_item_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    unmatched_operation_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, default=0, server_default="0"
+    )
+    # Suma con signo en centimos de los items conciliados (`INBOUND` +,
+    # `OUTBOUND` -; M5); nunca `float` (regla 3).
+    total_minor: Mapped[int] = mapped_column(
+        sa.BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    executed_by: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
+class ReconciliationMatch(Base):
+    """Emparejamiento persistido de la corrida (`03b#12.2`, review PR #27).
+
+    Una fila por par conciliado: que clearing_item cruzo con que operacion
+    interna (`transaction_id` logico, sin FK fisica fuera del schema),
+    con que calificador (`EXACT`/`AMOUNT_DIFF`/`DATE_DIFF`), monto y moneda.
+    `amount_diff_minor` (`clearing - internal`, centimos) y `date_diff_days`
+    (`clearing_date - internal_date`, dias) conservan la diferencia que
+    califico el par (solo para `AMOUNT_DIFF`/`DATE_DIFF`; `EXACT` deja
+    `NULL`): la misma convencion del dominio (`matching._assess_pair`).
+    `UQ(clearing_item_id)`: un item se concilia como maximo una vez (doble
+    match = conflicto). `UQ(transaction_id)`: una operacion interna se
+    concilia como maximo una vez en todo el historial (doble uso =
+    conflicto; la corrida excluye los ya usados antes de cruzar).
+    Auditoria item -> `transaction_id` sin PII.
+    """
+
+    __tablename__ = "reconciliation_matches"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["run_id"],
+            ["reconciliation.reconciliation_runs.id"],
+            name="fk_reconciliation_matches_run",
+        ),
+        sa.ForeignKeyConstraint(
+            ["clearing_item_id"],
+            ["reconciliation.clearing_items.id"],
+            name="fk_reconciliation_matches_item",
+        ),
+        sa.UniqueConstraint(
+            "clearing_item_id",
+            name="uq_reconciliation_matches_item",
+        ),
+        sa.UniqueConstraint(
+            "transaction_id",
+            name="uq_reconciliation_matches_transaction",
+        ),
+        sa.CheckConstraint(
+            "match_type IN ('EXACT','AMOUNT_DIFF','DATE_DIFF')",
+            name="ck_reconciliation_matches_type",
+        ),
+        sa.CheckConstraint(
+            "amount_minor >= 0",
+            name="ck_reconciliation_matches_amount_nonneg",
+        ),
+        sa.Index("ix_reconciliation_matches_run_id", "run_id"),
+        sa.Index("ix_reconciliation_matches_transaction_id", "transaction_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    clearing_item_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    # REF logica a `transactions` (sin FK fisica entre modulos, regla 4).
+    transaction_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(), nullable=False)
+    match_type: Mapped[str] = mapped_column(sa.String(15), nullable=False)
+    # Monto en centimos `>= 0` del item conciliado; nunca `float` (regla 3).
+    amount_minor: Mapped[int] = mapped_column(sa.BigInteger(), nullable=False)
+    currency: Mapped[str] = mapped_column(sa.CHAR(3), nullable=False)
+    # Diferencias que calificaron el par (nullable; `EXACT` deja `NULL`).
+    # Convencion del dominio: `clearing - internal` y dias
+    # `clearing_date - internal_date` (pueden ser negativas).
+    amount_diff_minor: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    date_diff_days: Mapped[int | None] = mapped_column(sa.Integer(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+
+
 __all__ = [
     "CLEARING_DIRECTIONS",
     "CLEARING_FILE_STATUSES",
     "CLEARING_ITEM_STATUSES",
+    "MATCH_TYPES",
+    "RUN_STATUSES",
     "SCHEMA",
     "ClearingFile",
     "ClearingItem",
+    "ReconciliationMatch",
+    "ReconciliationRun",
 ]
